@@ -1,9 +1,15 @@
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vitepress'
 
+// The path the site is served under. GitHub Pages serves a project site under
+// `/retrograd/`: the deploy workflow passes it in `DOCS_BASE_PATH`, without the
+// trailing slash. Unset, as with `docs:dev`, the site is served from the root.
+const base = `${(process.env.DOCS_BASE_PATH ?? '').replace(/\/+$/, '')}/`
+
 export default defineConfig({
   title: 'Retrograd',
   description: 'User and engineering documentation for Retrograd LoRA training',
+  base,
   cleanUrls: true,
   srcExclude: ['**/README.md', '**/CLAUDE.md'],
   // Serve docs/assets as the public directory: the logo there is the one the
@@ -12,10 +18,12 @@ export default defineConfig({
   vite: {
     publicDir: fileURLToPath(new URL('../assets', import.meta.url)),
   },
+  // VitePress prefixes `base` onto the logo, not onto `head`: these are written
+  // with it by hand.
   head: [
-    ['link', { rel: 'icon', href: '/favicon.ico', sizes: '48x48' }],
-    ['link', { rel: 'icon', type: 'image/png', href: '/favicon-96x96.png', sizes: '96x96' }],
-    ['link', { rel: 'apple-touch-icon', href: '/apple-touch-icon.png', sizes: '180x180' }],
+    ['link', { rel: 'icon', href: `${base}favicon.ico`, sizes: '48x48' }],
+    ['link', { rel: 'icon', type: 'image/png', href: `${base}favicon-96x96.png`, sizes: '96x96' }],
+    ['link', { rel: 'apple-touch-icon', href: `${base}apple-touch-icon.png`, sizes: '180x180' }],
     ['meta', { name: 'theme-color', content: '#7a2fd4' }],
   ],
   themeConfig: {
