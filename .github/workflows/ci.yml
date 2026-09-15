@@ -30,11 +30,16 @@ jobs:
     name: licenses (cargo-deny, see deny.toml)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      # A prebuilt binary rather than EmbarkStudios/cargo-deny-action: that one
+      # builds a Docker image on every run and its pulls fail intermittently.
+      - uses: taiki-e/install-action@v2
         with:
-          command: check licenses
+          tool: cargo-deny
+
+      - name: cargo deny check licenses
+        run: cargo deny --all-features check licenses
 
 
   rust:
@@ -46,7 +51,7 @@ jobs:
       # `python/.cargo/config.toml` picks its own target directory.
       CARGO_TARGET_DIR: target/lanes/fast
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -59,7 +64,7 @@ jobs:
         with:
           components: clippy
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -84,7 +89,7 @@ jobs:
     name: python (fast lane + ruff)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -95,9 +100,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v10.1.0
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -120,7 +125,7 @@ jobs:
     name: python sdist (contents + wheel built from it)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -131,7 +136,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v10.1.0
 
       - name: Build the sdist
         working-directory: python
