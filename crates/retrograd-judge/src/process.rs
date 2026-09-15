@@ -543,7 +543,15 @@ fn call_once<R: DeserializeOwned>(
     // A reward command is not allowed to leave helpers behind. Closing the
     // whole group also guarantees the pipe readers below cannot wait forever.
     kill_process_group(pid);
-    receive_before(&writer_rx, deadline, timeout, "stdin")?.map_err(RewardProcessError::Write)?;
+    // A command that exits before reading all of its input leaves the rest of
+    // the payload without a reader, and the write fails with a broken pipe
+    // or does not, when the payload fit in the pipe buffer before the exit.
+    match receive_before(&writer_rx, deadline, timeout, "stdin")? {
+        Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => {
+            return Err(RewardProcessError::Write(error));
+        }
+        _ => {}
+    }
     let (stdout, stdout_truncated) = receive_before(&stdout_rx, deadline, timeout, "stdout")?
         .map_err(RewardProcessError::Read)?;
     let (stderr, stderr_truncated) = receive_before(&stderr_rx, deadline, timeout, "stderr")?
@@ -1030,6 +1038,31 @@ done"#
             );
             assert!(error.is_user_error(), "{error}");
         }
+    }
+
+    /// A one-shot command may answer without reading its input, and is then
+    /// judged on what it printed. The prompt is larger than any pipe buffer, so
+    /// the write is certain to outlive the process: without the rule, the
+    /// broken pipe would win here every time, where a small batch only lost
+    /// the race on a slow runner.
+    #[test]
+    fn a_one_shot_command_that_ignores_its_input_is_judged_on_its_output() {
+        let prompt = "p".repeat(1024 * 1024);
+
+        let answered = shell(r#"printf '{"reward":1}\n'"#);
+        let responses = call(&answered, RewardMode::OneShot, &[&prompt]);
+        assert_eq!(responses[0].reward, 1.0);
+
+        let garbage = shell(r#"printf 'not json\n'"#);
+        let mut process =
+            RewardProcess::new(&garbage, protocol(RewardMode::OneShot, 5_000)).unwrap();
+        let error = process
+            .call::<_, Response>([Request { prompt: &prompt }])
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("invalid reward response 1"),
+            "{error}"
+        );
     }
 
     #[test]
