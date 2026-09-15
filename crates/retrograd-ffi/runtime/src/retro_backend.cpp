@@ -163,7 +163,7 @@ bool supports_flash_attn_back(
                 probe.get(), GGML_TYPE_F32, hsv, n_head, tokens, 1);
         ggml_tensor * out = ggml_flash_attn_ext(
                 probe.get(), q, k, v, mask, 1.0f, 0.0f, 0.0f);
-        ggml_flash_attn_ext_set_prec(out, GGML_PREC_F32);
+        ggml_prec_set_acc(out, GGML_PREC_F32);
         // Probe the dense backward: the KV gradient window is an optional extra
         // input the same kernels accept, so a device that supports this supports
         // the windowed form too.
@@ -1316,7 +1316,7 @@ int read_model_info_impl(const char * model_path, int32_t device, retro_model_in
         info.n_embd_s      = hparams.n_embd_s();
         info.n_ctx_train   = hparams.n_ctx_train;
         info.n_expert      = hparams.n_expert;
-        info.n_expert_used = hparams.n_expert_used;
+        info.n_expert_used = hparams.n_expert_used_max();
 
         const llama_vocab * vocab = llama_model_get_vocab(model.get());
         const int32_t n_vocab = vocab ? llama_vocab_n_tokens(vocab) : 0;

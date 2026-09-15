@@ -340,7 +340,7 @@ static int probe_op_run_locked(
             ggml_tensor * tm = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F16, nkv, nq, 1, nbatch);
             ggml_tensor * td = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32, hsv, nhead, nq, nbatch);
             ggml_tensor * to = ggml_flash_attn_ext(ctx.get(), tq, tk, tv, tm, scale, 0.0f, softcap);
-            ggml_flash_attn_ext_set_prec(to, GGML_PREC_F32);
+            ggml_prec_set_acc(to, GGML_PREC_F32);
             ggml_tensor * ts = nullptr;
             if (has_sinks) {
                 ts = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, nhead);

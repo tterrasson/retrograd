@@ -42,6 +42,22 @@ add_library(retro_lora_train STATIC
     ${LLAMA_CPP_DIR}/common/chat-auto-parser-generator.cpp
     ${LLAMA_CPP_DIR}/common/chat-auto-parser-helpers.cpp
     ${LLAMA_CPP_DIR}/common/chat-diff-analyzer.cpp
+    ${LLAMA_CPP_DIR}/common/json-schema.cpp
+    ${LLAMA_CPP_DIR}/common/parsers/parsers.cpp
+    ${LLAMA_CPP_DIR}/common/parsers/cohere2moe.cpp
+    ${LLAMA_CPP_DIR}/common/parsers/deepseek.cpp
+    ${LLAMA_CPP_DIR}/common/parsers/functionary-v3-2.cpp
+    ${LLAMA_CPP_DIR}/common/parsers/gemma4.cpp
+    ${LLAMA_CPP_DIR}/common/parsers/gigachat-v3.cpp
+    ${LLAMA_CPP_DIR}/common/parsers/gpt-oss.cpp
+    ${LLAMA_CPP_DIR}/common/parsers/kimi-k2.cpp
+    ${LLAMA_CPP_DIR}/common/parsers/kimi-k3.cpp
+    ${LLAMA_CPP_DIR}/common/parsers/lfm2.cpp
+    ${LLAMA_CPP_DIR}/common/parsers/minicpm5.cpp
+    ${LLAMA_CPP_DIR}/common/parsers/minimax-m3.cpp
+    ${LLAMA_CPP_DIR}/common/parsers/ministral3.cpp
+    ${LLAMA_CPP_DIR}/common/parsers/muse-glimmer.cpp
+    ${LLAMA_CPP_DIR}/common/parsers/qwen3-coder.cpp
     ${LLAMA_CPP_DIR}/common/peg-parser.cpp
     ${LLAMA_CPP_DIR}/common/json-schema-to-grammar.cpp
     ${LLAMA_CPP_DIR}/common/log.cpp
