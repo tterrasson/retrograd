@@ -100,7 +100,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # One suffix per job: without it the python and sdist jobs compute the
+      # same key, run at the same time, and the second to finish fails to save.
       - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          cache-suffix: python
 
       - uses: actions/cache@v6
         with:
@@ -137,6 +141,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          cache-suffix: sdist
 
       - name: Build the sdist
         working-directory: python
