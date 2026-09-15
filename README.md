@@ -53,8 +53,8 @@ RETRO_BACKENDS=cpu,cuda cargo build --release     # needs the CUDA Toolkit
 ```
 
 Per-backend requirements and options are in
-[Build variants](docs/reference/builds.md); what each backend supports is in the
-[support matrix](docs/engineering/SUPPORT.md).
+[Build variants](https://tterrasson.github.io/retrograd/reference/builds); what each backend supports is in the
+[support matrix](https://tterrasson.github.io/retrograd/engineering/SUPPORT).
 
 ## Quick start
 
@@ -86,7 +86,7 @@ adapter and fails the run if the written GGUF is invalid.
 check for the rollout algorithms, on eight addition questions scored by
 `examples/smoke_rl_reward.py`. They take the same `--model MODEL.gguf`.
 
-The [quickstart](docs/getting-started/quickstart.md) walks through a first real
+The [quickstart](https://tterrasson.github.io/retrograd/getting-started/quickstart) walks through a first real
 run: a dataset, a configuration, training, and testing the adapter.
 
 ## Workflow
@@ -102,24 +102,25 @@ retrograd bench run.toml --adapter adapter.gguf  # base against adapter, same ex
 retrograd chat run.toml --compare                # base and adapter, turn by turn
 ```
 
-Every command and flag is in the [CLI reference](docs/reference/cli.md), and
+Every command and flag is in the [CLI reference](https://tterrasson.github.io/retrograd/reference/cli), and
 every configuration key in the
-[configuration reference](docs/reference/configuration.md).
+[configuration reference](https://tterrasson.github.io/retrograd/reference/configuration).
 
 ## Documentation
 
-The documentation is a VitePress site under [`docs/`](docs/)
+The documentation is published at <https://tterrasson.github.io/retrograd/>.
+It is a VitePress site under [`docs/`](docs/)
 (`cd docs && bun install && bun run docs:dev`):
 
-- **Getting started**: [quickstart](docs/getting-started/quickstart.md),
-  [datasets and paths](docs/getting-started/datasets.md).
-- **Training**: [SFT](docs/training/sft.md), [PPO](docs/training/ppo.md),
-  [GRPO](docs/training/grpo.md), [distillation](docs/training/distill.md).
-- **Reference**: [configuration](docs/reference/configuration.md),
-  [CLI](docs/reference/cli.md), [build variants](docs/reference/builds.md).
-- **Operations**: [checkpoints and monitoring](docs/operations/checkpoints.md),
-  [profiling](docs/operations/profiling.md).
-- **Engineering**: [overview](docs/engineering/index.md), covering contribution
+- **Getting started**: [quickstart](https://tterrasson.github.io/retrograd/getting-started/quickstart),
+  [datasets and paths](https://tterrasson.github.io/retrograd/getting-started/datasets).
+- **Training**: [SFT](https://tterrasson.github.io/retrograd/training/sft), [PPO](https://tterrasson.github.io/retrograd/training/ppo),
+  [GRPO](https://tterrasson.github.io/retrograd/training/grpo), [distillation](https://tterrasson.github.io/retrograd/training/distill).
+- **Reference**: [configuration](https://tterrasson.github.io/retrograd/reference/configuration),
+  [CLI](https://tterrasson.github.io/retrograd/reference/cli), [build variants](https://tterrasson.github.io/retrograd/reference/builds).
+- **Operations**: [checkpoints and monitoring](https://tterrasson.github.io/retrograd/operations/checkpoints),
+  [profiling](https://tterrasson.github.io/retrograd/operations/profiling).
+- **Engineering**: [overview](https://tterrasson.github.io/retrograd/engineering/), covering contribution
   rules, test lanes, RIR kernels, backend status and implementation notes.
 
 ## Libraries
@@ -154,16 +155,16 @@ scripts/test-fast-rust.sh     # every change
 scripts/test-fast-python.sh   # every change touching Python or the configuration
 ```
 
-[Tests and validation](docs/engineering/tests/notice.md) says which lane to run
-for a given change, and [the test lanes in detail](docs/engineering/tests/lanes.md)
+[Tests and validation](https://tterrasson.github.io/retrograd/engineering/tests/notice) says which lane to run
+for a given change, and [the test lanes in detail](https://tterrasson.github.io/retrograd/engineering/tests/lanes)
 what each one covers.
 
 ## Contributing
 
-Start with [the contribution principles](docs/engineering/contributing.md). The
+Start with [the contribution principles](https://tterrasson.github.io/retrograd/engineering/contributing). The
 `llama.cpp` fork is vendored as a git submodule at
 `crates/retrograd-ffi/runtime/vendor/llama.cpp`; syncing and publishing it is
-described in [the fork workflow](docs/engineering/LLAMA_CPP_FORK_WORKFLOW.md).
+described in [the fork workflow](https://tterrasson.github.io/retrograd/engineering/LLAMA_CPP_FORK_WORKFLOW).
 
 ## License
 
