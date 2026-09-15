@@ -1,0 +1,4 @@
+[submodule "runtime/vendor/llama.cpp"]
+	path = crates/retrograd-ffi/runtime/vendor/llama.cpp
+	url = https://github.com/tterrasson/llama.cpp-retrograd.git
+	branch = retrograd/main

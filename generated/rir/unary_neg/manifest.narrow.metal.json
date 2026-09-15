@@ -1,0 +1,155 @@
+{
+  "schema_version": 9,
+  "name": "unary_neg",
+  "entrypoint": "rir_unary_neg_narrow",
+  "ggml_op": "GGML_OP_UNARY",
+  "variant_id": "unary_neg_f32_4d_serial_narrow",
+  "production": true,
+  "assumed_domain": [
+    {
+      "reject": "dtype",
+      "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+    },
+    {
+      "reject": "op_variant",
+      "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+    }
+  ],
+  "backend": "metal",
+  "bindings": [
+    {
+      "name": "x",
+      "binding": 0,
+      "source": "src[0]",
+      "dtype": "f32",
+      "access": "read",
+      "extents": [
+        "col",
+        "row",
+        "plane",
+        "batch"
+      ]
+    },
+    {
+      "name": "dst",
+      "binding": 1,
+      "source": "dst",
+      "dtype": "f32",
+      "access": "write",
+      "extents": [
+        "col",
+        "row",
+        "plane",
+        "batch"
+      ]
+    }
+  ],
+  "params": [],
+  "push_constants": [
+    {
+      "name": "n_col",
+      "type": "u32",
+      "offset": 0
+    },
+    {
+      "name": "n_row",
+      "type": "u32",
+      "offset": 4
+    },
+    {
+      "name": "n_plane",
+      "type": "u32",
+      "offset": 8
+    },
+    {
+      "name": "n_batch",
+      "type": "u32",
+      "offset": 12
+    },
+    {
+      "name": "x_nb0",
+      "type": "u32",
+      "offset": 16
+    },
+    {
+      "name": "x_nb1",
+      "type": "u32",
+      "offset": 20
+    },
+    {
+      "name": "x_nb2",
+      "type": "u32",
+      "offset": 24
+    },
+    {
+      "name": "x_nb3",
+      "type": "u32",
+      "offset": 28
+    },
+    {
+      "name": "dst_nb0",
+      "type": "u32",
+      "offset": 32
+    },
+    {
+      "name": "dst_nb1",
+      "type": "u32",
+      "offset": 36
+    },
+    {
+      "name": "dst_nb2",
+      "type": "u32",
+      "offset": 40
+    },
+    {
+      "name": "dst_nb3",
+      "type": "u32",
+      "offset": 44
+    }
+  ],
+  "packed_output": null,
+  "constraints": [
+    "dtype(x)=f32",
+    "rank(x)<=4"
+  ],
+  "determinism": "elementwise",
+  "reduction": "serial",
+  "scan": "serial",
+  "variant": "narrow",
+  "priority": 90,
+  "vector_width": 4,
+  "linear_addr": false,
+  "eligible_when": [
+    {
+      "axes": [
+        "col"
+      ],
+      "min": 0,
+      "max": 256
+    }
+  ],
+  "features": [
+    "metal>=2.0"
+  ],
+  "parallel_mapping": "invocation",
+  "dispatch": [
+    {
+      "axis": "col",
+      "per_workgroup": 128
+    },
+    {
+      "axis": "row",
+      "per_workgroup": 1
+    },
+    {
+      "axis": "plane",
+      "per_workgroup": 1
+    }
+  ],
+  "flat": [],
+  "workgroup": [
+    32,
+    1,
+    1
+  ]
+}

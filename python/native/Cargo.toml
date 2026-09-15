@@ -1,0 +1,35 @@
+[package]
+name = "retrograd-python"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Retrograd - PyO3 extension module behind the Python package"
+publish = false
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.25", features = ["abi3-py311"] }
+retrograd = { path = "../.." }
+retrograd-agent = { workspace = true, features = ["mcp", "http-env"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync"] }
+
+# Not used by any code: this entry is what makes the Python sdist buildable.
+# maturin copies the path dependencies it finds in the resolved graph, and the
+# container backend is optional in `retrograd-env` and `retrograd-spec` and off
+# in the wheel, so it is not in that graph. Cargo still reads the manifest of
+# every path dependency, optional or not, and the unpacked sdist then fails
+# before compiling anything. A dev-dependency puts the crate in the graph
+# maturin walks without building it into the extension.
+[dev-dependencies]
+retrograd-container.workspace = true
+
+# The one member that did not inherit them: `unwrap_used = "deny"` was inert in
+# this file while `CLAUDE.md` claimed it held workspace-wide.
+[lints]
+workspace = true

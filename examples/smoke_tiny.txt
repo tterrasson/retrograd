@@ -1,0 +1,181 @@
+Retrograd smoke test.
+
+The base model stays frozen.
+The LoRA adapter is the only trainable part.
+The trainer reads this short file as next-token text.
+
+Prompt: ping
+Answer: pong
+
+Prompt: red
+Answer: blue
+
+Prompt: small
+Answer: tiny
+
+Prompt: up
+Answer: down
+
+Prompt: left
+Answer: right
+
+Prompt: hot
+Answer: cold
+
+Prompt: open
+Answer: closed
+
+Prompt: start
+Answer: finish
+
+Prompt: day
+Answer: night
+
+Prompt: sun
+Answer: moon
+
+Prompt: cat
+Answer: kitten
+
+Prompt: dog
+Answer: puppy
+
+Prompt: tree
+Answer: leaf
+
+Prompt: river
+Answer: water
+
+Prompt: fire
+Answer: spark
+
+Prompt: stone
+Answer: rock
+
+Prompt: code
+Answer: compile
+
+Prompt: model
+Answer: tensor
+
+Prompt: token
+Answer: text
+
+Prompt: adapter
+Answer: lora
+
+Prompt: base
+Answer: frozen
+
+Prompt: train
+Answer: update
+
+Prompt: save
+Answer: reload
+
+Prompt: loss
+Answer: number
+
+Prompt: epoch
+Answer: pass
+
+Prompt: batch
+Answer: sample
+
+Prompt: context
+Answer: window
+
+Prompt: graph
+Answer: backward
+
+Prompt: gradient
+Answer: signal
+
+Prompt: optimizer
+Answer: adamw
+
+Prompt: export
+Answer: gguf
+
+Prompt: smoke
+Answer: success
+
+Prompt: tiny
+Answer: dataset
+
+Prompt: rust
+Answer: runtime
+
+Prompt: llama
+Answer: cpp
+
+Prompt: quant
+Answer: q8
+
+Prompt: file
+Answer: adapter
+
+Prompt: check
+Answer: pass
+
+Prompt: metric
+Answer: finite
+
+Prompt: eval
+Answer: loss
+
+Prompt: train
+Answer: loss
+
+Prompt: tensor
+Answer: hash
+
+Prompt: frozen
+Answer: base
+
+Prompt: changed
+Answer: lora
+
+Prompt: reload
+Answer: adapter
+
+Prompt: output
+Answer: file
+
+Prompt: short
+Answer: context
+
+Prompt: cpu
+Answer: backend
+
+Prompt: mmap
+Answer: disabled
+
+Prompt: flash
+Answer: disabled
+
+Prompt: kv
+Answer: cache
+
+Prompt: f32
+Answer: lora
+
+Prompt: adam
+Answer: optimizer
+
+Prompt: window
+Answer: stride
+
+Prompt: final
+Answer: batch
+
+Prompt: validation
+Answer: datapoint
+
+Prompt: result
+Answer: finite
+
+Prompt: nan
+Answer: gone
+
+End of smoke test.

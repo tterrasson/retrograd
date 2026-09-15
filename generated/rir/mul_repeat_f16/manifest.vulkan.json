@@ -1,0 +1,195 @@
+{
+  "schema_version": 9,
+  "name": "mul_repeat_f16",
+  "entrypoint": "main",
+  "ggml_op": "GGML_OP_MUL",
+  "variant_id": "mul_repeat_f16_f16_4d_serial",
+  "production": true,
+  "assumed_domain": [],
+  "backend": "vulkan",
+  "bindings": [
+    {
+      "name": "a",
+      "binding": 0,
+      "source": "src[0]",
+      "dtype": "f16",
+      "access": "read",
+      "extents": [
+        "col",
+        "row",
+        "plane",
+        "batch"
+      ]
+    },
+    {
+      "name": "b",
+      "binding": 1,
+      "source": "src[1]",
+      "dtype": "f16",
+      "access": "read",
+      "extents": [
+        "col_b",
+        "row_b",
+        "plane_b",
+        "batch_b"
+      ]
+    },
+    {
+      "name": "dst",
+      "binding": 2,
+      "source": "dst",
+      "dtype": "f16",
+      "access": "write",
+      "extents": [
+        "col",
+        "row",
+        "plane",
+        "batch"
+      ]
+    }
+  ],
+  "params": [],
+  "push_constants": [
+    {
+      "name": "n_col",
+      "type": "u32",
+      "offset": 0
+    },
+    {
+      "name": "n_row",
+      "type": "u32",
+      "offset": 4
+    },
+    {
+      "name": "n_plane",
+      "type": "u32",
+      "offset": 8
+    },
+    {
+      "name": "n_batch",
+      "type": "u32",
+      "offset": 12
+    },
+    {
+      "name": "n_col_b",
+      "type": "u32",
+      "offset": 16
+    },
+    {
+      "name": "n_row_b",
+      "type": "u32",
+      "offset": 20
+    },
+    {
+      "name": "n_plane_b",
+      "type": "u32",
+      "offset": 24
+    },
+    {
+      "name": "n_batch_b",
+      "type": "u32",
+      "offset": 28
+    },
+    {
+      "name": "a_nb0",
+      "type": "u32",
+      "offset": 32
+    },
+    {
+      "name": "a_nb1",
+      "type": "u32",
+      "offset": 36
+    },
+    {
+      "name": "a_nb2",
+      "type": "u32",
+      "offset": 40
+    },
+    {
+      "name": "a_nb3",
+      "type": "u32",
+      "offset": 44
+    },
+    {
+      "name": "b_nb0",
+      "type": "u32",
+      "offset": 48
+    },
+    {
+      "name": "b_nb1",
+      "type": "u32",
+      "offset": 52
+    },
+    {
+      "name": "b_nb2",
+      "type": "u32",
+      "offset": 56
+    },
+    {
+      "name": "b_nb3",
+      "type": "u32",
+      "offset": 60
+    },
+    {
+      "name": "dst_nb0",
+      "type": "u32",
+      "offset": 64
+    },
+    {
+      "name": "dst_nb1",
+      "type": "u32",
+      "offset": 68
+    },
+    {
+      "name": "dst_nb2",
+      "type": "u32",
+      "offset": 72
+    },
+    {
+      "name": "dst_nb3",
+      "type": "u32",
+      "offset": 76
+    }
+  ],
+  "packed_output": null,
+  "constraints": [
+    "dtype(a)=f16",
+    "dtype(b)=f16",
+    "rank(b)<=4",
+    "rank(a)<=4"
+  ],
+  "determinism": "elementwise",
+  "reduction": "serial",
+  "scan": "serial",
+  "variant": null,
+  "priority": 80,
+  "vector_width": 1,
+  "linear_addr": false,
+  "eligible_when": [],
+  "features": [
+    "vulkan>=1.0",
+    "storage_buffer_16bit",
+    "shader_float16"
+  ],
+  "parallel_mapping": "invocation",
+  "dispatch": [
+    {
+      "axis": "col",
+      "per_workgroup": 256
+    },
+    {
+      "axis": "row",
+      "per_workgroup": 1
+    },
+    {
+      "axis": "plane",
+      "per_workgroup": 1
+    }
+  ],
+  "flat": [],
+  "workgroup": [
+    256,
+    1,
+    1
+  ]
+}

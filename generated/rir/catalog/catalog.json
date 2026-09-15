@@ -1,0 +1,6233 @@
+{
+  "schema_version": 1,
+  "fingerprint": "sha256:b5bea18ac46f724b28f38bc49cdacdf69b526595328077277a7c95a309da50db",
+  "kernels": [
+    {
+      "ggml_op": "GGML_OP_ADD",
+      "op_variant": null,
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": "the native strip serves four paths a RIR kernel cannot express - one node, one dispatch: fused ADD chains, RMS_NORM+MUL+ADD fusion, Metal snake fusion, and do_add_rms_partials on Vulkan, which is a correctness path. On Metal there is also no kernel to remove: one pattern serves ADD/SUB/MUL/DIV and ACC. Deliberate native exception, not a missed removal"
+    },
+    {
+      "ggml_op": "GGML_OP_ADD",
+      "op_variant": null,
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "add_f16_f16_4d_serial_flat_linear",
+          "kernel": "add_f16",
+          "priority": 100,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.3",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_f32_4d_serial_flat_linear",
+          "kernel": "add",
+          "priority": 100,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_f16_f16_4d_serial_vec4",
+          "kernel": "add_f16",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.3",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_f32_4d_serial_vec4",
+          "kernel": "add",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_repeat_f16_f16_4d_serial_vec4",
+          "kernel": "add_repeat_f16",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.3",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_repeat_f32_4d_serial_vec4",
+          "kernel": "add_repeat",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_f16_f16_4d_serial",
+          "kernel": "add_f16",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.3",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_f32_4d_serial",
+          "kernel": "add",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_repeat_f16_f16_4d_serial",
+          "kernel": "add_repeat_f16",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.3",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_repeat_f32_4d_serial",
+          "kernel": "add_repeat",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": "the native strip serves four paths a RIR kernel cannot express - one node, one dispatch: fused ADD chains, RMS_NORM+MUL+ADD fusion, Metal snake fusion, and do_add_rms_partials on Vulkan, which is a correctness path. On Metal there is also no kernel to remove: one pattern serves ADD/SUB/MUL/DIV and ACC. Deliberate native exception, not a missed removal"
+    },
+    {
+      "ggml_op": "GGML_OP_ADD",
+      "op_variant": null,
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "add_f16_f16_4d_serial_vec4",
+          "kernel": "add_f16",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_f32_4d_serial_vec4",
+          "kernel": "add",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_repeat_f16_f16_4d_serial_vec4",
+          "kernel": "add_repeat_f16",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_repeat_f32_4d_serial_vec4",
+          "kernel": "add_repeat",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_f16_f16_4d_serial",
+          "kernel": "add_f16",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_f32_4d_serial",
+          "kernel": "add",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_repeat_f16_f16_4d_serial",
+          "kernel": "add_repeat_f16",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_repeat_f32_4d_serial",
+          "kernel": "add_repeat",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": "the native strip serves four paths a RIR kernel cannot express - one node, one dispatch: fused ADD chains, RMS_NORM+MUL+ADD fusion, Metal snake fusion, and do_add_rms_partials on Vulkan, which is a correctness path. On Metal there is also no kernel to remove: one pattern serves ADD/SUB/MUL/DIV and ACC. Deliberate native exception, not a missed removal"
+    },
+    {
+      "ggml_op": "GGML_OP_ADD",
+      "op_variant": null,
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "add_f16_f16_4d_serial_vec4",
+          "kernel": "add_f16",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_f32_4d_serial_vec4",
+          "kernel": "add",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_repeat_f16_f16_4d_serial_vec4",
+          "kernel": "add_repeat_f16",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_repeat_f32_4d_serial_vec4",
+          "kernel": "add_repeat",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_f16_f16_4d_serial",
+          "kernel": "add_f16",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_f32_4d_serial",
+          "kernel": "add",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_repeat_f16_f16_4d_serial",
+          "kernel": "add_repeat_f16",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "add_repeat_f32_4d_serial",
+          "kernel": "add_repeat",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": "the native strip serves four paths a RIR kernel cannot express - one node, one dispatch: fused ADD chains, RMS_NORM+MUL+ADD fusion, Metal snake fusion, and do_add_rms_partials on Vulkan, which is a correctness path. On Metal there is also no kernel to remove: one pattern serves ADD/SUB/MUL/DIV and ACC. Deliberate native exception, not a missed removal"
+    },
+    {
+      "ggml_op": "GGML_OP_CUMSUM",
+      "op_variant": null,
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_CUMSUM",
+      "op_variant": null,
+      "backend": "cuda",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_CUMSUM",
+      "op_variant": null,
+      "backend": "metal",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "cumsum_f32_4d_shared_tree_tiled",
+          "kernel": "cumsum",
+          "priority": 100,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "row",
+                "plane",
+                "batch"
+              ],
+              "min": 1,
+              "max": 128
+            },
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 4096,
+              "max": 4294967295
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "shared_tree",
+          "scan": "tiled_lanes"
+        },
+        {
+          "variant_id": "cumsum_f32_4d_subgroup_tree_blocked",
+          "kernel": "cumsum",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "row",
+                "plane",
+                "batch"
+              ],
+              "min": 1,
+              "max": 128
+            }
+          ],
+          "features": [
+            "metal>=2.1",
+            "simdgroup_reduction",
+            "simdgroup_size>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "blocked_lanes"
+        },
+        {
+          "variant_id": "cumsum_f32_4d_serial",
+          "kernel": "cumsum",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            64,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_CUMSUM",
+      "op_variant": null,
+      "backend": "vulkan",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "cumsum_f32_4d_shared_tree_tiled",
+          "kernel": "cumsum",
+          "priority": 100,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "row",
+                "plane",
+                "batch"
+              ],
+              "min": 1,
+              "max": 128
+            },
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 4096,
+              "max": 4294967295
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "shared_tree",
+          "scan": "tiled_lanes"
+        },
+        {
+          "variant_id": "cumsum_f32_4d_subgroup_tree_blocked",
+          "kernel": "cumsum",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "row",
+                "plane",
+                "batch"
+              ],
+              "min": 1,
+              "max": 128
+            }
+          ],
+          "features": [
+            "vulkan>=1.1",
+            "subgroup_arithmetic",
+            "subgroup_size>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "blocked_lanes"
+        },
+        {
+          "variant_id": "cumsum_f32_4d_serial",
+          "kernel": "cumsum",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            64,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_L2_NORM_BACK",
+      "op_variant": null,
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_L2_NORM_BACK",
+      "op_variant": null,
+      "backend": "cuda",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "l2_norm_back_f32_4d_subgroup_tree",
+          "kernel": "l2_norm_back",
+          "priority": 80,
+          "constraints": [
+            "dtype(dz)=f32",
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [],
+      "native_retired": true,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_L2_NORM_BACK",
+      "op_variant": null,
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "l2_norm_back_f32_4d_subgroup_tree",
+          "kernel": "l2_norm_back",
+          "priority": 80,
+          "constraints": [
+            "dtype(dz)=f32",
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.1",
+            "simdgroup_reduction",
+            "simdgroup_size>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [],
+      "native_retired": true,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_L2_NORM_BACK",
+      "op_variant": null,
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "l2_norm_back_f32_4d_subgroup_tree",
+          "kernel": "l2_norm_back",
+          "priority": 80,
+          "constraints": [
+            "dtype(dz)=f32",
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.1",
+            "subgroup_arithmetic",
+            "subgroup_size>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [],
+      "native_retired": true,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_MUL",
+      "op_variant": null,
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": "the native strip serves four paths a RIR kernel cannot express - one node, one dispatch: fused ADD chains, RMS_NORM+MUL+ADD fusion, Metal snake fusion, and do_add_rms_partials on Vulkan, which is a correctness path. On Metal there is also no kernel to remove: one pattern serves ADD/SUB/MUL/DIV and ACC. Deliberate native exception, not a missed removal"
+    },
+    {
+      "ggml_op": "GGML_OP_MUL",
+      "op_variant": null,
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "mul_f16_f16_4d_serial_flat_linear",
+          "kernel": "mul_f16",
+          "priority": 100,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.3",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_f32_4d_serial_flat_linear",
+          "kernel": "mul",
+          "priority": 100,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_f16_f16_4d_serial_vec4",
+          "kernel": "mul_f16",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.3",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_f32_4d_serial_vec4",
+          "kernel": "mul",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_repeat_f16_f16_4d_serial_vec4",
+          "kernel": "mul_repeat_f16",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.3",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_repeat_f32_4d_serial_vec4",
+          "kernel": "mul_repeat",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_f16_f16_4d_serial",
+          "kernel": "mul_f16",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.3",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_f32_4d_serial",
+          "kernel": "mul",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_repeat_f16_f16_4d_serial",
+          "kernel": "mul_repeat_f16",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.3",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_repeat_f32_4d_serial",
+          "kernel": "mul_repeat",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": "the native strip serves four paths a RIR kernel cannot express - one node, one dispatch: fused ADD chains, RMS_NORM+MUL+ADD fusion, Metal snake fusion, and do_add_rms_partials on Vulkan, which is a correctness path. On Metal there is also no kernel to remove: one pattern serves ADD/SUB/MUL/DIV and ACC. Deliberate native exception, not a missed removal"
+    },
+    {
+      "ggml_op": "GGML_OP_MUL",
+      "op_variant": null,
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "mul_f16_f16_4d_serial_vec4",
+          "kernel": "mul_f16",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_f32_4d_serial_vec4",
+          "kernel": "mul",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_repeat_f16_f16_4d_serial_vec4",
+          "kernel": "mul_repeat_f16",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_repeat_f32_4d_serial_vec4",
+          "kernel": "mul_repeat",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_f16_f16_4d_serial",
+          "kernel": "mul_f16",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_f32_4d_serial",
+          "kernel": "mul",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_repeat_f16_f16_4d_serial",
+          "kernel": "mul_repeat_f16",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_repeat_f32_4d_serial",
+          "kernel": "mul_repeat",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": "the native strip serves four paths a RIR kernel cannot express - one node, one dispatch: fused ADD chains, RMS_NORM+MUL+ADD fusion, Metal snake fusion, and do_add_rms_partials on Vulkan, which is a correctness path. On Metal there is also no kernel to remove: one pattern serves ADD/SUB/MUL/DIV and ACC. Deliberate native exception, not a missed removal"
+    },
+    {
+      "ggml_op": "GGML_OP_MUL",
+      "op_variant": null,
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "mul_f16_f16_4d_serial_vec4",
+          "kernel": "mul_f16",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_f32_4d_serial_vec4",
+          "kernel": "mul",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_repeat_f16_f16_4d_serial_vec4",
+          "kernel": "mul_repeat_f16",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_repeat_f32_4d_serial_vec4",
+          "kernel": "mul_repeat",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_f16_f16_4d_serial",
+          "kernel": "mul_f16",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_f32_4d_serial",
+          "kernel": "mul",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_repeat_f16_f16_4d_serial",
+          "kernel": "mul_repeat_f16",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f16",
+            "dtype(b)=f16",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_repeat_f32_4d_serial",
+          "kernel": "mul_repeat",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(b)<=4",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": "the native strip serves four paths a RIR kernel cannot express - one node, one dispatch: fused ADD chains, RMS_NORM+MUL+ADD fusion, Metal snake fusion, and do_add_rms_partials on Vulkan, which is a correctness path. On Metal there is also no kernel to remove: one pattern serves ADD/SUB/MUL/DIV and ACC. Deliberate native exception, not a missed removal"
+    },
+    {
+      "ggml_op": "GGML_OP_OUT_PROD",
+      "op_variant": null,
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "out_prod",
+          "why": "quantized src0: served by out_prod_<format> variants, not this one - selection uses the node dtype"
+        },
+        {
+          "reject": "dtype",
+          "kernel": "out_prod_q4_0",
+          "why": "F32 src0: served by the fallback variant, not this one; plus formats without a portable decoder (native_intrinsic and mxfp4, whose E8M0 scale is rejected with its reason) and F16"
+        },
+        {
+          "reject": "shape",
+          "kernel": "out_prod",
+          "why": "src0 broadcast over ne2/ne3; same lack of index arithmetic as the elementwise-strip broadcast. No real-graph node"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_OUT_PROD",
+      "op_variant": null,
+      "backend": "cuda",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "out_prod",
+          "why": "quantized src0: served by out_prod_<format> variants, not this one - selection uses the node dtype"
+        },
+        {
+          "reject": "dtype",
+          "kernel": "out_prod_q4_0",
+          "why": "F32 src0: served by the fallback variant, not this one; plus formats without a portable decoder (native_intrinsic and mxfp4, whose E8M0 scale is rejected with its reason) and F16"
+        },
+        {
+          "reject": "shape",
+          "kernel": "out_prod",
+          "why": "src0 broadcast over ne2/ne3; same lack of index arithmetic as the elementwise-strip broadcast. No real-graph node"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_OUT_PROD",
+      "op_variant": null,
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "out_prod_f32_4d_tiled_stage_w4",
+          "kernel": "out_prod",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_iq4_nl_iq4_nl_4d_tiled_stage_w4",
+          "kernel": "out_prod_iq4_nl",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=iq4_nl",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_iq4_xs_iq4_xs_4d_tiled_stage_w4",
+          "kernel": "out_prod_iq4_xs",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=iq4_xs",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q2_K_q2_K_4d_tiled_stage_w4",
+          "kernel": "out_prod_q2_K",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q2_K",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q3_K_q3_K_4d_tiled_stage_w4",
+          "kernel": "out_prod_q3_K",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q3_K",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q4_0_q4_0_4d_tiled_stage_w4",
+          "kernel": "out_prod_q4_0",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q4_0",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q4_1_q4_1_4d_tiled_stage_w4",
+          "kernel": "out_prod_q4_1",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q4_1",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q4_K_q4_K_4d_tiled_stage_w4",
+          "kernel": "out_prod_q4_K",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q4_K",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q5_0_q5_0_4d_tiled_stage_w4",
+          "kernel": "out_prod_q5_0",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q5_0",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q5_1_q5_1_4d_tiled_stage_w4",
+          "kernel": "out_prod_q5_1",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q5_1",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q5_K_q5_K_4d_tiled_stage_w4",
+          "kernel": "out_prod_q5_K",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q5_K",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q6_K_q6_K_4d_tiled_stage_w4",
+          "kernel": "out_prod_q6_K",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q6_K",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q8_0_q8_0_4d_tiled_stage_w4",
+          "kernel": "out_prod_q8_0",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q8_0",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "out_prod",
+          "why": "quantized src0: served by out_prod_<format> variants, not this one - selection uses the node dtype"
+        },
+        {
+          "reject": "dtype",
+          "kernel": "out_prod_q4_0",
+          "why": "F32 src0: served by the fallback variant, not this one; plus formats without a portable decoder (native_intrinsic and mxfp4, whose E8M0 scale is rejected with its reason) and F16"
+        },
+        {
+          "reject": "shape",
+          "kernel": "out_prod",
+          "why": "src0 broadcast over ne2/ne3; same lack of index arithmetic as the elementwise-strip broadcast. No real-graph node"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_OUT_PROD",
+      "op_variant": null,
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "out_prod_f32_4d_tiled_stage_w4",
+          "kernel": "out_prod",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f32",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_iq4_nl_iq4_nl_4d_tiled_stage_w4",
+          "kernel": "out_prod_iq4_nl",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=iq4_nl",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_iq4_xs_iq4_xs_4d_tiled_stage_w4",
+          "kernel": "out_prod_iq4_xs",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=iq4_xs",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q2_K_q2_K_4d_tiled_stage_w4",
+          "kernel": "out_prod_q2_K",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q2_K",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q3_K_q3_K_4d_tiled_stage_w4",
+          "kernel": "out_prod_q3_K",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q3_K",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q4_0_q4_0_4d_tiled_stage_w4",
+          "kernel": "out_prod_q4_0",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q4_0",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q4_1_q4_1_4d_tiled_stage_w4",
+          "kernel": "out_prod_q4_1",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q4_1",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q4_K_q4_K_4d_tiled_stage_w4",
+          "kernel": "out_prod_q4_K",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q4_K",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q5_0_q5_0_4d_tiled_stage_w4",
+          "kernel": "out_prod_q5_0",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q5_0",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q5_1_q5_1_4d_tiled_stage_w4",
+          "kernel": "out_prod_q5_1",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q5_1",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q5_K_q5_K_4d_tiled_stage_w4",
+          "kernel": "out_prod_q5_K",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q5_K",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q6_K_q6_K_4d_tiled_stage_w4",
+          "kernel": "out_prod_q6_K",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q6_K",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "out_prod_q8_0_q8_0_4d_tiled_stage_w4",
+          "kernel": "out_prod_q8_0",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q8_0",
+            "dtype(b)=f32",
+            "rank(a)<=4",
+            "rank(b)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            16,
+            16,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "tiled_stage",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "out_prod",
+          "why": "quantized src0: served by out_prod_<format> variants, not this one - selection uses the node dtype"
+        },
+        {
+          "reject": "dtype",
+          "kernel": "out_prod_q4_0",
+          "why": "F32 src0: served by the fallback variant, not this one; plus formats without a portable decoder (native_intrinsic and mxfp4, whose E8M0 scale is rejected with its reason) and F16"
+        },
+        {
+          "reject": "shape",
+          "kernel": "out_prod",
+          "why": "src0 broadcast over ne2/ne3; same lack of index arithmetic as the elementwise-strip broadcast. No real-graph node"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_RMS_NORM",
+      "op_variant": null,
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_RMS_NORM",
+      "op_variant": null,
+      "backend": "cuda",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_RMS_NORM",
+      "op_variant": null,
+      "backend": "metal",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "rms_norm_f32_4d_shared_tree_shared_reduce",
+          "kernel": "rms_norm",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "row",
+                "plane",
+                "batch"
+              ],
+              "min": 1,
+              "max": 32
+            },
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 256,
+              "max": 4294967295
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "shared_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "rms_norm_f32_4d_subgroup_tree",
+          "kernel": "rms_norm",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.1",
+            "simdgroup_reduction",
+            "simdgroup_size>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_RMS_NORM",
+      "op_variant": null,
+      "backend": "vulkan",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "rms_norm_f32_4d_shared_tree_shared_reduce",
+          "kernel": "rms_norm",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "row",
+                "plane",
+                "batch"
+              ],
+              "min": 1,
+              "max": 32
+            },
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 256,
+              "max": 4294967295
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "shared_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "rms_norm_f32_4d_subgroup_tree",
+          "kernel": "rms_norm",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.1",
+            "subgroup_arithmetic",
+            "subgroup_size>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_RMS_NORM_BACK",
+      "op_variant": null,
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_RMS_NORM_BACK",
+      "op_variant": null,
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "rms_norm_back_f32_4d_shared_tree_shared_reduce",
+          "kernel": "rms_norm_back",
+          "priority": 90,
+          "constraints": [
+            "dtype(dz)=f32",
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "row",
+                "plane",
+                "batch"
+              ],
+              "min": 1,
+              "max": 32
+            },
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 256,
+              "max": 4294967295
+            }
+          ],
+          "features": [
+            "cuda>=5.0",
+            "shared_bytes>=2048",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "shared_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "rms_norm_back_f32_4d_subgroup_tree_flat_rows",
+          "kernel": "rms_norm_back",
+          "priority": 85,
+          "constraints": [
+            "dtype(dz)=f32",
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "row",
+                "plane",
+                "batch"
+              ],
+              "min": 33,
+              "max": 4294967295
+            }
+          ],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "rms_norm_back_f32_4d_subgroup_tree",
+          "kernel": "rms_norm_back",
+          "priority": 80,
+          "constraints": [
+            "dtype(dz)=f32",
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_RMS_NORM_BACK",
+      "op_variant": null,
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "rms_norm_back_f32_4d_shared_tree_shared_reduce",
+          "kernel": "rms_norm_back",
+          "priority": 90,
+          "constraints": [
+            "dtype(dz)=f32",
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "row",
+                "plane",
+                "batch"
+              ],
+              "min": 1,
+              "max": 32
+            },
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 256,
+              "max": 4294967295
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "shared_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "rms_norm_back_f32_4d_subgroup_tree",
+          "kernel": "rms_norm_back",
+          "priority": 80,
+          "constraints": [
+            "dtype(dz)=f32",
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.1",
+            "simdgroup_reduction",
+            "simdgroup_size>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [],
+      "native_retired": true,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_RMS_NORM_BACK",
+      "op_variant": null,
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "rms_norm_back_f32_4d_shared_tree_shared_reduce",
+          "kernel": "rms_norm_back",
+          "priority": 90,
+          "constraints": [
+            "dtype(dz)=f32",
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "row",
+                "plane",
+                "batch"
+              ],
+              "min": 1,
+              "max": 32
+            },
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 256,
+              "max": 4294967295
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "shared_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "rms_norm_back_f32_4d_subgroup_tree",
+          "kernel": "rms_norm_back",
+          "priority": 80,
+          "constraints": [
+            "dtype(dz)=f32",
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.1",
+            "subgroup_arithmetic",
+            "subgroup_size>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [],
+      "native_retired": true,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_SCALE",
+      "op_variant": null,
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "scale",
+          "why": "F16: both native GPU kernels accept it, ggml_compute_forward_scale does not - an F16 member would be a variant no benchmark can judge"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_SCALE",
+      "op_variant": null,
+      "backend": "cuda",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "scale_f32_4d_serial_flat_linear",
+          "kernel": "scale",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=f32",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "scale_f32_4d_serial_w4",
+          "kernel": "scale",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f32",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "scale",
+          "why": "F16: both native GPU kernels accept it, ggml_compute_forward_scale does not - an F16 member would be a variant no benchmark can judge"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_SCALE",
+      "op_variant": null,
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "scale_f32_4d_serial_w4",
+          "kernel": "scale",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f32",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "scale",
+          "why": "F16: both native GPU kernels accept it, ggml_compute_forward_scale does not - an F16 member would be a variant no benchmark can judge"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_SCALE",
+      "op_variant": null,
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "scale_f32_4d_serial_w4",
+          "kernel": "scale",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=f32",
+            "rank(a)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "scale",
+          "why": "F16: both native GPU kernels accept it, ggml_compute_forward_scale does not - an F16 member would be a variant no benchmark can judge"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_ABS",
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_abs",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_abs",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_ABS",
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "unary_abs_f32_4d_serial_flat_linear",
+          "kernel": "unary_abs",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_abs_f32_4d_serial",
+          "kernel": "unary_abs",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_abs",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_abs",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_ABS",
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_abs_f32_4d_serial_narrow",
+          "kernel": "unary_abs",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_abs_f32_4d_serial_w4",
+          "kernel": "unary_abs",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_abs",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_abs",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_ABS",
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_abs_f32_4d_serial_narrow",
+          "kernel": "unary_abs",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_abs_f32_4d_serial_w4",
+          "kernel": "unary_abs",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_abs",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_abs",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_ELU",
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_elu",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_elu",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_ELU",
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "unary_elu_f32_4d_serial_flat_linear",
+          "kernel": "unary_elu",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_elu_f32_4d_serial",
+          "kernel": "unary_elu",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_elu",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_elu",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_ELU",
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_elu_f32_4d_serial_narrow",
+          "kernel": "unary_elu",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_elu_f32_4d_serial_w4",
+          "kernel": "unary_elu",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_elu",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_elu",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_ELU",
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_elu_f32_4d_serial_narrow",
+          "kernel": "unary_elu",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_elu_f32_4d_serial_w4",
+          "kernel": "unary_elu",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_elu",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_elu",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_EXP",
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_exp",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_exp",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_EXP",
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "unary_exp_f32_4d_serial_flat_linear",
+          "kernel": "unary_exp",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_exp_f32_4d_serial",
+          "kernel": "unary_exp",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_exp",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_exp",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_EXP",
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_exp_f32_4d_serial_narrow",
+          "kernel": "unary_exp",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_exp_f32_4d_serial_w4",
+          "kernel": "unary_exp",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_exp",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_exp",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_EXP",
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_exp_f32_4d_serial_narrow",
+          "kernel": "unary_exp",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_exp_f32_4d_serial_w4",
+          "kernel": "unary_exp",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_exp",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_exp",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_EXPM1",
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_expm1",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_expm1",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_EXPM1",
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "unary_expm1_f32_4d_serial_flat_linear",
+          "kernel": "unary_expm1",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_expm1_f32_4d_serial",
+          "kernel": "unary_expm1",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_expm1",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_expm1",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_EXPM1",
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_expm1_f32_4d_serial_narrow",
+          "kernel": "unary_expm1",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_expm1_f32_4d_serial_w4",
+          "kernel": "unary_expm1",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_expm1",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_expm1",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_EXPM1",
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_expm1_f32_4d_serial_narrow",
+          "kernel": "unary_expm1",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_expm1_f32_4d_serial_w4",
+          "kernel": "unary_expm1",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_expm1",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_expm1",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_GELU_QUICK",
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_gelu_quick",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_gelu_quick",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_GELU_QUICK",
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "unary_gelu_quick_f32_4d_serial_flat_linear",
+          "kernel": "unary_gelu_quick",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_gelu_quick_f32_4d_serial",
+          "kernel": "unary_gelu_quick",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_gelu_quick",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_gelu_quick",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_GELU_QUICK",
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_gelu_quick_f32_4d_serial_narrow",
+          "kernel": "unary_gelu_quick",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_gelu_quick_f32_4d_serial_w4",
+          "kernel": "unary_gelu_quick",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_gelu_quick",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_gelu_quick",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_GELU_QUICK",
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_gelu_quick_f32_4d_serial_narrow",
+          "kernel": "unary_gelu_quick",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_gelu_quick_f32_4d_serial_w4",
+          "kernel": "unary_gelu_quick",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_gelu_quick",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_gelu_quick",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_HARDSIGMOID",
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_hardsigmoid",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_hardsigmoid",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_HARDSIGMOID",
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "unary_hardsigmoid_f32_4d_serial_flat_linear",
+          "kernel": "unary_hardsigmoid",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_hardsigmoid_f32_4d_serial",
+          "kernel": "unary_hardsigmoid",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_hardsigmoid",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_hardsigmoid",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_HARDSIGMOID",
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_hardsigmoid_f32_4d_serial_narrow",
+          "kernel": "unary_hardsigmoid",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_hardsigmoid_f32_4d_serial_w4",
+          "kernel": "unary_hardsigmoid",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_hardsigmoid",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_hardsigmoid",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_HARDSIGMOID",
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_hardsigmoid_f32_4d_serial_narrow",
+          "kernel": "unary_hardsigmoid",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_hardsigmoid_f32_4d_serial_w4",
+          "kernel": "unary_hardsigmoid",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_hardsigmoid",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_hardsigmoid",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_HARDSWISH",
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_hardswish",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_hardswish",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_HARDSWISH",
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "unary_hardswish_f32_4d_serial_flat_linear",
+          "kernel": "unary_hardswish",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_hardswish_f32_4d_serial",
+          "kernel": "unary_hardswish",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_hardswish",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_hardswish",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_HARDSWISH",
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_hardswish_f32_4d_serial_narrow",
+          "kernel": "unary_hardswish",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_hardswish_f32_4d_serial_w4",
+          "kernel": "unary_hardswish",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_hardswish",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_hardswish",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_HARDSWISH",
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_hardswish_f32_4d_serial_narrow",
+          "kernel": "unary_hardswish",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_hardswish_f32_4d_serial_w4",
+          "kernel": "unary_hardswish",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_hardswish",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_hardswish",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_NEG",
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_neg",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_neg",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_NEG",
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "unary_neg_f32_4d_serial_flat_linear",
+          "kernel": "unary_neg",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_neg_f32_4d_serial",
+          "kernel": "unary_neg",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_neg",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_neg",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_NEG",
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_neg_f32_4d_serial_narrow",
+          "kernel": "unary_neg",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_neg_f32_4d_serial_w4",
+          "kernel": "unary_neg",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_neg",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_neg",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_NEG",
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_neg_f32_4d_serial_narrow",
+          "kernel": "unary_neg",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_neg_f32_4d_serial_w4",
+          "kernel": "unary_neg",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_neg",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_neg",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_RELU",
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_relu",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_relu",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_RELU",
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "unary_relu_f32_4d_serial_flat_linear",
+          "kernel": "unary_relu",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_relu_f32_4d_serial",
+          "kernel": "unary_relu",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_relu",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_relu",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_RELU",
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_relu_f32_4d_serial_narrow",
+          "kernel": "unary_relu",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_relu_f32_4d_serial_w4",
+          "kernel": "unary_relu",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_relu",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_relu",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_RELU",
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_relu_f32_4d_serial_narrow",
+          "kernel": "unary_relu",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_relu_f32_4d_serial_w4",
+          "kernel": "unary_relu",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_relu",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_relu",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_SGN",
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_sgn",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_sgn",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_SGN",
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "unary_sgn_f32_4d_serial_flat_linear",
+          "kernel": "unary_sgn",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_sgn_f32_4d_serial",
+          "kernel": "unary_sgn",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_sgn",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_sgn",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_SGN",
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_sgn_f32_4d_serial_narrow",
+          "kernel": "unary_sgn",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_sgn_f32_4d_serial_w4",
+          "kernel": "unary_sgn",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_sgn",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_sgn",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_SGN",
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_sgn_f32_4d_serial_narrow",
+          "kernel": "unary_sgn",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_sgn_f32_4d_serial_w4",
+          "kernel": "unary_sgn",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_sgn",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_sgn",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_SIGMOID",
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_sigmoid",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_sigmoid",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_SIGMOID",
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "unary_sigmoid_f32_4d_serial_flat_linear",
+          "kernel": "unary_sigmoid",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_sigmoid_f32_4d_serial",
+          "kernel": "unary_sigmoid",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_sigmoid",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_sigmoid",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_SIGMOID",
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_sigmoid_f32_4d_serial_narrow",
+          "kernel": "unary_sigmoid",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_sigmoid_f32_4d_serial_w4",
+          "kernel": "unary_sigmoid",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_sigmoid",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_sigmoid",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_SIGMOID",
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_sigmoid_f32_4d_serial_narrow",
+          "kernel": "unary_sigmoid",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_sigmoid_f32_4d_serial_w4",
+          "kernel": "unary_sigmoid",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_sigmoid",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_sigmoid",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_SILU",
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_silu",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_silu",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_SILU",
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "unary_silu_f32_4d_serial_flat_linear",
+          "kernel": "unary_silu",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_silu_f32_4d_serial",
+          "kernel": "unary_silu",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_silu",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_silu",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_SILU",
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_silu_f32_4d_serial_narrow",
+          "kernel": "unary_silu",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_silu_f32_4d_serial_w4",
+          "kernel": "unary_silu",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_silu",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_silu",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_SILU",
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_silu_f32_4d_serial_narrow",
+          "kernel": "unary_silu",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_silu_f32_4d_serial_w4",
+          "kernel": "unary_silu",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_silu",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_silu",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_STEP",
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_step",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_step",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_STEP",
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "unary_step_f32_4d_serial_flat_linear",
+          "kernel": "unary_step",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_step_f32_4d_serial",
+          "kernel": "unary_step",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_step",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_step",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_STEP",
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_step_f32_4d_serial_narrow",
+          "kernel": "unary_step",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_step_f32_4d_serial_w4",
+          "kernel": "unary_step",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_step",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_step",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_STEP",
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_step_f32_4d_serial_narrow",
+          "kernel": "unary_step",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_step_f32_4d_serial_w4",
+          "kernel": "unary_step",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_step",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_step",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_TANH",
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_tanh",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_tanh",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_TANH",
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "unary_tanh_f32_4d_serial_flat_linear",
+          "kernel": "unary_tanh",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_tanh_f32_4d_serial",
+          "kernel": "unary_tanh",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_tanh",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_tanh",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_TANH",
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_tanh_f32_4d_serial_narrow",
+          "kernel": "unary_tanh",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_tanh_f32_4d_serial_w4",
+          "kernel": "unary_tanh",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_tanh",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_tanh",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_TANH",
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_tanh_f32_4d_serial_narrow",
+          "kernel": "unary_tanh",
+          "priority": 90,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_tanh_f32_4d_serial_w4",
+          "kernel": "unary_tanh",
+          "priority": 80,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_tanh",
+          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_tanh",
+          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    }
+  ]
+}

@@ -1,0 +1,187 @@
+{
+  "schema_version": 9,
+  "name": "out_prod",
+  "entrypoint": "main",
+  "ggml_op": "GGML_OP_OUT_PROD",
+  "variant_id": "out_prod_f32_4d_tiled_stage_w4",
+  "production": true,
+  "assumed_domain": [
+    {
+      "reject": "dtype",
+      "why": "quantized src0: served by out_prod_<format> variants, not this one - selection uses the node dtype"
+    },
+    {
+      "reject": "shape",
+      "why": "src0 broadcast over ne2/ne3; same lack of index arithmetic as the elementwise-strip broadcast. No real-graph node"
+    }
+  ],
+  "backend": "vulkan",
+  "bindings": [
+    {
+      "name": "a",
+      "binding": 0,
+      "source": "src[0]",
+      "dtype": "f32",
+      "access": "read",
+      "extents": [
+        "i",
+        "k",
+        "plane",
+        "batch"
+      ]
+    },
+    {
+      "name": "b",
+      "binding": 1,
+      "source": "src[1]",
+      "dtype": "f32",
+      "access": "read",
+      "extents": [
+        "j",
+        "k",
+        "plane",
+        "batch"
+      ]
+    },
+    {
+      "name": "dst",
+      "binding": 2,
+      "source": "dst",
+      "dtype": "f32",
+      "access": "write",
+      "extents": [
+        "i",
+        "j",
+        "plane",
+        "batch"
+      ]
+    }
+  ],
+  "params": [],
+  "push_constants": [
+    {
+      "name": "n_i",
+      "type": "u32",
+      "offset": 0
+    },
+    {
+      "name": "n_j",
+      "type": "u32",
+      "offset": 4
+    },
+    {
+      "name": "n_plane",
+      "type": "u32",
+      "offset": 8
+    },
+    {
+      "name": "n_batch",
+      "type": "u32",
+      "offset": 12
+    },
+    {
+      "name": "n_k",
+      "type": "u32",
+      "offset": 16
+    },
+    {
+      "name": "a_nb0",
+      "type": "u32",
+      "offset": 20
+    },
+    {
+      "name": "a_nb1",
+      "type": "u32",
+      "offset": 24
+    },
+    {
+      "name": "a_nb2",
+      "type": "u32",
+      "offset": 28
+    },
+    {
+      "name": "a_nb3",
+      "type": "u32",
+      "offset": 32
+    },
+    {
+      "name": "b_nb0",
+      "type": "u32",
+      "offset": 36
+    },
+    {
+      "name": "b_nb1",
+      "type": "u32",
+      "offset": 40
+    },
+    {
+      "name": "b_nb2",
+      "type": "u32",
+      "offset": 44
+    },
+    {
+      "name": "b_nb3",
+      "type": "u32",
+      "offset": 48
+    },
+    {
+      "name": "dst_nb0",
+      "type": "u32",
+      "offset": 52
+    },
+    {
+      "name": "dst_nb1",
+      "type": "u32",
+      "offset": 56
+    },
+    {
+      "name": "dst_nb2",
+      "type": "u32",
+      "offset": 60
+    },
+    {
+      "name": "dst_nb3",
+      "type": "u32",
+      "offset": 64
+    }
+  ],
+  "packed_output": null,
+  "constraints": [
+    "dtype(a)=f32",
+    "dtype(b)=f32",
+    "rank(a)<=4",
+    "rank(b)<=4"
+  ],
+  "determinism": "deterministic",
+  "reduction": "tiled_stage",
+  "scan": "serial",
+  "variant": null,
+  "priority": 80,
+  "vector_width": 4,
+  "linear_addr": false,
+  "eligible_when": [],
+  "features": [
+    "vulkan>=1.0"
+  ],
+  "parallel_mapping": "invocation",
+  "dispatch": [
+    {
+      "axis": "i",
+      "per_workgroup": 64
+    },
+    {
+      "axis": "j",
+      "per_workgroup": 16
+    },
+    {
+      "axis": "plane",
+      "per_workgroup": 1
+    }
+  ],
+  "flat": [],
+  "workgroup": [
+    16,
+    16,
+    1
+  ]
+}

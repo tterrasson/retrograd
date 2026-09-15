@@ -1,0 +1,254 @@
+/* The palette is taken from the logo: the lavender wave, and the sunset that
+   runs amber to magenta inside its trough. Light mode darkens the lavender to
+   a violet that holds contrast on a pale surface; dark mode uses the logo
+   value as it is. */
+:root {
+  /* Give reference pages a little more breathing room on wide displays. */
+  --vp-layout-max-width: 1560px;
+  --vp-c-brand-1: #7a2fd4;
+  --vp-c-brand-2: #8535e0;
+  --vp-c-brand-3: #6d28c4;
+  --vp-c-brand-soft: rgba(133, 53, 224, 0.12);
+  --retrograd-c-lavender: #c9a0f5;
+  --retrograd-c-magenta: #c0157f;
+  --retrograd-c-amber: #986014;
+
+  --vp-c-text-1: #221a2e;
+  --vp-c-text-2: #4d4159;
+  --vp-c-text-3: #655470;
+  --vp-c-bg: #fcfaff;
+  --vp-c-bg-alt: #f1ebf8;
+  --vp-c-bg-soft: #f7f3fc;
+  --vp-c-bg-mute: #ece3f7;
+  --vp-c-divider: #d6c8e6;
+  --vp-c-border: #bda9d6;
+
+  /* The filled button is the deep violet in light mode and the logo lavender
+     in dark, each with the text color that carries contrast on it. */
+  --vp-button-brand-border: transparent;
+  --vp-button-brand-text: #ffffff;
+  --vp-button-brand-bg: var(--vp-c-brand-1);
+  --vp-button-brand-hover-border: transparent;
+  --vp-button-brand-hover-text: #ffffff;
+  --vp-button-brand-hover-bg: var(--vp-c-brand-2);
+  --vp-button-brand-active-border: transparent;
+  --vp-button-brand-active-text: #ffffff;
+  --vp-button-brand-active-bg: var(--vp-c-brand-3);
+  --vp-button-alt-border: var(--vp-c-border);
+  --vp-button-alt-bg: var(--vp-c-bg-mute);
+  --vp-button-alt-hover-border: var(--vp-c-brand-1);
+  --vp-button-alt-hover-text: var(--vp-c-brand-1);
+  --vp-button-alt-hover-bg: var(--vp-c-bg-mute);
+  --vp-button-alt-active-bg: var(--vp-c-bg-alt);
+  --vp-code-bg: var(--vp-c-bg-mute);
+  --vp-sidebar-bg-color: var(--vp-c-bg);
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(
+    92deg, var(--vp-c-brand-1), var(--retrograd-c-magenta) 55%, var(--retrograd-c-amber)
+  );
+  --vp-font-family-base: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  --vp-font-family-mono: "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas,
+    monospace;
+}
+
+.dark {
+  --vp-c-brand-1: #d4a4f4;
+  --vp-c-brand-2: #e0bcf8;
+  --vp-c-brand-3: #a874e8;
+  --vp-c-brand-soft: rgba(212, 164, 244, 0.16);
+  --retrograd-c-lavender: #d4a4f4;
+  --retrograd-c-magenta: #f78fb0;
+  --retrograd-c-amber: #f9c676;
+
+  --vp-c-text-1: #f3eefa;
+  --vp-c-text-2: #cdc2dc;
+  --vp-c-text-3: #b3a6c6;
+  --vp-c-bg: #151020;
+  --vp-c-bg-alt: #0e0b15;
+  --vp-c-bg-soft: #1d1630;
+  --vp-c-bg-mute: #281f3d;
+  --vp-c-divider: #3a2f56;
+  --vp-c-border: #524369;
+
+  --vp-button-brand-text: #1a1027;
+  --vp-button-brand-hover-text: #1a1027;
+  --vp-button-brand-active-text: #1a1027;
+  --vp-button-brand-active-bg: #c08ff0;
+}
+
+/* The wave and its sunset, flattened into the rule under the navigation. */
+.VPNavBar::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 4%,
+    var(--retrograd-c-lavender) 26%,
+    var(--retrograd-c-magenta) 52%,
+    var(--retrograd-c-amber) 70%,
+    transparent 88%
+  );
+  content: '';
+  opacity: 0.75;
+}
+
+/* The mark is wide rather than square, so it is sized by height and given the
+   width it needs. */
+.VPNavBarTitle .logo {
+  width: auto;
+  height: 20px;
+  margin-right: 8px;
+}
+
+.VPNavBarTitle .title {
+  font-weight: 700;
+}
+
+.VPSidebarItem.is-active > .item .text {
+  font-weight: 700;
+}
+
+/* Home page */
+.VPHero .name {
+  font-weight: 800;
+  letter-spacing: -0.035em;
+}
+
+.VPHero .text {
+  letter-spacing: -0.03em;
+}
+
+.VPHero .tagline {
+  max-width: 38rem;
+}
+
+/* Size the wide logo by width instead of the default square image bounds. */
+.VPHero .image-container {
+  width: 100%;
+  max-width: 420px;
+  height: auto;
+  transform: none;
+}
+
+/* A quiet halo contains the pale logo in light mode, fading out before its own
+   edge so no rectangle competes with the art; dark mode keeps its glow. */
+:root:not(.dark) .VPHero .image-container {
+  position: relative;
+}
+
+/* The halo is a layer behind the art, not padding around it: the image keeps
+   the same drawn size in both modes. */
+:root:not(.dark) .VPHero .image-container::before {
+  content: '';
+  position: absolute;
+  inset: -40px;
+  z-index: -1;
+  background: radial-gradient(
+    ellipse 62% 62% at 50% 50%,
+    var(--vp-c-bg-alt) 0%,
+    var(--vp-c-bg-alt) 55%,
+    transparent 100%
+  );
+}
+
+.VPHero .VPImage.image-src {
+  position: static;
+  max-width: 100%;
+  max-height: none;
+  transform: none;
+}
+
+.dark .VPHero .VPImage.image-src {
+  filter: drop-shadow(0 0 4px rgba(212, 164, 244, 0.45))
+    drop-shadow(0 0 18px rgba(168, 116, 232, 0.22));
+}
+
+/* Stacked under the navigation, the art no longer has the empty lower half of
+   the square plate, so it cannot be pulled up over the title. */
+@media (max-width: 959px) {
+  .VPHero .image {
+    margin: 0 auto 1.5rem;
+  }
+}
+
+.VPHero .image-bg {
+  display: none;
+}
+
+.VPButton.brand {
+  font-weight: 700;
+}
+
+.VPFeatures .VPFeature {
+  border-color: var(--vp-c-border);
+}
+
+.VPFeature .title {
+  font-weight: 700;
+}
+
+/* Documentation content */
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3,
+.vp-doc h4 {
+  letter-spacing: -0.02em;
+}
+
+.vp-doc h1 {
+  font-weight: 800;
+}
+
+.vp-doc h2 {
+  margin-top: 3rem;
+  padding-top: 1.5rem;
+}
+
+.vp-doc div[class*='language-'] {
+  border: 1px solid var(--vp-c-border);
+}
+
+/* Tables are frequent in the configuration reference. Keep the header and
+   row boundaries visible in either color scheme. */
+.vp-doc table {
+  width: max-content;
+  max-width: 100%;
+  border: 1px solid var(--vp-c-border);
+  border-radius: 8px;
+  font-size: 0.94rem;
+}
+
+.vp-doc th,
+.vp-doc td {
+  vertical-align: top;
+  border: 1px solid var(--vp-c-divider);
+}
+
+.vp-doc th {
+  background: var(--vp-c-bg-mute);
+  font-weight: 750;
+  text-align: left;
+}
+
+.vp-doc tr:nth-child(2n) {
+  background: var(--vp-c-bg-soft);
+}
+
+/* The default 688px reading column is too narrow for configuration tables.
+   Preserve the comfortable measure on small screens, then widen it only when
+   the persistent outline is visible. */
+@media (min-width: 1280px) {
+  .VPDoc.has-aside .content .content-container {
+    max-width: 800px;
+  }
+}
+
+@media (max-width: 720px) {
+  .vp-doc table {
+    font-size: 0.88rem;
+  }
+}

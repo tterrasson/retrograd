@@ -1,0 +1,65 @@
+# Fetch the CPU fixture once, then run from the repository root:
+# scripts/fetch-cpu-fixture.sh
+# cargo run -q -- train examples/smoke_tiny_grpo.toml
+# cargo run -q -- bench examples/smoke_tiny_grpo.toml [--data smoke_rl_eval.jsonl]
+
+[run]
+algorithm = "grpo"
+verbose = false
+
+[model]
+# Relative to this file; `reward_command` below is relative to the working directory.
+path = "../tests/fixtures/LFM2.5-230M-Q4_K_M.gguf"
+device = "cpu"
+
+[lora]
+output = "/tmp/retrograd-smoke-grpo-adapter.gguf"
+rank = 8
+alpha = 16.0
+seed = 42
+targets = ["q", "k", "v", "o", "ffn_up", "ffn_down", "ffn_gate"]
+
+[training]
+ctx = 64
+# `micro_batch` is the physical forward/backward width and the only memory
+# lever. `gradient_accumulation` is omitted: a rollout algorithm pins it to
+# ctx / micro_batch = 8, one optimizer step per rollout.
+micro_batch = 8
+# `epochs` is an SFT-only setting. GRPO uses `updates * grpo_epochs` below.
+lr = 5e-6
+lr_scheduler = "constant"
+warmup_steps = 0
+weight_decay = 0.01
+max_grad_norm = 1.0
+
+[grpo]
+prompts = "smoke_rl_prompts.jsonl" # chat JSONL ending with a user message
+reward_command = ["python3", "examples/smoke_rl_reward.py"]
+updates = 2             # newly sampled grouped rollout batches
+prompts_per_update = 2
+group_size = 8
+grpo_epochs = 3          # optimizer passes over each sampled batch
+clip_range_low = 0.2
+clip_range_high = 0.28   # DAPO Clip-Higher: looser upper range fights entropy collapse
+kl_coefficient = 0.02
+
+[grpo.sampling]
+# Dr. GRPO is strictly on-policy: temperature and top_p must both be 1.
+temperature = 1.0
+top_p = 1.0
+max_new_tokens = 4
+seed = 42
+
+[evaluation]
+data = "smoke_rl_eval.jsonl"
+every_iterations = 2 # GRPO: evaluate every grouped rollout update
+patience = 10
+min_delta = 0.0
+
+[checkpoint]
+directory = "/tmp/retrograd-smoke-grpo-checkpoints"
+mode = "best_eval"
+# every_steps = 32
+
+[metrics]
+tensorboard_dir = "/tmp/retrograd-smoke-grpo-tensorboard"

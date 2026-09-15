@@ -1,0 +1,28 @@
+# Claimed test-backend-ops nodes per pair. This catches domain shrinkage that
+# the registry category mask cannot represent.
+# Regenerate with: scripts/test-rir.sh --no-perf --update-domain-baseline
+# pair	claimed	seen
+ADD/cuda	106	106
+ADD/metal	86	86
+ADD/vulkan	141	141
+CUMSUM/metal	15	15
+CUMSUM/vulkan	15	15
+L2_NORM_BACK/cuda	60	60
+L2_NORM_BACK/metal	60	60
+L2_NORM_BACK/vulkan	60	60
+MUL/cuda	106	106
+MUL/metal	86	86
+MUL/vulkan	106	106
+OUT_PROD/metal	108	207
+OUT_PROD/vulkan	108	255
+RMS_NORM/metal	51	51
+RMS_NORM/vulkan	51	51
+RMS_NORM_BACK/cuda	30	30
+RMS_NORM_BACK/metal	30	30
+RMS_NORM_BACK/vulkan	30	30
+SCALE/cuda	4	4
+SCALE/metal	4	4
+SCALE/vulkan	4	4
+UNARY/cuda	42	84
+UNARY/metal	84	168
+UNARY/vulkan	84	168

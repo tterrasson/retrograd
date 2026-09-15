@@ -1,0 +1,92 @@
+{"messages":[{"role":"user","content":"Calculate 14 + 7. Reply with exactly one number."}]}
+{"messages":[{"role":"user","content":"Compute 23 + 8 and output exactly one number."}]}
+{"messages":[{"role":"user","content":"Solve 31 + 6. Your response must contain one number only."}]}
+{"messages":[{"role":"user","content":"Evaluate 42 + 15; return a single number, with no explanation."}]}
+{"messages":[{"role":"user","content":"Add 51 + 5. Give exactly one numeric answer."}]}
+{"messages":[{"role":"user","content":"Find the result of 63 + 12. Output one number only."}]}
+{"messages":[{"role":"user","content":"Please work out 8 + 12 and respond with a single number."}]}
+{"messages":[{"role":"user","content":"Determine 9 + 24. Use exactly one number in your answer."}]}
+{"messages":[{"role":"user","content":"What does 16 + 9 equal? Reply with one number only."}]}
+{"messages":[{"role":"user","content":"Give the sum of 27 + 4 as exactly one number."}]}
+{"messages":[{"role":"user","content":"Return the value of 103 + 8. No words: one number only."}]}
+{"messages":[{"role":"user","content":"Perform this addition: 117 + 26. Output a single number."}]}
+{"messages":[{"role":"user","content":"Calculate 18 - 7. Reply with exactly one number."}]}
+{"messages":[{"role":"user","content":"Compute 25 - 9 and output exactly one number."}]}
+{"messages":[{"role":"user","content":"Solve 40 - 13. Your response must contain one number only."}]}
+{"messages":[{"role":"user","content":"Evaluate 52 - 18; return a single number, with no explanation."}]}
+{"messages":[{"role":"user","content":"Calculate 64 - 27. Give exactly one numeric answer."}]}
+{"messages":[{"role":"user","content":"Find the result of 81 - 16. Output one number only."}]}
+{"messages":[{"role":"user","content":"Please work out 95 - 37 and respond with a single number."}]}
+{"messages":[{"role":"user","content":"Determine 120 - 45. Use exactly one number in your answer."}]}
+{"messages":[{"role":"user","content":"What does 200 - 75 equal? Reply with one number only."}]}
+{"messages":[{"role":"user","content":"Give the difference 314 - 27 as exactly one number."}]}
+{"messages":[{"role":"user","content":"Return the value of 500 - 125. No words: one number only."}]}
+{"messages":[{"role":"user","content":"Perform this subtraction: 750 - 250. Output a single number."}]}
+{"messages":[{"role":"user","content":"How much is 999 - 111? Respond with exactly one number."}]}
+{"messages":[{"role":"user","content":"Calculate 3 × 4. Reply with exactly one number."}]}
+{"messages":[{"role":"user","content":"Compute 6 * 7 and output exactly one number."}]}
+{"messages":[{"role":"user","content":"Solve 8 × 9. Your response must contain one number only."}]}
+{"messages":[{"role":"user","content":"Evaluate 12 * 5; return a single number, with no explanation."}]}
+{"messages":[{"role":"user","content":"Multiply 14 × 6. Give exactly one numeric answer."}]}
+{"messages":[{"role":"user","content":"Find the result of 15 * 8. Output one number only."}]}
+{"messages":[{"role":"user","content":"Please work out 21 × 4 and respond with a single number."}]}
+{"messages":[{"role":"user","content":"Determine 25 * 3. Use exactly one number in your answer."}]}
+{"messages":[{"role":"user","content":"What does 32 × 2 equal? Reply with one number only."}]}
+{"messages":[{"role":"user","content":"Give the product 11 * 11 as exactly one number."}]}
+{"messages":[{"role":"user","content":"Return the value of 18 × 7. No words: one number only."}]}
+{"messages":[{"role":"user","content":"Perform this multiplication: 20 * 9. Output a single number."}]}
+{"messages":[{"role":"user","content":"Calculate 12 ÷ 3. Reply with exactly one number."}]}
+{"messages":[{"role":"user","content":"Compute 24 / 6 and output exactly one number."}]}
+{"messages":[{"role":"user","content":"Solve 45 ÷ 5. Your response must contain one number only."}]}
+{"messages":[{"role":"user","content":"Evaluate 72 / 8; return a single number, with no explanation."}]}
+{"messages":[{"role":"user","content":"Divide 96 ÷ 12. Give exactly one numeric answer."}]}
+{"messages":[{"role":"user","content":"Find the result of 144 / 9. Output one number only."}]}
+{"messages":[{"role":"user","content":"Please work out 225 ÷ 15 and respond with a single number."}]}
+{"messages":[{"role":"user","content":"Determine 360 / 12. Use exactly one number in your answer."}]}
+{"messages":[{"role":"user","content":"What does 1000 ÷ 25 equal? Reply with one number only."}]}
+{"messages":[{"role":"user","content":"Calculate 2 + 3 + 4. Reply with exactly one number."}]}
+{"messages":[{"role":"user","content":"Compute 20 - 5 - 3 and output exactly one number."}]}
+{"messages":[{"role":"user","content":"Solve 2 × 3 × 4. Your response must contain one number only."}]}
+{"messages":[{"role":"user","content":"Evaluate 48 ÷ 4 + 5; return a single number, with no explanation."}]}
+{"messages":[{"role":"user","content":"Work out 100 - 20 + 7. Give exactly one numeric answer."}]}
+{"messages":[{"role":"user","content":"Find the result of 3 + 4 × 2. Output one number only."}]}
+{"messages":[{"role":"user","content":"Calculate 29 + 34. Reply with exactly one number."}]}
+{"messages":[{"role":"user","content":"Compute 76 + 19 and output exactly one number."}]}
+{"messages":[{"role":"user","content":"Solve 205 + 47. Your response must contain one number only."}]}
+{"messages":[{"role":"user","content":"Evaluate 91 - 36; return a single number, with no explanation."}]}
+{"messages":[{"role":"user","content":"Subtract 148 - 69. Give exactly one numeric answer."}]}
+{"messages":[{"role":"user","content":"Find the result of 620 - 284. Output one number only."}]}
+{"messages":[{"role":"user","content":"Please work out 7 × 12 and respond with a single number."}]}
+{"messages":[{"role":"user","content":"Determine 19 * 13. Use exactly one number in your answer."}]}
+{"messages":[{"role":"user","content":"What does 24 × 11 equal? Reply with one number only."}]}
+{"messages":[{"role":"user","content":"Give the product 37 * 4 as exactly one number."}]}
+{"messages":[{"role":"user","content":"Return the value of 84 ÷ 7. No words: one number only."}]}
+{"messages":[{"role":"user","content":"Perform this division: 315 / 9. Output a single number."}]}
+{"messages":[{"role":"user","content":"Calculate 528 ÷ 16. Reply with exactly one number."}]}
+{"messages":[{"role":"user","content":"Compute 5 + 9 + 13 + 17 and output exactly one number."}]}
+{"messages":[{"role":"user","content":"Solve 90 - 14 - 22. Your response must contain one number only."}]}
+{"messages":[{"role":"user","content":"Evaluate 4 × 6 × 5; return a single number, with no explanation."}]}
+{"messages":[{"role":"user","content":"Work out 7 + 8 × 3. Give exactly one numeric answer."}]}
+{"messages":[{"role":"user","content":"Find the result of (18 + 6) × 2. Output one number only."}]}
+{"messages":[{"role":"user","content":"Determine 144 ÷ (6 + 2). Use exactly one number in your answer."}]}
+{"messages":[{"role":"user","content":"Calculate (50 - 14) ÷ 4. Reply with one number only."}]}
+{"messages":[{"role":"user","content":"Calculate 38 + 57. Reply with exactly one number."}]}
+{"messages":[{"role":"user","content":"Compute 164 + 29 and output exactly one number."}]}
+{"messages":[{"role":"user","content":"Solve 703 + 86. Your response must contain one number only."}]}
+{"messages":[{"role":"user","content":"Evaluate 107 - 48; return a single number, with no explanation."}]}
+{"messages":[{"role":"user","content":"Subtract 275 - 118. Give exactly one numeric answer."}]}
+{"messages":[{"role":"user","content":"Find the result of 904 - 367. Output one number only."}]}
+{"messages":[{"role":"user","content":"Please work out 16 × 15 and respond with a single number."}]}
+{"messages":[{"role":"user","content":"Determine 23 * 14. Use exactly one number in your answer."}]}
+{"messages":[{"role":"user","content":"What does 45 × 6 equal? Reply with one number only."}]}
+{"messages":[{"role":"user","content":"Give the product 28 * 12 as exactly one number."}]}
+{"messages":[{"role":"user","content":"Return the value of 132 ÷ 11. No words: one number only."}]}
+{"messages":[{"role":"user","content":"Perform this division: 448 / 14. Output a single number."}]}
+{"messages":[{"role":"user","content":"Calculate 945 ÷ 27. Reply with exactly one number."}]}
+{"messages":[{"role":"user","content":"Compute 8 + 15 + 22 + 5 and output exactly one number."}]}
+{"messages":[{"role":"user","content":"Solve 130 - 18 - 27. Your response must contain one number only."}]}
+{"messages":[{"role":"user","content":"Evaluate 3 × 7 × 8; return a single number, with no explanation."}]}
+{"messages":[{"role":"user","content":"Work out 9 + 6 × 4. Give exactly one numeric answer."}]}
+{"messages":[{"role":"user","content":"Find the result of (27 + 9) × 3. Output one number only."}]}
+{"messages":[{"role":"user","content":"Determine 180 ÷ (9 - 3). Use exactly one number in your answer."}]}
+{"messages":[{"role":"user","content":"Calculate (84 - 24) ÷ 5. Reply with one number only."}]}

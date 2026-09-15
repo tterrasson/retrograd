@@ -1,0 +1,5 @@
+# `clippy::unwrap_used` is denied by the workspace lint table, and this is what
+# keeps that rule honest instead of drowning it in `allow`. A test that unwraps
+# is asserting - the panic *is* its failure report - so the lint has nothing to
+# say there.
+allow-unwrap-in-tests = true

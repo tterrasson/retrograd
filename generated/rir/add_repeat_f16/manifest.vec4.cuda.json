@@ -1,0 +1,248 @@
+{
+  "schema_version": 9,
+  "name": "add_repeat_f16",
+  "entrypoint": "rir_launch_add_repeat_f16_vec4",
+  "ggml_op": "GGML_OP_ADD",
+  "variant_id": "add_repeat_f16_f16_4d_serial_vec4",
+  "production": true,
+  "assumed_domain": [],
+  "backend": "cuda",
+  "bindings": [
+    {
+      "name": "a",
+      "binding": 0,
+      "source": "src[0]",
+      "dtype": "f16",
+      "access": "read",
+      "extents": [
+        "col",
+        "row",
+        "plane",
+        "batch"
+      ]
+    },
+    {
+      "name": "b",
+      "binding": 1,
+      "source": "src[1]",
+      "dtype": "f16",
+      "access": "read",
+      "extents": [
+        "col_b",
+        "row_b",
+        "plane_b",
+        "batch_b"
+      ]
+    },
+    {
+      "name": "dst",
+      "binding": 2,
+      "source": "dst",
+      "dtype": "f16",
+      "access": "write",
+      "extents": [
+        "col",
+        "row",
+        "plane",
+        "batch"
+      ]
+    }
+  ],
+  "params": [],
+  "push_constants": [
+    {
+      "name": "n_col",
+      "type": "u32",
+      "offset": 0
+    },
+    {
+      "name": "n_row",
+      "type": "u32",
+      "offset": 4
+    },
+    {
+      "name": "n_plane",
+      "type": "u32",
+      "offset": 8
+    },
+    {
+      "name": "n_batch",
+      "type": "u32",
+      "offset": 12
+    },
+    {
+      "name": "n_col_b",
+      "type": "u32",
+      "offset": 16
+    },
+    {
+      "name": "n_row_b",
+      "type": "u32",
+      "offset": 20
+    },
+    {
+      "name": "n_plane_b",
+      "type": "u32",
+      "offset": 24
+    },
+    {
+      "name": "n_batch_b",
+      "type": "u32",
+      "offset": 28
+    },
+    {
+      "name": "a_nb0",
+      "type": "u32",
+      "offset": 32
+    },
+    {
+      "name": "a_nb1",
+      "type": "u32",
+      "offset": 36
+    },
+    {
+      "name": "a_nb2",
+      "type": "u32",
+      "offset": 40
+    },
+    {
+      "name": "a_nb3",
+      "type": "u32",
+      "offset": 44
+    },
+    {
+      "name": "b_nb0",
+      "type": "u32",
+      "offset": 48
+    },
+    {
+      "name": "b_nb1",
+      "type": "u32",
+      "offset": 52
+    },
+    {
+      "name": "b_nb2",
+      "type": "u32",
+      "offset": 56
+    },
+    {
+      "name": "b_nb3",
+      "type": "u32",
+      "offset": 60
+    },
+    {
+      "name": "dst_nb0",
+      "type": "u32",
+      "offset": 64
+    },
+    {
+      "name": "dst_nb1",
+      "type": "u32",
+      "offset": 68
+    },
+    {
+      "name": "dst_nb2",
+      "type": "u32",
+      "offset": 72
+    },
+    {
+      "name": "dst_nb3",
+      "type": "u32",
+      "offset": 76
+    },
+    {
+      "name": "rir_flat_total",
+      "type": "u32",
+      "offset": 80
+    },
+    {
+      "name": "rir_flat0_div",
+      "type": "u32",
+      "offset": 84
+    },
+    {
+      "name": "rir_flat0_mp",
+      "type": "u32",
+      "offset": 88
+    },
+    {
+      "name": "rir_flat0_sh",
+      "type": "u32",
+      "offset": 92
+    },
+    {
+      "name": "rir_flat1_div",
+      "type": "u32",
+      "offset": 96
+    },
+    {
+      "name": "rir_flat1_mp",
+      "type": "u32",
+      "offset": 100
+    },
+    {
+      "name": "rir_flat1_sh",
+      "type": "u32",
+      "offset": 104
+    },
+    {
+      "name": "rir_flat2_div",
+      "type": "u32",
+      "offset": 108
+    },
+    {
+      "name": "rir_flat2_mp",
+      "type": "u32",
+      "offset": 112
+    },
+    {
+      "name": "rir_flat2_sh",
+      "type": "u32",
+      "offset": 116
+    }
+  ],
+  "packed_output": null,
+  "constraints": [
+    "dtype(a)=f16",
+    "dtype(b)=f16",
+    "rank(b)<=4",
+    "rank(a)<=4"
+  ],
+  "determinism": "elementwise",
+  "reduction": "serial",
+  "scan": "serial",
+  "variant": "vec4",
+  "priority": 90,
+  "vector_width": 4,
+  "linear_addr": false,
+  "eligible_when": [],
+  "features": [
+    "cuda>=5.3",
+    "block_threads>=256"
+  ],
+  "parallel_mapping": "invocation",
+  "dispatch": [],
+  "flat": [
+    {
+      "axis": "col",
+      "per_index": 4
+    },
+    {
+      "axis": "row",
+      "per_index": 1
+    },
+    {
+      "axis": "plane",
+      "per_index": 1
+    },
+    {
+      "axis": "batch",
+      "per_index": 1
+    }
+  ],
+  "workgroup": [
+    256,
+    1,
+    1
+  ]
+}

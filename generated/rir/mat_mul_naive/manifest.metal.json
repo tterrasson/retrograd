@@ -1,0 +1,128 @@
+{
+  "schema_version": 9,
+  "name": "mat_mul_naive",
+  "entrypoint": "rir_mat_mul_naive",
+  "ggml_op": "GGML_OP_MUL_MAT",
+  "variant_id": "mat_mul_naive_f32_2d_serial",
+  "production": false,
+  "assumed_domain": [],
+  "backend": "metal",
+  "bindings": [
+    {
+      "name": "a",
+      "binding": 0,
+      "source": "src[0]",
+      "dtype": "f32",
+      "access": "read",
+      "extents": [
+        "k",
+        "i"
+      ]
+    },
+    {
+      "name": "b",
+      "binding": 1,
+      "source": "src[1]",
+      "dtype": "f32",
+      "access": "read",
+      "extents": [
+        "k",
+        "j"
+      ]
+    },
+    {
+      "name": "c",
+      "binding": 2,
+      "source": "dst",
+      "dtype": "f32",
+      "access": "write",
+      "extents": [
+        "i",
+        "j"
+      ]
+    }
+  ],
+  "params": [],
+  "push_constants": [
+    {
+      "name": "n_i",
+      "type": "u32",
+      "offset": 0
+    },
+    {
+      "name": "n_j",
+      "type": "u32",
+      "offset": 4
+    },
+    {
+      "name": "n_k",
+      "type": "u32",
+      "offset": 8
+    },
+    {
+      "name": "a_nb0",
+      "type": "u32",
+      "offset": 12
+    },
+    {
+      "name": "a_nb1",
+      "type": "u32",
+      "offset": 16
+    },
+    {
+      "name": "b_nb0",
+      "type": "u32",
+      "offset": 20
+    },
+    {
+      "name": "b_nb1",
+      "type": "u32",
+      "offset": 24
+    },
+    {
+      "name": "c_nb0",
+      "type": "u32",
+      "offset": 28
+    },
+    {
+      "name": "c_nb1",
+      "type": "u32",
+      "offset": 32
+    }
+  ],
+  "packed_output": null,
+  "constraints": [
+    "dtype(a)=f32",
+    "dtype(b)=f32",
+    "rank(a)<=2",
+    "rank(b)<=2"
+  ],
+  "determinism": "deterministic",
+  "reduction": "serial",
+  "scan": "serial",
+  "variant": null,
+  "priority": 80,
+  "vector_width": 1,
+  "linear_addr": false,
+  "eligible_when": [],
+  "features": [
+    "metal>=2.0"
+  ],
+  "parallel_mapping": "invocation",
+  "dispatch": [
+    {
+      "axis": "i",
+      "per_workgroup": 16
+    },
+    {
+      "axis": "j",
+      "per_workgroup": 16
+    }
+  ],
+  "flat": [],
+  "workgroup": [
+    16,
+    16,
+    1
+  ]
+}

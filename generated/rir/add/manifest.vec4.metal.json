@@ -1,0 +1,178 @@
+{
+  "schema_version": 9,
+  "name": "add",
+  "entrypoint": "rir_add_vec4",
+  "ggml_op": "GGML_OP_ADD",
+  "variant_id": "add_f32_4d_serial_vec4",
+  "production": true,
+  "assumed_domain": [
+    {
+      "reject": "shape",
+      "why": "ggml_can_repeat on src1: served by add_repeat/mul_repeat, not this variant - selection uses node shape. Real graph: 280/920 nodes on MUL, none on ADD"
+    }
+  ],
+  "backend": "metal",
+  "bindings": [
+    {
+      "name": "a",
+      "binding": 0,
+      "source": "src[0]",
+      "dtype": "f32",
+      "access": "read",
+      "extents": [
+        "col",
+        "row",
+        "plane",
+        "batch"
+      ]
+    },
+    {
+      "name": "b",
+      "binding": 1,
+      "source": "src[1]",
+      "dtype": "f32",
+      "access": "read",
+      "extents": [
+        "col",
+        "row",
+        "plane",
+        "batch"
+      ]
+    },
+    {
+      "name": "dst",
+      "binding": 2,
+      "source": "dst",
+      "dtype": "f32",
+      "access": "write",
+      "extents": [
+        "col",
+        "row",
+        "plane",
+        "batch"
+      ]
+    }
+  ],
+  "params": [],
+  "push_constants": [
+    {
+      "name": "n_col",
+      "type": "u32",
+      "offset": 0
+    },
+    {
+      "name": "n_row",
+      "type": "u32",
+      "offset": 4
+    },
+    {
+      "name": "n_plane",
+      "type": "u32",
+      "offset": 8
+    },
+    {
+      "name": "n_batch",
+      "type": "u32",
+      "offset": 12
+    },
+    {
+      "name": "a_nb0",
+      "type": "u32",
+      "offset": 16
+    },
+    {
+      "name": "a_nb1",
+      "type": "u32",
+      "offset": 20
+    },
+    {
+      "name": "a_nb2",
+      "type": "u32",
+      "offset": 24
+    },
+    {
+      "name": "a_nb3",
+      "type": "u32",
+      "offset": 28
+    },
+    {
+      "name": "b_nb0",
+      "type": "u32",
+      "offset": 32
+    },
+    {
+      "name": "b_nb1",
+      "type": "u32",
+      "offset": 36
+    },
+    {
+      "name": "b_nb2",
+      "type": "u32",
+      "offset": 40
+    },
+    {
+      "name": "b_nb3",
+      "type": "u32",
+      "offset": 44
+    },
+    {
+      "name": "dst_nb0",
+      "type": "u32",
+      "offset": 48
+    },
+    {
+      "name": "dst_nb1",
+      "type": "u32",
+      "offset": 52
+    },
+    {
+      "name": "dst_nb2",
+      "type": "u32",
+      "offset": 56
+    },
+    {
+      "name": "dst_nb3",
+      "type": "u32",
+      "offset": 60
+    }
+  ],
+  "packed_output": null,
+  "constraints": [
+    "dtype(a)=f32",
+    "dtype(b)=f32",
+    "rank(b)<=4",
+    "rank(a)<=4"
+  ],
+  "determinism": "elementwise",
+  "reduction": "serial",
+  "scan": "serial",
+  "variant": "vec4",
+  "priority": 90,
+  "vector_width": 4,
+  "linear_addr": false,
+  "eligible_when": [],
+  "features": [
+    "metal>=2.0"
+  ],
+  "parallel_mapping": "invocation",
+  "dispatch": [
+    {
+      "axis": "col",
+      "per_workgroup": 1024
+    },
+    {
+      "axis": "row",
+      "per_workgroup": 1
+    },
+    {
+      "axis": "plane",
+      "per_workgroup": 1
+    }
+  ],
+  "flat": [],
+  "workgroup": [
+    256,
+    1,
+    1
+  ]
+}

@@ -1,0 +1,47 @@
+[package]
+name = "retrograd-run"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - run orchestration between the training loops and the frontends"
+publish = false
+
+[dependencies]
+# The agentic algorithm is optional: `--no-default-features` drops the async
+# stack (judge transport, environments, MCP) and the loader then says so rather
+# than refusing the section.
+retrograd-agent = { workspace = true, optional = true, features = ["http-env"] }
+retrograd-checkpoint.workspace = true
+retrograd-config.workspace = true
+retrograd-core.workspace = true
+retrograd-dataset.workspace = true
+retrograd-engine.workspace = true
+retrograd-memory.workspace = true
+retrograd-scenario-gen = { workspace = true, optional = true }
+retrograd-metrics.workspace = true
+retrograd-training.workspace = true
+# For `ToolPlanResolve`: the run signature hashes the *merged* MCP servers, which
+# means reading the `mcp_config` files - legitimate here, since this is the
+# machine about to execute the document, and not in `retrograd-config`
+retrograd-tools.workspace = true
+serde_json = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal", "time"], optional = true }
+tracing.workspace = true
+
+# Only for `_exit` on the forced-interrupt path, where running the C++ runtime's
+# static destructors from a signal thread is what a plain `exit` would do - see
+# `interrupt.rs`. Already in the tree under tokio, so this costs no build time.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[features]
+default = ["agent"]
+# Multi-turn GRPO: `run.algorithm = "agent_grpo"`.
+agent = ["dep:retrograd-agent", "dep:retrograd-scenario-gen", "dep:serde_json", "dep:tokio"]
+# Tools served over MCP. Pulls rmcp and its transports.
+mcp = ["agent", "retrograd-agent/mcp"]
+# The Docker-backed environment pool. Pulls bollard.
+container = ["agent", "retrograd-agent/container", "retrograd-config/container"]
+
+[lints]
+workspace = true

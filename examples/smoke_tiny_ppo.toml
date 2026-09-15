@@ -1,0 +1,63 @@
+# Fetch the CPU fixture once, then run from the repository root:
+# scripts/fetch-cpu-fixture.sh
+# cargo run -q -- train examples/smoke_tiny_ppo.toml
+
+[run]
+algorithm = "ppo"
+verbose = false
+
+[model]
+# Relative to this file; `reward_command` below is relative to the working directory.
+path = "../tests/fixtures/LFM2.5-230M-Q4_K_M.gguf"
+device = "cpu"
+
+[lora]
+output = "/tmp/retrograd-smoke-ppo-adapter.gguf"
+rank = 1
+alpha = 2.0
+seed = 42
+targets = ["q"]
+
+[training]
+ctx = 64
+# `micro_batch` is the physical forward/backward width and the only memory
+# lever. `gradient_accumulation` is omitted: a rollout algorithm pins it to
+# ctx / micro_batch = 8, one optimizer step per rollout.
+micro_batch = 8
+# `epochs` is an SFT-only setting. PPO uses `updates * ppo_epochs` below.
+lr = 0.0001
+lr_scheduler = "constant"
+warmup_steps = 0
+weight_decay = 0.0
+max_grad_norm = 1.0
+
+[ppo]
+prompts = "smoke_rl_prompts.jsonl" # chat JSONL ending with a user message
+reward_command = ["python3", "examples/smoke_rl_reward.py"]
+updates = 5                 # 5 newly sampled rollout batches
+rollout_batch_size = 4
+ppo_epochs = 1              # 1 optimizer pass over each sampled batch
+clip_range = 0.2
+kl_coefficient = 0.02
+
+[ppo.critic]
+# Disabled here to keep the smoke test short; the policy rollout, reward,
+# clipping, weighted update, metrics, and adapter export still run end to end.
+enabled = false
+
+[ppo.sampling]
+temperature = 1.0
+top_p = 0.95
+max_new_tokens = 4
+seed = 42
+
+[evaluation]
+data = "smoke_rl_eval.jsonl"
+every_iterations = 1 # PPO: evaluate every rollout update
+patience = 3
+min_delta = 0.0
+
+[checkpoint]
+directory = "/tmp/retrograd-smoke-ppo-checkpoints"
+mode = "steps_and_best_eval"
+every_steps = 16

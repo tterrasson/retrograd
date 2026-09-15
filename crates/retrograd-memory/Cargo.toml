@@ -1,0 +1,14 @@
+[package]
+name = "retrograd-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - dependency-free process memory accounting"
+publish = false
+
+[dependencies]
+retrograd-ffi.workspace = true
+retrograd-metrics.workspace = true
+
+[lints]
+workspace = true

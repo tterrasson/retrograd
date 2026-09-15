@@ -1,0 +1,15 @@
+[package]
+name = "retrograd-metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - dependency-free experiment metric exporters"
+publish = false
+
+[dependencies]
+retrograd-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

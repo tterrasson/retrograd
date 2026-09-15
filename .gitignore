@@ -1,0 +1,38 @@
+# Build trees, one per lane under `target/lanes/` so switching lanes stays warm.
+/target/
+
+# Per-lane build trees left at the repository root by older scripts.
+/target-*/
+/crates/retrograd-ffi/runtime/build/
+
+# Python build files
+/python/.venv/
+/python/target/
+/python/native/target/
+/python/dist/
+/python/.pytest_cache/
+__pycache__/
+*.py[cod]
+*.so
+.coverage
+
+# Generated model files
+*.gguf
+*.gguf.verified
+
+# Local run output
+
+# Run output resolved against the directory of a config kept at the root.
+/runs/
+
+# Temporary files and logs
+
+# Scratch diffs against the fork; the submodule itself is read with `git -C`.
+/*.patch
+*.jsonl
+# The smoke examples' prompts and evaluation set ship with the repository.
+!/examples/*.jsonl
+.ruff_cache
+
+# Operating system files
+.DS_Store

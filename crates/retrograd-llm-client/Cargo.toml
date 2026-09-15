@@ -1,0 +1,16 @@
+[package]
+name = "retrograd-llm-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - hardened client for OpenAI-compatible chat completions"
+publish = false
+
+[dependencies]
+retrograd-agent-core.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

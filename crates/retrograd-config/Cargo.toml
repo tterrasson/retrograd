@@ -1,0 +1,31 @@
+[package]
+name = "retrograd-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - strict TOML run configuration, parsed and validated"
+publish = false
+
+# The one schema every frontend reads. It links the *declarations* of the
+# agentic stack - `retrograd-spec` - and not one of the crates that execute one:
+# no environment, no judge, no tool registry, and therefore no HTTP client, no
+# daemon client and no MCP transport.
+#
+# `retrograd-plan`'s dependency-tree guard fails if any of them comes back.
+[dependencies]
+retrograd-agent-core.workspace = true
+retrograd-core.workspace = true
+retrograd-dataset.workspace = true
+retrograd-spec.workspace = true
+serde.workspace = true
+toml.workspace = true
+tracing.workspace = true
+
+[features]
+default = []
+# Type the `[agent.environment]` container table instead of accepting it as an
+# opaque map. Forwarded from whichever binary can actually run one.
+container = ["retrograd-spec/container"]
+
+[lints]
+workspace = true

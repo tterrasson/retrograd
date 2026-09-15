@@ -1,0 +1,36 @@
+[package]
+name = "retrograd-plan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - budgets, memory cost model and configuration resolver"
+publish = false
+
+[features]
+# OpenAPI schema derivation for the wire types this crate owns (recipe, plan,
+# provenance). Off by default: the CLI and the cost model have no use for it,
+# and `retrograd-server` turns it on through its own `openapi` feature.
+openapi = ["dep:utoipa"]
+# Synthetic model geometries and recipes, so the server's tests can resolve
+# against a machine that does not exist without duplicating the fixtures.
+testing = []
+
+[dependencies]
+thiserror.workspace = true
+retrograd-config.workspace = true
+retrograd-core.workspace = true
+retrograd-dataset.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tracing.workspace = true
+utoipa = { workspace = true, optional = true }
+
+[dev-dependencies]
+retrograd-config.workspace = true
+retrograd-core.workspace = true
+retrograd-plan = { workspace = true, features = ["testing"] }
+toml.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "rir-gen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "RIR - the AOT build binary: emits generated/rir (committed code)"
+
+[dependencies]
+thiserror.workspace = true
+rir-core.workspace = true
+rir-emit.workspace = true
+rir-kernels.workspace = true
+rir-lower.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,306 @@
+{
+  "config": {
+    "run": {
+      "algorithm": "sft",
+      "verbose": false
+    },
+    "model": {
+      "path": "model.gguf"
+    },
+    "lora": {
+      "output": "adapter.gguf",
+      "rank": 8,
+      "alpha": 16.0,
+      "seed": 7,
+      "targets": [
+        "q",
+        "v"
+      ]
+    },
+    "training": {
+      "ctx": 4096,
+      "micro_batch": 8,
+      "gradient_accumulation": 512,
+      "epochs": 1,
+      "lr": 0.00014142135,
+      "weight_decay": 0.01,
+      "max_grad_norm": 1.0,
+      "lr_scheduler": "cosine",
+      "warmup_steps": 30,
+      "fast_sampling_context": true,
+      "kv_dtype": "f16",
+      "chunked_cross_entropy": true,
+      "chunked_ce_tiles": 2,
+      "chunked_ce_seq_chunk": 512,
+      "gradient_checkpointing": false,
+      "checkpoint_every_n_layers": 4,
+      "checkpoint_dtype": "f32"
+    },
+    "sft": {
+      "data": "data.jsonl",
+      "data_format": "jsonl"
+    }
+  },
+  "plan": {
+    "schema_version": 2,
+    "total_steps": 1000,
+    "iterations": 1,
+    "memory": {
+      "resources": {
+        "cost_model_version": 2,
+        "persistent_device": {
+          "bytes": 630390784,
+          "posts": [
+            {
+              "name": "model_weight_bytes",
+              "bytes": 419430400,
+              "origin": "exact",
+              "bound": "exact"
+            },
+            {
+              "name": "optimizer_kv_bytes",
+              "bytes": 201326592,
+              "origin": "analytical",
+              "bound": "upper"
+            },
+            {
+              "name": "generation_kv_bytes",
+              "bytes": 0,
+              "origin": "analytical",
+              "bound": "upper"
+            },
+            {
+              "name": "lora_parameter_bytes",
+              "bytes": 1376256,
+              "origin": "analytical",
+              "bound": "upper"
+            },
+            {
+              "name": "lora_gradient_bytes",
+              "bytes": 2752512,
+              "origin": "analytical",
+              "bound": "upper"
+            },
+            {
+              "name": "adamw_momenta_bytes",
+              "bytes": 5505024,
+              "origin": "analytical",
+              "bound": "upper"
+            }
+          ]
+        },
+        "persistent_host": {
+          "bytes": 32768000,
+          "posts": [
+            {
+              "name": "host_dataset_bytes",
+              "bytes": 32768000,
+              "origin": "analytical",
+              "bound": "upper"
+            },
+            {
+              "name": "host_rollout_bytes",
+              "bytes": 0,
+              "origin": "analytical",
+              "bound": "upper"
+            }
+          ]
+        },
+        "optimizer_transient": {
+          "bytes": 442785792,
+          "posts": [
+            {
+              "name": "dequant_scratch_bytes",
+              "bytes": 419430400,
+              "origin": "calibrated",
+              "bound": "upper"
+            },
+            {
+              "name": "optimizer_compute_bytes",
+              "bytes": 23355392,
+              "origin": "calibrated",
+              "bound": "upper"
+            }
+          ]
+        },
+        "generation_transient": {
+          "bytes": 419430400,
+          "posts": [
+            {
+              "name": "dequant_scratch_bytes",
+              "bytes": 419430400,
+              "origin": "calibrated",
+              "bound": "upper"
+            },
+            {
+              "name": "generation_compute_bytes",
+              "bytes": 0,
+              "origin": "calibrated",
+              "bound": "upper"
+            }
+          ]
+        },
+        "kernel": {
+          "bytes": 0,
+          "posts": []
+        },
+        "device_peak_bytes": 1073176576,
+        "host_peak_bytes": 32768000,
+        "lower_bound_device_bytes": 429064192,
+        "upper_bound_device_bytes": 1073176576
+      },
+      "budgets": {
+        "vram": {
+          "requested": "all",
+          "total_bytes": 1153433600,
+          "baseline_bytes": 0,
+          "margin_bytes": 57671680,
+          "effective_bytes": 1095761920,
+          "capped": false
+        },
+        "ram": {
+          "requested": "all",
+          "total_bytes": 8589934592,
+          "baseline_bytes": 0,
+          "margin_bytes": 429496729,
+          "effective_bytes": 8160437863,
+          "capped": false
+        },
+        "unified": false
+      }
+    },
+    "execution": {
+      "schema_version": 2,
+      "confidence": "analytical",
+      "profile_fingerprint": "unavailable",
+      "expected_backend": "cuda",
+      "rir_mode": "unknown",
+      "kernel_coverage": [],
+      "cpu_fallbacks": [],
+      "assumptions": [
+        {
+          "code": "execution_profile_unavailable",
+          "message": "kernel and device capabilities were not supplied; execution claims are analytical only"
+        }
+      ],
+      "alternatives": [
+        {
+          "code": "cost_superior",
+          "candidate": "ctx=4096/batch=4096/ubatch=1/fanout=auto/checkpoint=false:4:f32",
+          "reason": "predicted relative cost 16777217"
+        },
+        {
+          "code": "cost_superior",
+          "candidate": "ctx=4096/batch=4096/ubatch=1/fanout=auto/checkpoint=true:5:f16",
+          "reason": "predicted relative cost 16777218"
+        },
+        {
+          "code": "cost_superior",
+          "candidate": "ctx=4096/batch=4096/ubatch=1/fanout=auto/checkpoint=true:5:f32",
+          "reason": "predicted relative cost 16777218"
+        },
+        {
+          "code": "budget",
+          "candidate": "ctx=4096/batch=4096/ubatch=1024/fanout=auto/checkpoint=false:4:f32",
+          "reason": "budget"
+        },
+        {
+          "code": "budget",
+          "candidate": "ctx=4096/batch=4096/ubatch=1024/fanout=auto/checkpoint=true:5:f16",
+          "reason": "budget"
+        }
+      ]
+    },
+    "defaults_applied": [
+      {
+        "id": "chunked_cross_entropy",
+        "from": "8 tiles, 512-token chunks",
+        "to": "2 tiles, 512-token chunks",
+        "note": "the vocabulary logits are streamed tile by tile, over a bounded token chunk",
+        "cost": "none - the tile recompute costs less bandwidth than the tensor it avoids building"
+      }
+    ],
+    "levers": [
+      {
+        "id": "micro_batch",
+        "from": "16",
+        "to": "8",
+        "note": "a shorter physical micro-batch",
+        "cost": "additional physical passes"
+      }
+    ],
+    "truncation_fraction": 0.0,
+    "judge_calls_expected": 0,
+    "warnings": [
+      {
+        "code": "kv_f16_may_fall_back",
+        "field": "training.kv_dtype",
+        "message": "kv_dtype = f16 is the default and falls back to F32 on a device without differentiable flash attention for this head geometry; the estimate then understates the KV cache"
+      }
+    ]
+  },
+  "provenance": {
+    "lora.alpha": {
+      "source": "derived",
+      "reason": "twice the rank"
+    },
+    "lora.dtype": {
+      "source": "default"
+    },
+    "lora.rank": {
+      "source": "derived",
+      "reason": "1000 examples: rank 8"
+    },
+    "lora.targets": {
+      "source": "derived",
+      "reason": "1000 examples, below 2000: q and v only"
+    },
+    "training.chunked_ce_seq_chunk": {
+      "source": "derived",
+      "reason": "active by default: always - every backend the project ships carries both fused nodes"
+    },
+    "training.chunked_ce_tiles": {
+      "source": "derived",
+      "reason": "active by default: always - every backend the project ships carries both fused nodes"
+    },
+    "training.chunked_cross_entropy": {
+      "source": "derived",
+      "reason": "active by default: always - every backend the project ships carries both fused nodes"
+    },
+    "training.ctx": {
+      "source": "derived",
+      "reason": "P99 of the example lengths, rounded up to a power of two"
+    },
+    "training.epochs": {
+      "source": "derived",
+      "reason": "3500000 tokens: 1 pass(es) towards the 1500000-token exposure target"
+    },
+    "training.gradient_accumulation": {
+      "source": "derived",
+      "reason": "largest optimizer window whose estimate fits the budget and its safety margin"
+    },
+    "training.lr": {
+      "source": "derived",
+      "reason": "rank 8: the reference rate scaled by sqrt(16 / rank)"
+    },
+    "training.lr_scheduler": {
+      "source": "derived",
+      "reason": "1000 optimizer steps: a cosine has room to decay"
+    },
+    "training.max_grad_norm": {
+      "source": "default"
+    },
+    "training.micro_batch": {
+      "source": "derived",
+      "reason": "Pareto selection across physical passes, memory peak and packed fanout"
+    },
+    "training.warmup_steps": {
+      "source": "derived",
+      "reason": "3% of the 1000 optimizer steps"
+    },
+    "training.weight_decay": {
+      "source": "derived",
+      "reason": "1000 examples: the usual decay"
+    }
+  }
+}

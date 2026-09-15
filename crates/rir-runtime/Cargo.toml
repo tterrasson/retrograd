@@ -1,0 +1,38 @@
+[package]
+name = "rir-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "RIR - runs the generated shaders on a real Vulkan device"
+
+[dependencies]
+thiserror.workspace = true
+# Load Vulkan dynamically so builds need no SDK and a missing driver remains a
+# recoverable runtime error.
+ash = { version = "0.38", default-features = false, features = ["loaded"] }
+serde.workspace = true
+serde_json.workspace = true
+# Read quantized block geometry from the canonical table.
+rir-core.workspace = true
+# Compile CUDA with `nvcc -shared` and load it dynamically. A missing toolkit
+# remains recoverable, like a missing Vulkan driver.
+libloading = { version = "0.8", optional = true }
+
+[features]
+# CUDA is optional. Without its toolkit, the crate must compile and tests skip
+# with an explicit message.
+cuda = ["dep:libloading"]
+
+[dev-dependencies]
+rir-kernels.workspace = true
+rir-lower.workspace = true
+# The timing harness emits shaders in-process, so schedule changes require no
+# generated artifact or fork rebuild.
+rir-emit.workspace = true
+# Timing tests and offline search share the same emit, build, and measurement
+# path. The resulting dependency cycle is test-only and accepted by Cargo.
+rir-sweep.workspace = true
+
+[lints]
+workspace = true

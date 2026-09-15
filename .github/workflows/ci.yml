@@ -1,0 +1,173 @@
+name: CI
+
+# CPU-only. The GPU lanes (Metal, Vulkan, CUDA) are not wrapped here - they
+# need real hardware and stay a manual step before a PR, see
+# docs/engineering/tests/notice.md. This workflow only proves what a fresh clone
+# can prove on its own: it builds, the fast lanes pass, clippy, rustdoc and ruff
+# are clean.
+
+# Runs on every pull request and every push to main, and by hand from "Run
+# workflow" in Actions or `gh workflow run ci.yml`.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch or pull request cancels the run it supersedes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  RETRO_BACKENDS: cpu
+
+jobs:
+  licenses:
+    name: licenses (cargo-deny, see deny.toml)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+
+
+  rust:
+    name: rust (fast lane + clippy + rustdoc)
+    runs-on: ubuntu-latest
+    env:
+      # The fast lane's own build tree, so clippy and rustdoc below do not
+      # configure llama.cpp a second time. Scoped to this job: the python job's
+      # `python/.cargo/config.toml` picks its own target directory.
+      CARGO_TARGET_DIR: target/lanes/fast
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/lanes/fast
+          key: rust-fast-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            rust-fast-${{ runner.os }}-
+
+      - name: Fast Rust lane
+        run: scripts/test-fast-rust.sh
+
+      - name: Clippy (unwrap_used = deny, workspace lint table)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rustdoc (a broken intra-doc link fails the build)
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  python:
+    name: python (fast lane + ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: astral-sh/setup-uv@v3
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            python/target
+          key: python-fast-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            python-fast-${{ runner.os }}-
+
+      - name: Fast Python lane
+        run: scripts/test-fast-python.sh
+
+      - name: Ruff
+        working-directory: python
+        run: |
+          uv run ruff check . ../examples ../scripts
+          uv run ruff format --check . ../examples ../scripts
+
+  sdist:
+    name: python sdist (contents + wheel built from it)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: astral-sh/setup-uv@v3
+
+      - name: Build the sdist
+        working-directory: python
+        run: uvx --from 'maturin>=1.8,<2' maturin sdist -o ../dist
+
+      # The sdist is what the `include` lists of the root and `retrograd-ffi`
+      # manifests produce. It stays small, carries no model weights, no
+      # `node_modules` and no git metadata, and keeps its licence metadata.
+      - name: Check the sdist contents
+        run: |
+          set -euo pipefail
+          sdist=$(ls dist/retrograd-*.tar.gz)
+          size=$(stat -c %s "$sdist")
+          echo "sdist: $sdist, $size bytes, $(tar -tzf "$sdist" | wc -l) files"
+          if [ "$size" -gt 20000000 ]; then
+            echo "sdist is over 20 MB - something outside the build inputs was packaged" >&2
+            exit 1
+          fi
+          if tar -tzf "$sdist" | grep -E '\.gguf$|/node_modules/|/\.git(/|$)|(^|/)\.\.(/|$)'; then
+            echo "sdist contains files it must not ship (listed above)" >&2
+            exit 1
+          fi
+          pkg_info=$(tar -xzOf "$sdist" --wildcards '*/PKG-INFO')
+          grep -qx 'License-Expression: MIT' <<<"$pkg_info"
+          grep -qx 'License-File: LICENSE' <<<"$pkg_info"
+          grep -qx 'License-File: NOTICE' <<<"$pkg_info"
+
+      # Proves the `include` lists still hold every build input: uv unpacks the
+      # archive outside the checkout, with no git metadata, and builds from it.
+      - name: Build a wheel from the sdist
+        run: uv build --wheel dist/retrograd-*.tar.gz -o dist
+
+      # Linking with unresolved symbols is allowed for an extension module, so a
+      # wheel that builds can still fail to load: import it in a clean venv.
+      - name: Import the wheel
+        run: |
+          uv venv /tmp/wheel-venv
+          uv pip install --python /tmp/wheel-venv/bin/python dist/retrograd-*.whl
+          cd /tmp && /tmp/wheel-venv/bin/python -c "import retrograd._native"

@@ -1,0 +1,37 @@
+[package]
+name = "retrograd-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - session tools, MCP client and tool catalogue"
+publish = false
+
+# What the policy may ask for. Tools are written against `Sandbox`, never
+# against a container runtime, so this crate stays free of bollard and of the
+# FFI bridge, and a user-supplied tool is testable without either.
+[dependencies]
+async-trait.workspace = true
+futures = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
+retrograd-agent-core.workspace = true
+retrograd-spec.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"], optional = true }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "process", "rt", "sync", "time"] }
+tracing.workspace = true
+
+[features]
+default = ["mcp"]
+# MCP pulls rmcp, and with it hyper/tower/reqwest. A run whose tools all live
+# in its own sandbox has no use for any of that.
+mcp = ["dep:rmcp", "dep:http", "dep:futures"]
+
+[dev-dependencies]
+rmcp = { workspace = true, features = ["macros", "server", "transport-io"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

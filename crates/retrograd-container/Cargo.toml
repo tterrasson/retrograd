@@ -1,0 +1,31 @@
+[package]
+name = "retrograd-container"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - Docker-backed sandboxes for agentic environments"
+publish = false
+
+# Docker-backed execution. This crate knows nothing about agents, trajectories
+# or rewards: it starts a container, runs a command in it, moves files in and
+# out, and recycles it. That is deliberate - a judge with a sandboxed command or
+# a server-side evaluation job reuses it as is, and it is the only place in the
+# workspace where bollard appears, so removing it from a build is a matter of
+# not depending on this crate.
+[dependencies]
+async-trait.workspace = true
+bollard = "0.21"
+futures.workspace = true
+retrograd-agent-core.workspace = true
+retrograd-metrics.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tar = "0.4"
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

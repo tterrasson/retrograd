@@ -1,0 +1,43 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "retrograd"
+version = "0.1.0"
+description = "High-level Python API for the Retrograd Rust/llama.cpp runtime"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+# Symlinks to the repository root: PEP 639 forbids `..` in `license-files`.
+license-files = ["LICENSE", "NOTICE"]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/tterrasson/retrograd"
+Repository = "https://github.com/tterrasson/retrograd"
+Changelog = "https://github.com/tterrasson/retrograd/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "ruff>=0.9",
+]
+
+[tool.maturin]
+manifest-path = "native/Cargo.toml"
+python-source = "src"
+module-name = "retrograd._native"
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["src/retrograd"]
+
+[tool.coverage.report]
+show_missing = true
+
+# Ruff reads the repository-wide `ruff.toml`, which also covers `examples/` and `scripts/`.

@@ -1,0 +1,71 @@
+[package]
+name = "retrograd-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - HTTP control plane for training runs"
+publish = false
+
+[features]
+# OpenAPI schema derivation. On by default; turning it off keeps `cargo check`
+# fast while iterating on handlers and proves
+# no logic depends on it.
+default = ["openapi"]
+openapi = ["dep:utoipa", "retrograd-plan/openapi"]
+# Declarable `[[environment]]` entries of kind `container`. Off by default: the
+# operator opts into a build that carries bollard, the same switch as
+# `retrograd-agent`'s.
+container = ["retrograd-agent/container"]
+
+[dependencies]
+# The SSE handlers are a replay followed by a live subscription; writing
+# that as a generator keeps the two halves in one readable sequence instead of a
+# hand-rolled `Stream` state machine.
+async-stream = "0.3"
+axum.workspace = true
+bytes = "1.12.1"
+futures-core = "0.3.33"
+futures-util = { version = "0.3.33", default-features = false, features = ["std"] }
+http.workspace = true
+# For `LengthLimitError`: recognizing the body-limit layer's own rejection by
+# its type rather than by the wording of its message.
+http-body-util.workspace = true
+# The server runs agentic configurations, so it asks for MCP tools and the HTTP
+# environment explicitly. `container` stays its own feature, forwarded below.
+retrograd-agent = { workspace = true, features = ["mcp", "http-env"] }
+retrograd-checkpoint.workspace = true
+retrograd-config.workspace = true
+retrograd-core.workspace = true
+retrograd-dataset.workspace = true
+retrograd-engine.workspace = true
+retrograd-memory.workspace = true
+retrograd-metrics.workspace = true
+retrograd-plan.workspace = true
+retrograd-run = { workspace = true, features = ["agent"] }
+serde.workspace = true
+# `raw_value`: a run's rendered configuration, provenance and plan are stored and
+# re-served as the bytes they were first serialized to, never re-rendered.
+serde_json = { workspace = true, features = ["raw_value"] }
+serde_path_to_error = "0.1.20"
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+toml.workspace = true
+tower = { workspace = true, features = ["limit"] }
+tower-http = { version = "0.6", features = ["limit", "timeout", "trace"] }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+utoipa = { workspace = true, optional = true }
+uuid = { version = "1", features = ["serde", "v4"] }
+
+[dev-dependencies]
+http-body-util.workspace = true
+retrograd-plan = { workspace = true, features = ["testing"] }
+tower = { workspace = true, features = ["util"] }
+
+[[bin]]
+name = "retrograd-server"
+path = "src/bin/retrograd-server.rs"
+
+[lints]
+workspace = true

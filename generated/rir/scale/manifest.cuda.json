@@ -1,0 +1,221 @@
+{
+  "schema_version": 9,
+  "name": "scale",
+  "entrypoint": "rir_launch_scale",
+  "ggml_op": "GGML_OP_SCALE",
+  "variant_id": "scale_f32_4d_serial_w4",
+  "production": true,
+  "assumed_domain": [
+    {
+      "reject": "dtype",
+      "why": "F16: both native GPU kernels accept it, ggml_compute_forward_scale does not - an F16 member would be a variant no benchmark can judge"
+    }
+  ],
+  "backend": "cuda",
+  "bindings": [
+    {
+      "name": "a",
+      "binding": 0,
+      "source": "src[0]",
+      "dtype": "f32",
+      "access": "read",
+      "extents": [
+        "col",
+        "row",
+        "plane",
+        "batch"
+      ]
+    },
+    {
+      "name": "dst",
+      "binding": 1,
+      "source": "dst",
+      "dtype": "f32",
+      "access": "write",
+      "extents": [
+        "col",
+        "row",
+        "plane",
+        "batch"
+      ]
+    }
+  ],
+  "params": [
+    {
+      "name": "scale",
+      "type": "f32",
+      "source": "op_params",
+      "source_offset": 0
+    },
+    {
+      "name": "bias",
+      "type": "f32",
+      "source": "op_params",
+      "source_offset": 4
+    }
+  ],
+  "push_constants": [
+    {
+      "name": "scale",
+      "type": "f32",
+      "offset": 0
+    },
+    {
+      "name": "bias",
+      "type": "f32",
+      "offset": 4
+    },
+    {
+      "name": "n_col",
+      "type": "u32",
+      "offset": 8
+    },
+    {
+      "name": "n_row",
+      "type": "u32",
+      "offset": 12
+    },
+    {
+      "name": "n_plane",
+      "type": "u32",
+      "offset": 16
+    },
+    {
+      "name": "n_batch",
+      "type": "u32",
+      "offset": 20
+    },
+    {
+      "name": "a_nb0",
+      "type": "u32",
+      "offset": 24
+    },
+    {
+      "name": "a_nb1",
+      "type": "u32",
+      "offset": 28
+    },
+    {
+      "name": "a_nb2",
+      "type": "u32",
+      "offset": 32
+    },
+    {
+      "name": "a_nb3",
+      "type": "u32",
+      "offset": 36
+    },
+    {
+      "name": "dst_nb0",
+      "type": "u32",
+      "offset": 40
+    },
+    {
+      "name": "dst_nb1",
+      "type": "u32",
+      "offset": 44
+    },
+    {
+      "name": "dst_nb2",
+      "type": "u32",
+      "offset": 48
+    },
+    {
+      "name": "dst_nb3",
+      "type": "u32",
+      "offset": 52
+    },
+    {
+      "name": "rir_flat_total",
+      "type": "u32",
+      "offset": 56
+    },
+    {
+      "name": "rir_flat0_div",
+      "type": "u32",
+      "offset": 60
+    },
+    {
+      "name": "rir_flat0_mp",
+      "type": "u32",
+      "offset": 64
+    },
+    {
+      "name": "rir_flat0_sh",
+      "type": "u32",
+      "offset": 68
+    },
+    {
+      "name": "rir_flat1_div",
+      "type": "u32",
+      "offset": 72
+    },
+    {
+      "name": "rir_flat1_mp",
+      "type": "u32",
+      "offset": 76
+    },
+    {
+      "name": "rir_flat1_sh",
+      "type": "u32",
+      "offset": 80
+    },
+    {
+      "name": "rir_flat2_div",
+      "type": "u32",
+      "offset": 84
+    },
+    {
+      "name": "rir_flat2_mp",
+      "type": "u32",
+      "offset": 88
+    },
+    {
+      "name": "rir_flat2_sh",
+      "type": "u32",
+      "offset": 92
+    }
+  ],
+  "packed_output": null,
+  "constraints": [
+    "dtype(a)=f32",
+    "rank(a)<=4"
+  ],
+  "determinism": "elementwise",
+  "reduction": "serial",
+  "scan": "serial",
+  "variant": null,
+  "priority": 80,
+  "vector_width": 4,
+  "linear_addr": false,
+  "eligible_when": [],
+  "features": [
+    "cuda>=5.0",
+    "block_threads>=256"
+  ],
+  "parallel_mapping": "invocation",
+  "dispatch": [],
+  "flat": [
+    {
+      "axis": "col",
+      "per_index": 4
+    },
+    {
+      "axis": "row",
+      "per_index": 1
+    },
+    {
+      "axis": "plane",
+      "per_index": 1
+    },
+    {
+      "axis": "batch",
+      "per_index": 1
+    }
+  ],
+  "workgroup": [
+    256,
+    1,
+    1
+  ]
+}

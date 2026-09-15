@@ -1,0 +1,49 @@
+# Fetch the CPU fixture once, then run from the repository root:
+# scripts/fetch-cpu-fixture.sh
+# cargo run -q -- train examples/smoke_tiny_sft.toml
+
+[run]
+algorithm = "sft"
+verbose = true
+
+[model]
+# Relative to this file. Any other GGUF works.
+path = "../tests/fixtures/LFM2.5-230M-Q4_K_M.gguf"
+device = "cpu"
+
+[lora]
+output = "/tmp/retrograd-smoke-adapter.gguf"
+dtype = "f16"
+rank = 1
+alpha = 2.0
+seed = 42
+# The `q` alias expands to `blk.*.attn_q.weight`: every attention query
+# projection the model actually has, whatever its architecture.
+targets = ["q"]
+
+[training]
+ctx = 128
+# 16 tokens per forward/backward, 4 of them per optimizer step: the step trains
+# a 64-token window, which must divide ctx.
+micro_batch = 16
+gradient_accumulation = 4
+epochs = 1
+lr = 0.0001
+lr_scheduler = "constant"
+warmup_steps = 0
+weight_decay = 0.0
+
+[sft]
+data = "smoke_tiny.txt"
+data_format = "text"
+
+[evaluation]
+data = "smoke_tiny.txt"
+every_iterations = 1 # SFT: evaluate every epoch
+patience = 3
+min_delta = 0.0
+
+[checkpoint]
+directory = "/tmp/retrograd-smoke-sft-checkpoints"
+mode = "steps_and_best_eval"
+every_steps = 2

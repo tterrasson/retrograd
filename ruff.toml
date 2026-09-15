@@ -1,0 +1,8 @@
+line-length = 100
+target-version = "py311"
+# `retrograd` is first-party for isort wherever it is imported from.
+src = ["python/src"]
+extend-exclude = ["crates/retrograd-ffi/runtime/vendor", "generated", "target"]
+
+[lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]

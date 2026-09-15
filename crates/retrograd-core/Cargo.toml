@@ -1,0 +1,20 @@
+[package]
+name = "retrograd-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - shared types and the applicative error facade"
+publish = false
+
+[dependencies]
+# The kernel catalog schema lives in the leaf crate shared by its RIR producer
+# and the planner that consumes it. This crate must not reverse that dependency.
+rir-core.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

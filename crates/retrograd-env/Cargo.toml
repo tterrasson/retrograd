@@ -1,0 +1,49 @@
+[package]
+name = "retrograd-env"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - environment implementations for agentic rollouts"
+publish = false
+
+# Environment implementations: what a trajectory acts on, and where.
+#
+# The container backend is a separate crate behind a feature, so a run whose
+# tools are all read-only never compiles bollard.
+[dependencies]
+async-trait.workspace = true
+futures.workspace = true
+http = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
+retrograd-agent-core.workspace = true
+retrograd-spec.workspace = true
+retrograd-container = { workspace = true, optional = true }
+retrograd-metrics.workspace = true
+retrograd-tools.workspace = true
+reqwest = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+tempfile = { version = "3", optional = true }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
+tracing.workspace = true
+
+[features]
+default = ["http-env", "local-sandbox"]
+# The OpenEnv-shaped HTTP client: reset/step/state/close over the wire.
+http-env = ["dep:reqwest", "dep:http"]
+# Executes on the host with no isolation. Compiled in by default because it is
+# what makes session tools testable without a daemon, but refused at runtime
+# unless the caller says so explicitly.
+local-sandbox = ["dep:tempfile", "dep:libc"]
+# The Docker-backed pool. Off by default: this is the single switch that keeps
+# bollard out of a run whose tools are all read-only.
+container = ["dep:retrograd-container", "retrograd-spec/container"]
+
+[dev-dependencies]
+axum.workspace = true
+toml.workspace = true
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "test-util"] }
+
+[lints]
+workspace = true

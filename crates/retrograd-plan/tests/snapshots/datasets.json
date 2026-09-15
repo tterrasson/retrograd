@@ -1,0 +1,50 @@
+{
+  "1_tiny": {
+    "examples": 300,
+    "rank": 8,
+    "alpha": 16.0,
+    "targets": "Patterns([\"blk.*.attn_q.weight\", \"blk.*.attn_v.weight\"])",
+    "epochs": 8,
+    "learning_rate": 0.00014142135,
+    "weight_decay": 0.0,
+    "scheduler": "cosine",
+    "warmup_steps": 72,
+    "total_steps": 2400
+  },
+  "2_small": {
+    "examples": 1500,
+    "rank": 8,
+    "alpha": 16.0,
+    "targets": "Patterns([\"blk.*.attn_q.weight\", \"blk.*.attn_v.weight\"])",
+    "epochs": 2,
+    "learning_rate": 0.00014142135,
+    "weight_decay": 0.01,
+    "scheduler": "cosine",
+    "warmup_steps": 90,
+    "total_steps": 3000
+  },
+  "3_medium": {
+    "examples": 12000,
+    "rank": 16,
+    "alpha": 32.0,
+    "targets": "Auto",
+    "epochs": 1,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.01,
+    "scheduler": "cosine",
+    "warmup_steps": 360,
+    "total_steps": 12000
+  },
+  "4_large": {
+    "examples": 250000,
+    "rank": 64,
+    "alpha": 128.0,
+    "targets": "Auto",
+    "epochs": 1,
+    "learning_rate": 0.00005,
+    "weight_decay": 0.01,
+    "scheduler": "cosine",
+    "warmup_steps": 7500,
+    "total_steps": 250000
+  }
+}

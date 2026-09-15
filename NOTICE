@@ -1,0 +1,50 @@
+Retrograd
+Copyright (c) 2026 Thibault Terrasson
+
+This product is licensed under the MIT License (see LICENSE).
+
+--------------------------------------------------------------------------
+
+Third-party notices
+====================
+
+llama.cpp / ggml
+-----------------
+Retrograd vendors, as a git submodule, a dedicated fork of llama.cpp
+(https://github.com/tterrasson/llama.cpp-retrograd), itself forked from
+upstream llama.cpp (https://github.com/ggml-org/llama.cpp), which bundles
+ggml (https://github.com/ggml-org/ggml). Both llama.cpp and ggml are
+distributed under the MIT License:
+
+  Copyright (c) 2023-2026 The ggml authors
+  Copyright (c) 2023-2026 The llama.cpp authors
+
+Provenance, the pinned commit, and the fork's own delta list are documented in
+crates/retrograd-ffi/runtime/third_party_notes/LLAMA_CPP_SOURCE.md. The full
+upstream license text ships with the submodule at
+crates/retrograd-ffi/runtime/vendor/llama.cpp/LICENSE once it is checked out
+(`scripts/setup-llama-cpp.sh`), and is not duplicated here because the
+submodule is not part of this repository's own tracked history.
+
+Model chat templates (test fixtures)
+------------------------------------
+crates/retrograd-engine/tests/fixtures/chat-templates/ holds chat templates
+copied verbatim from the Hugging Face repositories of the models below. They
+are only read by the chat-template tests and are not part of the built
+software. Each stays under the terms of its model:
+
+  gemma-3-270m.jinja   Gemma 3 270M (Unsloth revision)  Gemma Terms of Use
+  lfm2.5-230m.jinja    Liquid AI LFM2.5-230M            LFM Open License v1.0
+  qwen3-0.6b.jinja     Qwen3-0.6B                       Apache License 2.0
+  qwen3.5-0.8b.jinja   Qwen3.5-0.8B                     Apache License 2.0
+
+Gemma is provided under and subject to the Gemma Terms of Use found at
+https://ai.google.dev/gemma/terms. The LFM Open License v1.0 is at
+https://huggingface.co/LiquidAI/LFM2.5-230M/blob/main/LICENSE.
+
+Model weights
+-------------
+No model weights are distributed with Retrograd. scripts/fetch-cpu-fixture.sh
+downloads the LFM2.5-230M GGUF (https://huggingface.co/unsloth/LFM2.5-230M-GGUF)
+on demand for the CPU test lanes; that file is subject to the LFM Open License
+v1.0.

@@ -1,0 +1,354 @@
+{
+  "config": {
+    "run": {
+      "algorithm": "grpo",
+      "verbose": false
+    },
+    "model": {
+      "path": "model.gguf"
+    },
+    "lora": {
+      "output": "adapter.gguf",
+      "rank": 8,
+      "alpha": 16.0,
+      "seed": 7,
+      "targets": [
+        "q",
+        "v"
+      ]
+    },
+    "training": {
+      "ctx": 1024,
+      "micro_batch": 1024,
+      "shared_prefix_fanout": "auto",
+      "gradient_accumulation": 1,
+      "epochs": 5,
+      "lr": 0.00014142135,
+      "weight_decay": 0.01,
+      "max_grad_norm": 1.0,
+      "lr_scheduler": "cosine",
+      "warmup_steps": 154,
+      "fast_sampling_context": true,
+      "kv_dtype": "f16",
+      "generation_concurrency": 8,
+      "chunked_cross_entropy": true,
+      "chunked_ce_tiles": 3,
+      "chunked_ce_seq_chunk": 512,
+      "gradient_checkpointing": false,
+      "checkpoint_every_n_layers": 4,
+      "checkpoint_dtype": "f32"
+    },
+    "grpo": {
+      "prompts": "data.jsonl",
+      "reward_command": [
+        "python",
+        "reward.py"
+      ],
+      "updates": 40,
+      "prompts_per_update": 8,
+      "group_size": 8,
+      "grpo_epochs": 2,
+      "clip_range_low": 0.2,
+      "clip_range_high": 0.28,
+      "kl_coefficient": 0.0,
+      "mask_truncated": true,
+      "prompt_order": "shuffled",
+      "sampling": {
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "max_new_tokens": 512,
+        "seed": 7
+      }
+    }
+  },
+  "plan": {
+    "schema_version": 2,
+    "total_steps": 5120,
+    "iterations": 40,
+    "memory": {
+      "resources": {
+        "cost_model_version": 2,
+        "persistent_device": {
+          "bytes": 882049024,
+          "posts": [
+            {
+              "name": "model_weight_bytes",
+              "bytes": 419430400,
+              "origin": "exact",
+              "bound": "exact"
+            },
+            {
+              "name": "optimizer_kv_bytes",
+              "bytes": 50331648,
+              "origin": "analytical",
+              "bound": "upper"
+            },
+            {
+              "name": "generation_kv_bytes",
+              "bytes": 402653184,
+              "origin": "analytical",
+              "bound": "upper"
+            },
+            {
+              "name": "lora_parameter_bytes",
+              "bytes": 1376256,
+              "origin": "analytical",
+              "bound": "upper"
+            },
+            {
+              "name": "lora_gradient_bytes",
+              "bytes": 2752512,
+              "origin": "analytical",
+              "bound": "upper"
+            },
+            {
+              "name": "adamw_momenta_bytes",
+              "bytes": 5505024,
+              "origin": "analytical",
+              "bound": "upper"
+            }
+          ]
+        },
+        "persistent_host": {
+          "bytes": 5144576,
+          "posts": [
+            {
+              "name": "host_dataset_bytes",
+              "bytes": 4096000,
+              "origin": "analytical",
+              "bound": "upper"
+            },
+            {
+              "name": "host_rollout_bytes",
+              "bytes": 1048576,
+              "origin": "analytical",
+              "bound": "upper"
+            }
+          ]
+        },
+        "optimizer_transient": {
+          "bytes": 2591383552,
+          "posts": [
+            {
+              "name": "dequant_scratch_bytes",
+              "bytes": 419430400,
+              "origin": "calibrated",
+              "bound": "upper"
+            },
+            {
+              "name": "optimizer_compute_bytes",
+              "bytes": 2171953152,
+              "origin": "calibrated",
+              "bound": "upper"
+            }
+          ]
+        },
+        "generation_transient": {
+          "bytes": 491688960,
+          "posts": [
+            {
+              "name": "dequant_scratch_bytes",
+              "bytes": 419430400,
+              "origin": "calibrated",
+              "bound": "upper"
+            },
+            {
+              "name": "generation_compute_bytes",
+              "bytes": 72258560,
+              "origin": "calibrated",
+              "bound": "upper"
+            }
+          ]
+        },
+        "kernel": {
+          "bytes": 0,
+          "posts": []
+        },
+        "device_peak_bytes": 3545691136,
+        "host_peak_bytes": 5144576,
+        "lower_bound_device_bytes": 429064192,
+        "upper_bound_device_bytes": 3545691136
+      },
+      "budgets": {
+        "vram": {
+          "requested": "all",
+          "total_bytes": 25769803776,
+          "baseline_bytes": 0,
+          "margin_bytes": 1288490188,
+          "effective_bytes": 24481313588,
+          "capped": false
+        },
+        "ram": {
+          "requested": "all",
+          "total_bytes": 68719476736,
+          "baseline_bytes": 0,
+          "margin_bytes": 3435973836,
+          "effective_bytes": 65283502900,
+          "capped": false
+        },
+        "unified": false
+      }
+    },
+    "execution": {
+      "schema_version": 2,
+      "confidence": "analytical",
+      "profile_fingerprint": "unavailable",
+      "expected_backend": "cuda",
+      "rir_mode": "unknown",
+      "kernel_coverage": [],
+      "cpu_fallbacks": [],
+      "assumptions": [
+        {
+          "code": "execution_profile_unavailable",
+          "message": "kernel and device capabilities were not supplied; execution claims are analytical only"
+        }
+      ],
+      "alternatives": [
+        {
+          "code": "cost_superior",
+          "candidate": "ctx=1024/batch=1024/ubatch=1/fanout=auto/checkpoint=false:4:f32",
+          "reason": "predicted relative cost 1058304"
+        },
+        {
+          "code": "cost_superior",
+          "candidate": "ctx=1024/batch=1024/ubatch=1/fanout=auto/checkpoint=true:5:f16",
+          "reason": "predicted relative cost 1058305"
+        },
+        {
+          "code": "cost_superior",
+          "candidate": "ctx=1024/batch=1024/ubatch=1/fanout=auto/checkpoint=true:5:f32",
+          "reason": "predicted relative cost 1058305"
+        },
+        {
+          "code": "cost_superior",
+          "candidate": "ctx=1024/batch=1024/ubatch=128/fanout=auto/checkpoint=false:4:f32",
+          "reason": "predicted relative cost 17920"
+        },
+        {
+          "code": "cost_superior",
+          "candidate": "ctx=1024/batch=1024/ubatch=128/fanout=auto/checkpoint=true:5:f16",
+          "reason": "predicted relative cost 18048"
+        }
+      ]
+    },
+    "defaults_applied": [
+      {
+        "id": "chunked_cross_entropy",
+        "from": "8 tiles, 512-token chunks",
+        "to": "3 tiles, 512-token chunks",
+        "note": "the vocabulary logits are streamed tile by tile, over a bounded token chunk",
+        "cost": "none - the tile recompute costs less bandwidth than the tensor it avoids building"
+      },
+      {
+        "id": "generation_concurrency",
+        "from": "64",
+        "to": "8",
+        "note": "as many sequences decode at once as the generation cache holds",
+        "cost": "none - it only sets how many completions share one decode wave"
+      }
+    ],
+    "levers": [],
+    "truncation_fraction": 0.0,
+    "judge_calls_expected": 0,
+    "warnings": [
+      {
+        "code": "kv_f16_may_fall_back",
+        "field": "training.kv_dtype",
+        "message": "kv_dtype = f16 is the default and falls back to F32 on a device without differentiable flash attention for this head geometry; the estimate then understates the KV cache"
+      },
+      {
+        "code": "sampling_distribution_approximated",
+        "field": "training.fast_sampling_context",
+        "message": "fast_sampling_context makes the sampling distribution differ from the trained policy by rounding; set training.fast_sampling_context = false for exact parity"
+      }
+    ]
+  },
+  "provenance": {
+    "grpo.group_size": {
+      "source": "derived",
+      "reason": "8: the smallest group where the Dr. GRPO baseline is stable"
+    },
+    "grpo.grpo_epochs": {
+      "source": "derived",
+      "reason": "40 updates: two inner passes per rollout"
+    },
+    "grpo.prompts_per_update": {
+      "source": "derived",
+      "reason": "8 prompts: beyond that the 8-wide groups overflow the generation cache"
+    },
+    "grpo.updates": {
+      "source": "derived",
+      "reason": "budget.updates = 40, as the recipe asked"
+    },
+    "lora.alpha": {
+      "source": "derived",
+      "reason": "twice the rank"
+    },
+    "lora.dtype": {
+      "source": "default"
+    },
+    "lora.rank": {
+      "source": "derived",
+      "reason": "500 examples: rank 8"
+    },
+    "lora.targets": {
+      "source": "derived",
+      "reason": "500 examples, below 2000: q and v only"
+    },
+    "sampling.max_new_tokens": {
+      "source": "derived",
+      "reason": "half the resolved context, so a prompt and its completion both fit"
+    },
+    "training.chunked_ce_seq_chunk": {
+      "source": "derived",
+      "reason": "active by default: always - every backend the project ships carries both fused nodes"
+    },
+    "training.chunked_ce_tiles": {
+      "source": "derived",
+      "reason": "active by default: always - every backend the project ships carries both fused nodes"
+    },
+    "training.chunked_cross_entropy": {
+      "source": "derived",
+      "reason": "active by default: always - every backend the project ships carries both fused nodes"
+    },
+    "training.ctx": {
+      "source": "derived",
+      "reason": "P99 of the example lengths, rounded up to a power of two"
+    },
+    "training.epochs": {
+      "source": "derived",
+      "reason": "350000 tokens: 5 pass(es) towards the 1500000-token exposure target"
+    },
+    "training.generation_concurrency": {
+      "source": "derived",
+      "reason": "active by default: any objective that samples rollouts: one whole group decodes at once when its KV cache fits"
+    },
+    "training.gradient_accumulation": {
+      "source": "derived",
+      "reason": "largest optimizer window whose estimate fits the budget and its safety margin"
+    },
+    "training.lr": {
+      "source": "derived",
+      "reason": "rank 8: the reference rate scaled by sqrt(16 / rank)"
+    },
+    "training.lr_scheduler": {
+      "source": "derived",
+      "reason": "5120 optimizer steps: a cosine has room to decay"
+    },
+    "training.max_grad_norm": {
+      "source": "default"
+    },
+    "training.micro_batch": {
+      "source": "derived",
+      "reason": "divides the resolved optimizer window"
+    },
+    "training.warmup_steps": {
+      "source": "derived",
+      "reason": "3% of the 5120 optimizer steps"
+    },
+    "training.weight_decay": {
+      "source": "derived",
+      "reason": "500 examples: the usual decay"
+    }
+  }
+}

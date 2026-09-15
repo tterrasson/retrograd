@@ -1,0 +1,22 @@
+[package]
+name = "retrograd-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - safe trainer API over the C++ runtime"
+publish = false
+
+[dependencies]
+retrograd-checkpoint.workspace = true
+retrograd-core.workspace = true
+retrograd-dataset.workspace = true
+retrograd-ffi.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# The round-trip test reads the JSON document the parser entry emits; the crate
+# itself hands that document out as a string and needs no JSON of its own.
+serde_json.workspace = true
+
+[lints]
+workspace = true

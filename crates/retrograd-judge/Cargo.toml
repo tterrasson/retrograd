@@ -1,0 +1,42 @@
+[package]
+name = "retrograd-judge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - reward commands and RULER judges for grouped completions"
+publish = false
+
+# Reward backends: given trajectory groups, produce scores. Nothing here
+# executes a rollout or loads a model, so the crate compiles without the FFI
+# bridge and its whole surface is testable against a fake HTTP endpoint.
+[dependencies]
+async-trait.workspace = true
+futures.workspace = true
+retrograd-agent-core.workspace = true
+# The reward protocol's vocabulary (`RewardMode`, `RewardProtocol`) and the
+# applicative error façade its `From` lands in.
+retrograd-core.workspace = true
+retrograd-spec.workspace = true
+retrograd-metrics.workspace = true
+retrograd-llm-client = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+thiserror.workspace = true
+tracing.workspace = true
+
+[features]
+# The RULER judge and its OpenAI-shaped client. On by default - it is the judge
+# most runs use - but optional, so a build whose rewards are all `command`
+# judges links neither `reqwest` nor `rustls`.
+default = ["http"]
+http = ["dep:retrograd-llm-client"]
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

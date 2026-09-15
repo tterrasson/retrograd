@@ -1,0 +1,27 @@
+[package]
+name = "rir-sweep"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "RIR - offline schedule search: candidates, measurement, and a table proposal"
+
+[dependencies]
+thiserror.workspace = true
+rir-core.workspace = true
+# The tool builds its candidates from the same constructors the production
+# table uses, emits them with the same emitters, and runs them on the same
+# device harness: a search that reproduced any of the three would be searching
+# a different compiler.
+rir-lower.workspace = true
+rir-emit.workspace = true
+rir-kernels.workspace = true
+rir-runtime.workspace = true
+
+[features]
+# Forwarded, not redefined: the tool drives whatever backends the runtime can
+# drive, and CUDA is behind a feature there.
+cuda = ["rir-runtime/cuda"]
+
+[lints]
+workspace = true

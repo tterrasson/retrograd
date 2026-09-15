@@ -1,0 +1,91 @@
+{
+  "schema_version": 9,
+  "name": "sum_rows_q4_1",
+  "entrypoint": "rir_launch_sum_rows_q4_1",
+  "ggml_op": null,
+  "variant_id": "sum_rows_q4_1_q4_1_2d_subgroup_tree",
+  "production": false,
+  "assumed_domain": [],
+  "backend": "cuda",
+  "bindings": [
+    {
+      "name": "x",
+      "binding": 0,
+      "source": "src[0]",
+      "dtype": "q4_1",
+      "access": "read",
+      "extents": [
+        "col",
+        "row"
+      ]
+    },
+    {
+      "name": "y",
+      "binding": 1,
+      "source": "dst",
+      "dtype": "f32",
+      "access": "write",
+      "extents": [
+        "row"
+      ]
+    }
+  ],
+  "params": [],
+  "push_constants": [
+    {
+      "name": "n_row",
+      "type": "u32",
+      "offset": 0
+    },
+    {
+      "name": "n_col",
+      "type": "u32",
+      "offset": 4
+    },
+    {
+      "name": "x_nb0",
+      "type": "u32",
+      "offset": 8
+    },
+    {
+      "name": "x_nb1",
+      "type": "u32",
+      "offset": 12
+    },
+    {
+      "name": "y_nb0",
+      "type": "u32",
+      "offset": 16
+    }
+  ],
+  "packed_output": null,
+  "constraints": [
+    "dtype(x)=q4_1",
+    "rank(x)<=2"
+  ],
+  "determinism": "deterministic",
+  "reduction": "subgroup_tree",
+  "scan": "serial",
+  "variant": null,
+  "priority": 80,
+  "vector_width": 1,
+  "linear_addr": false,
+  "eligible_when": [],
+  "features": [
+    "cuda>=5.3",
+    "block_threads>=32"
+  ],
+  "parallel_mapping": "workgroup",
+  "dispatch": [
+    {
+      "axis": "row",
+      "per_workgroup": 1
+    }
+  ],
+  "flat": [],
+  "workgroup": [
+    32,
+    1,
+    1
+  ]
+}

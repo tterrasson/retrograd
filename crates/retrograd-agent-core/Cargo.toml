@@ -1,0 +1,22 @@
+[package]
+name = "retrograd-agent-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - vocabulary and contracts of the agent stack, with no transport"
+publish = false
+
+# Vocabulary and contracts for the agent stack: no I/O, no transport, and above
+# all no dependency on the training engine. Everything above this crate
+# (environments, containers, tools, judges) is therefore compilable and testable
+# without the C++/FFI bridge; `retrograd-agent` is the only crate that links it.
+[dependencies]
+async-trait.workspace = true
+retrograd-core.workspace = true
+retrograd-metrics.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

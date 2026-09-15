@@ -1,0 +1,2 @@
+CompileFlags:
+  CompilationDatabase: crates/retrograd-ffi/runtime/build

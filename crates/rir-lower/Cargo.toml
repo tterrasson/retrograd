@@ -1,0 +1,14 @@
+[package]
+name = "rir-lower"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "RIR - declarative schedules and lowering, semantic IR to Loop IR"
+
+[dependencies]
+thiserror.workspace = true
+rir-core.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,44 @@
+[package]
+name = "retrograd-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - agentic GRPO: policy actor, lockstep rollouts and judge wiring"
+publish = false
+
+[dependencies]
+async-trait.workspace = true
+futures.workspace = true
+retrograd-agent-core.workspace = true
+retrograd-core.workspace = true
+retrograd-engine.workspace = true
+retrograd-env = { workspace = true, features = ["local-sandbox"] }
+retrograd-judge.workspace = true
+retrograd-metrics.workspace = true
+retrograd-tools.workspace = true
+retrograd-training.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "process", "rt", "rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
+toml.workspace = true
+
+[features]
+default = ["mcp", "http-env"]
+# MCP tools. Off, a run whose tools all live in its own sandbox compiles neither
+# rmcp nor hyper.
+mcp = ["retrograd-tools/mcp"]
+# The OpenEnv-shaped HTTP environment client.
+http-env = ["retrograd-env/http-env"]
+# The Docker-backed environment. Off by default: this is the switch that keeps
+# bollard out of the graph.
+container = ["retrograd-env/container"]
+
+[dev-dependencies]
+# `test-util` pauses the clock so the rollout deadline is exercised in virtual
+# time instead of making the fast lane sleep for it.
+tokio = { workspace = true, features = ["net", "test-util"] }
+
+[lints]
+workspace = true

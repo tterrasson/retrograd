@@ -1,0 +1,12 @@
+[build]
+# Keep artifacts from the nested binding crate in one predictable, ignored
+# directory when Cargo is launched from python/ (as uv/maturin does).
+target-dir = "target"
+
+# The wheel is the one consumer that leaves the build tree, so it links the
+# native side statically whatever the profile - `maturin develop` builds debug,
+# where `retrograd-ffi` would otherwise default to shared and produce a
+# `_native.so` pointing at absolute paths under `python/target`. See
+# `GgmlLink::detect` in crates/retrograd-ffi/build.rs.
+[env]
+RETRO_GGML_LINK = "static"

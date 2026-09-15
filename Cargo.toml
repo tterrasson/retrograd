@@ -1,0 +1,207 @@
+[package]
+name = "retrograd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+default-run = "retrograd"
+# What `cargo package --list` reports, and so what the Python sdist copies from
+# this directory: the sources that build the library, nothing else. Without it
+# the listing takes the whole repository root - the documentation site and its
+# `node_modules`, the test fixtures, and the model weights they download, which
+# NOTICE says are not distributed. A whitelist rather than an `exclude`, because
+# `.gitignore` only applies once this manifest is in the git index. The member
+# crates below are packages of their own and list their own files.
+include = ["/build.rs", "/src/**", "/LICENSE", "/NOTICE", "/README.md"]
+
+[workspace]
+members = [
+    ".",
+    "crates/retrograd-core",
+    "crates/retrograd-ffi",
+    "crates/retrograd-checkpoint",
+    "crates/retrograd-cli-ui",
+    "crates/retrograd-metrics",
+    "crates/retrograd-memory",
+    "crates/retrograd-dataset",
+    "crates/retrograd-engine",
+    "crates/retrograd-config",
+    "crates/retrograd-training",
+    "crates/retrograd-plan",
+    "crates/retrograd-run",
+    "crates/retrograd-server",
+    "crates/retrograd-agent-core",
+    "crates/retrograd-agent",
+    "crates/retrograd-judge",
+    "crates/retrograd-llm-client",
+    "crates/retrograd-tools",
+    "crates/retrograd-scenario-gen",
+    "crates/retrograd-spec",
+    "crates/retrograd-env",
+    "crates/retrograd-container",
+    "crates/rir-core",
+    "crates/rir-lower",
+    "crates/rir-emit",
+    "crates/rir-kernels",
+    "crates/rir-gen",
+    "crates/rir-runtime",
+    "crates/rir-sweep",
+    "python/native",
+]
+resolver = "3"
+
+# Version, edition, licence and repository, written once for every manifest.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/tterrasson/retrograd"
+
+# Where a dependency's *version* is decided.
+#
+# The rule: every crate of this workspace is listed here, and an external crate
+# is listed as soon as a second manifest asks for it. A dependency with a single consumer stays in that
+# consumer's manifest, next to the comment that says why it is there.
+#
+# Features are deliberately *not* unified here. `tokio` is used with six different
+# feature sets, and folding them into one union would compile the signal handler
+# into a crate that only wants a timer. The version is what has to agree; the
+# feature set is a statement about one crate and stays with it, added on top of
+# the entry below.
+[workspace.dependencies]
+# The three crates whose consumers disagree about default features are declared
+# without them, so each consumer states the algorithms and transports it wants.
+# Cargo refuses a member `default-features = false` over a workspace entry that
+# does not say it, and stating it here is the honest direction anyway: nothing
+# above these three should get a transport by forgetting to ask.
+retrograd-agent = { path = "crates/retrograd-agent", default-features = false }
+retrograd-agent-core = { path = "crates/retrograd-agent-core" }
+retrograd-checkpoint = { path = "crates/retrograd-checkpoint" }
+retrograd-cli-ui = { path = "crates/retrograd-cli-ui" }
+retrograd-config = { path = "crates/retrograd-config" }
+retrograd-container = { path = "crates/retrograd-container" }
+retrograd-core = { path = "crates/retrograd-core" }
+retrograd-dataset = { path = "crates/retrograd-dataset" }
+retrograd-engine = { path = "crates/retrograd-engine" }
+retrograd-env = { path = "crates/retrograd-env", default-features = false }
+retrograd-ffi = { path = "crates/retrograd-ffi" }
+retrograd-judge = { path = "crates/retrograd-judge" }
+retrograd-llm-client = { path = "crates/retrograd-llm-client" }
+retrograd-memory = { path = "crates/retrograd-memory" }
+retrograd-metrics = { path = "crates/retrograd-metrics" }
+retrograd-plan = { path = "crates/retrograd-plan" }
+retrograd-run = { path = "crates/retrograd-run", default-features = false }
+retrograd-scenario-gen = { path = "crates/retrograd-scenario-gen" }
+retrograd-server = { path = "crates/retrograd-server" }
+retrograd-training = { path = "crates/retrograd-training" }
+# Two crates every consumer takes without its default features: the declarations
+# without the container type (`retrograd-spec`), and the tool registry without
+# the MCP transport (`retrograd-tools`). Written here rather than repeated at
+# each of the four call sites, because a manifest that forgets it silently pulls
+# bollard or rmcp back into a build that had excluded them.
+retrograd-spec = { path = "crates/retrograd-spec", default-features = false }
+retrograd-tools = { path = "crates/retrograd-tools", default-features = false }
+rir-core = { path = "crates/rir-core" }
+rir-emit = { path = "crates/rir-emit" }
+rir-kernels = { path = "crates/rir-kernels" }
+rir-lower = { path = "crates/rir-lower" }
+rir-runtime = { path = "crates/rir-runtime" }
+rir-sweep = { path = "crates/rir-sweep" }
+
+async-trait = "0.1"
+axum = "0.8"
+futures = "0.3"
+http = "1"
+http-body-util = "0.1"
+libc = "0.2"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+rmcp = "2.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# One version: two would put two copies of `sha2`, `digest`, `block-buffer` and
+# `crypto-common` in the tree.
+sha2 = "0.11"
+thiserror = "2"
+toml = "0.8"
+tokio = "1"
+tower = "0.5"
+tracing = "0.1"
+utoipa = "5"
+
+[lib]
+name = "retrograd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "retrograd"
+path = "src/main.rs"
+
+[[bin]]
+name = "profile"
+path = "src/bin/profile/main.rs"
+
+
+[workspace.lints.clippy]
+# Every production `unwrap` in this repo is an `expect` that says why the call
+# cannot fail. The lint is what keeps that true: `clippy.toml` exempts tests, where the panic is the assertion.
+unwrap_used = "deny"
+
+[dependencies]
+comfy-table = "7"
+indicatif = "0.18"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+retrograd-checkpoint.workspace = true
+retrograd-cli-ui.workspace = true
+retrograd-config.workspace = true
+retrograd-core.workspace = true
+retrograd-dataset.workspace = true
+retrograd-engine.workspace = true
+retrograd-ffi.workspace = true
+retrograd-memory.workspace = true
+retrograd-metrics.workspace = true
+# The CLI selects the algorithms it runs through its own `agent` feature, so it
+# takes none of the run crate's defaults.
+retrograd-run.workspace = true
+retrograd-training.workspace = true
+retrograd-tools.workspace = true
+retrograd-scenario-gen.workspace = true
+serde_json.workspace = true
+# Only `profile` needs this directly: driving an `agent_grpo` run at the
+# `AgenticRun` level, to keep the same `timing/*` breakdown a synchronous GRPO
+# profile gets, rather than the condensed `RolloutEpoch` a `RunObserver` sees.
+retrograd-agent = { workspace = true, optional = true, features = ["http-env"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"], optional = true }
+
+[dev-dependencies]
+# tests/rir_quant_oracle.rs holds ggml `to_float` → the RIR dequantization
+# oracle → its Loop IR expansion end to end, on the same bytes, with no device
+# and no schedule beyond the CPU serial one. Only the tests link RIR: neither
+# crate is part of the runtime binary.
+rir-core.workspace = true
+rir-lower.workspace = true
+
+[features]
+# `train` runs every algorithm the one schema describes, including
+# `agent_grpo`. The two costly transports stay opt-in: rmcp for MCP tools,
+# bollard for the container pool.
+default = ["agent"]
+agent = ["retrograd-run/agent", "dep:retrograd-agent", "dep:tokio"]
+mcp = ["agent", "retrograd-run/mcp", "retrograd-tools/mcp", "retrograd-agent/mcp"]
+container = ["agent", "retrograd-run/container", "retrograd-agent/container"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# Line tables only for our crates, no debug info at all for the dependency
+# tree: keeps backtraces readable while cutting the size of `target/debug`
+# and the link time (dsymutil on macOS).
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = false
+
+[lints]
+workspace = true

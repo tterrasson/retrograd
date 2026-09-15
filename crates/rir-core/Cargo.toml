@@ -1,0 +1,19 @@
+[package]
+name = "rir-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "RIR - semantic IR: types, layouts, SSA, builder DSL, validation"
+
+[dependencies]
+# The producer and consumer share the manifest schema through this crate. The
+# manifest is serialized as structured data rather than assembled as strings.
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

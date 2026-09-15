@@ -1,0 +1,35 @@
+[package]
+name = "retrograd-spec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - agentic declarations (environment, judge, tools) without execution"
+publish = false
+
+# The *declarations* of the agentic stack, and nothing that executes one.
+#
+# `retrograd-config` reads this crate, and each executant - `retrograd-env`,
+# `retrograd-judge`, `retrograd-tools` - depends on it to learn what it was
+# asked for, so a parser links no HTTP client, container daemon client or MCP
+# transport.
+#
+# What belongs here is what a *file* can say. A method that needs a registry, a
+# socket or a device belongs to the executant, which adds it through an
+# extension trait.
+[dependencies]
+retrograd-agent-core.workspace = true
+retrograd-core.workspace = true
+sha2.workspace = true
+retrograd-container = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+
+[features]
+default = []
+# Type the container environment table instead of accepting it as an opaque map.
+# The switch is `retrograd-env`'s, forwarded: the declaration of a container is
+# the container crate's own `SpecLimits`, so typing it costs bollard.
+container = ["dep:retrograd-container"]
+
+[lints]
+workspace = true

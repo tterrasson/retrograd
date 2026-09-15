@@ -1,0 +1,27 @@
+# Licence policy for the Rust dependency tree, checked in CI by
+# `cargo deny check licenses`. Every licence below is permissive: a new crate
+# that brings anything else fails the check until it is reviewed and added here.
+#
+# The llama.cpp fork is a git submodule, not a Cargo dependency, so this check
+# does not see it; NOTICE covers it.
+
+[graph]
+# Optional transports (rmcp, bollard) and the Python extension included, so a
+# licence cannot enter the tree through a feature the default build leaves off.
+all-features = true
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Unlicense",
+]
+confidence-threshold = 0.8

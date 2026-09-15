@@ -1,0 +1,778 @@
+//! Exhaustive coverage of the TOML surface, and of the defaults behind it.
+//!
+//! The 38 tests next door check what a config *rejects*. What none of them
+//! checks is that a field written in a document actually reaches [`RunConfig`]:
+//! `build` copies the two shapes field by field, by hand, and a line missing
+//! there is silent - the run trains with the default and the file that asked
+//! for something else is never contradicted. That is the failure this file is
+//! here to make loud, because it is the one that makes the `*Toml` doubling
+//! dangerous to touch.
+//!
+//! Two properties, and one construction that carries both:
+//!
+//! - **Coverage is a compile error, not a claim.** [`exhaustive_document`]
+//!   builds every `*Toml` value as a struct literal with no
+//!   `..Default::default()` tail. A field added to any of the fifteen types
+//!   stops this file compiling, which is what keeps the word "exhaustive"
+//!   true after the fact.
+//! - **Every key survives the trip.** [`KEYS`] freezes the flattened key set a
+//!   full document serializes to. A field that fails to serialize disappears
+//!   from it; a field that fails to deserialize disappears from the second
+//!   pass. Both are diffed against the frozen list rather than against each
+//!   other, so a symmetric loss cannot cancel out.
+//!
+//! `[agent]` is deliberately absent: `AgentToml` is `#[serde(default)]` and
+//! carries the whole agentic stack's declarations, which are typed and tested
+//! in their own crates. The fifteen types here are the ones `build` and its six
+//! `build_*` helpers copy by hand.
+
+use super::*;
+
+/// Every key a fully-populated document serializes to, in dotted form and
+/// sorted. Frozen: adding a field to a `*Toml` type breaks
+/// [`exhaustive_document`] at compile time, and updating this list is how the
+/// author says the new field really does make the round trip.
+const KEYS: &[&str] = &[
+    "checkpoint.directory",
+    "checkpoint.every_steps",
+    "checkpoint.mode",
+    "checkpoint.resume_from",
+    "evaluation.data",
+    "evaluation.every_iterations",
+    "evaluation.max_examples",
+    "evaluation.min_delta",
+    "evaluation.patience",
+    "grpo.baseline",
+    "grpo.clip_range_high",
+    "grpo.clip_range_low",
+    "grpo.dynamic_sampling.max_resample_factor",
+    "grpo.group_size",
+    "grpo.grpo_epochs",
+    "grpo.judge.command",
+    "grpo.judge.timeout_secs",
+    "grpo.judge.type",
+    "grpo.judge_failure",
+    "grpo.judge_weight",
+    "grpo.kl_coefficient",
+    "grpo.kl_schedule.target",
+    "grpo.kl_schedule.warmup_updates",
+    "grpo.log_completions.every",
+    "grpo.log_completions.path",
+    "grpo.mask_truncated",
+    "grpo.max_judge_dropped_fraction",
+    "grpo.max_stalled_updates",
+    "grpo.overlong_penalty.buffer_tokens",
+    "grpo.overlong_penalty.max_penalty",
+    "grpo.prompt_order",
+    "grpo.prompts",
+    "grpo.prompts_per_update",
+    "grpo.reward_command",
+    "grpo.reward_mode",
+    "grpo.reward_timeout_seconds",
+    "grpo.sampling.max_new_tokens",
+    "grpo.sampling.seed",
+    "grpo.sampling.temperature",
+    "grpo.sampling.top_p",
+    "grpo.updates",
+    "lora.alpha",
+    "lora.dtype",
+    "lora.output",
+    "lora.rank",
+    "lora.seed",
+    "lora.targets",
+    "metrics.tensorboard_dir",
+    "metrics.wandb_export_dir",
+    "model.device",
+    "model.path",
+    "run.algorithm",
+    "run.verbose",
+    "training.checkpoint_dtype",
+    "training.checkpoint_every_n_layers",
+    "training.chunked_ce_seq_chunk",
+    "training.chunked_ce_tiles",
+    "training.chunked_cross_entropy",
+    "training.ctx",
+    "training.epochs",
+    "training.fast_sampling_context",
+    "training.generation_batch",
+    "training.generation_concurrency",
+    "training.gradient_accumulation",
+    "training.gradient_checkpointing",
+    "training.kv_dtype",
+    "training.lr",
+    "training.lr_scheduler",
+    "training.max_gpu_duty_cycle",
+    "training.max_grad_norm",
+    "training.micro_batch",
+    "training.require_gpu_resident",
+    "training.shared_prefix_fanout",
+    "training.threads",
+    "training.warmup_steps",
+    "training.weight_decay",
+];
+
+/// The three `*Toml` types the GRPO document cannot reach, because only one
+/// algorithm section may be present at a time. Same construction rule: no
+/// `..Default::default()` tail.
+fn exhaustive_sft() -> SftToml {
+    SftToml {
+        data: PathBuf::from("data/sft.jsonl"),
+        data_format: Some("jsonl".to_string()),
+        shuffle: Some(false),
+    }
+}
+
+fn exhaustive_ppo() -> PpoToml {
+    PpoToml {
+        prompts: PathBuf::from("data/prompts.txt"),
+        reward_command: vec!["score".to_string(), "--ppo".to_string()],
+        reward_mode: Some(RewardMode::OneShot),
+        reward_timeout_seconds: Some(45),
+        updates: 7,
+        rollout_batch_size: 4,
+        ppo_epochs: 2,
+        clip_range: 0.25,
+        kl_coefficient: 0.05,
+        critic: CriticToml {
+            enabled: Some(true),
+            gamma: Some(0.97),
+            gae_lambda: Some(0.9),
+            value_lr: Some(3.0e-4),
+            value_epochs: Some(3),
+            feature_dtype: Some(FeatureDtype::Bf16),
+        },
+        sampling: ppo_sampling(),
+    }
+}
+
+/// Distillation is on-policy for the same reason GRPO is - the behaviour
+/// log-probabilities the sampler records are what the advantage is a difference
+/// against - so it reuses the GRPO sampling literal.
+fn exhaustive_distill() -> DistillToml {
+    DistillToml {
+        // The on-policy document. `mode` is written explicitly rather than
+        // defaulted: this literal exists to name every key the schema has, and
+        // the offline three are covered by `exhaustive_distill_offline`.
+        mode: Some("on_policy".to_string()),
+        data: None,
+        sidecar: None,
+        offline_epochs: None,
+        teacher_path: PathBuf::from("models/teacher.gguf"),
+        prompts: Some(PathBuf::from("data/prompts.txt")),
+        updates: Some(11),
+        prompts_per_update: Some(2),
+        samples_per_prompt: Some(3),
+        distill_epochs: Some(2),
+        clip_range_low: Some(0.15),
+        clip_range_high: Some(0.3),
+        weight_clip: Some(4.5),
+        kl_coefficient: Some(0.03),
+        mask_truncated: true,
+        prompt_order: Some("shuffled".to_string()),
+        sampling: Some(exhaustive_sampling()),
+    }
+}
+
+/// The offline top-k document: a teacher, a corpus, a
+/// sidecar, and none of the keys a sampler would read.
+fn exhaustive_distill_offline() -> DistillToml {
+    DistillToml {
+        mode: Some("topk_offline".to_string()),
+        data: Some(PathBuf::from("data/corpus.jsonl")),
+        sidecar: Some(PathBuf::from("data/corpus.topk")),
+        offline_epochs: Some(4),
+        teacher_path: PathBuf::from("models/teacher.gguf"),
+        prompts: None,
+        updates: None,
+        prompts_per_update: None,
+        samples_per_prompt: None,
+        distill_epochs: None,
+        clip_range_low: None,
+        clip_range_high: None,
+        weight_clip: Some(4.5),
+        kl_coefficient: None,
+        mask_truncated: false,
+        prompt_order: None,
+        sampling: None,
+    }
+}
+
+/// Dr. GRPO refuses anything but strictly on-policy sampling, so the two
+/// fields that could vary are covered by the PPO document instead.
+fn exhaustive_sampling() -> SamplingToml {
+    SamplingToml {
+        temperature: 1.0,
+        top_p: 1.0,
+        max_new_tokens: 48,
+        seed: 1234,
+    }
+}
+
+fn ppo_sampling() -> SamplingToml {
+    SamplingToml {
+        temperature: 0.8,
+        top_p: 0.95,
+        max_new_tokens: 48,
+        seed: 1234,
+    }
+}
+
+/// A document with **every** field of every `*Toml` type set, each to a value
+/// distinguishable from its default, so a `build_*` line that drops one is
+/// visible as a wrong value rather than as an absent one.
+///
+/// The literals carry no `..Default::default()`: that is the compile-time half
+/// of the coverage claim.
+fn exhaustive_document() -> ConfigDocument {
+    ConfigDocument {
+        run: RunToml {
+            algorithm: "grpo".to_string(),
+            verbose: true,
+        },
+        model: ModelToml {
+            path: Some(PathBuf::from("model.gguf")),
+            device: Some("cpu".to_string()),
+        },
+        lora: LoraToml {
+            output: PathBuf::from("out/adapter.gguf"),
+            rank: Some(16),
+            alpha: Some(32.0),
+            seed: Some(7),
+            targets: vec!["q".to_string(), "v".to_string()],
+            // Mutually exclusive with every field above it, so it is covered by
+            // its own test rather than by this document.
+            init_adapter: None,
+            dtype: Some(LoraDtype::F16),
+        },
+        training: TrainingToml {
+            ctx: Some(256),
+            micro_batch: Some(64),
+            shared_prefix_fanout: Some(SharedPrefixFanoutToml::Exact(2)),
+            gradient_accumulation: Some(4),
+            threads: Some(3),
+            epochs: Some(2),
+            lr: Some(5.0e-5),
+            weight_decay: Some(0.02),
+            max_grad_norm: Some(0.5),
+            lr_scheduler: Some("cosine".to_string()),
+            warmup_steps: Some(11),
+            fast_sampling_context: Some(false),
+            kv_dtype: Some(KvDtype::F32),
+            generation_concurrency: Some(6),
+            generation_batch: Some(128),
+            chunked_cross_entropy: Some(true),
+            chunked_ce_tiles: Some(5),
+            chunked_ce_seq_chunk: Some(17),
+            gradient_checkpointing: Some(true),
+            checkpoint_every_n_layers: Some(3),
+            checkpoint_dtype: Some(CheckpointDtype::F16),
+            require_gpu_resident: Some(true),
+            max_gpu_duty_cycle: Some(0.5),
+        },
+        metrics: MetricsToml {
+            tensorboard_dir: Some(PathBuf::from("runs/tb")),
+            wandb_export_dir: Some(PathBuf::from("runs/wandb")),
+        },
+        evaluation: Some(EvaluationToml {
+            data: PathBuf::from("data/eval.jsonl"),
+            every_iterations: Some(2),
+            patience: Some(4),
+            min_delta: Some(0.125),
+            max_examples: Some(9),
+        }),
+        checkpoint: Some(CheckpointToml {
+            directory: PathBuf::from("ckpt"),
+            mode: "steps_and_best_eval".to_string(),
+            every_steps: Some(13),
+            resume_from: Some(PathBuf::from("ckpt/step-13.state")),
+        }),
+        sft: None,
+        ppo: None,
+        distill: None,
+        grpo: Some(GrpoToml {
+            prompts: PathBuf::from("data/prompts.txt"),
+            reward_command: vec!["score".to_string(), "--grpo".to_string()],
+            reward_mode: Some(RewardMode::Persistent),
+            reward_timeout_seconds: Some(90),
+            updates: 5,
+            prompts_per_update: 2,
+            group_size: 3,
+            grpo_epochs: 2,
+            clip_range_low: 0.2,
+            clip_range_high: 0.28,
+            kl_coefficient: 0.01,
+            mask_truncated: true,
+            baseline: Some("leave_one_out".to_string()),
+            prompt_order: Some("shuffled".to_string()),
+            overlong_penalty: Some(OverlongPenalty {
+                buffer_tokens: 12,
+                max_penalty: 0.75,
+            }),
+            log_completions: Some(CompletionLogToml {
+                every: 3,
+                path: PathBuf::from("logs/completions.jsonl"),
+            }),
+            kl_schedule: Some(KlScheduleToml {
+                warmup_updates: Some(4),
+                target: Some(0.02),
+            }),
+            dynamic_sampling: Some(DynamicSampling {
+                max_resample_factor: 3,
+            }),
+            judge: Some(retrograd_spec::judge::JudgeConfig::Command {
+                command: vec!["judge".to_string()],
+                timeout_secs: 45,
+            }),
+            judge_weight: Some(0.4),
+            judge_failure: Some(retrograd_agent_core::config::JudgeFailurePolicy::Fail),
+            max_judge_dropped_fraction: Some(0.25),
+            max_stalled_updates: Some(9),
+            sampling: exhaustive_sampling(),
+        }),
+        agent: None,
+    }
+}
+
+/// Flattened, sorted key paths of a serialized document. Arrays are one key,
+/// their contents are values, not schema.
+fn keys(document: &ConfigDocument) -> Vec<String> {
+    fn walk(prefix: &str, value: &toml::Value, out: &mut Vec<String>) {
+        match value {
+            toml::Value::Table(table) => {
+                for (key, value) in table {
+                    let path = if prefix.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{prefix}.{key}")
+                    };
+                    walk(&path, value, out);
+                }
+            }
+            _ => out.push(prefix.to_string()),
+        }
+    }
+    let value = toml::Value::try_from(document).expect("a document serializes");
+    let mut out = Vec::new();
+    walk("", &value, &mut out);
+    out.sort();
+    out
+}
+
+#[test]
+fn every_toml_field_survives_a_document_round_trip() {
+    let written = keys(&exhaustive_document());
+    assert_eq!(
+        written,
+        KEYS.iter().map(|key| key.to_string()).collect::<Vec<_>>(),
+        "the document does not serialize to the frozen key set: a field either \
+         stopped serializing, or was added without being listed"
+    );
+    let text = toml::to_string(&exhaustive_document()).expect("a document serializes");
+    let parsed = parse_toml(&text, "round-trip").expect("a serialized document parses back");
+    assert_eq!(
+        keys(&parsed),
+        written,
+        "a key was lost on the way back in: it serializes but does not deserialize"
+    );
+}
+
+/// The other half: the keys reach [`RunConfig`], not just the document.
+///
+/// One assertion per field of the exhaustive document, on the *value* - a
+/// `build` line that copies the wrong field, or none at all, fails here with
+/// the default it silently used.
+#[test]
+fn every_toml_field_reaches_the_run_config() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    let config = build(exhaustive_document(), root).expect("the exhaustive document builds");
+
+    assert_eq!(config.model, root.join("model.gguf"));
+    assert_eq!(config.lora.output, root.join("out/adapter.gguf"));
+    assert_eq!(config.lora.init_adapter, None);
+    assert_eq!(config.lora.config.rank, 16);
+    assert_eq!(config.lora.config.alpha, 32.0);
+    assert_eq!(config.lora.config.seed, 7);
+    assert_eq!(config.lora.config.dtype, LoraDtype::F16);
+    assert_eq!(
+        config.lora.config.targets,
+        parse_targets(&["q".to_string(), "v".to_string()]).unwrap()
+    );
+
+    let training = &config.training;
+    assert!(training.verbose);
+    assert_eq!(training.n_ctx, 256);
+    assert_eq!(training.n_ubatch, 64);
+    // Not spelled in the file: `micro_batch * gradient_accumulation`.
+    assert_eq!(training.n_batch, 256);
+    assert_eq!(training.shared_prefix_fanout, SharedPrefixFanout::Exact(2));
+    assert_eq!(training.threads, 3);
+    assert_eq!(training.epochs, 2);
+    assert_eq!(training.learning_rate, 5.0e-5);
+    assert_eq!(training.weight_decay, 0.02);
+    assert_eq!(training.max_grad_norm, 0.5);
+    assert_eq!(training.lr_scheduler, LrScheduler::Cosine);
+    assert_eq!(training.warmup_steps, 11);
+    assert!(!training.fast_generation_context);
+    assert_eq!(training.kv_dtype, KvDtype::F32);
+    assert_eq!(training.generation_concurrency, 6);
+    assert_eq!(training.generation_batch, 128);
+    assert!(training.chunked_cross_entropy);
+    assert_eq!(training.chunked_ce_tiles, 5);
+    assert_eq!(training.chunked_ce_seq_chunk, 17);
+    assert!(training.gradient_checkpointing);
+    assert_eq!(training.checkpoint_every_n_layers, 3);
+    assert_eq!(training.checkpoint_dtype, CheckpointDtype::F16);
+    assert!(training.require_gpu_resident);
+    assert_eq!(training.max_gpu_duty_cycle, Some(0.5));
+    assert_eq!(training.device, "cpu".parse().unwrap());
+    // Pinned by the GRPO group size, not by the file.
+    assert_eq!(training.n_seq_max, 3);
+
+    let metrics = &config.metrics;
+    assert_eq!(metrics.tensorboard_dir, Some(root.join("runs/tb")));
+    assert_eq!(metrics.wandb_export_dir, Some(root.join("runs/wandb")));
+
+    let evaluation = config.evaluation.as_ref().expect("[evaluation] builds");
+    assert_eq!(evaluation.data, root.join("data/eval.jsonl"));
+    assert_eq!(evaluation.every_iterations, 2);
+    assert_eq!(evaluation.patience, Some(4));
+    assert_eq!(evaluation.min_delta, 0.125);
+    assert_eq!(evaluation.max_examples, Some(9));
+
+    let checkpoint = config.checkpoint.as_ref().expect("[checkpoint] builds");
+    assert_eq!(checkpoint.directory, root.join("ckpt"));
+    assert_eq!(checkpoint.mode, CheckpointMode::StepsAndBestEval);
+    assert_eq!(checkpoint.every_steps, Some(13));
+    assert_eq!(
+        checkpoint.resume_from,
+        Some(root.join("ckpt/step-13.state"))
+    );
+
+    let Algorithm::Grpo(grpo) = &config.algorithm else {
+        panic!("run.algorithm = 'grpo' builds a GRPO run");
+    };
+    assert_eq!(grpo.prompts, root.join("data/prompts.txt"));
+    assert_eq!(grpo.reward_command, ["score", "--grpo"]);
+    assert_eq!(grpo.reward_protocol.mode, RewardMode::Persistent);
+    assert_eq!(
+        grpo.reward_protocol.timeout,
+        std::time::Duration::from_secs(90)
+    );
+    assert_eq!(grpo.updates, 5);
+    assert_eq!(grpo.prompts_per_update, 2);
+    assert_eq!(grpo.group_size, 3);
+    assert_eq!(grpo.grpo_epochs, 2);
+    assert_eq!(grpo.clip_range_low, 0.2);
+    assert_eq!(grpo.clip_range_high, 0.28);
+    assert_eq!(grpo.kl_coefficient, 0.01);
+    assert!(grpo.mask_truncated);
+    assert_eq!(grpo.baseline, AdvantageBaseline::LeaveOneOut);
+    assert_eq!(grpo.prompt_order, PromptOrder::Shuffled);
+    assert_eq!(grpo.max_stalled_updates, 9);
+    let penalty = grpo.overlong_penalty.expect("[grpo.overlong_penalty]");
+    assert_eq!(penalty.buffer_tokens, 12);
+    assert_eq!(penalty.max_penalty, 0.75);
+    let log = grpo
+        .log_completions
+        .as_ref()
+        .expect("[grpo.log_completions]");
+    assert_eq!(log.every, 3);
+    assert_eq!(log.path, root.join("logs/completions.jsonl"));
+    let schedule = grpo.kl_schedule.expect("[grpo.kl_schedule]");
+    assert_eq!(schedule.warmup_updates, 4);
+    assert_eq!(schedule.target, Some(0.02));
+    let dynamic = grpo.dynamic_sampling.expect("[grpo.dynamic_sampling]");
+    assert_eq!(dynamic.max_resample_factor, 3);
+    let judge = grpo.judge.as_ref().expect("[grpo.judge]");
+    assert_eq!(judge.weight, 0.4);
+    assert_eq!(judge.max_dropped_fraction, 0.25);
+    assert!(matches!(
+        judge.failure,
+        retrograd_agent_core::config::JudgeFailurePolicy::Fail
+    ));
+    let retrograd_spec::judge::JudgeConfig::Command {
+        command,
+        timeout_secs,
+    } = &judge.config
+    else {
+        panic!("the judge keeps the command backend it was given");
+    };
+    assert_eq!(command, &["judge".to_string()]);
+    assert_eq!(*timeout_secs, 45);
+    assert_eq!(grpo.sampling.temperature, 1.0);
+    assert_eq!(grpo.sampling.top_p, 1.0);
+    assert_eq!(grpo.sampling.max_new_tokens, 48);
+    assert_eq!(grpo.sampling.seed, 1234);
+}
+
+/// `[ppo]` and `[sft]` cannot share a document with `[grpo]`, so they get the
+/// same treatment on their own.
+#[test]
+fn the_other_algorithm_sections_reach_the_run_config() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+
+    let mut document = exhaustive_document();
+    document.run.algorithm = "ppo".to_string();
+    document.grpo = None;
+    document.ppo = Some(exhaustive_ppo());
+    // `generation_concurrency` is GRPO-only, and PPO has no group size to pin
+    // `n_seq_max` from.
+    document.training.generation_concurrency = None;
+    let config = build(document, root).expect("the PPO document builds");
+    let Algorithm::Ppo(ppo) = &config.algorithm else {
+        panic!("run.algorithm = 'ppo' builds a PPO run");
+    };
+    assert_eq!(ppo.prompts, root.join("data/prompts.txt"));
+    assert_eq!(ppo.reward_command, ["score", "--ppo"]);
+    assert_eq!(ppo.reward_protocol.mode, RewardMode::OneShot);
+    assert_eq!(
+        ppo.reward_protocol.timeout,
+        std::time::Duration::from_secs(45)
+    );
+    assert_eq!(ppo.updates, 7);
+    assert_eq!(ppo.rollout_batch_size, 4);
+    assert_eq!(ppo.ppo_epochs, 2);
+    assert_eq!(ppo.clip_range, 0.25);
+    assert_eq!(ppo.kl_coefficient, 0.05);
+    assert!(ppo.critic.enabled);
+    assert_eq!(ppo.critic.gamma, 0.97);
+    assert_eq!(ppo.critic.gae_lambda, 0.9);
+    assert_eq!(ppo.critic.value_lr, 3.0e-4);
+    assert_eq!(ppo.critic.value_epochs, 3);
+    assert_eq!(ppo.critic.feature_dtype, FeatureDtype::Bf16);
+    assert_eq!(ppo.sampling.temperature, 0.8);
+    assert_eq!(ppo.sampling.top_p, 0.95);
+    assert_eq!(ppo.sampling.max_new_tokens, 48);
+    assert_eq!(ppo.sampling.seed, 1234);
+
+    let mut document = exhaustive_document();
+    document.run.algorithm = "distill".to_string();
+    document.grpo = None;
+    document.distill = Some(exhaustive_distill());
+    // 3 samples over 2 prompts is 6 rollouts an update, and the exhaustive
+    // document asks for a concurrency of 6.
+    let config = build(document, root).expect("the distillation document builds");
+    let Algorithm::Distill(distill) = &config.algorithm else {
+        panic!("run.algorithm = 'distill' builds a distillation run");
+    };
+    assert_eq!(distill.teacher_path, root.join("models/teacher.gguf"));
+    assert_eq!(distill.prompts, root.join("data/prompts.txt"));
+    assert_eq!(distill.updates, 11);
+    assert_eq!(distill.prompts_per_update, 2);
+    assert_eq!(distill.samples_per_prompt, 3);
+    assert_eq!(distill.distill_epochs, 2);
+    assert_eq!(distill.clip_range_low, 0.15);
+    assert_eq!(distill.clip_range_high, 0.3);
+    assert_eq!(distill.weight_clip, 4.5);
+    assert_eq!(distill.kl_coefficient, 0.03);
+    assert!(distill.mask_truncated);
+    assert_eq!(distill.prompt_order, PromptOrder::Shuffled);
+    assert_eq!(distill.sampling.temperature, 1.0);
+    assert_eq!(distill.sampling.top_p, 1.0);
+    assert_eq!(distill.sampling.max_new_tokens, 48);
+    assert_eq!(distill.sampling.seed, 1234);
+    // `samples_per_prompt` pins the same geometry `group_size` does.
+    assert_eq!(config.training.n_seq_max, 3);
+    assert_eq!(distill.mode, DistillMode::OnPolicy);
+
+    // The offline mode of the same section.
+    let mut document = exhaustive_document();
+    document.run.algorithm = "distill".to_string();
+    document.grpo = None;
+    document.distill = Some(exhaustive_distill_offline());
+    // Offline distillation does not generate, so the rollout-only geometry the
+    // exhaustive document pins would be describing a sampler that never runs.
+    document.training.generation_concurrency = None;
+    let config = build(document, root).expect("the offline distillation document builds");
+    let Algorithm::Distill(distill) = &config.algorithm else {
+        panic!("run.algorithm = 'distill' builds a distillation run");
+    };
+    let DistillMode::TopkOffline(offline) = &distill.mode else {
+        panic!("distill.mode = 'topk_offline' builds an offline run");
+    };
+    assert_eq!(offline.data, root.join("data/corpus.jsonl"));
+    assert_eq!(offline.sidecar, root.join("data/corpus.topk"));
+    assert_eq!(offline.epochs, 4);
+    assert_eq!(distill.teacher_path, root.join("models/teacher.gguf"));
+
+    // The three offline keys next to `mode = "on_policy"` are a document whose
+    // author expects a sidecar to be read, and it would not be.
+    let mut document = exhaustive_document();
+    document.run.algorithm = "distill".to_string();
+    document.grpo = None;
+    let mut mixed = exhaustive_distill();
+    mixed.sidecar = Some(PathBuf::from("data/corpus.topk"));
+    document.distill = Some(mixed);
+    let error = build(document, root)
+        .expect_err("offline keys under on_policy are refused")
+        .to_string();
+    assert!(error.contains("topk_offline"), "{error}");
+
+    // And an offline document without its sidecar is refused by name rather
+    // than falling back to a mode nobody asked for.
+    let mut document = exhaustive_document();
+    document.run.algorithm = "distill".to_string();
+    document.grpo = None;
+    document.training.generation_concurrency = None;
+    let mut incomplete = exhaustive_distill_offline();
+    incomplete.sidecar = None;
+    document.distill = Some(incomplete);
+    let error = build(document, root)
+        .expect_err("an offline document without a sidecar is refused")
+        .to_string();
+    assert!(error.contains("distill.sidecar"), "{error}");
+
+    let mut document = exhaustive_document();
+    document.run.algorithm = "sft".to_string();
+    document.grpo = None;
+    document.sft = Some(exhaustive_sft());
+    document.training.generation_concurrency = None;
+    let config = build(document, root).expect("the SFT document builds");
+    let Algorithm::Sft(sft) = &config.algorithm else {
+        panic!("run.algorithm = 'sft' builds an SFT run");
+    };
+    assert_eq!(sft.data, root.join("data/sft.jsonl"));
+    assert_eq!(sft.data_format, DataFormat::ChatJsonl);
+    assert!(!sft.shuffle);
+    // The row order lives on `TrainConfig`, where the runtime reads it.
+    assert!(!config.training.shuffle_dataset);
+    assert_eq!(config.training.shuffle_seed, 7);
+}
+
+/// The other side of the same coin: what a document that says nothing gets.
+///
+/// A default that moves is a silent change in every run that did not spell the
+/// field, which is most of them. This freezes the ones `build` and its helpers
+/// choose themselves - `TrainConfig::default` and `CriticConfig::default` own
+/// the rest and are frozen where they live.
+#[test]
+fn the_defaults_behind_an_absent_field_are_frozen() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    let document = parse_toml(
+        r#"
+[run]
+algorithm = "grpo"
+
+[model]
+path = "model.gguf"
+
+[lora]
+output = "adapter.gguf"
+
+[training]
+ctx = 256
+micro_batch = 64
+
+[grpo]
+prompts = "prompts.txt"
+reward_command = ["score"]
+updates = 5
+prompts_per_update = 2
+group_size = 3
+grpo_epochs = 1
+clip_range_low = 0.2
+clip_range_high = 0.2
+kl_coefficient = 0.0
+
+[grpo.sampling]
+temperature = 1.0
+top_p = 1.0
+max_new_tokens = 32
+seed = 0
+"#,
+        "defaults",
+    )
+    .expect("the minimal document parses");
+    let config = build(document, root).expect("the minimal document builds");
+
+    assert!(!config.training.verbose);
+    assert_eq!(config.lora.config.rank, 8);
+    assert_eq!(config.lora.config.alpha, 16.0);
+    assert_eq!(config.lora.config.seed, 42);
+    assert_eq!(config.lora.config.dtype, LoraDtype::default());
+    assert_eq!(
+        config.lora.config.targets,
+        parse_targets(&DEFAULT_TARGETS.map(String::from)).unwrap()
+    );
+    // A rollout algorithm pins the optimizer window to the whole context.
+    assert_eq!(config.training.n_batch, config.training.n_ctx);
+    // `min(prompts_per_update * group_size, n_batch, 256)`.
+    assert_eq!(config.training.generation_concurrency, 6);
+    assert!(config.evaluation.is_none());
+    assert!(config.checkpoint.is_none());
+    assert!(config.metrics.tensorboard_dir.is_none());
+    assert!(config.metrics.wandb_export_dir.is_none());
+
+    let Algorithm::Grpo(grpo) = &config.algorithm else {
+        panic!("run.algorithm = 'grpo' builds a GRPO run");
+    };
+    assert!(!grpo.mask_truncated);
+    assert_eq!(grpo.baseline, AdvantageBaseline::Mean);
+    assert_eq!(grpo.prompt_order, PromptOrder::Sequential);
+    assert_eq!(grpo.max_stalled_updates, DEFAULT_MAX_STALLED_UPDATES);
+    assert!(grpo.overlong_penalty.is_none());
+    assert!(grpo.log_completions.is_none());
+    assert!(grpo.kl_schedule.is_none());
+    assert!(grpo.dynamic_sampling.is_none());
+    assert!(grpo.judge.is_none());
+}
+
+/// `[grpo.kl_schedule]` is the one sub-table whose absent field has a default
+/// that is not `None`, and it is spelled in `build_grpo` rather than on the
+/// type.
+#[test]
+fn an_empty_kl_schedule_warms_up_over_zero_updates() {
+    let schedule = build_grpo(
+        GrpoToml {
+            kl_schedule: Some(KlScheduleToml {
+                warmup_updates: None,
+                target: None,
+            }),
+            ..exhaustive_document().grpo.expect("the GRPO section")
+        },
+        Path::new("/tmp/retrograd-round-trip"),
+    )
+    .expect("the GRPO section builds")
+    .kl_schedule
+    .expect("[grpo.kl_schedule]");
+    assert_eq!(schedule.warmup_updates, 0);
+    assert_eq!(schedule.target, None);
+}
+
+/// **Why the `*Toml` doubling is not a doubling to remove.**
+///
+/// The file form and the validated form differ by paths, enums and defaults,
+/// so the copy is the price of validation. That leaves the handful of types
+/// whose `build_*` is nothing but `unwrap_or(default)`, `CriticToml` above all,
+/// and which therefore look collapsible into the runtime type with
+/// `#[serde(default)]`.
+///
+/// They are not, and the reason is here: an `Option` field in a `*Toml` type
+/// does not carry "a default in waiting", it carries **presence**. Paired with
+/// `skip_serializing_if`, that is what keeps a serialized document down to what
+/// its author actually wrote. Collapse `CriticToml` into `CriticConfig` and the
+/// one line below becomes five, `gae_lambda` among them printed as
+/// `0.949999988079071` - an `f32` default rendered at `f64` precision, in a
+/// document the server publishes as `effective_config`.
+///
+/// So this is asserted on the **serialized text**, not on the parsed value: the
+/// parsed value is identical either way, which is exactly why the regression
+/// would otherwise go through.
+#[test]
+fn a_field_the_author_did_not_write_does_not_appear_in_the_document() {
+    let only_enabled = CriticToml {
+        enabled: Some(true),
+        ..CriticToml::default()
+    };
+    let rendered = toml::to_string(&only_enabled).expect("a critic table serializes");
+    assert_eq!(
+        rendered, "enabled = true\n",
+        "a `*Toml` type must serialize only the fields it was given; see this \
+         test's documentation before making one of them non-optional"
+    );
+
+    // And the empty table disappears entirely rather than rendering five
+    // defaults - the same property one level up.
+    let empty = CriticToml::default();
+    assert_eq!(toml::to_string(&empty).expect("an empty critic table"), "");
+}

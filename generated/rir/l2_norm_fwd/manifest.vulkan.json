@@ -1,0 +1,98 @@
+{
+  "schema_version": 9,
+  "name": "l2_norm_fwd",
+  "entrypoint": "main",
+  "ggml_op": null,
+  "variant_id": "l2_norm_fwd_f32_2d_subgroup_tree",
+  "production": false,
+  "assumed_domain": [],
+  "backend": "vulkan",
+  "bindings": [
+    {
+      "name": "x",
+      "binding": 0,
+      "source": "src[0]",
+      "dtype": "f32",
+      "access": "read",
+      "extents": [
+        "col",
+        "row"
+      ]
+    },
+    {
+      "name": "y",
+      "binding": 1,
+      "source": "dst",
+      "dtype": "f32",
+      "access": "write",
+      "extents": [
+        "col",
+        "row"
+      ]
+    }
+  ],
+  "params": [],
+  "push_constants": [
+    {
+      "name": "n_row",
+      "type": "u32",
+      "offset": 0
+    },
+    {
+      "name": "n_col",
+      "type": "u32",
+      "offset": 4
+    },
+    {
+      "name": "x_nb0",
+      "type": "u32",
+      "offset": 8
+    },
+    {
+      "name": "x_nb1",
+      "type": "u32",
+      "offset": 12
+    },
+    {
+      "name": "y_nb0",
+      "type": "u32",
+      "offset": 16
+    },
+    {
+      "name": "y_nb1",
+      "type": "u32",
+      "offset": 20
+    }
+  ],
+  "packed_output": null,
+  "constraints": [
+    "dtype(x)=f32",
+    "rank(x)<=2"
+  ],
+  "determinism": "deterministic",
+  "reduction": "subgroup_tree",
+  "scan": "serial",
+  "variant": null,
+  "priority": 80,
+  "vector_width": 1,
+  "linear_addr": false,
+  "eligible_when": [],
+  "features": [
+    "vulkan>=1.1",
+    "subgroup_arithmetic",
+    "subgroup_size>=32"
+  ],
+  "parallel_mapping": "workgroup",
+  "dispatch": [
+    {
+      "axis": "row",
+      "per_workgroup": 1
+    }
+  ],
+  "flat": [],
+  "workgroup": [
+    32,
+    1,
+    1
+  ]
+}

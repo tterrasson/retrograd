@@ -1,0 +1,18 @@
+[package]
+name = "rir-emit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "RIR - textual emitters, Loop IR to backend source, plus the manifests"
+
+[dependencies]
+thiserror.workspace = true
+rir-core.workspace = true
+rir-lower.workspace = true
+# Emit the manifest by serializing `rir_core::manifest::Manifest`, not by
+# concatenating strings.
+serde_json.workspace = true
+
+[lints]
+workspace = true

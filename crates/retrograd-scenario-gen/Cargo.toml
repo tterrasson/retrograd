@@ -1,0 +1,21 @@
+[package]
+name = "retrograd-scenario-gen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - LLM generation of agentic scenario corpora"
+publish = false
+
+[dependencies]
+retrograd-agent-core.workspace = true
+retrograd-config.workspace = true
+retrograd-core.workspace = true
+retrograd-llm-client.workspace = true
+retrograd-tools.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["fs", "macros", "rt", "time"] }
+
+[lints]
+workspace = true

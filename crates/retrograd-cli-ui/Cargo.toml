@@ -1,0 +1,19 @@
+[package]
+name = "retrograd-cli-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - terminal tables and progress rendering shared by the binaries"
+publish = false
+
+# Terminal presentation, and nothing else. This crate knows about columns,
+# colour codes and progress bars; it knows nothing about a run, a metric or a
+# checkpoint, which is what lets the two binaries of the root package share it
+#. Anything that needs a domain type is a formatter and
+# stays in the binary that owns the type.
+[dependencies]
+comfy-table = "7"
+indicatif = "0.18"
+
+[lints]
+workspace = true

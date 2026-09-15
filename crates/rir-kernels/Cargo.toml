@@ -1,0 +1,18 @@
+[package]
+name = "rir-kernels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "RIR - the kernels themselves, each described once in the DSL"
+
+[dependencies]
+rir-core.workspace = true
+rir-emit.workspace = true
+# `variants()` asks lowering which quantized block shapes it can expand, so the
+# kernel registry declares only kernels that can actually be generated.
+# No cycle: rir-lower depends on rir-core alone.
+rir-lower.workspace = true
+
+[lints]
+workspace = true
