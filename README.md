@@ -22,6 +22,10 @@ exported as a standalone GGUF in the standard `llama.cpp` LoRA format: a stock
 - **Algorithms**: SFT, PPO, GRPO, distillation from a teacher model, and
   multi-turn agentic GRPO.
 - **Devices**: CPU everywhere, and GPU through Metal (macOS), Vulkan, or CUDA.
+- **Quantizations**: the base model can be F16 or quantized - Q4_0/Q4_1,
+  Q5_0/Q5_1, Q8_0, the K-quants (Q2_K to Q6_K), the i-quants (IQ2_XXS to
+  IQ4_XS), and MXFP4, on every backend. The lowest-bit formats (Q1_0, Q2_0,
+  IQ1_S, IQ1_M) and NVFP4 train on CPU, CUDA, and Vulkan, not on Metal.
 - **Interfaces**: the CLI, the `retrograd` Rust crate, and Python bindings.
 
 ---
