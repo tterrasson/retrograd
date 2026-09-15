@@ -34,6 +34,10 @@ export default defineConfig({
       { text: 'Operations', link: '/operations/checkpoints' },
       { text: 'Reference', link: '/reference/configuration' },
       { text: 'Engineering', link: '/engineering/' },
+      // The rustdoc the deploy workflow copies under `api/`, not a VitePress
+      // page: `_self` makes the router hand the click to the browser instead
+      // of resolving it to its own 404. Absent from `docs:dev`.
+      { text: 'API', link: '/api/retrograd/', target: '_self' },
     ],
     sidebar: {
       '/getting-started/': [

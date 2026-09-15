@@ -1,14 +1,22 @@
 name: Docs
 
-# Builds the VitePress site in docs/ and deploys it to GitHub Pages.
+# Builds the VitePress site in docs/ and the workspace rustdoc, and deploys both
+# to GitHub Pages: the rustdoc is served under `api/`. The crates are not
+# published, so this is the only place their API documentation is rendered.
 
-# Runs on pushes to main that touch the documentation, and by hand from "Run
-# workflow" in Actions or `gh workflow run docs.yml`.
+# Runs on pushes to main that touch the documentation or the Rust sources the
+# rustdoc is generated from, and by hand from "Run workflow" in Actions or
+# `gh workflow run docs.yml`.
 on:
   push:
     branches: [main]
     paths:
       - docs/**
+      - src/**
+      - crates/**
+      - build.rs
+      - Cargo.toml
+      - Cargo.lock
       - .github/workflows/docs.yml
   workflow_dispatch:
 
@@ -24,18 +32,54 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+env:
+  RETRO_BACKENDS: cpu
+
 jobs:
   build:
-    name: build (vitepress)
+    name: build (vitepress + rustdoc)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: docs
+    env:
+      # Relative to the repository root: the cargo steps below run from there.
+      CARGO_TARGET_DIR: target/lanes/docs
     steps:
-      # No submodules: the site reads nothing outside docs/.
+      # Submodules: `retrograd-ffi/build.rs` configures and builds llama.cpp
+      # even for rustdoc.
       - uses: actions/checkout@v5
+        with:
+          submodules: recursive
 
       - uses: oven-sh/setup-bun@v2
+
+      - name: Install system dependencies
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build
+
+      - uses: dtolnay/rust-toolchain@stable
+        id: toolchain
+
+      - name: Read the llama.cpp pin
+        id: llama
+        working-directory: .
+        run: echo "commit=$(git rev-parse HEAD:crates/retrograd-ffi/runtime/vendor/llama.cpp)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target/lanes/docs
+            !target/lanes/docs/doc
+          key: rustdoc-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ steps.llama.outputs.commit }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            rustdoc-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ steps.llama.outputs.commit }}-
+            rustdoc-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
 
       # Publishes the path the site is served under: `/retrograd` for a project
       # site, empty behind a custom domain.
@@ -51,6 +95,17 @@ jobs:
         run: bun run docs:build
         env:
           DOCS_BASE_PATH: ${{ steps.pages.outputs.base_path }}
+
+      # After VitePress, which empties its output directory. The PyO3 binding is
+      # left out: its API is the Python module, not a Rust one. `--workspace`
+      # writes no index of its own, hence the redirect to the root crate.
+      - name: Build rustdoc
+        working-directory: .
+        run: |
+          cargo doc --workspace --exclude retrograd-python --no-deps
+          cp -r "$CARGO_TARGET_DIR/doc" docs/.vitepress/dist/api
+          printf '<meta http-equiv="refresh" content="0; url=retrograd/index.html">\n' \
+            > docs/.vitepress/dist/api/index.html
 
       - uses: actions/upload-pages-artifact@v5
         with:
