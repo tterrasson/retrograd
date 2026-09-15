@@ -55,8 +55,6 @@ therefore not a single yes/no for the product - read the registry, or
   unrelated to the CUDA work (`docs/engineering/cuda/STATUS.md`).
 - **No CUDA CI.** `flash-attn-back.cu` and `out-prod.cu` have no automatic
   coverage; the reference command sequence is in `docs/engineering/cuda/STATUS.md`.
-- **Tiled K/V flash-attention backward (CUDA).** Written, compiled, verified by
-  host simulation over 243 shape combinations, never executed on real hardware.
 - **Recurrent and hybrid models.** No decision is taken on an architecture
   name any more, and the limitation is now stated per property rather than per
   model. Three properties, each resolved at load and published in the
