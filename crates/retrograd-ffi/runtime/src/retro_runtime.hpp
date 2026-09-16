@@ -105,6 +105,9 @@ struct trainer_state {
     opt_result_ptr weighted_eval_result_cache;
     size_t weighted_cache_rows = 0;
     uint32_t weighted_cache_ctx = 0;
+    // Extra variables handed to the chat template on every render, as a JSON object, empty for
+    // none.
+    std::string chat_template_variables;
     uint64_t scheduler_step = 0;
     uint64_t scheduler_total_steps = 0;
     // Checkpoint resume point. When active, the SFT epoch loop starts at
@@ -292,6 +295,9 @@ int render_string_out(
     destination[needed] = '\0';
     return 0;
 }
+
+// Replaces chat-template variables; null or `{}` clears them. Reserved keys are rejected.
+int set_chat_template_variables(trainer_state & state, const char * variables_json);
 
 // Renders `messages` through the model's own tokenizer.chat_template by
 // actually executing its Jinja program (defined in retro_chat_template.cpp),

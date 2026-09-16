@@ -443,6 +443,18 @@ extern "C" int retro_trainer_format_chat_messages(
     });
 }
 
+extern "C" int retro_trainer_set_chat_template_variables(
+        retro_trainer * trainer,
+        const char * variables_json) {
+    return retro::boundary([&]() -> int {
+        retro::trainer_state * state = retro::checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        return retro::set_chat_template_variables(*state, variables_json);
+    });
+}
+
 extern "C" int retro_trainer_chat_template_supports_tools(
         retro_trainer * trainer,
         bool * out_supports) {

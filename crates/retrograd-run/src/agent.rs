@@ -74,12 +74,17 @@ fn prepare(
     agent: &AgentRunConfig,
     ctx: &mut Context<'_>,
 ) -> Result<Prepared> {
-    let scenarios = read_scenarios(&agent.scenarios)?;
+    let mut scenarios = read_scenarios(&agent.scenarios)?;
+    append_system_suffix(&mut scenarios, &agent.system_suffix);
+    // Configure variables before the cached tool-support probe renders the template.
+    trainer.set_chat_template_variables(Some(&agent.template_variables_json()))?;
     let context_size = trainer.context_size()?;
     let trajectory_limit = agent.trajectory_limit(context_size)?;
     let evaluation = match &ctx.config.evaluation {
         Some(evaluation) => {
-            let held_out = read_scenarios(&evaluation.data)?;
+            let mut held_out = read_scenarios(&evaluation.data)?;
+            // The same suffix as the training set, applied in the same place.
+            append_system_suffix(&mut held_out, &agent.system_suffix);
             // An agentic evaluation costs one full trajectory per scenario,
             // containers, turns, tool calls - so the cap is the lever that
             // decides whether evaluating costs less than training.
@@ -618,6 +623,19 @@ impl UpdateHook for BoundaryHook<'_, '_, '_> {
     }
 }
 
+/// Appends `[agent].system_suffix` to every scenario's system turn.
+fn append_system_suffix(scenarios: &mut [Scenario], suffix: &str) {
+    if suffix.is_empty() {
+        return;
+    }
+    for scenario in scenarios {
+        scenario.system = Some(match scenario.system.take() {
+            Some(system) if !system.is_empty() => format!("{system} {suffix}"),
+            _ => suffix.to_string(),
+        });
+    }
+}
+
 fn read_scenarios(path: &Path) -> Result<Vec<Scenario>> {
     retrograd_scenario_gen::verify_manifest(path).map_err(Error::from)?;
     let source = fs::read_to_string(path)?;
@@ -798,6 +816,36 @@ mod tests {
                 metadata: Default::default(),
             })
             .collect()
+    }
+
+    #[test]
+    fn the_system_suffix_joins_every_scenario_and_creates_a_turn_when_there_is_none() {
+        let mut set = scenarios(3);
+        set[0].system = Some("Play well.".into());
+        set[1].system = Some(String::new());
+        append_system_suffix(&mut set, "Answer with one tool call.");
+        assert_eq!(
+            set[0].system.as_deref(),
+            Some("Play well. Answer with one tool call.")
+        );
+        // No system turn, and an empty one, both become the suffix alone rather
+        // than a leading separator.
+        assert_eq!(set[1].system.as_deref(), Some("Answer with one tool call."));
+        assert_eq!(set[2].system.as_deref(), Some("Answer with one tool call."));
+        // The task itself is untouched: the suffix is a standing instruction,
+        // not part of the question.
+        assert_eq!(set[0].user, "hello");
+    }
+
+    #[test]
+    fn an_empty_system_suffix_leaves_every_scenario_exactly_as_written() {
+        let mut set = scenarios(2);
+        set[0].system = Some("Play well.".into());
+        append_system_suffix(&mut set, "");
+        assert_eq!(set[0].system.as_deref(), Some("Play well."));
+        // Still `None`, not `Some("")`: appending nothing must not invent a
+        // system turn the scenario never had.
+        assert_eq!(set[1].system, None);
     }
 
     fn ids(scenarios: &[Scenario]) -> Vec<&str> {

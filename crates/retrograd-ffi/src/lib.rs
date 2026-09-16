@@ -574,6 +574,12 @@ unsafe extern "C" {
         out_n_bytes: *mut usize,
     ) -> c_int;
 
+    /// Extra variables every later render hands to the chat template, as a JSON object.
+    pub fn retro_trainer_set_chat_template_variables(
+        trainer: *mut RetroTrainer,
+        variables_json: *const c_char,
+    ) -> c_int;
+
     pub fn retro_trainer_chat_template_supports_tools(
         trainer: *mut RetroTrainer,
         out_supports: *mut bool,

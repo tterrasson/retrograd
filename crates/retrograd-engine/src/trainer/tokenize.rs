@@ -199,6 +199,21 @@ impl Trainer {
         })
     }
 
+    /// Replaces chat-template variables and invalidates the cached tool-support probe.
+    /// `None` or `{}` clears them; conversation-owned keys are rejected.
+    pub fn set_chat_template_variables(&mut self, variables_json: Option<&str>) -> Result<()> {
+        let variables = variables_json
+            .map(|variables| CString::new(variables).map_err(nul_error))
+            .transpose()?;
+        // SAFETY: the `Trainer` invariant holds and the borrowed string lives through this synchronous call.
+        self.check(unsafe {
+            ffi::retro_trainer_set_chat_template_variables(
+                self.raw.as_ptr(),
+                variables.as_ref().map_or(std::ptr::null(), |v| v.as_ptr()),
+            )
+        })
+    }
+
     /// Whether the model's own chat template renders a tool catalog. Probed once
     /// by the runtime with a sentinel tool, so a template that mentions `tools`
     /// and then drops it answers `false` - the question is only ever whether the

@@ -1607,6 +1607,7 @@ dependencies = [
  "retrograd-dataset",
  "retrograd-spec",
  "serde",
+ "serde_json",
  "toml",
  "tracing",
 ]

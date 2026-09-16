@@ -2947,6 +2947,8 @@ mod tests {
             "[metrics]\ntensorboard_dir='tb'\n",
             "[agent]\nscenarios='s.jsonl'\nupdates=3\nscenarios_per_update=2\n",
             "group_size=4\nepochs_per_update=2\nmax_new_tokens_per_turn=128\n",
+            "system_suffix='Reply with one tool call.'\n",
+            "template_variables={ enable_thinking = false }\n",
             "[agent.judge]\ntype='command'\ncommand=['python','judge.py']\n",
         );
         let file = write_config(base);
@@ -2958,6 +2960,14 @@ mod tests {
         assert_eq!(agent.config.updates, 3);
         assert_eq!(agent.config.epochs, 2);
         assert_eq!(agent.config.limits.max_new_tokens_per_turn, 128);
+        assert_eq!(agent.system_suffix, "Reply with one tool call.");
+        // A TOML table crosses into the JSON object the runtime hands the template; `false`
+        // must stay a boolean, not become the string "false", because a template branching on
+        // it would read any string as truthy.
+        assert_eq!(
+            agent.template_variables_json(),
+            r#"{"enable_thinking":false}"#
+        );
         assert!(agent.scenarios.ends_with("s.jsonl"));
         // The shared sections are read by the same code as every other
         // algorithm.

@@ -213,6 +213,23 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
                 mcp_servers,
             )
             .expect("writing to a String never fails");
+            // Preserve existing checkpoint signatures when both options use their defaults.
+            if !agent.system_suffix.is_empty() {
+                write!(
+                    &mut descriptor,
+                    "|system_suffix={}",
+                    checkpoint::fingerprint(agent.system_suffix.as_bytes()),
+                )
+                .expect("writing to a String never fails");
+            }
+            if !agent.template_variables.is_empty() {
+                write!(
+                    &mut descriptor,
+                    "|template_variables={}",
+                    checkpoint::fingerprint(agent.template_variables_json().as_bytes()),
+                )
+                .expect("writing to a String never fails");
+            }
         }
     }
     if let Some(evaluation) = &config.evaluation {

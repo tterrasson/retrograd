@@ -33,6 +33,11 @@ pub struct AgentRunConfig {
     /// belongs to the runner (`ToolPlanResolve::merged_servers` in
     /// `retrograd-tools`), not to the reader.
     pub tool_plan: ToolPlan,
+    /// Appended to the system turn of every scenario, training and held-out
+    /// alike. Empty (the default) changes nothing.
+    pub system_suffix: String,
+    /// Extra variables handed to the model's chat template on every render.
+    pub template_variables: serde_json::Map<String, serde_json::Value>,
     pub scenario_generation: Option<ScenarioGenerationConfig>,
     /// `max_trajectory_tokens` as written, before it is clamped to the model's
     /// context. The clamp needs a loaded model, so it happens in the runner and
@@ -131,6 +136,11 @@ impl AgentRunConfig {
         }
         Ok(requested)
     }
+
+    /// `template_variables` as the JSON object the runtime takes.
+    pub fn template_variables_json(&self) -> String {
+        serde_json::Value::Object(self.template_variables.clone()).to_string()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -190,6 +200,14 @@ pub struct AgentToml {
     pub skip_empty_updates: bool,
     /// `"drop"` (default) or `"min_reward"` - see [`TruncationPolicy`].
     pub truncation: TruncationPolicy,
+    /// Text appended to training and held-out system turns; creates a turn if absent.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub system_suffix: String,
+    /// Chat-template variables, e.g. `template_variables = { enable_thinking = false }`.
+    /// The runtime rejects `messages`, `tools`, `bos_token`, `eos_token` and
+    /// `add_generation_prompt`, which are supplied by the renderer.
+    #[serde(skip_serializing_if = "serde_json::Map::is_empty")]
+    pub template_variables: serde_json::Map<String, serde_json::Value>,
     pub seed: u64,
 }
 
@@ -221,6 +239,8 @@ impl Default for AgentToml {
             drop_degenerate_groups: defaults.drop_degenerate_groups,
             skip_empty_updates: defaults.skip_empty_updates,
             truncation: defaults.truncation,
+            system_suffix: String::new(),
+            template_variables: serde_json::Map::new(),
             seed: defaults.seed,
         }
     }
@@ -355,6 +375,8 @@ pub(crate) fn build_agent(
         judge,
         environment: value.environment,
         tool_plan,
+        system_suffix: value.system_suffix,
+        template_variables: value.template_variables,
         scenario_generation: value.scenario_generation,
         explicit_trajectory_limit,
     })

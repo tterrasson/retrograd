@@ -97,13 +97,25 @@ bool apply_template(
         const json & messages,
         const json * tools,
         bool add_assistant,
+        const std::string & variables,
         std::string & rendered) {
-    json inputs = json{
-        { "messages", messages },
-        { "bos_token", tmpl.bos_token },
-        { "eos_token", tmpl.eos_token },
-        { "add_generation_prompt", add_assistant },
-    };
+    json inputs = json::object();
+    // The configured variables go in first and the renderer's own keys are written over them.
+    if (!variables.empty()) {
+        try {
+            const json extra = json::parse(variables);
+            for (auto it = extra.begin(); it != extra.end(); ++it) {
+                inputs[it.key()] = it.value();
+            }
+        } catch (const std::exception & err) {
+            set_error(std::string("failed to parse chat template variables: ") + err.what());
+            return false;
+        }
+    }
+    inputs["messages"] = messages;
+    inputs["bos_token"] = tmpl.bos_token;
+    inputs["eos_token"] = tmpl.eos_token;
+    inputs["add_generation_prompt"] = add_assistant;
     if (tools) {
         inputs["tools"] = *tools;
     }
@@ -137,6 +149,44 @@ int copy_rendered_out(const std::string & rendered, char * buffer, size_t n_buff
 
 }  // namespace
 
+int set_chat_template_variables(trainer_state & state, const char * variables_json) {
+    if (!variables_json || *variables_json == '\0') {
+        state.chat_template_variables.clear();
+        if (state.chat_template_cache) {
+            state.chat_template_cache->supports_tools = -1;
+        }
+        return 0;
+    }
+    json variables;
+    try {
+        variables = json::parse(variables_json);
+    } catch (const std::exception & err) {
+        set_error(std::string("failed to parse chat template variables: ") + err.what());
+        return -1;
+    }
+    if (!variables.is_object()) {
+        set_error("chat template variables must be a JSON object");
+        return -1;
+    }
+    // Refused, not overwritten.
+    static const char * const reserved[] = {
+        "messages", "tools", "bos_token", "eos_token", "add_generation_prompt",
+    };
+    for (const char * name : reserved) {
+        if (variables.contains(name)) {
+            set_error(std::string("chat template variable '") + name
+                      + "' is built from the conversation and cannot be set");
+            return -1;
+        }
+    }
+    state.chat_template_variables = variables.empty() ? std::string() : variables.dump();
+    // Template variables may change whether the tool-support probe succeeds.
+    if (state.chat_template_cache) {
+        state.chat_template_cache->supports_tools = -1;
+    }
+    return 0;
+}
+
 int render_chat_template(
         trainer_state & state,
         const char * const * roles,
@@ -160,7 +210,7 @@ int render_chat_template(
     }
 
     std::string rendered;
-    if (!apply_template(*tmpl, messages, nullptr, add_assistant, rendered)) {
+    if (!apply_template(*tmpl, messages, nullptr, add_assistant, state.chat_template_variables, rendered)) {
         return -1;
     }
     return copy_rendered_out(rendered, buffer, n_buffer, out_n_bytes);
@@ -200,7 +250,8 @@ int render_chat_messages(
     }
 
     std::string rendered;
-    if (!apply_template(*tmpl, messages, tools_json ? &tools : nullptr, add_assistant, rendered)) {
+    if (!apply_template(*tmpl, messages, tools_json ? &tools : nullptr, add_assistant,
+                        state.chat_template_variables, rendered)) {
         return -1;
     }
     return copy_rendered_out(rendered, buffer, n_buffer, out_n_bytes);
@@ -242,7 +293,9 @@ int render_chat_template_source(
     }
 
     std::string rendered;
-    if (!apply_template(*tmpl, messages, tools_json ? &tools : nullptr, add_assistant, rendered)) {
+    // No trainer here, so no configured variables: this entry point exists to
+    // render a `.jinja` fixture, and a fixture states its own inputs.
+    if (!apply_template(*tmpl, messages, tools_json ? &tools : nullptr, add_assistant, {}, rendered)) {
         return -1;
     }
     return copy_rendered_out(rendered, buffer, n_buffer, out_n_bytes);
@@ -277,7 +330,8 @@ int chat_template_supports_tools(trainer_state & state, bool * out_supports) {
         std::string rendered;
         // A template that throws on any of that does not support tools; the probe
         // must not turn the refusal into a hard error for the caller.
-        const bool rendered_ok = apply_template(*tmpl, messages, &tools, /*add_assistant=*/true, rendered);
+        const bool rendered_ok = apply_template(*tmpl, messages, &tools, /*add_assistant=*/true,
+                                                state.chat_template_variables, rendered);
         const bool renders_tools = rendered_ok
                 && rendered.find(catalog_sentinel) != std::string::npos
                 && rendered.find(result_sentinel) != std::string::npos;

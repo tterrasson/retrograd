@@ -1052,6 +1052,13 @@ int retro_trainer_format_chat_messages(
     size_t n_buffer,
     size_t * out_n_bytes);
 
+// Sets JSON chat-template variables and invalidates the tool-support probe.
+// NULL, an empty string or "{}" clears them. Rejects non-objects and reserved
+// keys: messages, tools, bos_token, eos_token, add_generation_prompt.
+int retro_trainer_set_chat_template_variables(
+    retro_trainer * trainer,
+    const char * variables_json);
+
 // Whether this model's chat template renders a tool catalog of its own. Probed
 // once by rendering with a sentinel tool: a template that mentions `tools` and
 // then drops it reports false, since what matters is only whether the catalog

@@ -233,6 +233,88 @@ fn real_chat_template_prepares_sft_rows_and_renders_tools_prefix_stably() {
     assert!(trainer.tokenize_fragment("").expect("empty").is_empty());
 }
 
+/// JSON variables reach the fixture's Jinja context through the trainer and FFI.
+#[test]
+fn chat_template_variables_reach_the_template_and_refuse_the_renderers_own_keys() {
+    let Some(model) = common::model_path_if_available() else {
+        eprintln!(
+            "skipping: no local model at {}",
+            common::model_path().display()
+        );
+        return;
+    };
+    let _guard = common::serialize_models();
+    let mut trainer = Trainer::new(&model, cpu_config()).expect("load model");
+
+    // The assistant turn sits before the last user turn, so the template's other condition -
+    // `loop.index0 > ns.last_user_index` - is false and `preserve_thinking` is the only thing
+    // that can keep the block.
+    let messages = r#"[{"role":"user","content":"First."},
+        {"role":"assistant","content":"Answer.","thinking":"the reasoning"},
+        {"role":"user","content":"Second."}]"#;
+
+    let without = trainer
+        .format_chat_messages(messages, None, true)
+        .expect("render without variables");
+    assert!(
+        !without.contains("the reasoning"),
+        "the template drops a thinking block by default: {without}"
+    );
+
+    trainer
+        .set_chat_template_variables(Some(r#"{"preserve_thinking":true}"#))
+        .expect("set a template variable");
+    let with = trainer
+        .format_chat_messages(messages, None, true)
+        .expect("render with variables");
+    assert!(
+        with.contains("the reasoning"),
+        "preserve_thinking must reach the template: {with}"
+    );
+
+    // Clearing restores the default rather than leaving the last set in place.
+    trainer
+        .set_chat_template_variables(None)
+        .expect("clear the variables");
+    assert_eq!(
+        trainer
+            .format_chat_messages(messages, None, true)
+            .expect("render after clearing"),
+        without
+    );
+
+    // Variables cannot replace the renderer's conversation inputs.
+    for reserved in [
+        r#"{"messages":[]}"#,
+        r#"{"tools":[]}"#,
+        r#"{"bos_token":"x"}"#,
+        r#"{"eos_token":"x"}"#,
+        r#"{"add_generation_prompt":false}"#,
+    ] {
+        let error = trainer
+            .set_chat_template_variables(Some(reserved))
+            .expect_err("a reserved key must be refused");
+        assert!(
+            error.to_string().contains("cannot be set"),
+            "unexpected error for {reserved}: {error}"
+        );
+    }
+
+    // And so is anything that is not a JSON object.
+    for bad in [r#"{"unclosed": "#, "[1,2]", r#""a string""#] {
+        trainer
+            .set_chat_template_variables(Some(bad))
+            .expect_err("malformed variables must be refused");
+    }
+    // A refused set leaves the previous state alone.
+    assert_eq!(
+        trainer
+            .format_chat_messages(messages, None, true)
+            .expect("render after a refused set"),
+        without
+    );
+}
+
 #[test]
 fn the_derived_parser_reads_the_call_format_this_template_teaches() {
     // The bug of, on the model that produced it: LFM2's
