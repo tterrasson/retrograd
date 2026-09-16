@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Reward server of the GRPO register-machine example.
+
+Speaks the persistent reward protocol (`reward_mode = "persistent"`): answer
+the handshake once, then one *flushed* JSON line per
+{"prompt": ..., "completion": ...} request, for the whole run. `prompt` is the
+last user message - the task as `machine.Task.render` wrote it.
+
+The reward, at most 1.0, is the sum of four parts:
+
+    format      0.1  one <program> block, nothing around it, every line a command
+    progress    0.5  share of the way to the goal covered by the commands that ran,
+                     halved when the program stopped on an error
+    solved      0.3  the program ran to its end, within the limit, onto the goal
+    efficiency  0.1  shortest / used, for a solved program only
+
+Progress is measured in exact remaining commands (a breadth-first search back
+from the goal), not in digit differences: one `swap` can fix two registers,
+and a `copy` can make the goal unreachable. Each command that runs is credited
+with how much it shortened that distance, so the credits add up to
+`(d_start - d_end) / d_start` - a detour that is later undone earns nothing,
+and the commands after the first one that cannot run earn nothing either. The
+halving keeps a program that breaks below the same progress made cleanly: the
+task asks for a program that runs, not for a good first half.
+
+Without a <program> block the reward is 0 and nothing else is looked at.
+
+    python3 reward_server.py --explain < requests.jsonl
+
+prints the breakdown of each request instead of speaking the protocol.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+from machine import Task, distances, parse_command, run
+
+PROTOCOL = "retrograd-reward/1"
+
+FORMAT_WEIGHT = 0.1
+PROGRESS_WEIGHT = 0.5
+SOLVED_WEIGHT = 0.3
+EFFICIENCY_WEIGHT = 0.1
+# The share of its progress a program keeps when it stops on an error.
+STOPPED_PROGRESS = 0.5
+
+PROGRAM = re.compile(r"<program>(.*?)</program>", re.DOTALL)
+
+
+@dataclass(frozen=True)
+class Score:
+    reward: float
+    # Each part already weighted: `reward` is their sum.
+    format: float
+    progress: float
+    solved: float
+    efficiency: float
+    # Commands that ran, and why the program stopped early (`None`: it did not).
+    executed: int
+    error: str | None
+    # Fewest commands to the goal, before the program and where it stopped;
+    # `None` when the stopping state can no longer reach the goal.
+    distance_start: int
+    distance_end: int | None
+
+
+def score(prompt: str, completion: str) -> Score:
+    task = Task.parse(prompt)
+    distance = distances(task)
+    start = distance.get(task.start)
+    if not start:
+        raise ValueError(f"the goal must be reachable from a different start: {prompt!r}")
+
+    blocks = PROGRAM.findall(completion)
+    if not blocks:
+        return Score(0.0, 0.0, 0.0, 0.0, 0.0, 0, "no <program> block", start, start)
+
+    lines = [line for line in blocks[0].splitlines() if line.strip()]
+    well_formed = (
+        len(blocks) == 1
+        and not PROGRAM.sub("", completion).strip()
+        and bool(lines)
+        and all(parse_command(line) is not None for line in lines)
+    )
+
+    result = run(task, lines)
+    end = distance.get(result.state)
+    progress = 0.0 if end is None else max(0, start - end) / start
+    if result.error is not None:
+        progress *= STOPPED_PROGRESS
+    solved = result.error is None and result.state == task.goal and result.executed > 0
+    efficiency = start / result.executed if solved else 0.0
+
+    parts = (
+        FORMAT_WEIGHT * well_formed,
+        PROGRESS_WEIGHT * progress,
+        SOLVED_WEIGHT * solved,
+        EFFICIENCY_WEIGHT * efficiency,
+    )
+    return Score(
+        round(sum(parts), 6),
+        *(round(part, 6) for part in parts),
+        executed=result.executed,
+        error=result.error if lines else "empty program",
+        distance_start=start,
+        distance_end=end,
+    )
+
+
+def serve(stdin, stdout) -> None:
+    handshake = json.loads(stdin.readline())
+    if handshake.get("protocol") != PROTOCOL:
+        raise SystemExit(f"unsupported reward protocol: {handshake}")
+    print(json.dumps({"protocol": PROTOCOL}), file=stdout, flush=True)
+
+    for line in stdin:
+        request = json.loads(line)
+        if "_retrograd_batch_end" in request:
+            print(json.dumps(request, separators=(",", ":")), file=stdout, flush=True)
+            continue
+        response = {
+            "reward": score(request["prompt"], request.get("completion", "")).reward,
+            "_retrograd_batch": request["_retrograd_batch"],
+            "_retrograd_index": request["_retrograd_index"],
+        }
+        print(json.dumps(response, separators=(",", ":")), file=stdout, flush=True)
+
+
+def explain(stdin, stdout, prompts: list[str] | None = None) -> None:
+    for line in stdin:
+        if line.strip():
+            request = json.loads(line)
+            if "prompt" in request:
+                prompt = request["prompt"]
+            elif prompts is not None:
+                index = request["prompt_index"]
+                if type(index) is not int or not 0 <= index < len(prompts):
+                    raise ValueError(f"prompt_index out of range: {index!r}")
+                prompt = prompts[index]
+            else:
+                raise ValueError("completion logs require --prompts with the training JSONL")
+            details = score(prompt, request.get("completion", ""))
+            print(json.dumps(asdict(details)), file=stdout, flush=True)
+
+
+def main() -> None:
+    assert __doc__ is not None
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="print the score breakdown of each request line instead of serving",
+    )
+    parser.add_argument(
+        "--prompts", type=Path, help="training JSONL used by a completion log (with --explain)"
+    )
+    arguments = parser.parse_args()
+    if arguments.prompts is not None and not arguments.explain:
+        parser.error("--prompts requires --explain")
+    if arguments.explain:
+        prompts = None
+        if arguments.prompts is not None:
+            records = arguments.prompts.read_text(encoding="utf-8").splitlines()
+            prompts = [
+                next(
+                    message["content"]
+                    for message in reversed(json.loads(line)["messages"])
+                    if message["role"] == "user"
+                )
+                for line in records
+            ]
+        explain(sys.stdin, sys.stdout, prompts)
+    else:
+        serve(sys.stdin, sys.stdout)
+
+
+if __name__ == "__main__":
+    main()

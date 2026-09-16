@@ -30,8 +30,8 @@ __pycache__/
 # Scratch diffs against the fork; the submodule itself is read with `git -C`.
 /*.patch
 *.jsonl
-# The smoke examples' prompts and evaluation set ship with the repository.
-!/examples/*.jsonl
+# The examples' prompts and evaluation sets ship with the repository.
+!/examples/**/*.jsonl
 .ruff_cache
 
 # Operating system files

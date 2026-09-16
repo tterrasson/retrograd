@@ -86,6 +86,9 @@ adapter and fails the run if the written GGUF is invalid.
 check for the rollout algorithms, on eight addition questions scored by
 `examples/smoke_rl_reward.py`. They take the same `--model MODEL.gguf`.
 
+For a fuller GRPO example, the [register machine](examples/register_machine/README.md)
+trains a small model to write programs, with an exact reward and held-out evaluation.
+
 The [quickstart](https://tterrasson.github.io/retrograd/getting-started/quickstart) walks through a first real
 run: a dataset, a configuration, training, and testing the adapter.
 

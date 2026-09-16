@@ -1,0 +1,88 @@
+# GRPO on the register machine: see README.md in this directory.
+# Run from the repository root (`reward_command` is relative to it):
+# scripts/fetch-cpu-fixture.sh
+# cargo run --release -- train examples/register_machine/grpo.toml
+# cargo run --release -- bench examples/register_machine/grpo.toml
+
+[run]
+algorithm = "grpo"
+verbose = false
+
+[model]
+# Relative to this file. The CPU fixture makes the example run anywhere; an
+# instruct model of 0.5B-1.5B parameters learns the task far faster.
+path = "../../tests/fixtures/LFM2.5-230M-Q4_K_M.gguf"
+device = "auto"
+
+[lora]
+output = "/tmp/retrograd-register-machine-adapter.gguf"
+rank = 16
+alpha = 32.0
+seed = 42
+targets = ["q", "k", "v", "o", "ffn_up", "ffn_down", "ffn_gate"]
+
+[training]
+# A prompt is about 250 tokens (system rules + task) and the budget below adds
+# 96: 512 leaves room for a more verbose chat template.
+ctx = 512
+# The memory lever. `gradient_accumulation` is pinned to ctx / micro_batch.
+# It must also hold the shared prompt plus several completions, or
+# shared-prefix packing is refused and every completion takes its own
+# optimizer step: 512 fits a whole group of the short early programs.
+micro_batch = 512
+lr = 5e-6
+lr_scheduler = "cosine"
+warmup_steps = 10
+weight_decay = 0.0
+max_grad_norm = 1.0
+
+[grpo]
+# 520 tasks written easy-first by generate.py; `sequential` keeps that order,
+# and 250 updates draw 1,000 prompts before dynamic resampling.
+prompts = "prompts.jsonl"
+prompt_order = "sequential"
+reward_command = ["python3", "examples/register_machine/reward_server.py"]
+updates = 250
+prompts_per_update = 4
+group_size = 8
+# One pass: a second one is off-policy and moved this small model too far.
+grpo_epochs = 1
+clip_range_low = 0.2
+clip_range_high = 0.28
+kl_coefficient = 0.005
+# A cut-off program has no closing </program> and scores 0: rambling is a
+# mistake to learn from, so truncated members stay in the group.
+mask_truncated = false
+# Early on the easy tasks, then later on the hard ones, whole groups score the
+# same (all solved, or all stuck) and carry no signal: draw replacements.
+max_stalled_updates = 25
+
+[grpo.dynamic_sampling]
+max_resample_factor = 3
+
+[grpo.log_completions]
+every = 10
+path = "/tmp/retrograd-register-machine-completions.jsonl"
+
+[grpo.sampling]
+# Dr. GRPO is strictly on-policy: temperature and top_p must both be 1.
+temperature = 1.0
+top_p = 1.0
+# The longest shortest program is 5 commands plus a slack of one: about 40 tokens.
+max_new_tokens = 96
+seed = 42
+
+[evaluation]
+data = "eval.jsonl"
+every_iterations = 10
+# Evenly spaced over a file written tier by tier in turn, so all three tiers stay in.
+max_examples = 30
+patience = 10
+min_delta = 0.0
+
+[checkpoint]
+directory = "/tmp/retrograd-register-machine-checkpoints"
+mode = "best_eval"
+
+[metrics]
+tensorboard_dir = "/tmp/retrograd-register-machine-tensorboard"
