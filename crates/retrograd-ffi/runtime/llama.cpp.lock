@@ -4,7 +4,7 @@
 # This file only tracks the upstream base the fork descends from and the
 # contribution status of each Retrograd patch.
 upstream_url = "https://github.com/ggml-org/llama.cpp.git"
-upstream_commit = "9f31776c3773cf03f98535c19b7e6d394af374b4"
+upstream_commit = "c6824a9e42ceeda5d58089fa274ddd816e59e68e"
 
 [upstream_status]
 # Contribution status of each Retrograd patch family.
