@@ -252,3 +252,19 @@ and metrics sections. Their additional fields cover rollout limits, tools,
 environments, judges, and optional scenario generation. Treat them as a
 separate integration surface; a simple SFT, PPO, or GRPO run does not need
 `[agent]`.
+
+Optional prompt settings apply to both training and evaluation:
+
+```toml
+[agent]
+scenarios = "scenarios.jsonl"
+system_suffix = "Answer with one tool call and nothing else."
+template_variables = { enable_thinking = false }
+```
+
+- `system_suffix` appends an instruction to each scenario's system message,
+  creating one if absent. Default: `""`.
+- `template_variables` passes values to the model's chat template. Supported
+  names depend on the template; `enable_thinking` is an example. Default: `{}`.
+
+Changing either option prevents resuming a checkpoint from the previous configuration.

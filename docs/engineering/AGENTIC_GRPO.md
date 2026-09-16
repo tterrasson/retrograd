@@ -200,6 +200,8 @@ judge_failure = "drop_group"
 max_dropped_fraction = 0.5
 skip_empty_updates = false # see "An update with nothing to train on"
 truncation = "drop"        # or "min_reward"; see "What truncation costs"
+# See "Prompt and template settings"; applies to training and evaluation.
+system_suffix = ""
 seed = 42
 
 # Optional, and an addition rather than a default: a task whose environment
@@ -482,6 +484,19 @@ The option covers *only* the no-baseline case. An update that kept two or more
 trainable trajectories and still blew past `max_dropped_fraction` remains a
 failure: that is the "the judge or the environment is broken" signal, and a skip
 would hide it.
+
+### Prompt and template settings
+
+```toml
+[agent]
+system_suffix = "Answer with one tool call and nothing else."
+template_variables = { enable_thinking = false }
+```
+
+`system_suffix` appends text to every training and held-out system message,
+creating one if absent. `template_variables` supplies values to the model's
+chat template; available names and defaults depend on that template.
+Both default to empty and are included in the checkpoint resume signature.
 
 ### What truncation costs
 
