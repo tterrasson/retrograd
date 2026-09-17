@@ -133,6 +133,7 @@ impl Fixture {
                     reward: None,
                     truncated: false,
                     metadata,
+                    provenance: None,
                 }
             })
             .collect();

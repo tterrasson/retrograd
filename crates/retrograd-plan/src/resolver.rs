@@ -1021,7 +1021,6 @@ fn draft_document(
                 baseline: None,
                 prompt_order: Some("shuffled".to_string()),
                 overlong_penalty: None,
-                log_completions: None,
                 kl_schedule: None,
                 dynamic_sampling: None,
                 // A judge is a server-side declaration referenced by id
@@ -1136,6 +1135,7 @@ fn draft_document(
             // The planner sizes single-turn runs: an agentic recipe is not one
             // of the shapes it derives, so the section is never emitted.
             agent: None,
+            observe: None,
         },
         rollout,
     ))

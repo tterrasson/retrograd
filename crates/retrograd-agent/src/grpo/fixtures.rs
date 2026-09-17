@@ -13,6 +13,7 @@ fn trajectory(truncated: bool) -> Trajectory {
         reward: None,
         truncated,
         metadata: Default::default(),
+        provenance: None,
     }
 }
 

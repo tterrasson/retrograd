@@ -25,7 +25,7 @@ use crate::error::{ApiError, ApiResult, ErrorCode, ProblemKind};
 use crate::runtime::registry::RunArtifacts;
 use crate::state::AppState;
 
-/// Largest artefact served inline. An adapter is megabytes and a completions log
+/// Largest artefact served inline. An adapter is megabytes and an observe log
 /// can be tens; a multi-gigabyte file is a path a client should read directly, and
 /// streaming one through the control plane would tie up a connection for minutes.
 const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
@@ -226,15 +226,16 @@ fn inventory(artifacts: &RunArtifacts, run_dir: &FsPath) -> Vec<Item> {
         directory: false,
         content_type: "application/x-ndjson",
     });
-    if let Some(completions) = &artifacts.completions {
+    if let Some(observe) = &artifacts.observe {
         items.push(Item {
-            name: "completions",
-            path: completions.clone(),
+            name: "observe_log",
+            path: observe.join("observe.jsonl"),
             directory: false,
             content_type: "application/x-ndjson",
         });
     }
     for (name, path) in [
+        ("observe", &artifacts.observe),
         ("checkpoints", &artifacts.checkpoint_directory),
         ("tensorboard", &artifacts.tensorboard_directory),
         ("wandb_export", &artifacts.wandb_export_directory),
@@ -384,6 +385,33 @@ mod tests {
         assert!(checkpoint_id(FsPath::new("/c/.step-1.state.backup")).is_none());
         assert_eq!(step_from_id("step-000000000042"), Some(42));
         assert_eq!(step_from_id("best"), None);
+    }
+
+    #[test]
+    fn an_observed_run_lists_its_log_and_its_directory_in_order() {
+        let artifacts = RunArtifacts {
+            adapter: Some("/r/adapter.gguf".into()),
+            checkpoint_directory: Some("/r/ckpt".into()),
+            observe: Some("/r/observe".into()),
+            ..Default::default()
+        };
+        let items = inventory(&artifacts, FsPath::new("/runs/1"));
+        let names = items.iter().map(|item| item.name).collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "adapter",
+                "run",
+                "events",
+                "observe_log",
+                "observe",
+                "checkpoints"
+            ]
+        );
+        let log = &items[3];
+        assert_eq!(log.path, FsPath::new("/r/observe/observe.jsonl"));
+        assert!(!log.directory);
+        assert!(items[4].directory);
     }
 
     #[test]

@@ -24,6 +24,7 @@ members = [
     "crates/retrograd-cli-ui",
     "crates/retrograd-metrics",
     "crates/retrograd-memory",
+    "crates/retrograd-observe",
     "crates/retrograd-dataset",
     "crates/retrograd-engine",
     "crates/retrograd-config",
@@ -90,6 +91,7 @@ retrograd-judge = { path = "crates/retrograd-judge" }
 retrograd-llm-client = { path = "crates/retrograd-llm-client" }
 retrograd-memory = { path = "crates/retrograd-memory" }
 retrograd-metrics = { path = "crates/retrograd-metrics" }
+retrograd-observe = { path = "crates/retrograd-observe" }
 retrograd-plan = { path = "crates/retrograd-plan" }
 retrograd-run = { path = "crates/retrograd-run", default-features = false }
 retrograd-scenario-gen = { path = "crates/retrograd-scenario-gen" }

@@ -8,6 +8,7 @@
 //! step is an exact PPO step.
 
 use super::features::FeatureStore;
+use super::observe::{PpoSlots, observed_prompts, outcome, ppo_rollouts};
 use super::rollout::{
     PpoStepParams, Rollout, RowLayout, SchedulerHorizon, SurrogateStep, TokenStats,
     WeightedStepScratch, check_policy_divergence, mean_std, read_prompts, reward_process,
@@ -19,6 +20,7 @@ use retrograd_config::{CriticConfig, PpoConfig};
 use retrograd_core::{Result, TrainConfig, TrainMetrics};
 use retrograd_engine::Trainer;
 use retrograd_metrics::MetricValue;
+use retrograd_observe::{ObserveBatch, RolloutBatch, TrajectoryObserver};
 
 pub fn evaluate(
     trainer: &mut Trainer,
@@ -221,18 +223,22 @@ pub fn run_controlled(
     training: &TrainConfig,
     on_progress: &mut dyn FnMut(&mut Trainer, Progress) -> Result<bool>,
 ) -> Result<TrainMetrics> {
-    run_resumed(trainer, config, training, None, on_progress)
+    run_resumed(trainer, config, training, None, None, on_progress)
 }
 
 /// [`run_controlled`], restarting at a boundary restored from a checkpoint.
 /// The prompt cursor is a pure function of the update index here, so only the
 /// completed-update count is used; the critic is rebuilt from scratch, which
 /// is why a PPO checkpoint marks its value head recreatable.
+///
+/// `observer` receives each wanted update's rollouts before its epochs, and
+/// its outcome once they all succeeded.
 pub fn run_resumed(
     trainer: &mut Trainer,
     config: &PpoConfig,
     training: &TrainConfig,
     resume: Option<Boundary>,
+    observer: Option<&dyn TrajectoryObserver>,
     on_progress: &mut dyn FnMut(&mut Trainer, Progress) -> Result<bool>,
 ) -> Result<TrainMetrics> {
     let span = tracing::info_span!(target: "retrograd::training::ppo", "training");
@@ -276,6 +282,7 @@ pub fn run_resumed(
             scheduler_total_steps: horizon.steps(),
         };
         let update_start_step = final_metrics.global_step;
+        let observer = observer.filter(|observer| observer.wants(update + 1));
         // 1. Sample one rollout per prompt, cycling deterministically.
         let mut rollouts = Vec::with_capacity(config.rollout_batch_size);
         let mut completions = Vec::with_capacity(config.rollout_batch_size);
@@ -310,7 +317,6 @@ pub fn run_resumed(
                 )
             }),
         )?;
-        drop(completions);
         let mean_reward = rewards.iter().sum::<f32>() / rewards.len().max(1) as f32;
         let (advantages, critic_stats) = batch_advantages(
             trainer,
@@ -319,6 +325,31 @@ pub fn run_resumed(
             &rewards,
             &config.critic,
         )?;
+        match observer {
+            Some(observer) => {
+                let rollouts = ppo_rollouts(PpoSlots {
+                    update: update + 1,
+                    first_offset,
+                    prompt_count: prompts.len(),
+                    sampling_seed: config.sampling.seed,
+                    max_new_tokens: config.sampling.max_new_tokens as usize,
+                    completions,
+                    lengths: rollouts.iter().map(Rollout::completion_len).collect(),
+                    rewards: &rewards,
+                    advantages: &advantages,
+                    critic: config.critic.enabled,
+                });
+                observer.observe(ObserveBatch::Rollouts(RolloutBatch {
+                    prompts: observed_prompts(
+                        &prompts,
+                        (0..config.rollout_batch_size)
+                            .map(|index| (first_offset + index) % prompts.len()),
+                    ),
+                    rollouts,
+                }));
+            }
+            None => drop(completions),
+        }
 
         // 3. PPO epochs: one exact clipped-surrogate step per rollout, ratios
         // re-scored under the current policy before every step.
@@ -379,6 +410,13 @@ pub fn run_resumed(
                 epoch_stats.clip_fraction / n,
                 epoch_stats.ratio_max,
             )?;
+            let closes_update = epoch + 1 == config.ppo_epochs;
+            if closes_update && let Some(observer) = observer {
+                observer.observe(ObserveBatch::Outcome {
+                    update: update + 1,
+                    entries: outcome(None, &vec![true; rollouts.len()]),
+                });
+            }
             let mut values = vec![
                 MetricValue {
                     name: "reward/mean".into(),
@@ -425,7 +463,7 @@ pub fn run_resumed(
                     // Only the last policy epoch of an update closes a
                     // resumable boundary: the next update re-samples from a
                     // deterministic cursor, an intermediate epoch does not.
-                    boundary: (epoch + 1 == config.ppo_epochs).then(|| Boundary {
+                    boundary: closes_update.then(|| Boundary {
                         completed_iterations: update as u64 + 1,
                         cursor: (update as u64 + 1) * config.rollout_batch_size as u64,
                         kl_multiplier: None,

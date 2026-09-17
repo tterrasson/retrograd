@@ -1557,6 +1557,7 @@ dependencies = [
  "retrograd-env",
  "retrograd-judge",
  "retrograd-metrics",
+ "retrograd-observe",
  "retrograd-tools",
  "retrograd-training",
  "serde",
@@ -1735,6 +1736,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "retrograd-observe"
+version = "0.1.0"
+dependencies = [
+ "retrograd-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "retrograd-plan"
 version = "0.1.0"
 dependencies = [
@@ -1777,6 +1788,7 @@ dependencies = [
  "retrograd-engine",
  "retrograd-memory",
  "retrograd-metrics",
+ "retrograd-observe",
  "retrograd-scenario-gen",
  "retrograd-tools",
  "retrograd-training",
@@ -1877,6 +1889,7 @@ dependencies = [
  "retrograd-engine",
  "retrograd-judge",
  "retrograd-metrics",
+ "retrograd-observe",
  "serde",
  "serde_json",
  "tokio",

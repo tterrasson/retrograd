@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="retrograd-version" content="{{VERSION}}">
+<title>retrograd observe</title>
+<link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+<header id="header">
+  <div class="run">
+    <span id="live" class="live" title="feed activity"></span>
+    <strong id="algorithm">no run loaded</strong>
+    <span id="model" class="muted"></span>
+    <span id="segment" class="muted"></span>
+  </div>
+  <div class="status">
+    <span id="last-update" class="muted"></span>
+    <span id="record-count" class="muted"></span>
+    <label class="button">Open .jsonl<input id="open-file" type="file" accept=".jsonl,.ndjson,application/x-ndjson" hidden></label>
+  </div>
+</header>
+<div id="banner" class="banner" hidden></div>
+<section id="charts" class="charts"></section>
+<main>
+  <nav id="sidebar">
+    <div class="sidebar-tools">
+      <label><input id="follow" type="checkbox" checked> follow latest</label>
+      <label title="updates whose rollouts stay in memory">keep <input id="keep" type="number" min="1" value="200"> updates</label>
+    </div>
+    <ol id="updates"></ol>
+  </nav>
+  <section id="content">
+    <form id="filters" class="filters" autocomplete="off">
+      <input id="search" type="search" placeholder="search text">
+      <label>reward <input id="reward-min" type="number" step="any" placeholder="min"> - <input id="reward-max" type="number" step="any" placeholder="max"></label>
+      <label><input id="trained-only" type="checkbox"> trained only</label>
+      <label><input id="skipped-only" type="checkbox"> truncated or skipped only</label>
+      <select id="tool-filter"><option value="">any tool</option></select>
+      <label><input id="compact" type="checkbox"> compact</label>
+      <button id="compare" type="button" disabled>compare 0/2</button>
+    </form>
+    <div id="update-view" class="update-view"><p class="muted">Waiting for data. Open this page from an export directory, or open an <code>observe.jsonl</code>.</p></div>
+  </section>
+</main>
+<dialog id="compare-dialog">
+  <div id="compare-body" class="compare"></div>
+  <form method="dialog"><button>close</button></form>
+</dialog>
+<script src="viewer.js"></script>
+</body>
+</html>

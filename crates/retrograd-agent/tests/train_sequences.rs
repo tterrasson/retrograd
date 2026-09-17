@@ -38,6 +38,7 @@ fn trajectory(reward: Option<f32>, step_rewards: [Option<f32>; 2]) -> Trajectory
         reward,
         truncated: false,
         metadata: serde_json::Map::new(),
+        provenance: None,
     }
 }
 

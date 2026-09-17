@@ -6,9 +6,9 @@ rather than ignored, because a misspelled key that trains something other than
 what its author read is the failure mode this file exists to prevent.
 
 Seven sections are shared by every algorithm - `[run]`, `[model]`, `[lora]`,
-`[training]`, `[metrics]`, `[evaluation]`, `[checkpoint]` - and `[run].algorithm`
-selects exactly one of `[sft]`, `[ppo]`, `[grpo]`, `[distill]` or `[agent]` as the
-run's own section. Declaring a second one is an error, not a silently ignored
+`[training]`, `[metrics]`, `[evaluation]`, `[checkpoint]` - plus `[observe]` for
+the rollout algorithms. `[run].algorithm` selects exactly one of `[sft]`,
+`[ppo]`, `[grpo]`, `[distill]` or `[agent]` as the run's own section. Declaring a second one is an error, not a silently ignored
 leftover.
 
 The [configuration reference](/reference/configuration) is the summary table of
@@ -27,6 +27,7 @@ environment declarations in `retrograd-spec`.
 - [`[metrics]`](#metrics)
 - [`[evaluation]`](#evaluation)
 - [`[checkpoint]`](#checkpoint)
+- [`[observe]`](#observe)
 - [`[sft]`](#sft)
 - [`[ppo]`](#ppo)
 - [`[grpo]`](#grpo)
@@ -308,6 +309,24 @@ when it does not.
 
 A mode including `best_eval` without an `[evaluation]` section is refused.
 
+## `[observe]`
+
+Live export of the rollouts, with a static viewer; see
+[Observing rollouts](/training/observe). Accepted for `ppo`, `grpo` and
+`agent_grpo`, refused for `sft` and `distill`.
+
+`directory` - **required**, resolved relative to the configuration file and created if missing. A directory that cannot be
+created prevents the run from starting, as does failure to start the writer
+thread. If locking is unavailable or another writer holds the lock, export is disabled
+with a warning. Disk write failures also disable export without stopping training.
+
+`every` - default `1`, positive. The texts of updates `every`, `2 × every`, …
+are exported; update summaries always are.
+
+`max_text_chars` - default `0` (no truncation). Limits each exported text to this
+many Unicode characters, then appends a marker showing how many were removed.
+Identifiers and tool names are preserved; this does not limit total batch size.
+
 ## `[sft]`
 
 `data` - **required**.
@@ -417,12 +436,6 @@ to conclude rather than to ignore the limit.
 
 `buffer_tokens` - **required**, in `1..max_new_tokens`. `max_penalty` -
 **required**, positive.
-
-### `[grpo.log_completions]`
-
-Optional periodic JSONL dump of sampled completions, for offline inspection of
-reward hacking and collapse. `every` - **required**, positive. `path` -
-**required**.
 
 ### `[grpo.kl_schedule]`
 

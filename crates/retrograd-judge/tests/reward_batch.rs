@@ -38,6 +38,7 @@ fn trajectory(scenario: &str) -> Trajectory {
         reward: None,
         truncated: false,
         metadata: serde_json::Map::new(),
+        provenance: None,
     }
 }
 

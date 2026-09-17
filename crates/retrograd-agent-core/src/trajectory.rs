@@ -63,6 +63,17 @@ pub struct Step {
     pub reward: Option<f32>,
 }
 
+/// Where a trajectory came from, recorded while it was collected so that
+/// filtering and regrouping never have to guess it back.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Provenance {
+    /// Position among the members its group was collected with.
+    pub member: usize,
+    pub seed: u64,
+    /// For each entry of `steps`, the indices into `messages` it produced.
+    pub step_messages: Vec<Vec<usize>>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Trajectory {
     pub scenario_id: String,
@@ -75,6 +86,9 @@ pub struct Trajectory {
     pub truncated: bool,
     #[serde(default)]
     pub metadata: serde_json::Map<String, serde_json::Value>,
+    /// Bookkeeping of the process that collected it; never sent anywhere.
+    #[serde(skip)]
+    pub provenance: Option<Provenance>,
 }
 
 impl Trajectory {
@@ -215,6 +229,7 @@ mod tests {
             reward: Some(1.0),
             truncated: false,
             metadata: Default::default(),
+            provenance: None,
         };
         trajectory.validate().unwrap();
         // Final reward plus the graded step: what a group is centered on.
@@ -248,6 +263,7 @@ mod tests {
             reward: Some(0.5),
             truncated: false,
             metadata: Default::default(),
+            provenance: None,
         };
         trajectory.validate().unwrap();
         let decoded: Trajectory =
@@ -268,6 +284,7 @@ mod tests {
             reward: Some(0.5),
             truncated: false,
             metadata: Default::default(),
+            provenance: None,
         };
         let mut group = TrajectoryGroup {
             group_id: 1,

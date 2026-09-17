@@ -248,10 +248,6 @@ integration.
 buffer_tokens = 16
 max_penalty = 1.0
 
-[grpo.log_completions]
-every = 10
-path = "artifacts/completions.jsonl"
-
 [grpo.kl_schedule]
 warmup_updates = 10
 target = 0.05
@@ -264,10 +260,23 @@ max_resample_factor = 3
 `mask_truncated` instead removes budget-truncated completions from a group;
 choose one based on whether the reward can judge incomplete answers.
 
-`log_completions` periodically writes sampled outputs for offline inspection.
 `kl_schedule` requires `kl_coefficient > 0` and supports warmup plus an optional
 adaptive target. `dynamic_sampling` draws replacement prompts after zero-signal
 groups are removed, up to `prompts_per_update × max_resample_factor` candidates.
+
+## Observing rollouts
+
+`[observe]` exports selected updates' prompts, completions, rewards before and
+after `overlong_penalty`, advantages and exclusion causes, and writes a viewer
+next to them. An agentic run exports its conversations, tool calls, step
+rewards and judge explanations the same way. See
+[Observing rollouts](./observe).
+
+```toml
+[observe]
+directory = "artifacts/observe"
+every = 10  # rollouts for updates 10, 20, …; summaries for every update
+```
 
 ## Sharing the GPU
 

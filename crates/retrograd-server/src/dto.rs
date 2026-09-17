@@ -977,8 +977,8 @@ schema! {
 /// path parameter - and therefore from being an arbitrary file reader.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct ArtifactEntry {
-    /// `adapter` | `run` | `events` | `completions` | `checkpoints` |
-    /// `tensorboard` | `wandb_export`.
+    /// `adapter` | `run` | `events` | `observe_log` | `observe` |
+    /// `checkpoints` | `tensorboard` | `wandb_export`.
     pub name: &'static str,
     pub path: String,
     /// `file` | `directory`.

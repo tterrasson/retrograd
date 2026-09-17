@@ -383,6 +383,7 @@ mod tests {
             reward: None,
             truncated: false,
             metadata: Default::default(),
+            provenance: None,
         };
         TrajectoryGroup {
             group_id: 1,

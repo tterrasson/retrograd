@@ -14,6 +14,8 @@ pub(super) struct RolloutState {
     pub(super) framing: Vec<Vec<i32>>,
     pub(super) train_mask: Vec<bool>,
     pub(super) steps: Vec<Step>,
+    /// For each entry of `steps`, the messages it produced.
+    pub(super) step_messages: Vec<Vec<usize>>,
     pub(super) old_logprobs: Option<Vec<f32>>,
     pub(super) truncated: bool,
     /// The member no longer generates: it stopped, ran out of budget, or
@@ -37,6 +39,7 @@ impl RolloutState {
         let context_len = opening.len();
         Self {
             seed,
+            step_messages: vec![(0..messages.len()).collect()],
             messages,
             train_mask: vec![false; context_len],
             steps: vec![Step {
@@ -59,6 +62,11 @@ impl RolloutState {
     pub(super) fn fail(&mut self, error: Error) {
         self.failure = Some(error);
         self.finished = true;
+    }
+
+    pub(super) fn push_step(&mut self, step: Step, messages: Vec<usize>) {
+        self.steps.push(step);
+        self.step_messages.push(messages);
     }
 
     pub(super) fn stop(&mut self, truncated: bool) {

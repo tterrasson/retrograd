@@ -172,6 +172,7 @@ pub(super) fn trajectory_group(group: &JudgeGroup<'_>) -> Result<TrajectoryGroup
                 reward: None,
                 truncated: false,
                 metadata: metadata.clone(),
+                provenance: None,
             }
         })
         .collect();

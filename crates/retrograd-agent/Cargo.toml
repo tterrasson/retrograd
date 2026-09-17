@@ -15,6 +15,7 @@ retrograd-engine.workspace = true
 retrograd-env = { workspace = true, features = ["local-sandbox"] }
 retrograd-judge.workspace = true
 retrograd-metrics.workspace = true
+retrograd-observe.workspace = true
 retrograd-tools.workspace = true
 retrograd-training.workspace = true
 serde.workspace = true

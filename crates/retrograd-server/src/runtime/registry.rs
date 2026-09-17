@@ -71,8 +71,8 @@ pub struct RunArtifacts {
     pub checkpoint_directory: Option<PathBuf>,
     pub tensorboard_directory: Option<PathBuf>,
     pub wandb_export_directory: Option<PathBuf>,
-    /// GRPO's sampled-completion log, when the run asked for one.
-    pub completions: Option<PathBuf>,
+    /// The `[observe]` directory: the viewer, its feed and `observe.jsonl`.
+    pub observe: Option<PathBuf>,
 }
 
 /// Which halves of the `PATCH` whitelist this run actually has.

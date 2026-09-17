@@ -1,0 +1,16 @@
+[package]
+name = "retrograd-observe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - live export of training rollouts and the static viewer that reads it"
+publish = false
+
+[dependencies]
+retrograd-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

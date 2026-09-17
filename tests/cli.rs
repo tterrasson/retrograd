@@ -305,6 +305,153 @@ fn train_sft_runs_through_the_cli_and_writes_metrics_and_adapter() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// Every line of `observe.jsonl`, and the records the feed publishes.
+fn read_export(directory: &std::path::Path) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let read = |path: std::path::PathBuf| std::fs::read_to_string(path).expect("an export file");
+    let records = read(directory.join("observe.jsonl"))
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("a complete record"))
+        .collect::<Vec<serde_json::Value>>();
+    let callback = |text: &str, prefix: &str| -> serde_json::Value {
+        let json = text
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(");\n"))
+            .expect("a feed callback");
+        serde_json::from_str(json).expect("a JSON argument")
+    };
+    let feed = directory.join("feed");
+    let manifest = callback(&read(feed.join("manifest.js")), "RG_FEED.manifest(");
+    assert_eq!(manifest["dropped_batches"], 0, "{manifest}");
+    let generation = feed.join(manifest["generation"].as_str().expect("a generation"));
+    let chunks = manifest["chunks"].as_u64().expect("a chunk count");
+    assert_eq!(
+        std::fs::read_dir(&generation)
+            .expect("the generation directory")
+            .count() as u64,
+        chunks,
+        "the manifest names every chunk and nothing else"
+    );
+    let published = (0..chunks)
+        .flat_map(|index| {
+            let text = read(generation.join(format!("{index:06}.js")));
+            let chunk = callback(&text, &format!("RG_FEED.chunk({index}, "));
+            chunk.as_array().expect("a record list").clone()
+        })
+        .collect();
+    assert!(directory.join("index.html").is_file());
+    (records, published)
+}
+
+fn of_type<'a>(records: &'a [serde_json::Value], kind: &str) -> Vec<&'a serde_json::Value> {
+    records
+        .iter()
+        .filter(|record| record["type"] == kind)
+        .collect()
+}
+
+#[test]
+fn rollout_runs_export_what_they_trained_on() {
+    let Some(model) = common::model_path_if_available() else {
+        eprintln!("skipping: no local test model");
+        return;
+    };
+    let _guard = common::serialize_models();
+    let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let dir = std::env::temp_dir().join(format!("retrograd-cli-observe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let common = format!(
+        "[model]\npath='{}'\ndevice='cpu'\n[lora]\noutput='adapter.gguf'\nrank=2\nalpha=4.0\n\
+         targets=['blk.2.attn_q.weight']\n[training]\nctx=64\nmicro_batch=16\nlr=0.00001\n",
+        model.display()
+    );
+    let reward = format!(
+        "prompts='{}'\nreward_command=['python3', '{}']\n",
+        examples.join("smoke_rl_prompts.jsonl").display(),
+        examples.join("smoke_rl_reward.py").display()
+    );
+    let sampling = "temperature=1.0\ntop_p=1.0\nmax_new_tokens=4\nseed=3\n";
+    for (algorithm, section) in [
+        (
+            "grpo",
+            format!(
+                "[grpo]\n{reward}updates=2\nprompts_per_update=1\ngroup_size=2\ngrpo_epochs=1\n\
+                 clip_range_low=0.2\nclip_range_high=0.28\nkl_coefficient=0.0\n\
+                 [grpo.sampling]\n{sampling}"
+            ),
+        ),
+        (
+            "ppo",
+            format!(
+                "[ppo]\n{reward}updates=2\nrollout_batch_size=2\nppo_epochs=1\n\
+                 clip_range=0.2\nkl_coefficient=0.0\n[ppo.critic]\nenabled=false\n\
+                 [ppo.sampling]\n{sampling}"
+            ),
+        ),
+    ] {
+        let observe = dir.join(algorithm);
+        let config = format!(
+            "[run]\nalgorithm='{algorithm}'\n{common}{section}\
+             [observe]\ndirectory='{}'\nevery=2\n",
+            observe.display()
+        );
+        let config_path = dir.join(format!("{algorithm}.toml"));
+        std::fs::write(&config_path, config).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_retrograd"))
+            .args(["train", config_path.to_str().unwrap()])
+            .current_dir(&dir)
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("run the CLI");
+        assert!(output.status.success(), "{algorithm}: {}", stderr(&output));
+
+        let (records, published) = read_export(&observe);
+        assert_eq!(records, published, "{algorithm}: the feed mirrors the log");
+        let runs = of_type(&records, "run");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["algorithm"], algorithm);
+        assert!(runs[0]["resumed_from_update"].is_null());
+        // Summaries for every update, texts for the one `every` selects.
+        let summaries = of_type(&records, "update");
+        assert_eq!(
+            summaries
+                .iter()
+                .map(|record| &record["update"])
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert!(summaries[1]["metrics"]["reward/mean"].is_number());
+        let rollouts = of_type(&records, "rollout");
+        assert_eq!(rollouts.len(), 2, "{algorithm}");
+        for rollout in &rollouts {
+            assert_eq!(rollout["update"], 2);
+            assert!(rollout["completion"].is_string());
+            assert!(rollout["reward"].is_number());
+            let key = rollout["prompt"].as_str().unwrap();
+            assert!(
+                of_type(&records, "prompt")
+                    .iter()
+                    .any(|prompt| prompt["key"] == key),
+                "{algorithm}: {key} has its prompt record"
+            );
+        }
+        let outcomes = of_type(&records, "outcome");
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0]["update"], 2);
+        assert_eq!(outcomes[0]["entries"].as_array().unwrap().len(), 2);
+        // The order of an update: its rollouts, their outcome, its summary.
+        let position = |record: &serde_json::Value| {
+            records
+                .iter()
+                .position(|candidate| candidate == record)
+                .unwrap()
+        };
+        assert!(position(rollouts[1]) < position(outcomes[0]));
+        assert!(position(outcomes[0]) < position(summaries[1]));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn train_failure_is_exported_and_does_not_write_an_adapter() {
     let Some(model) = common::model_path_if_available() else {

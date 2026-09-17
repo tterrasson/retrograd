@@ -157,7 +157,7 @@ fn run_grpo(options: Options, mut run_config: RunConfig, wall: Instant) -> retro
         Ok(true)
     };
     let metrics =
-        training::grpo::run_resumed(&mut trainer, &grpo, &training, None, &mut on_progress)?;
+        training::grpo::run_resumed(&mut trainer, &grpo, &training, None, None, &mut on_progress)?;
     let train_time = train_start.elapsed();
     let mem_peak = peak_bytes();
     vram.sample();

@@ -19,12 +19,13 @@ retrograd-engine.workspace = true
 retrograd-memory.workspace = true
 retrograd-scenario-gen = { workspace = true, optional = true }
 retrograd-metrics.workspace = true
+retrograd-observe.workspace = true
 retrograd-training.workspace = true
 # For `ToolPlanResolve`: the run signature hashes the *merged* MCP servers, which
 # means reading the `mcp_config` files - legitimate here, since this is the
 # machine about to execute the document, and not in `retrograd-config`
 retrograd-tools.workspace = true
-serde_json = { workspace = true, optional = true }
+serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal", "time"], optional = true }
 tracing.workspace = true
 
@@ -37,7 +38,7 @@ libc.workspace = true
 [features]
 default = ["agent"]
 # Multi-turn GRPO: `run.algorithm = "agent_grpo"`.
-agent = ["dep:retrograd-agent", "dep:retrograd-scenario-gen", "dep:serde_json", "dep:tokio"]
+agent = ["dep:retrograd-agent", "dep:retrograd-scenario-gen", "dep:tokio"]
 # Tools served over MCP. Pulls rmcp and its transports.
 mcp = ["agent", "retrograd-agent/mcp"]
 # The Docker-backed environment pool. Pulls bollard.

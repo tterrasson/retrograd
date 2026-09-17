@@ -7,12 +7,14 @@ use retrograd_core::{Error, Result, TrainMetrics};
 use retrograd_engine::Trainer;
 use retrograd_memory::{self as memory, MemoryTracker};
 use retrograd_metrics::{MetricEvent, MetricValue, MetricsBus};
+use retrograd_observe::{Algorithm as ObservedAlgorithm, ObserveSink, TrajectoryObserver};
 use retrograd_training as training;
 
 use crate::control::{
     AdHocEvaluation, ControlPoint, GenerationOutput, GenerationRequest, RunControl, RunControls,
 };
 use crate::controller::{EvalDirection, RunController};
+use crate::observe;
 use crate::observer::{EvaluationReport, LoopPlan, RolloutEpoch, RunObserver, SftEpoch, SftStep};
 use crate::signature::{checked_total_steps, dataset_fingerprint, prompts_dataset};
 
@@ -366,6 +368,17 @@ pub(crate) fn run_ppo(
             ],
         )?,
     )?;
+    let sink = observe::open(
+        config,
+        ObservedAlgorithm::Ppo,
+        resume.map(|boundary| boundary.completed_iterations),
+        [
+            ("rollout_batch_size", ppo.rollout_batch_size as u64),
+            ("max_new_tokens", u64::from(ppo.sampling.max_new_tokens)),
+            ("updates", u64::from(ppo.updates)),
+            ("epochs", u64::from(ppo.ppo_epochs)),
+        ],
+    )?;
     run_rollout_updates(
         trainer,
         ctx,
@@ -373,8 +386,16 @@ pub(crate) fn run_ppo(
         "reward",
         ppo.updates,
         ppo.ppo_epochs,
-        |trainer, on_progress| {
-            training::ppo::run_resumed(trainer, ppo, &config.training, resume, on_progress)
+        sink,
+        |trainer, observer, on_progress| {
+            training::ppo::run_resumed(
+                trainer,
+                ppo,
+                &config.training,
+                resume,
+                observer,
+                on_progress,
+            )
         },
         |trainer, evaluation| {
             training::ppo::evaluate(
@@ -408,6 +429,18 @@ pub(crate) fn run_grpo(
             ],
         )?,
     )?;
+    let sink = observe::open(
+        config,
+        ObservedAlgorithm::Grpo,
+        resume.map(|boundary| boundary.completed_iterations),
+        [
+            ("group_size", grpo.group_size as u64),
+            ("prompts_per_update", grpo.prompts_per_update as u64),
+            ("max_new_tokens", u64::from(grpo.sampling.max_new_tokens)),
+            ("updates", u64::from(grpo.updates)),
+            ("epochs", u64::from(grpo.grpo_epochs)),
+        ],
+    )?;
     run_rollout_updates(
         trainer,
         ctx,
@@ -415,8 +448,16 @@ pub(crate) fn run_grpo(
         "reward",
         grpo.updates,
         grpo.grpo_epochs,
-        |trainer, on_progress| {
-            training::grpo::run_resumed(trainer, grpo, &config.training, resume, on_progress)
+        sink,
+        |trainer, observer, on_progress| {
+            training::grpo::run_resumed(
+                trainer,
+                grpo,
+                &config.training,
+                resume,
+                observer,
+                on_progress,
+            )
         },
         |trainer, evaluation| {
             training::grpo::evaluate(
@@ -472,7 +513,9 @@ pub(crate) fn run_distill(
         "neg_teacher_kl",
         distill.updates,
         distill.distill_epochs,
-        |trainer, on_progress| {
+        // `[observe]` is refused for distillation by the loader.
+        None,
+        |trainer, _, on_progress| {
             training::distill::run_resumed(
                 trainer,
                 distill,
@@ -581,7 +624,8 @@ fn run_distill_offline(
 
 /// Shared driver of the rollout-based algorithms: one observation per optimizer
 /// epoch, metrics forwarded to the sinks, evaluation and checkpoint at update
-/// boundaries.
+/// boundaries. `sink` is the `[observe]` export, closed here whatever the
+/// outcome.
 #[allow(clippy::too_many_arguments)]
 fn run_rollout_updates(
     trainer: &mut Trainer,
@@ -595,8 +639,10 @@ fn run_rollout_updates(
     eval_series: &'static str,
     updates: u32,
     epochs_per_update: u32,
+    sink: Option<ObserveSink>,
     run: impl FnOnce(
         &mut Trainer,
+        Option<&dyn TrajectoryObserver>,
         &mut dyn FnMut(&mut Trainer, training::Progress) -> Result<bool>,
     ) -> Result<TrainMetrics>,
     mut evaluate: impl FnMut(&mut Trainer, &EvaluationConfig) -> Result<training::RewardEvalMetrics>,
@@ -612,7 +658,8 @@ fn run_rollout_updates(
     });
     let mut rollout_position = RolloutPosition::default();
     let config = ctx.config;
-    let result = run(trainer, &mut |trainer, mut event| {
+    let handle = sink.as_ref().map(ObserveSink::observer);
+    let result = run(trainer, handle.as_deref(), &mut |trainer, mut event| {
         let Context {
             bus,
             controller,
@@ -772,6 +819,18 @@ fn run_rollout_updates(
         if let Some(note) = memory_note {
             observer.memory_note(&note);
         }
+        if let Some(sink) = &sink {
+            observe::report(sink, &mut **observer, &mut event.values);
+            if policy_epoch == epochs_per_update as u64 {
+                sink.update_summary(
+                    event.metrics.epoch,
+                    event
+                        .values
+                        .iter()
+                        .map(|value| (value.name.as_ref(), value.value)),
+                );
+            }
+        }
         bus.emit(&MetricEvent::Step {
             epoch: event.metrics.epoch,
             global_step: event.metrics.global_step,
@@ -779,6 +838,8 @@ fn run_rollout_updates(
         })?;
         Ok(keep_training && flow.is_continue())
     });
+    drop(handle);
+    observe::close(sink, ctx.observer);
     ctx.observer.loop_finished();
     result
 }

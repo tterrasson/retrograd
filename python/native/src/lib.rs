@@ -724,7 +724,6 @@ impl PyTrainer {
             baseline: AdvantageBaseline::Mean,
             prompt_order: PromptOrder::Sequential,
             overlong_penalty: None,
-            log_completions: None,
             kl_schedule: None,
             dynamic_sampling: None,
             // This binding accepts a reward command; judge configuration belongs

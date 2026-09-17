@@ -28,11 +28,13 @@ use retrograd_core::{Error, Result, TrainMetrics};
 use retrograd_engine::Trainer;
 use retrograd_memory as memory;
 use retrograd_metrics::{MetricEvent, MetricValue};
+use retrograd_observe::{Algorithm as ObservedAlgorithm, ObserveSink};
 use retrograd_training as training;
 
 use crate::algorithm::{Context, LiveControls};
 use crate::control::{AdHocEvaluation, ControlPoint};
 use crate::controller::EvalDirection;
+use crate::observe;
 use crate::observer::{EvaluationReport, LoopPlan, RolloutEpoch};
 use crate::signature::{checked_total_steps, prompts_dataset};
 
@@ -66,7 +68,8 @@ struct Prepared {
     scenarios: Vec<Scenario>,
     evaluation: Vec<Scenario>,
     trajectory_limit: usize,
-    start_update: u32,
+    /// Updates the restored checkpoint consumed, when there is one.
+    resumed_from_update: Option<u32>,
 }
 
 fn prepare(
@@ -115,7 +118,7 @@ fn prepare(
         scenarios,
         evaluation,
         trajectory_limit,
-        start_update: resume.map_or(0, |boundary| boundary.completed_iterations as u32),
+        resumed_from_update: resume.map(|boundary| boundary.completed_iterations as u32),
     })
 }
 
@@ -363,14 +366,41 @@ fn drive(
         epochs_per_update,
         total_epochs,
     });
+    let sink = match observe::open(
+        ctx.config,
+        ObservedAlgorithm::AgentGrpo,
+        prepared.resumed_from_update.map(u64::from),
+        [
+            ("group_size", config.group_size as u64),
+            ("scenarios_per_update", config.scenarios_per_update as u64),
+            (
+                "max_new_tokens",
+                u64::from(config.limits.max_new_tokens_per_turn),
+            ),
+            ("updates", u64::from(updates)),
+            ("epochs", u64::from(epochs_per_update)),
+        ],
+    ) {
+        Ok(sink) => sink,
+        Err(error) => {
+            tools.shutdown(&local, &runtime);
+            ctx.observer.loop_finished();
+            return AgentOutcome {
+                trainer: Some(trainer),
+                result: Err(error),
+            };
+        }
+    };
 
     // The progress callback and the boundary hook both need the observer, the
     // bus and the controller, and both are handed to the run at once. A
     // `RefCell` is what lets them share: they are called from the same thread
     // and never while the other is active - a progress event comes from the
     // optimizer step, a boundary from between updates.
+    let trajectory_observer = sink.as_ref().map(ObserveSink::observer);
     let shared = RefCell::new(Reporter {
         ctx,
+        sink,
         position: Position::default(),
         bus_error: None,
         updates,
@@ -386,7 +416,10 @@ fn drive(
         .on_progress(&mut report)
         .with_update_hook(&mut hook)
         .with_evaluation(prepared.evaluation)
-        .starting_at(prepared.start_update);
+        .starting_at(prepared.resumed_from_update.unwrap_or(0));
+    if let Some(observer) = trajectory_observer {
+        run = run.with_trajectory_observer(observer);
+    }
     if let Some(reward) = reward {
         run = run.with_judge(reward);
     }
@@ -400,7 +433,13 @@ fn drive(
     }
     let outcome = local.block_on(&runtime, run.run());
     tools.shutdown(&local, &runtime);
-    let Reporter { ctx, bus_error, .. } = shared.into_inner();
+    let Reporter {
+        ctx,
+        sink,
+        bus_error,
+        ..
+    } = shared.into_inner();
+    observe::close(sink, ctx.observer);
     ctx.observer.loop_finished();
 
     let result = outcome.result.map_err(Error::from);
@@ -420,6 +459,8 @@ fn drive(
 /// event per epoch and per evaluation.
 struct Reporter<'a, 'b> {
     ctx: &'a mut Context<'b>,
+    /// Held here so the progress callback can report it; closed by `drive`.
+    sink: Option<ObserveSink>,
     position: Position,
     bus_error: Option<Error>,
     updates: u32,
@@ -473,6 +514,9 @@ impl Reporter<'_, '_> {
         values.extend(memory.device_metric_values());
         if let Some(note) = memory_note {
             observer.memory_note(&note);
+        }
+        if let Some(sink) = &self.sink {
+            observe::report(sink, &mut **observer, &mut values);
         }
         self.emit(progress.metrics.epoch, progress.metrics.global_step, values);
     }

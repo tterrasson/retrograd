@@ -7,11 +7,15 @@ use std::time::Instant;
 
 use retrograd_core::{TrainConfig, TrainMetrics};
 use retrograd_metrics::MetricValue;
+use retrograd_observe::{
+    ObserveBatch, ObservedRollout, TrajectoryObserver, UpdateStatus, UpdateSummary,
+};
 use retrograd_training::Progress;
-use retrograd_training::batch::GrpoBatchParams;
+use retrograd_training::batch::{BatchObservation, GrpoBatchParams};
 
 use super::evaluate::evaluate_scenarios;
 use super::metrics::{AgentMetricTotals, ratio_or_zero};
+use super::observe::{UpdateExport, draft};
 use super::selection::{
     DropBreakdown, UpdateFate, check_dropped_fraction, restore_truncated_members,
     split_environment_scored, tool_call_parse_warning, withhold_truncated_members,
@@ -41,15 +45,32 @@ struct CollectedGroup {
     environment_scored: Option<TrajectoryGroup>,
     rollout_done_at: f32,
     judge_window: Option<(f32, f32)>,
+    group_id: Option<u64>,
+    /// Every trajectory as it came back, when the update is exported.
+    drafts: Vec<ObservedRollout>,
 }
+
+/// Where a collected group sits in an exported update: the one-based update,
+/// the group's index in it, and its scenario.
+type Drafting<'a> = (u32, usize, &'a Scenario);
 
 async fn collect_and_start_judge(
     outcome: Result<GroupOutcome>,
     reward: Option<Arc<dyn RewardBackend>>,
     update_started: Instant,
+    drafting: Option<Drafting<'_>>,
 ) -> Result<CollectedGroup> {
     let outcome = outcome?;
     let rollout_done_at = update_started.elapsed().as_secs_f32();
+    let group_id = outcome.group.as_ref().map(|group| group.group_id);
+    let drafts = match (drafting, &outcome.group) {
+        (Some((update, index, scenario)), Some(group)) => group
+            .trajectories
+            .iter()
+            .filter_map(|trajectory| draft(update, index, scenario, trajectory))
+            .collect(),
+        _ => Vec::new(),
+    };
     let mut metrics = AgentMetricTotals::default();
     let mut first_assistant_text = None;
     if let Some(group) = &outcome.group {
@@ -119,7 +140,58 @@ async fn collect_and_start_judge(
         environment_scored,
         rollout_done_at,
         judge_window,
+        group_id,
+        drafts,
     })
+}
+
+/// The series every update boundary knows, trained or not.
+fn boundary_values(
+    agent_metrics: &[MetricValue],
+    rollout_seconds: f32,
+    judge_seconds: f32,
+    judge_metrics: &JudgeBatchMetrics,
+    reward: Option<&Arc<dyn RewardBackend>>,
+    environments: Option<&Arc<dyn EnvironmentFactory>>,
+) -> Vec<MetricValue> {
+    let mut values = agent_metrics.to_vec();
+    values.extend([
+        MetricValue {
+            name: "timing/rollout_seconds".into(),
+            value: rollout_seconds,
+        },
+        MetricValue {
+            name: "timing/judge_seconds".into(),
+            value: judge_seconds,
+        },
+        MetricValue {
+            name: "judge/invalid_score_fraction".into(),
+            value: judge_metrics.invalid_score_fraction,
+        },
+        MetricValue {
+            name: "judge/dropped_group_fraction".into(),
+            value: judge_metrics.dropped_group_fraction,
+        },
+        MetricValue {
+            name: "judge/degenerate_group_fraction".into(),
+            value: judge_metrics.degenerate_group_fraction,
+        },
+        MetricValue {
+            name: "judge/score_mean".into(),
+            value: judge_metrics.score_mean,
+        },
+        MetricValue {
+            name: "judge/score_std".into(),
+            value: judge_metrics.score_std,
+        },
+    ]);
+    if let Some(reward) = reward {
+        values.extend(reward.metric_values());
+    }
+    if let Some(environments) = environments {
+        values.extend(environments.metric_values());
+    }
+    values
 }
 
 /// Everything one update loop runs against. A struct rather than a dozen
@@ -139,6 +211,7 @@ pub(super) struct UpdateLoop<'a, 'p, 'h> {
     pub on_progress: &'p mut dyn FnMut(Progress),
     pub hook: Option<&'h mut dyn UpdateHook>,
     pub start_update: u32,
+    pub observer: Option<Arc<dyn TrajectoryObserver>>,
 }
 
 pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMetrics> {
@@ -155,17 +228,27 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
         on_progress,
         mut hook,
         start_update,
+        observer,
     } = loop_;
     let mut final_metrics = TrainMetrics::default();
     for update in start_update..config.updates {
+        let scenario_at = |offset: usize| {
+            &scenarios[(update as usize * config.scenarios_per_update + offset) % scenarios.len()]
+        };
+        let mut export = observer
+            .as_ref()
+            .filter(|observer| observer.wants(update + 1))
+            .map(|_| {
+                UpdateExport::new((0..config.scenarios_per_update).map(scenario_at).collect())
+            });
+        let exporting = export.is_some();
         let rollout_started = Instant::now();
         // Lifetime counters, differenced around this update's rollouts: the
         // reuse a whole run accumulated says nothing about whether *this* update
         // paid for its prefixes.
         let generation_before = policy.generation_stats().await?;
         let selected = (0..config.scenarios_per_update).map(|offset| {
-            let index = update as usize * config.scenarios_per_update + offset;
-            let scenario = &scenarios[index % scenarios.len()];
+            let scenario = scenario_at(offset);
             let seed = config
                 .seed
                 .wrapping_add((update as u64) << 32)
@@ -178,6 +261,7 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
                         .await,
                     reward,
                     rollout_started,
+                    exporting.then_some((update + 1, offset, scenario)),
                 )
                 .await
             }
@@ -199,7 +283,10 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
         let mut rollout_seconds = 0.0_f32;
         let mut judge_first = f32::INFINITY;
         let mut judge_last = 0.0_f32;
-        for outcome in outcomes {
+        for (index, outcome) in outcomes.into_iter().enumerate() {
+            if let Some(export) = &mut export {
+                export.collected(index, outcome.group_id, outcome.drafts);
+            }
             attempted += outcome.attempted;
             failures.merge(outcome.failures);
             last_error = outcome.last_error.or(last_error);
@@ -249,6 +336,9 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
                 config.drop_degenerate_groups,
             )?
         };
+        if let Some(export) = &mut export {
+            export.judged(&groups);
+        }
         let judge_seconds = if judge_first.is_finite() {
             (judge_last - judge_first).max(0.0)
         } else {
@@ -288,7 +378,7 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
         let reported_error = last_error
             .as_deref()
             .or(judge_metrics.last_error.as_deref());
-        let fate = check_dropped_fraction(
+        let fate = match check_dropped_fraction(
             update,
             attempted,
             trained,
@@ -296,7 +386,44 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
             config.skip_empty_updates,
             breakdown,
             reported_error,
-        )?;
+        ) {
+            Ok(fate) => fate,
+            Err(error) => {
+                // What was collected is still worth reading; nothing trained.
+                if let (Some(observer), Some(mut export)) = (&observer, export.take()) {
+                    export.settle(&groups, None);
+                    observer.observe(export.batch());
+                }
+                return Err(error);
+            }
+        };
+        let observation = match (&observer, export.take()) {
+            (Some(observer), Some(mut export)) => {
+                let members = match fate {
+                    UpdateFate::Train => export.members(&groups),
+                    UpdateFate::Skip(_) => None,
+                };
+                export.settle(&groups, Some(&fate));
+                observer.observe(export.batch());
+                members.map(|members| BatchObservation {
+                    observer: observer.clone(),
+                    update: update + 1,
+                    members,
+                })
+            }
+            _ => None,
+        };
+        let boundary = || {
+            boundary_values(
+                &agent_metrics,
+                rollout_seconds,
+                judge_seconds,
+                &judge_metrics,
+                reward.as_ref(),
+                environments,
+            )
+        };
+        let mut summary = None;
         // A skipped update still falls through to the boundary below: it
         // consumed its scenarios, and it is the one place the run can be
         // checkpointed or stopped - a run whose updates all come back empty has
@@ -333,7 +460,7 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
             let training_step = async {
                 let started = Instant::now();
                 let result = policy
-                    .train_grpo_batch(sequences, params, training.clone())
+                    .train_grpo_batch(sequences, params, training.clone(), observation)
                     .await;
                 (result, started.elapsed().as_secs_f32())
             };
@@ -362,18 +489,11 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
                 .delta_since(generation_before);
             final_metrics = metrics;
             final_metrics.epoch = update + 1;
-            for mut event in progress {
+            let last = progress.len().saturating_sub(1);
+            for (position, mut event) in progress.into_iter().enumerate() {
                 event.metrics.epoch = update + 1;
-                event.values.extend(agent_metrics.iter().cloned());
+                event.values.extend(boundary());
                 event.values.extend([
-                    MetricValue {
-                        name: "timing/rollout_seconds".into(),
-                        value: rollout_seconds,
-                    },
-                    MetricValue {
-                        name: "timing/judge_seconds".into(),
-                        value: judge_seconds,
-                    },
                     MetricValue {
                         name: "timing/optimizer_wall_seconds".into(),
                         value: optimizer_seconds,
@@ -400,35 +520,23 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
                         name: "generation/kv_eviction_fraction".into(),
                         value: ratio_or_zero(generation.evictions, generation.sequences),
                     },
-                    MetricValue {
-                        name: "judge/invalid_score_fraction".into(),
-                        value: judge_metrics.invalid_score_fraction,
-                    },
-                    MetricValue {
-                        name: "judge/dropped_group_fraction".into(),
-                        value: judge_metrics.dropped_group_fraction,
-                    },
-                    MetricValue {
-                        name: "judge/degenerate_group_fraction".into(),
-                        value: judge_metrics.degenerate_group_fraction,
-                    },
-                    MetricValue {
-                        name: "judge/score_mean".into(),
-                        value: judge_metrics.score_mean,
-                    },
-                    MetricValue {
-                        name: "judge/score_std".into(),
-                        value: judge_metrics.score_std,
-                    },
                 ]);
-                if let Some(reward) = &reward {
-                    event.values.extend(reward.metric_values());
-                }
-                if let Some(environments) = environments {
-                    event.values.extend(environments.metric_values());
+                if observer.is_some() && position == last {
+                    summary = Some((UpdateStatus::Completed, event.values.clone()));
                 }
                 on_progress(event);
             }
+        } else if observer.is_some() {
+            summary = Some((UpdateStatus::Skipped, boundary()));
+        }
+        if let (Some(observer), Some((status, values))) = (&observer, summary) {
+            observer.observe(ObserveBatch::Update(UpdateSummary::new(
+                update + 1,
+                status,
+                values
+                    .iter()
+                    .map(|value| (value.name.as_ref(), value.value)),
+            )));
         }
 
         // The boundary: the update's rollouts, judging and optimizer step are
@@ -518,11 +626,11 @@ mod tests {
             calls: AtomicUsize::new(0),
         });
         let started = Instant::now();
-        let first = collect_and_start_judge(outcome(), Some(judge.clone()), started);
+        let first = collect_and_start_judge(outcome(), Some(judge.clone()), started, None);
         let second = async {
             let permit = judge.started.acquire().await.unwrap();
             permit.forget();
-            collect_and_start_judge(outcome(), Some(judge.clone()), started).await
+            collect_and_start_judge(outcome(), Some(judge.clone()), started, None).await
         };
         let (first, second) = tokio::time::timeout(
             std::time::Duration::from_secs(1),
@@ -540,7 +648,7 @@ mod tests {
     /// `judge_failure` is asked about downstream.
     #[tokio::test]
     async fn a_group_no_environment_scored_is_a_failure_when_there_is_no_judge() {
-        let collected = collect_and_start_judge(outcome(), None, Instant::now())
+        let collected = collect_and_start_judge(outcome(), None, Instant::now(), None)
             .await
             .expect("collecting never fails on its own");
         let (_, result) = collected.judged.expect("the group needed a score");

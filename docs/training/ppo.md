@@ -148,6 +148,16 @@ first persistent batch. Increase it when the reward program loads a model.
 | `ppo.critic.value_epochs` | `8` | Full-batch value-head passes per update. |
 | `ppo.critic.feature_dtype` | `f32` | Host feature storage: `f32`, `f16`, or `bf16`. |
 
+## Observing rollouts
+
+`[observe]` exports every update's prompts, completions, rewards and advantages,
+and writes a viewer next to them. See [Observing rollouts](./observe).
+
+```toml
+[observe]
+directory = "artifacts/observe"
+```
+
 ## Sharing the GPU
 
 `training.max_gpu_duty_cycle` bounds the fraction of wall time the trainer

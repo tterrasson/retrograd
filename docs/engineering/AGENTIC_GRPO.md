@@ -540,6 +540,20 @@ budget is divided by roughly ten, and halving `max_turns` doubles the gradient
 without `lr` being touched. Re-tune `lr` when the limits move - that coupling is
 the price of a length-unbiased normalizer, not an accident.
 
+### Reading the trajectories
+
+The metrics count failed rollouts; `[observe]` shows the trajectories that were
+collected, including those excluded from training. Failed rollouts have no
+trajectory to export. Each collected trajectory is exported with its conversation, tool calls, step
+rewards attached to the messages the environment returned them with, and the
+judge's explanation. The engine records a member's position, seed and
+step-to-message map on the trajectory while collecting it
+(`Trajectory::provenance`), so the export never has to re-derive them after
+truncated members are withheld, groups are dropped or `MinReward` puts members
+back. The policy actor publishes the advantages and the effective mask before
+the epochs, and the outcome after them. See
+[Observing rollouts](/training/observe).
+
 ## Judging: comparison shape and context budget
 
 A group is scored by one of four strategies, selected with `strategy.mode`

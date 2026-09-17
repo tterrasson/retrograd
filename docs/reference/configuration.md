@@ -90,6 +90,16 @@ on the steps actually taken, so the decay still ends at zero.
 | `min_delta` | `0.0` | Minimum improvement counted by patience. |
 | `max_examples` | all | Maximum evaluation examples for rollout evaluation. |
 
+### `[observe]`
+
+PPO, GRPO and agentic GRPO only. See [Observing rollouts](../training/observe).
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `directory` | required | Export directory: `observe.jsonl`, the viewer and its feed. |
+| `every` | `1` | Positive interval: export rollouts for updates N, 2N, …; summaries for every update. |
+| `max_text_chars` | `0` | Keep this many characters per text, plus a truncation marker; `0` keeps full texts. |
+
 ### `[checkpoint]`
 
 | Key | Default | Description |
@@ -173,7 +183,6 @@ See [SFT training](../training/sft) for the data contract and a complete file.
 | Section | Keys | Description |
 | --- | --- | --- |
 | `[grpo.overlong_penalty]` | `buffer_tokens`, `max_penalty` | Soft penalty near the end of the generation budget. `buffer_tokens` must be below `max_new_tokens`. |
-| `[grpo.log_completions]` | `every`, `path` | Periodic JSONL completion journal. |
 | `[grpo.kl_schedule]` | `warmup_updates`, `target` | KL warmup and optional adaptive target; requires `kl_coefficient > 0`. |
 | `[grpo.dynamic_sampling]` | `max_resample_factor` | Replacement groups after zero-signal filtering; must be at least `2`. |
 | `[grpo.judge]` | judge config plus `judge_weight`, `judge_failure`, `max_judge_dropped_fraction` | Adds a group-relative judge verdict to the reward command score. |

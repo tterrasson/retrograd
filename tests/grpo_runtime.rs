@@ -447,7 +447,6 @@ fn valid_eval_config(
         baseline: retrograd::config::AdvantageBaseline::Mean,
         prompt_order: retrograd::config::PromptOrder::Sequential,
         overlong_penalty: None,
-        log_completions: None,
         kl_schedule: None,
         dynamic_sampling: None,
         judge: None,
@@ -530,7 +529,6 @@ fn grpo_runs_end_to_end() {
         baseline: retrograd::config::AdvantageBaseline::Mean,
         prompt_order: retrograd::config::PromptOrder::Sequential,
         overlong_penalty: None,
-        log_completions: None,
         kl_schedule: None,
         dynamic_sampling: None,
         judge: None,
@@ -686,7 +684,6 @@ fn dynamic_sampling_resamples_zero_signal_groups() {
         baseline: retrograd::config::AdvantageBaseline::Mean,
         prompt_order: retrograd::config::PromptOrder::Sequential,
         overlong_penalty: None,
-        log_completions: None,
         kl_schedule: None,
         judge: None,
         // The update here ends with one live group out of two, so it is not a

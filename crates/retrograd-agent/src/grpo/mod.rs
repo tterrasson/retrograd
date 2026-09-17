@@ -7,6 +7,7 @@
 
 mod evaluate;
 mod metrics;
+mod observe;
 mod selection;
 mod updates;
 
@@ -17,6 +18,7 @@ use std::sync::Arc;
 
 use retrograd_core::{TrainConfig, TrainMetrics};
 use retrograd_engine::Trainer;
+use retrograd_observe::TrajectoryObserver;
 use retrograd_training::Progress;
 
 pub use self::evaluate::AgentEvalMetrics;
@@ -101,6 +103,8 @@ pub struct AgenticGrpoServices<'p, 'h> {
     /// alone, so restarting at `start_update` replays exactly the schedule the
     /// interrupted run would have had.
     pub start_update: u32,
+    /// Receives the trajectories and the summary of every update.
+    pub observer: Option<Arc<dyn TrajectoryObserver>>,
 }
 
 /// Builder for an agentic GRPO run.
@@ -132,6 +136,7 @@ pub struct AgenticRun<'a> {
     evaluation: Vec<Scenario>,
     hook: Option<&'a mut dyn UpdateHook>,
     start_update: u32,
+    observer: Option<Arc<dyn TrajectoryObserver>>,
 }
 
 impl<'a> AgenticRun<'a> {
@@ -153,6 +158,7 @@ impl<'a> AgenticRun<'a> {
             evaluation: Vec::new(),
             hook: None,
             start_update: 0,
+            observer: None,
         }
     }
 
@@ -238,6 +244,12 @@ impl<'a> AgenticRun<'a> {
         self
     }
 
+    /// Exports every update's trajectories, selection, outcome and summary.
+    pub fn with_trajectory_observer(mut self, observer: Arc<dyn TrajectoryObserver>) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
     pub async fn run(self) -> AgentRunOutcome {
         let mut discard = |_: Progress| {};
         let Self {
@@ -252,6 +264,7 @@ impl<'a> AgenticRun<'a> {
             evaluation,
             hook,
             start_update,
+            observer,
         } = self;
         let on_progress = match on_progress {
             Some(callback) => callback,
@@ -270,6 +283,7 @@ impl<'a> AgenticRun<'a> {
                 evaluation,
                 hook,
                 start_update,
+                observer,
             },
         )
         .await
@@ -291,6 +305,7 @@ pub async fn run_agentic_grpo(
         evaluation,
         hook,
         start_update,
+        observer,
     } = services;
     let validation = config.validate().and_then(|_| {
         if scenarios.is_empty() {
@@ -366,6 +381,7 @@ pub async fn run_agentic_grpo(
                         on_progress,
                         hook,
                         start_update,
+                        observer,
                     })
                     .await
                 }

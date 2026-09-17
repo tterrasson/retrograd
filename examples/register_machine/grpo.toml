@@ -60,10 +60,6 @@ max_stalled_updates = 25
 [grpo.dynamic_sampling]
 max_resample_factor = 3
 
-[grpo.log_completions]
-every = 10
-path = "/tmp/retrograd-register-machine-completions.jsonl"
-
 [grpo.sampling]
 # Dr. GRPO is strictly on-policy: temperature and top_p must both be 1.
 temperature = 1.0
@@ -86,3 +82,8 @@ mode = "best_eval"
 
 [metrics]
 tensorboard_dir = "/tmp/retrograd-register-machine-tensorboard"
+
+# Live export of the rollouts; open /tmp/retrograd-register-machine-observe/index.html.
+[observe]
+directory = "/tmp/retrograd-register-machine-observe"
+every = 10

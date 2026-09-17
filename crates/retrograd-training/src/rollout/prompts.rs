@@ -97,6 +97,22 @@ impl Prompt {
         &self.reward_text
     }
 
+    pub(crate) fn observed(&self, key: String) -> retrograd_observe::ObservedPrompt {
+        retrograd_observe::ObservedPrompt {
+            key,
+            messages: self
+                .conversation
+                .messages
+                .iter()
+                .map(|message| {
+                    retrograd_observe::ObservedMessage::text(&message.role, &message.content)
+                })
+                .collect(),
+            reward_text: Some(self.reward_text.clone()),
+            metadata: None,
+        }
+    }
+
     pub(crate) fn reference(&self) -> Option<&str> {
         self.reference.as_deref()
     }

@@ -82,6 +82,7 @@ pub struct RunConfig {
     pub metrics: MetricsConfig,
     pub evaluation: Option<EvaluationConfig>,
     pub checkpoint: Option<CheckpointConfig>,
+    pub observe: Option<ObserveConfig>,
 }
 
 /// Which training objective a run carries, with that objective's own settings.
@@ -117,6 +118,16 @@ pub struct LoraRunConfig {
 pub struct MetricsConfig {
     pub tensorboard_dir: Option<PathBuf>,
     pub wandb_export_dir: Option<PathBuf>,
+}
+
+/// `[observe]`: live export of the rollouts of PPO, GRPO and agentic GRPO.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObserveConfig {
+    pub directory: PathBuf,
+    /// Exports the texts of one update in `every`, counted from one.
+    pub every: u32,
+    /// Cut applied to every exported text; `0` keeps them whole.
+    pub max_text_chars: usize,
 }
 
 /// Evaluation policy shared by SFT, PPO, and GRPO. An iteration is one SFT
@@ -254,14 +265,6 @@ pub struct OverlongPenalty {
     pub max_penalty: f32,
 }
 
-/// Periodic JSONL dump of sampled completions for offline inspection of reward
-/// hacking and collapse.
-#[derive(Clone, Debug)]
-pub struct CompletionLog {
-    pub every: u32,
-    pub path: PathBuf,
-}
-
 /// DAPO dynamic sampling: after the group baseline drops zero-signal groups,
 /// keep drawing replacement prompts (continuing the round-robin) until the
 /// update carries `prompts_per_update` informative groups, or the candidate
@@ -351,8 +354,6 @@ pub struct GrpoConfig {
     pub prompt_order: PromptOrder,
     /// Optional DAPO soft overlong punishment.
     pub overlong_penalty: Option<OverlongPenalty>,
-    /// Optional periodic completion journal.
-    pub log_completions: Option<CompletionLog>,
     /// Optional KL warmup / adaptive controller.
     pub kl_schedule: Option<KlSchedule>,
     /// Optional DAPO dynamic sampling (resample zero-signal groups).
@@ -427,12 +428,6 @@ impl GrpoConfig {
                 ));
             }
             require_positive_f32(penalty.max_penalty, "grpo.overlong_penalty.max_penalty")?;
-        }
-        if let Some(log) = &self.log_completions {
-            require_nonzero(
-                log.every,
-                "grpo.log_completions.every must be greater than zero",
-            )?;
         }
         if let Some(schedule) = &self.kl_schedule {
             if self.kl_coefficient == 0.0 {
@@ -663,6 +658,8 @@ pub struct ConfigDocument {
     pub distill: Option<DistillToml>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentToml>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observe: Option<ObserveToml>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -899,8 +896,6 @@ pub struct GrpoToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overlong_penalty: Option<OverlongPenalty>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub log_completions: Option<CompletionLogToml>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kl_schedule: Option<KlScheduleToml>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dynamic_sampling: Option<DynamicSampling>,
@@ -975,9 +970,12 @@ pub struct DistillToml {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct CompletionLogToml {
-    pub every: u32,
-    pub path: PathBuf,
+pub struct ObserveToml {
+    pub directory: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_text_chars: Option<usize>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1419,6 +1417,10 @@ pub fn build_with(
         .checkpoint
         .map(|value| build_checkpoint(value, root))
         .transpose()?;
+    let observe = file
+        .observe
+        .map(|value| build_observe(value, &algorithm, root))
+        .transpose()?;
     // An agentic evaluation grades a trajectory with the reward its environment
     // put on it - a verify command, a test suite, a task's own grading. The
     // judge cannot stand in: every RULER strategy scores the members of a group
@@ -1476,6 +1478,26 @@ pub fn build_with(
         },
         evaluation,
         checkpoint,
+        observe,
+    })
+}
+
+fn build_observe(value: ObserveToml, algorithm: &Algorithm, root: &Path) -> Result<ObserveConfig> {
+    // Only the rollout algorithms produce something to look at.
+    match algorithm {
+        Algorithm::Ppo(_) | Algorithm::Grpo(_) | Algorithm::AgentGrpo(_) => {}
+        Algorithm::Sft(_) | Algorithm::Distill(_) => {
+            return Err(Error::config(
+                "[observe] exports rollouts and is only supported for ppo, grpo and agent_grpo",
+            ));
+        }
+    }
+    let every = value.every.unwrap_or(1);
+    require_nonzero(every, "observe.every must be greater than zero")?;
+    Ok(ObserveConfig {
+        directory: resolve(root, value.directory),
+        every,
+        max_text_chars: value.max_text_chars.unwrap_or(0),
     })
 }
 
@@ -1592,10 +1614,6 @@ fn build_grpo(value: GrpoToml, root: &Path) -> Result<GrpoConfig> {
         .transpose()?
         .unwrap_or(PromptOrder::Sequential);
     let overlong_penalty = value.overlong_penalty;
-    let log_completions = value.log_completions.map(|c| CompletionLog {
-        every: c.every,
-        path: resolve(root, c.path),
-    });
     let kl_schedule = value.kl_schedule.map(|s| KlSchedule {
         warmup_updates: s.warmup_updates.unwrap_or(0),
         target: s.target,
@@ -1623,7 +1641,6 @@ fn build_grpo(value: GrpoToml, root: &Path) -> Result<GrpoConfig> {
         baseline,
         prompt_order,
         overlong_penalty,
-        log_completions,
         kl_schedule,
         dynamic_sampling,
         judge,
@@ -2027,7 +2044,6 @@ mod tests {
             baseline: AdvantageBaseline::Mean,
             prompt_order: PromptOrder::Sequential,
             overlong_penalty: None,
-            log_completions: None,
             kl_schedule: None,
             dynamic_sampling: None,
             judge: None,
@@ -3124,7 +3140,6 @@ mod tests {
             "clip_range_low=0.2\nclip_range_high=0.28\nkl_coefficient=0.02\n",
             "baseline='rloo'\nprompt_order='shuffled'\n",
             "overlong_penalty={buffer_tokens=4,max_penalty=1.0}\n",
-            "log_completions={every=2,path='completions.jsonl'}\n",
             "kl_schedule={warmup_updates=2,target=0.05}\n",
             "dynamic_sampling={max_resample_factor=3}\n",
             "[grpo.sampling]\ntemperature=1.0\ntop_p=1.0\nmax_new_tokens=16\nseed=1\n",
@@ -3141,14 +3156,70 @@ mod tests {
         let penalty = config.overlong_penalty.unwrap();
         assert_eq!(penalty.buffer_tokens, 4);
         assert_eq!(penalty.max_penalty, 1.0);
-        let log = config.log_completions.unwrap();
-        assert_eq!(log.every, 2);
-        assert_eq!(log.path, file.parent().unwrap().join("completions.jsonl"));
         let schedule = config.kl_schedule.unwrap();
         assert_eq!(schedule.warmup_updates, 2);
         assert_eq!(schedule.target, Some(0.05));
         assert_eq!(config.dynamic_sampling.unwrap().max_resample_factor, 3);
         remove_config(&file);
+    }
+
+    #[test]
+    fn observe_resolves_its_directory_and_defaults() {
+        let source = concat!(
+            "[run]\nalgorithm='grpo'\n",
+            "[model]\npath='model.gguf'\n",
+            "[lora]\noutput='out.gguf'\n",
+            "[grpo]\nprompts='p.jsonl'\nreward_command=['r']\n",
+            "updates=1\nprompts_per_update=1\ngroup_size=2\ngrpo_epochs=1\n",
+            "clip_range_low=0.2\nclip_range_high=0.28\nkl_coefficient=0.0\n",
+            "[grpo.sampling]\ntemperature=1.0\ntop_p=1.0\nmax_new_tokens=16\nseed=1\n",
+            "[observe]\ndirectory='observe'\n",
+        );
+        let file = write_config(source);
+        let config = load(&file).unwrap();
+        let observe = config.observe.expect("[observe] was declared");
+        assert_eq!(observe.directory, file.parent().unwrap().join("observe"));
+        assert_eq!(observe.every, 1);
+        assert_eq!(observe.max_text_chars, 0);
+        remove_config(&file);
+
+        let file = write_config(&source.replace("'observe'\n", "'observe'\nevery=0\n"));
+        let error = load(&file).unwrap_err().to_string();
+        remove_config(&file);
+        assert!(error.contains("observe.every"), "{error}");
+    }
+
+    #[test]
+    fn observe_is_refused_where_there_is_no_rollout() {
+        let source = concat!(
+            "[run]\nalgorithm='sft'\n",
+            "[model]\npath='model.gguf'\n",
+            "[lora]\noutput='out.gguf'\n",
+            "[sft]\ndata='data.txt'\n",
+            "[observe]\ndirectory='observe'\n",
+        );
+        let file = write_config(source);
+        let error = load(&file).unwrap_err().to_string();
+        remove_config(&file);
+        assert!(error.contains("[observe]"), "{error}");
+    }
+
+    /// `[grpo.log_completions]` was removed without an alias: the standard
+    /// serde error has to keep naming the key.
+    #[test]
+    fn the_removed_completion_log_is_named_in_the_error() {
+        let source = concat!(
+            "[run]\nalgorithm='grpo'\n",
+            "[model]\npath='model.gguf'\n",
+            "[lora]\noutput='out.gguf'\n",
+            "[grpo]\nprompts='p.jsonl'\nreward_command=['r']\n",
+            "updates=1\nprompts_per_update=1\ngroup_size=2\ngrpo_epochs=1\n",
+            "clip_range_low=0.2\nclip_range_high=0.28\nkl_coefficient=0.0\n",
+            "[grpo.sampling]\ntemperature=1.0\ntop_p=1.0\nmax_new_tokens=16\nseed=1\n",
+            "[grpo.log_completions]\nevery=1\npath='c.jsonl'\n",
+        );
+        let error = parse_toml(source, "old.toml").unwrap_err().to_string();
+        assert!(error.contains("log_completions"), "{error}");
     }
 
     /// `[grpo.judge]` is `[agent.judge]`, in the section of the other loop: the
@@ -3396,19 +3467,6 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("kl_schedule requires")
-        );
-
-        let mut config = valid_grpo();
-        config.log_completions = Some(CompletionLog {
-            every: 0,
-            path: "c.jsonl".into(),
-        });
-        assert!(
-            config
-                .validate()
-                .unwrap_err()
-                .to_string()
-                .contains("log_completions.every")
         );
 
         // A resample factor of 1 permits no resampling and is rejected.

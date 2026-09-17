@@ -5,6 +5,7 @@ pub mod batch;
 pub mod distill;
 pub mod features;
 pub mod grpo;
+mod observe;
 pub mod ppo;
 mod rollout;
 pub mod sft;
@@ -14,6 +15,7 @@ pub mod value;
 /// here because it is part of the `reward_command` contract this crate defines,
 /// and a test or an embedder that spells it by hand would drift from it.
 pub use retrograd_judge::REWARD_PROTOCOL_VERSION;
+pub use retrograd_observe::TrajectoryObserver;
 
 use retrograd_core::TrainMetrics;
 use retrograd_metrics::MetricValue;

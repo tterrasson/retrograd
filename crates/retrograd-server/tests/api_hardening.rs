@@ -345,7 +345,50 @@ async fn complete_configs_apply_roots_to_every_input_and_output() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
     let _ = std::fs::remove_file(outside);
+}
+
+#[test]
+fn the_observe_directory_is_held_to_the_path_roots() {
+    let fixture = Fixture::new("hardening-observe");
+    let mut state = state_of(&fixture, FakeEngine::succeeding(), false);
+    let mut config = (*state.config).clone();
+    config.path_roots = vec![fixture.dir.clone()];
+    state.config = Arc::new(config);
+    let document = |observe: &std::path::Path| {
+        format!(
+            "[run]\nalgorithm='ppo'\n[model]\npath='{}'\n[lora]\noutput='{}'\n\
+             [ppo]\nprompts='{}'\nreward_command=['true']\nupdates=1\nrollout_batch_size=1\n\
+             ppo_epochs=1\nclip_range=0.2\nkl_coefficient=0.0\n\
+             [ppo.sampling]\ntemperature=1.0\ntop_p=1.0\nmax_new_tokens=8\nseed=1\n\
+             [observe]\ndirectory='{}'\n",
+            fixture.path("model.gguf"),
+            fixture.path("adapter.gguf"),
+            fixture.path("data.jsonl"),
+            observe.display()
+        )
+    };
+    let build = |source: String| {
+        retrograd_config::build(
+            retrograd_config::parse_toml(&source, "run.toml").expect("parse"),
+            std::path::Path::new("/"),
+        )
+        .expect("build")
+    };
+    state
+        .validate_run_paths(&build(document(&fixture.dir.join("observe"))), false)
+        .expect("inside the root");
+    let error = state
+        .validate_run_paths(
+            &build(document(
+                &std::env::temp_dir().join("retrograd-outside-observe"),
+            )),
+            false,
+        )
+        .expect_err("outside every root");
+    let body = format!("{error:?}");
+    assert!(body.contains("/config/observe/directory"), "{body}");
 }
 
 #[tokio::test]

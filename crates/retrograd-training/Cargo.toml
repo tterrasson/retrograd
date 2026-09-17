@@ -18,6 +18,8 @@ retrograd-dataset.workspace = true
 retrograd-engine.workspace = true
 retrograd-judge.workspace = true
 retrograd-metrics.workspace = true
+# The observer trait and its plain types, for `[observe]`.
+retrograd-observe.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }

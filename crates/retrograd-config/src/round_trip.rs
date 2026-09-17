@@ -56,8 +56,6 @@ const KEYS: &[&str] = &[
     "grpo.kl_coefficient",
     "grpo.kl_schedule.target",
     "grpo.kl_schedule.warmup_updates",
-    "grpo.log_completions.every",
-    "grpo.log_completions.path",
     "grpo.mask_truncated",
     "grpo.max_judge_dropped_fraction",
     "grpo.max_stalled_updates",
@@ -84,6 +82,9 @@ const KEYS: &[&str] = &[
     "metrics.wandb_export_dir",
     "model.device",
     "model.path",
+    "observe.directory",
+    "observe.every",
+    "observe.max_text_chars",
     "run.algorithm",
     "run.verbose",
     "training.checkpoint_dtype",
@@ -308,10 +309,6 @@ fn exhaustive_document() -> ConfigDocument {
                 buffer_tokens: 12,
                 max_penalty: 0.75,
             }),
-            log_completions: Some(CompletionLogToml {
-                every: 3,
-                path: PathBuf::from("logs/completions.jsonl"),
-            }),
             kl_schedule: Some(KlScheduleToml {
                 warmup_updates: Some(4),
                 target: Some(0.02),
@@ -330,6 +327,11 @@ fn exhaustive_document() -> ConfigDocument {
             sampling: exhaustive_sampling(),
         }),
         agent: None,
+        observe: Some(ObserveToml {
+            directory: PathBuf::from("out/observe"),
+            every: Some(3),
+            max_text_chars: Some(2000),
+        }),
     }
 }
 
@@ -439,6 +441,11 @@ fn every_toml_field_reaches_the_run_config() {
     assert_eq!(evaluation.min_delta, 0.125);
     assert_eq!(evaluation.max_examples, Some(9));
 
+    let observe = config.observe.as_ref().expect("[observe] builds");
+    assert_eq!(observe.directory, root.join("out/observe"));
+    assert_eq!(observe.every, 3);
+    assert_eq!(observe.max_text_chars, 2000);
+
     let checkpoint = config.checkpoint.as_ref().expect("[checkpoint] builds");
     assert_eq!(checkpoint.directory, root.join("ckpt"));
     assert_eq!(checkpoint.mode, CheckpointMode::StepsAndBestEval);
@@ -472,12 +479,6 @@ fn every_toml_field_reaches_the_run_config() {
     let penalty = grpo.overlong_penalty.expect("[grpo.overlong_penalty]");
     assert_eq!(penalty.buffer_tokens, 12);
     assert_eq!(penalty.max_penalty, 0.75);
-    let log = grpo
-        .log_completions
-        .as_ref()
-        .expect("[grpo.log_completions]");
-    assert_eq!(log.every, 3);
-    assert_eq!(log.path, root.join("logs/completions.jsonl"));
     let schedule = grpo.kl_schedule.expect("[grpo.kl_schedule]");
     assert_eq!(schedule.warmup_updates, 4);
     assert_eq!(schedule.target, Some(0.02));
@@ -547,6 +548,8 @@ fn the_other_algorithm_sections_reach_the_run_config() {
 
     let mut document = exhaustive_document();
     document.run.algorithm = "distill".to_string();
+    // `[observe]` is refused where nothing is rolled out.
+    document.observe = None;
     document.grpo = None;
     document.distill = Some(exhaustive_distill());
     // 3 samples over 2 prompts is 6 rollouts an update, and the exhaustive
@@ -578,6 +581,7 @@ fn the_other_algorithm_sections_reach_the_run_config() {
     // The offline mode of the same section.
     let mut document = exhaustive_document();
     document.run.algorithm = "distill".to_string();
+    document.observe = None;
     document.grpo = None;
     document.distill = Some(exhaustive_distill_offline());
     // Offline distillation does not generate, so the rollout-only geometry the
@@ -599,6 +603,7 @@ fn the_other_algorithm_sections_reach_the_run_config() {
     // author expects a sidecar to be read, and it would not be.
     let mut document = exhaustive_document();
     document.run.algorithm = "distill".to_string();
+    document.observe = None;
     document.grpo = None;
     let mut mixed = exhaustive_distill();
     mixed.sidecar = Some(PathBuf::from("data/corpus.topk"));
@@ -612,6 +617,7 @@ fn the_other_algorithm_sections_reach_the_run_config() {
     // than falling back to a mode nobody asked for.
     let mut document = exhaustive_document();
     document.run.algorithm = "distill".to_string();
+    document.observe = None;
     document.grpo = None;
     document.training.generation_concurrency = None;
     let mut incomplete = exhaustive_distill_offline();
@@ -624,6 +630,7 @@ fn the_other_algorithm_sections_reach_the_run_config() {
 
     let mut document = exhaustive_document();
     document.run.algorithm = "sft".to_string();
+    document.observe = None;
     document.grpo = None;
     document.sft = Some(exhaustive_sft());
     document.training.generation_concurrency = None;
@@ -700,6 +707,7 @@ seed = 0
     assert_eq!(config.training.generation_concurrency, 6);
     assert!(config.evaluation.is_none());
     assert!(config.checkpoint.is_none());
+    assert!(config.observe.is_none());
     assert!(config.metrics.tensorboard_dir.is_none());
     assert!(config.metrics.wandb_export_dir.is_none());
 
@@ -711,7 +719,6 @@ seed = 0
     assert_eq!(grpo.prompt_order, PromptOrder::Sequential);
     assert_eq!(grpo.max_stalled_updates, DEFAULT_MAX_STALLED_UPDATES);
     assert!(grpo.overlong_penalty.is_none());
-    assert!(grpo.log_completions.is_none());
     assert!(grpo.kl_schedule.is_none());
     assert!(grpo.dynamic_sampling.is_none());
     assert!(grpo.judge.is_none());

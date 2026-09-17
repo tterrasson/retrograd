@@ -785,9 +785,6 @@ impl AppState {
             }
             retrograd_config::Algorithm::Grpo(value) => {
                 self.resolve_path(&value.prompts.to_string_lossy(), "/config/grpo/prompts")?;
-                if let Some(log) = &value.log_completions {
-                    self.resolve_output_path(&log.path, "/config/grpo/log_completions/path")?;
-                }
             }
             retrograd_config::Algorithm::Distill(value) => {
                 // The two modes read different files, and the sandbox has to
@@ -853,6 +850,9 @@ impl AppState {
         }
         if let Some(path) = &config.metrics.wandb_export_dir {
             self.resolve_output_path(path, "/config/metrics/wandb_export_dir")?;
+        }
+        if let Some(observe) = &config.observe {
+            self.resolve_output_path(&observe.directory, "/config/observe/directory")?;
         }
         Ok(())
     }

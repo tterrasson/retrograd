@@ -18,6 +18,7 @@ mod control;
 mod controller;
 #[cfg(feature = "agent")]
 mod interrupt;
+mod observe;
 mod observer;
 mod resume;
 mod signature;

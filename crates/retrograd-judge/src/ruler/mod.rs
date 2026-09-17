@@ -724,6 +724,7 @@ mod tests {
             reward: None,
             truncated: false,
             metadata: Default::default(),
+            provenance: None,
         }
     }
 

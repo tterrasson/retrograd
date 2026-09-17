@@ -14,7 +14,9 @@ use crate::{Error, Result};
 use retrograd_core::{SamplingParams, TrainConfig, TrainMetrics};
 use retrograd_engine::{GenerationStats, Trainer};
 use retrograd_training::Progress;
-use retrograd_training::batch::{GrpoBatchParams, TrainSequence, train_grpo_batch};
+use retrograd_training::batch::{
+    BatchObservation, GrpoBatchParams, TrainSequence, train_grpo_batch_observed,
+};
 
 #[derive(Clone, Debug)]
 pub struct PolicyGeneration {
@@ -204,6 +206,7 @@ enum PolicyRequest {
         sequences: Vec<TrainSequence>,
         params: GrpoBatchParams,
         training: TrainConfig,
+        observation: Option<BatchObservation>,
         reply: oneshot::Sender<Result<(TrainMetrics, Vec<Progress>)>>,
     },
     /// Hands the trainer to the borrower for the duration of one job, then
@@ -255,16 +258,20 @@ impl PolicyHandle {
             .await
     }
 
+    /// `observation` receives the selection before the epochs and the
+    /// outcome after them.
     pub async fn train_grpo_batch(
         &self,
         sequences: Vec<TrainSequence>,
         params: GrpoBatchParams,
         training: TrainConfig,
+        observation: Option<BatchObservation>,
     ) -> Result<(TrainMetrics, Vec<Progress>)> {
         self.request(|reply| PolicyRequest::TrainBatch {
             sequences,
             params,
             training,
+            observation,
             reply,
         })
         .await
@@ -915,14 +922,16 @@ impl PolicyActor {
                         sequences,
                         params,
                         training,
+                        observation,
                         reply,
                     } => {
                         let mut progress = Vec::new();
-                        let result = train_grpo_batch(
+                        let result = train_grpo_batch_observed(
                             &mut trainer,
                             &sequences,
                             &params,
                             &training,
+                            observation.as_ref(),
                             &mut |value| progress.push(value),
                         )
                         .map(|metrics| (metrics, progress))

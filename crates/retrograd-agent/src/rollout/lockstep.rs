@@ -12,7 +12,7 @@ use super::state::RolloutState;
 use crate::env::{EnvTask, Environment};
 use crate::policy::PolicyGeneration;
 use crate::tools::{ParsedAssistant, ToolResult};
-use crate::trajectory::{Message, Role, Step, StepKind, Trajectory};
+use crate::trajectory::{Message, Provenance, Role, Step, StepKind, Trajectory};
 use crate::{Error, Result};
 use retrograd_agent_core::scenario::Scenario;
 
@@ -273,17 +273,19 @@ impl RolloutEngine {
             let mut continuing = Vec::with_capacity(pending.len());
             for ((index, _), turn) in pending.iter().zip(turns) {
                 let state = &mut states[*index];
+                let first_observation = state.messages.len();
                 for observation in &turn.observations {
                     state
                         .messages
                         .push(observation_message(observation, rendering));
                 }
+                let observed = (first_observation..state.messages.len()).collect::<Vec<_>>();
                 match turn.failure {
                     // Not something the policy can react to: the environment
                     // itself broke, so the world the collected prefix is
                     // conditioned on is gone and the trajectory goes with it.
                     Some(error) => state.fail(error),
-                    None => continuing.push((*index, turn.reward, turn.done)),
+                    None => continuing.push((*index, turn.reward, turn.done, observed)),
                 }
             }
             if continuing.is_empty() {
@@ -292,7 +294,7 @@ impl RolloutEngine {
 
             let renders = before_deadline(
                 deadline,
-                join_all(continuing.iter().map(|(index, _, _)| {
+                join_all(continuing.iter().map(|(index, _, _, _)| {
                     self.render_framing(&states[*index].messages, rendering, true)
                 })),
             )
@@ -301,8 +303,8 @@ impl RolloutEngine {
                 truncate(&mut states, &live);
                 break;
             };
-            for ((index, reward, done), render) in continuing.into_iter().zip(renders) {
-                self.apply_observation(&mut states[index], render, reward, done);
+            for ((index, reward, done, observed), render) in continuing.into_iter().zip(renders) {
+                self.apply_observation(&mut states[index], render, reward, done, observed);
             }
         }
 
@@ -362,7 +364,8 @@ impl RolloutEngine {
 
         Ok(states
             .into_iter()
-            .map(|state| self.finish_trajectory(scenario, state))
+            .enumerate()
+            .map(|(member, state)| self.finish_trajectory(scenario, member, state))
             .collect())
     }
 
@@ -384,11 +387,15 @@ impl RolloutEngine {
         let action_start = state.tokens.len();
         state.tokens.extend_from_slice(&generation.tokens);
         state.train_mask.resize(state.tokens.len(), true);
-        state.steps.push(Step {
-            kind: StepKind::PolicyAction,
-            token_range: (action_start, state.tokens.len()),
-            reward: None,
-        });
+        let assistant = state.messages.len();
+        state.push_step(
+            Step {
+                kind: StepKind::PolicyAction,
+                token_range: (action_start, state.tokens.len()),
+                reward: None,
+            },
+            vec![assistant],
+        );
 
         // Read with the parser the rendering settled on, never with one chosen
         // anywhere else: a template that rendered its own catalog answers in
@@ -487,6 +494,7 @@ impl RolloutEngine {
     /// Folds the re-rendered conversation back into the member's token stream,
     /// carrying the environment's verdict on the turn: its step reward lands on
     /// the observation, and `done` ends the trajectory without truncating it.
+    /// `observed` are the messages the turn's observations were written to.
     ///
     /// Only the *new* framing piece is appended. The sampled turns are already in
     /// `state.tokens` exactly as the policy emitted them and are never rendered
@@ -498,6 +506,7 @@ impl RolloutEngine {
         render: Result<Vec<Vec<i32>>>,
         reward: Option<f32>,
         done: bool,
+        observed: Vec<usize>,
     ) {
         let framing = match render {
             Ok(framing) => framing,
@@ -540,17 +549,25 @@ impl RolloutEngine {
         state.framing = framing;
         state.env_rewarded |= reward.is_some();
         state.environment_done |= done;
-        state.steps.push(Step {
-            kind: StepKind::ToolResult,
-            token_range: (observation_start, state.tokens.len()),
-            reward,
-        });
+        state.push_step(
+            Step {
+                kind: StepKind::ToolResult,
+                token_range: (observation_start, state.tokens.len()),
+                reward,
+            },
+            observed,
+        );
         if done {
             state.stop(false);
         }
     }
 
-    fn finish_trajectory(&self, scenario: &Scenario, state: RolloutState) -> Result<Trajectory> {
+    fn finish_trajectory(
+        &self,
+        scenario: &Scenario,
+        member: usize,
+        state: RolloutState,
+    ) -> Result<Trajectory> {
         if let Some(error) = state.failure {
             return Err(error);
         }
@@ -574,6 +591,11 @@ impl RolloutEngine {
             reward: final_reward,
             truncated: state.truncated,
             metadata: scenario.metadata.clone(),
+            provenance: Some(Provenance {
+                member,
+                seed: state.seed,
+                step_messages: state.step_messages,
+            }),
         };
         trajectory.validate()?;
         Ok(trajectory)

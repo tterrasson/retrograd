@@ -125,6 +125,7 @@ mod tests {
             reward: Some(1.0),
             truncated: false,
             metadata: Default::default(),
+            provenance: None,
         }
     }
 

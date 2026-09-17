@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use super::*;
 use crate::rollout::RolloutEngine;
 use crate::tools::HermesToolCallParser;
-use crate::trajectory::Role;
+use crate::trajectory::{Role, StepKind};
 use retrograd_agent_core::scenario::TruncationPolicy;
 
 #[tokio::test]
@@ -252,4 +252,53 @@ async fn a_failing_tool_call_is_still_an_observation_the_policy_reads() {
         observation.content
     );
     assert!(!trajectory.truncated);
+}
+
+#[tokio::test]
+async fn each_member_records_who_it_is_and_which_messages_each_step_wrote() {
+    let factory = Arc::new(CountingFactory {
+        opening: Some("start".into()),
+        reward: Some(0.5),
+        ..Default::default()
+    });
+    let engine = engine_with_environments(Arc::new(MultiTurnPolicy), factory, group_limits());
+    let group = engine
+        .rollout_group(&scenario(), 3, 40)
+        .await
+        .unwrap()
+        .group
+        .unwrap();
+    for (index, trajectory) in group.trajectories.iter().enumerate() {
+        let provenance = trajectory
+            .provenance
+            .as_ref()
+            .expect("recorded by the engine");
+        assert_eq!(provenance.member, index);
+        assert_eq!(provenance.seed, 40 + index as u64);
+        assert_eq!(provenance.step_messages.len(), trajectory.steps.len());
+        // The context is the scenario and the environment's opening.
+        assert_eq!(provenance.step_messages[0], [0, 1, 2]);
+        let mut rewarded = 0;
+        for (step, messages) in trajectory
+            .steps
+            .iter()
+            .zip(&provenance.step_messages)
+            .skip(1)
+        {
+            let roles = messages
+                .iter()
+                .map(|&message| trajectory.messages[message].role)
+                .collect::<Vec<_>>();
+            match step.kind {
+                StepKind::PolicyAction => assert_eq!(roles, [Role::Assistant]),
+                StepKind::ToolResult => {
+                    assert!(!roles.is_empty());
+                    assert!(roles.iter().all(|role| *role == Role::Tool), "{roles:?}");
+                    rewarded += usize::from(step.reward == Some(0.5));
+                }
+                kind => panic!("unexpected step {kind:?}"),
+            }
+        }
+        assert!(rewarded > 0, "the graded observation keeps its messages");
+    }
 }

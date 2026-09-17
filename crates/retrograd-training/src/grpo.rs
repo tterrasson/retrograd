@@ -14,6 +14,7 @@
 //! truncated at the generation budget are excluded from both the baseline and
 //! the epochs, since their reward judges an incomplete response.
 
+use super::observe::{GrpoSlots, grpo_rollouts, observed_prompts, outcome};
 use super::rollout::prompts::Prompt;
 use super::rollout::{
     EpochBatch, EpochState, GroupJudge, GrpoObjective, GrpoStepParams, JudgeGroup, JudgeTally,
@@ -27,6 +28,7 @@ use retrograd_core::{Error, Result, TrainConfig, TrainMetrics};
 use retrograd_engine::{ScoringStats, Trainer};
 use retrograd_judge::RewardProcess;
 use retrograd_metrics::MetricValue;
+use retrograd_observe::{ObserveBatch, RolloutBatch, TrajectoryObserver};
 
 macro_rules! metric {
     ($name:literal, $value:expr_2021) => {
@@ -424,45 +426,6 @@ fn group_has_signal(
     !live_rewards.iter().all(|&reward| reward == first)
 }
 
-/// Appends one JSONL record per rollout to the completion journal (item 11).
-#[allow(clippy::too_many_arguments)]
-fn append_completion_log(
-    path: &std::path::Path,
-    update: u32,
-    prompt_indices: &[usize],
-    completions: &[String],
-    seeds: &[u32],
-    rewards: &[f32],
-    advantages: &[f32],
-    live: &[bool],
-) -> Result<()> {
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|error| {
-            Error::runtime(format!("open completion log {}: {error}", path.display()))
-        })?;
-    let mut buffer = String::new();
-    for index in 0..completions.len() {
-        let record = serde_json::json!({
-            "update": update,
-            "prompt_index": prompt_indices[index],
-            "seed": seeds[index],
-            "completion": completions[index],
-            "reward": rewards[index],
-            "advantage": advantages[index],
-            "live": live[index],
-        });
-        buffer.push_str(&record.to_string());
-        buffer.push('\n');
-    }
-    file.write_all(buffer.as_bytes())
-        .map_err(|error| Error::runtime(format!("write completion log: {error}")))?;
-    Ok(())
-}
-
 /// Runs GRPO end to end: sample a group of completions per prompt, score them
 /// with the reward command, turn each group's rewards into group-relative
 /// advantages, then take `grpo_epochs` exact clipped-surrogate steps per
@@ -487,7 +450,7 @@ pub fn run_controlled(
     training: &TrainConfig,
     on_progress: &mut dyn FnMut(&mut Trainer, Progress) -> Result<bool>,
 ) -> Result<TrainMetrics> {
-    run_resumed(trainer, config, training, None, on_progress)
+    run_resumed(trainer, config, training, None, None, on_progress)
 }
 
 /// Everything a GRPO run establishes before its first update, plus the state
@@ -635,11 +598,15 @@ fn resume_state(
 /// both are needed because dynamic sampling makes the cursor independent of
 /// the update index. The learning-rate horizon is unchanged, so a resumed run
 /// follows the schedule the first launch started.
+///
+/// `observer` receives each wanted update's rollouts before its epochs, and
+/// its outcome once they all succeeded.
 pub fn run_resumed(
     trainer: &mut Trainer,
     config: &GrpoConfig,
     training: &TrainConfig,
     resume: Option<Boundary>,
+    observer: Option<&dyn TrajectoryObserver>,
     on_progress: &mut dyn FnMut(&mut Trainer, Progress) -> Result<bool>,
 ) -> Result<TrainMetrics> {
     let span = tracing::info_span!(target: "retrograd::training::grpo", "training");
@@ -662,7 +629,16 @@ pub fn run_resumed(
         let effective_kl = config.kl_coefficient * warmup_factor * state.kl_multiplier;
         let update_start_step = final_metrics.global_step;
         let batch = assemble_batch(trainer, config, training, &mut state)?;
-        let baseline = build_baseline(trainer, config, &mut state, update, effective_kl, batch)?;
+        let observer = observer.filter(|observer| observer.wants(update + 1));
+        let baseline = build_baseline(
+            trainer,
+            config,
+            &mut state,
+            update,
+            effective_kl,
+            batch,
+            observer,
+        )?;
         if !run_epochs(
             trainer,
             config,
@@ -670,6 +646,7 @@ pub fn run_resumed(
             &baseline,
             &mut scratch,
             &mut final_metrics,
+            observer,
             on_progress,
         )? {
             return Ok(final_metrics);
@@ -763,7 +740,7 @@ struct BatchMetrics {
 /// Phase 2 consumes the [`TrainingBatch`] rather than borrowing it, which is
 /// what frees the per-slot text buffers - completions, seeds, prompt indices,
 /// before the epochs allocate anything: they are needed only up to the
-/// completion journal.
+/// observer, which takes the completions.
 struct UpdateBaseline {
     update: u32,
     /// KL coefficient in force for this update: base * warm-up * adaptive
@@ -1133,6 +1110,8 @@ fn assemble_batch(
 /// collapse diagnostic but is deliberately absent from the advantage. This is
 /// also where the DAPO shaping happens (overlong penalty, truncation masking)
 /// and where a run that has stalled for too long stops.
+///
+/// `observer` is only passed for an update it wants.
 fn build_baseline(
     trainer: &mut Trainer,
     config: &GrpoConfig,
@@ -1140,6 +1119,7 @@ fn build_baseline(
     update: u32,
     effective_kl: f32,
     batch: TrainingBatch,
+    observer: Option<&dyn TrajectoryObserver>,
 ) -> Result<UpdateBaseline> {
     let TrainingBatch {
         rollouts,
@@ -1177,6 +1157,7 @@ fn build_baseline(
         "the judge terms must stay aligned with the rewards they were blended into"
     );
     let (verifiable_reward_mean, judge_reward_mean) = reward_split(mean_reward_f64, &judge_terms);
+    let raw_rewards = observer.map(|_| rewards.clone());
     // DAPO soft overlong punishment (item 8): a progressive penalty over
     // the last `buffer_tokens` of the budget, applied to the reward before
     // the group baseline so the policy learns to conclude rather than run
@@ -1211,25 +1192,32 @@ fn build_baseline(
     // Fraction of unique completions per group (item 7): a precursor to
     // deduplication. Averaged over groups.
     let distinct_fraction = distinct_completion_fraction(&completions, &group_ids);
-    // Journal of sampled completions (item 11): dumped every N updates for
-    // offline reward-hacking / collapse inspection, before the per-update
-    // buffers are dropped.
-    if let Some(log) = &config.log_completions
-        && update.is_multiple_of(log.every)
-    {
-        append_completion_log(
-            &log.path,
-            update,
-            &prompt_indices,
-            &completions,
-            &member_seeds,
-            &rewards,
-            &advantages,
-            &live,
-        )?;
+    match (observer, &raw_rewards) {
+        (Some(observer), Some(raw_rewards)) => {
+            let rollouts = grpo_rollouts(GrpoSlots {
+                update: update + 1,
+                group_size: config.group_size,
+                loss_denominator,
+                mask_truncated: config.mask_truncated,
+                prompt_indices: &prompt_indices,
+                completions,
+                lengths: rollouts.iter().map(Rollout::completion_len).collect(),
+                seeds: &member_seeds,
+                rewards: &rewards,
+                raw_rewards,
+                judge_terms: &judge_terms,
+                judged: &judged_groups,
+                advantages: &advantages,
+                live: &live,
+            });
+            observer.observe(ObserveBatch::Rollouts(RolloutBatch {
+                prompts: observed_prompts(&state.prompts, prompt_indices.iter().copied()),
+                rollouts,
+            }));
+        }
+        _ => drop(completions),
     }
     drop(prompt_indices);
-    drop(completions);
     drop(member_seeds);
     // Zero-signal groups (and masked truncations) are dead by now: only
     // live rollouts are stepped, so no compute goes to KL-only updates.
@@ -1419,6 +1407,7 @@ fn build_baseline(
 /// every update and epoch.
 ///
 /// Returns `false` when a progress callback asked to stop, which ends the run.
+#[allow(clippy::too_many_arguments)]
 fn run_epochs(
     trainer: &mut Trainer,
     config: &GrpoConfig,
@@ -1426,6 +1415,7 @@ fn run_epochs(
     baseline: &UpdateBaseline,
     scratch: &mut WeightedStepScratch,
     final_metrics: &mut TrainMetrics,
+    observer: Option<&dyn TrajectoryObserver>,
     on_progress: &mut dyn FnMut(&mut Trainer, Progress) -> Result<bool>,
 ) -> Result<bool> {
     // Destructured rather than read through `baseline.metrics.…`, and the field
@@ -1567,6 +1557,16 @@ fn run_epochs(
             0.0
         };
         let closes_update = epoch + 1 == config.grpo_epochs;
+        if closes_update && let Some(observer) = observer {
+            let trained = reference_positions
+                .iter()
+                .map(Option::is_some)
+                .collect::<Vec<_>>();
+            observer.observe(ObserveBatch::Outcome {
+                update: update + 1,
+                entries: outcome(Some(config.group_size), &trained),
+            });
+        }
         // Persist the state for the *next* update. The effective
         // coefficient used above was captured before this adjustment.
         if closes_update && let Some(schedule) = &config.kl_schedule {

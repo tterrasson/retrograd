@@ -191,15 +191,10 @@ fn artifacts_of(config: &retrograd_config::RunConfig) -> RunArtifacts {
             .map(|checkpoint| checkpoint.directory.clone()),
         tensorboard_directory: config.metrics.tensorboard_dir.clone(),
         wandb_export_directory: config.metrics.wandb_export_dir.clone(),
-        completions: match &config.algorithm {
-            retrograd_config::Algorithm::Grpo(grpo) => {
-                grpo.log_completions.as_ref().map(|log| log.path.clone())
-            }
-            // Nothing else has a completions log to point at: SFT and PPO
-            // never had one, and distillation does not journal completions -
-            // there is no reward to inspect them against.
-            _ => None,
-        },
+        observe: config
+            .observe
+            .as_ref()
+            .map(|observe| observe.directory.clone()),
     }
 }
 

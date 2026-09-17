@@ -1,6 +1,7 @@
 //! Training entry point for trajectories collected outside the built-in
 //! single-turn GRPO sampler.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use super::Progress;
@@ -13,6 +14,7 @@ use super::rollout::{
 use retrograd_core::{Error, Result, TrainConfig, TrainMetrics};
 use retrograd_engine::Trainer;
 use retrograd_metrics::MetricValue;
+use retrograd_observe::{ObserveBatch, SelectionEntry, SkipReason, TrajectoryObserver};
 
 /// A pre-generated on-policy sequence ready for a GRPO update.
 #[derive(Clone, Debug)]
@@ -190,6 +192,17 @@ fn token_advantages(advantage: f32, intermediate_returns: &[f32]) -> Vec<f32> {
         .collect()
 }
 
+/// Where a batch's selection and outcome are exported, and who each sequence
+/// is in the update that collected it.
+#[derive(Clone)]
+pub struct BatchObservation {
+    pub observer: Arc<dyn TrajectoryObserver>,
+    /// One-based.
+    pub update: u32,
+    /// `(group, member)` of each sequence, in the order of the batch.
+    pub members: Vec<(usize, usize)>,
+}
+
 /// Trains one immutable-policy GRPO batch with explicit token masks and
 /// group ids. Collection and reward scoring happen before this call; no
 /// policy generation occurs while the batch is being optimized.
@@ -200,7 +213,29 @@ pub fn train_grpo_batch(
     training: &TrainConfig,
     on_progress: &mut dyn FnMut(Progress),
 ) -> Result<TrainMetrics> {
+    train_grpo_batch_observed(trainer, sequences, params, training, None, on_progress)
+}
+
+/// [`train_grpo_batch`], publishing the advantages and the effective mask
+/// before the epochs, and the outcome once they all succeeded.
+pub fn train_grpo_batch_observed(
+    trainer: &mut Trainer,
+    sequences: &[TrainSequence],
+    params: &GrpoBatchParams,
+    training: &TrainConfig,
+    observation: Option<&BatchObservation>,
+    on_progress: &mut dyn FnMut(Progress),
+) -> Result<TrainMetrics> {
     params.validate()?;
+    if let Some(observation) = observation
+        && observation.members.len() != sequences.len()
+    {
+        return Err(Error::invalid(format!(
+            "the batch observation names {} sequences for a batch of {}",
+            observation.members.len(),
+            sequences.len()
+        )));
+    }
     if sequences.is_empty() {
         return Err(Error::invalid("GRPO batch must not be empty"));
     }
@@ -279,6 +314,12 @@ pub fn train_grpo_batch(
     let trainable = (0..sequences.len())
         .filter(|&index| live[index])
         .collect::<Vec<_>>();
+    if let Some(observation) = observation {
+        observation.observer.observe(ObserveBatch::Selection {
+            update: observation.update,
+            entries: selection_entries(&observation.members, &advantages, &live),
+        });
+    }
 
     let rollouts = sequences
         .iter()
@@ -488,7 +529,47 @@ pub fn train_grpo_batch(
             .collect(),
         });
     }
+    if let Some(observation) = observation {
+        observation.observer.observe(ObserveBatch::Outcome {
+            update: observation.update,
+            entries: observation
+                .members
+                .iter()
+                .zip(&live)
+                .map(
+                    |(&(group, member), &trained)| retrograd_observe::OutcomeEntry {
+                        group: Some(group),
+                        member,
+                        trained,
+                    },
+                )
+                .collect(),
+        });
+    }
     Ok(final_metrics)
+}
+
+/// A sequence reaches this function only once it was scored, so the one
+/// exclusion decided here is a group without signal.
+fn selection_entries(
+    members: &[(usize, usize)],
+    advantages: &[f32],
+    live: &[bool],
+) -> Vec<SelectionEntry> {
+    members
+        .iter()
+        .zip(advantages)
+        .zip(live)
+        .map(
+            |((&(group, member), &advantage), &eligible)| SelectionEntry {
+                group,
+                member,
+                advantage,
+                eligible,
+                skip_reason: (!eligible).then_some(SkipReason::ZeroSignal),
+            },
+        )
+        .collect()
 }
 
 #[cfg(test)]
@@ -552,6 +633,21 @@ mod tests {
     #[test]
     fn a_single_policy_token_keeps_the_whole_advantage() {
         assert_eq!(token_advantages(0.75, &[9.0]), [0.75]);
+    }
+
+    #[test]
+    fn selection_marks_the_sequences_a_group_without_signal_left_out() {
+        let entries = selection_entries(
+            &[(0, 0), (0, 3), (2, 1)],
+            &[0.5, -0.5, 0.0],
+            &[true, true, false],
+        );
+        assert_eq!(entries[1].member, 3);
+        assert_eq!(entries[1].advantage, -0.5);
+        assert!(entries[1].eligible);
+        assert_eq!(entries[1].skip_reason, None);
+        assert_eq!((entries[2].group, entries[2].member), (2, 1));
+        assert_eq!(entries[2].skip_reason, Some(SkipReason::ZeroSignal));
     }
 
     #[test]
