@@ -1407,7 +1407,7 @@ fn build_baseline(
 /// every update and epoch.
 ///
 /// Returns `false` when a progress callback asked to stop, which ends the run.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn run_epochs(
     trainer: &mut Trainer,
     config: &GrpoConfig,

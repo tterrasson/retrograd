@@ -212,7 +212,7 @@ mod tests {
     // no line here does. Deleting them would delete the test's subject.
     #[derive(Deserialize, Debug)]
     #[serde(deny_unknown_fields)]
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     struct Recipe {
         objective: Option<String>,
         model: Option<String>,
@@ -241,7 +241,7 @@ mod tests {
     fn a_missing_field_is_named_by_code_and_by_pointer() {
         // Same as `Recipe` above: the field is the schema, not a value read.
         #[derive(Deserialize, Debug)]
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         struct Required {
             model: String,
         }
@@ -274,7 +274,7 @@ mod tests {
         #[serde(deny_unknown_fields)]
         struct Outer {
             // Nesting is the point of the test; the value is never read.
-            #[allow(dead_code)]
+            #[expect(dead_code)]
             recipe: Recipe,
         }
         let error = from_json_slice::<Outer>(br#"{"recipe":{"objectif":"x"}}"#).unwrap_err();

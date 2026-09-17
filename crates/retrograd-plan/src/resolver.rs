@@ -679,7 +679,7 @@ fn rebuild_and_validate(
 /// not: an overflow is still a 422 unless the caller forces it.
 // Eight now that a distillation run has a second model to size, and every one
 // of them is a distinct fact about the run being assessed.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn assess(
     config: &RunConfig,
     model: &ModelInfo,

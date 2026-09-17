@@ -83,7 +83,7 @@ impl Footprint {
 /// call it.
 // The `if let` is irrefutable in a build without the CUDA feature, and that is
 // the point: the alternative arm exists only under it.
-#[allow(irrefutable_let_patterns)]
+#[expect(irrefutable_let_patterns)]
 fn shared_memory_limit(gpu: &AnyGpu) -> Option<u32> {
     // Written as an `if let` and not a `match`, so this file carries no
     // `#[cfg(feature = "cuda")]` of its own: `AnyGpu`'s CUDA arm exists only

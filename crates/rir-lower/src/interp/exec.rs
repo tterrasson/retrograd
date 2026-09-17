@@ -22,7 +22,7 @@ use super::*;
 // registers, destination, binding, memory type, address, width - and grouping
 // them in a struct would only move the same list: these are statement fields,
 // not shared state.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn exec_load(
     k: &LoopKernel,
     args: &[BoundArg],
@@ -109,7 +109,7 @@ pub(crate) fn exec_load(
 // reason: they are the fields of `Stmt::Store`, so a struct would only move the
 // list. It answers `Ok(true)` when the store was skipped by its per-component
 // bound - the dispatcher's `continue`, returned instead of jumped to.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn exec_store(
     k: &LoopKernel,
     args: &mut [BoundArg],
@@ -315,7 +315,7 @@ fn exec_compute(
                 | LExpr::ISubC(..)
                 | LExpr::ISub(..)
                 | LExpr::ICmpC { .. } => {
-                    unreachable!()
+                    unreachable!("integer expression evaluated as a float")
                 }
             };
             regs.f[d] = val;

@@ -260,7 +260,7 @@ mod tests {
 
     // The **generated** Rust CPU path, including its fused quantized loader and
     // f16_to_f32 conversion, matches the reference.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     mod generated_q8_0 {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -268,7 +268,7 @@ mod tests {
         ));
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     mod generated_q4_0 {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),

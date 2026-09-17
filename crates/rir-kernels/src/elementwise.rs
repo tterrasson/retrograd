@@ -781,7 +781,6 @@ mod tests {
     /// stays independent of what it judges.
     use rir_lower::interp::f16_to_f32 as half_to_f32;
 
-    #[allow(dead_code)]
     mod generated_add {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -794,7 +793,7 @@ mod tests {
     // buffers, and the emitter cannot be bent to please a lint without moving
     // `generated/`, which must regenerate byte for byte. Named rather than blanketed
     // (`clippy::all`), so the next lint an emitter change trips is reported.
-    #[allow(dead_code, clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     mod generated_scale {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),

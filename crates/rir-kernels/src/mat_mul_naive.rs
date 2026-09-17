@@ -159,7 +159,6 @@ mod tests {
     }
 
     // The generated CPU i/j/k loop nest compiles and is correct.
-    #[allow(dead_code)]
     mod generated {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),

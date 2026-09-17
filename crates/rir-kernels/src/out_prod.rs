@@ -675,7 +675,7 @@ mod tests {
     // buffers, and the emitter cannot be bent to please a lint without moving
     // `generated/`, which must regenerate byte for byte. Named rather than blanketed
     // (`clippy::all`), so the next lint an emitter change trips is reported.
-    #[allow(dead_code, clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     mod generated {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),

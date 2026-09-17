@@ -344,7 +344,6 @@ mod tests {
     }
 
     // The generated CPU scan loop compiles and produces the expected result.
-    #[allow(dead_code)]
     mod generated {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),

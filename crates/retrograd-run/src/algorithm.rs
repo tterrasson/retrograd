@@ -626,7 +626,7 @@ fn run_distill_offline(
 /// epoch, metrics forwarded to the sinks, evaluation and checkpoint at update
 /// boundaries. `sink` is the `[observe]` export, closed here whatever the
 /// outcome.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn run_rollout_updates(
     trainer: &mut Trainer,
     ctx: &mut Context<'_>,

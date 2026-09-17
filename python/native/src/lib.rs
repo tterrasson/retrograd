@@ -251,7 +251,7 @@ impl PyTrainer {
         verbose=false,
         device="auto"
     ))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn new(
         model_path: String,
         n_ctx: u32,
@@ -483,7 +483,7 @@ impl PyTrainer {
         scheduler_total_rollouts=None,
         callback=None
     ))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn train_grpo_batch(
         &mut self,
         token_ids: Vec<Vec<i32>>,
@@ -598,7 +598,7 @@ impl PyTrainer {
         seed=42,
         callback=None
     ))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn fit_ppo(
         &mut self,
         prompts: String,
@@ -690,7 +690,7 @@ impl PyTrainer {
         seed=42,
         callback=None
     ))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn fit_grpo(
         &mut self,
         prompts: String,
@@ -775,7 +775,7 @@ impl PyTrainer {
         seed=42,
         callback=None
     ))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn fit_distill(
         &mut self,
         teacher_path: String,
@@ -870,7 +870,7 @@ impl PyTrainer {
         seed=42,
         callback=None
     ))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn fit_agentic_grpo(
         &mut self,
         scenarios_json: &str,

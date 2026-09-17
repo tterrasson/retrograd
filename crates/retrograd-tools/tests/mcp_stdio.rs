@@ -26,7 +26,7 @@ struct AddRequest {
 struct EchoServer {
     // Read by the `#[tool_router]`/`#[tool_handler]` macro expansion, never by
     // a line written here - which is what `dead_code` sees.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 

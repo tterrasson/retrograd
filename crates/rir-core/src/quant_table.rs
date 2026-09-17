@@ -106,7 +106,7 @@ macro_rules! quant_table {
         ///
         /// Variants keep the ggml spelling (`Q4_K`, `IQ2_XXS`) so a grep for a
         /// format name crosses the Rust/C boundary unchanged.
-        #[allow(non_camel_case_types)]
+        #[expect(non_camel_case_types)]
         #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
         pub enum QuantType {
             $($variant,)+
@@ -131,7 +131,7 @@ use BlockShape::*;
 use Lowering::{NativeIntrinsic, Portable};
 
 // Shorthand: every field is spelled once, in table order.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn f(
     id: u16,
     name: &'static str,
@@ -178,7 +178,7 @@ fn simple(payload: BitPlan, signed: bool, d_off: u32, value: Payload) -> Option<
 
 /// A K-quant super-block: block scale, packed sub-block scales, and the
 /// formula the sub-scale enters.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn sup(
     payload: BitPlan,
     high: Option<BitPlan>,

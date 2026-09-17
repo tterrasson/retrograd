@@ -162,7 +162,6 @@ pub fn execution_profile(shared_prefix_packed_training: bool) -> retrograd_core:
 
 /// Assembles a [`ResolveInput`] over the fixtures above. The borrowed pieces
 /// have to outlive the input, so the caller owns them.
-#[allow(clippy::too_many_arguments)]
 pub fn input<'a>(
     recipe: &'a Recipe,
     params: &'a serde_json::Value,
@@ -176,7 +175,6 @@ pub fn input<'a>(
 /// Same as [`input`], with an eval dataset wired in - what `resolve::plan_recipe`
 /// does once `recipe.eval` is set, and what most fixtures do not need to
 /// bother with.
-#[allow(clippy::too_many_arguments)]
 pub fn input_with_eval<'a>(
     recipe: &'a Recipe,
     params: &'a serde_json::Value,

@@ -1936,6 +1936,6 @@ mod contract_tests {
 
 // Exercise build-time platform rules in the normal fast lane.
 #[cfg(test)]
-#[allow(dead_code)]
+#[expect(dead_code)]
 #[path = "../build/backend_selection.rs"]
 mod backend_selection;

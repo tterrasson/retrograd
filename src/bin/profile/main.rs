@@ -333,7 +333,7 @@ pub(crate) fn extract_update_row(progress: &Progress) -> Option<UpdateRow> {
 
 /// The report section, shared by every algorithm: the checkpoint gates read
 /// from the trainer after training, and the nine tables plus the footer.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn print_report(
     options: &Options,
     run_config: &RunConfig,

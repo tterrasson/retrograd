@@ -615,7 +615,7 @@ fn assemble_batch(
 
 /// Phase 2 of an update - the optimizer epochs, `run_grpo_epoch` unchanged.
 /// Returns `false` when a progress callback asked to stop, which ends the run.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn run_epochs(
     trainer: &mut Trainer,
     config: &DistillConfig,

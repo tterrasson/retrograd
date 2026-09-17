@@ -1224,7 +1224,6 @@ fn dr_grpo_uses_a_constant_generation_budget_denominator() {
     assert!((short_reduction - 0.25).abs() < 1e-6);
 }
 
-#[allow(clippy::too_many_arguments)]
 fn exact_grpo_loss(
     new: f32,
     old: f32,

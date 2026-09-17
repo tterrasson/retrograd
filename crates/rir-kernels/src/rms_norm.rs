@@ -263,7 +263,6 @@ mod tests {
         }
     }
 
-    #[allow(dead_code)]
     mod generated {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),

@@ -1231,7 +1231,7 @@ fn several_cuda_instances_coexist_in_one_process() {
 /// The same block, derived from the **manifest** instead of the lowering, for
 /// the tests that hold a manifest and no `LoopKernel`. One computation, two
 /// sources of the geometry, and both are published rather than assumed.
-#[allow(unused)]
+#[expect(unused)]
 fn flat_values_from(values: &mut Values, m: &Manifest, extents: &[(&str, usize)]) {
     if m.flat.is_empty() {
         return;

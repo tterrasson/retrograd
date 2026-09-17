@@ -25,7 +25,7 @@
 
 /// The committed generated CPU kernel of an F16 band, included for its two
 /// helpers. `add_f16` is the smallest generated file that carries both.
-#[allow(dead_code)]
+#[expect(dead_code)]
 mod generated {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),

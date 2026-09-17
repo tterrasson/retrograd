@@ -150,7 +150,7 @@ pub fn sweep(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn arbitrate_one(
     gpu: &AnyGpu,
     target: Backend,

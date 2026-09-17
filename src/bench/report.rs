@@ -569,7 +569,7 @@ fn print_distill_bench_verdict(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn metric_row(
     table: &mut Table,
     color: bool,

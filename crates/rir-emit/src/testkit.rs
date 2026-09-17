@@ -894,7 +894,7 @@ macro_rules! pin_probes {
 
         /// Never called: it exists so that a probe this backend forgot to pin
         /// is a non-exhaustive `match`, at compile time.
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         fn every_probe_is_pinned(p: $crate::testkit::Probes) {
             match p {
                 $($crate::testkit::Probes::$variant => ()),*
