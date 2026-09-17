@@ -87,7 +87,11 @@ pub fn load_mcp_config_files(
                 .to_string_lossy()
                 .into_owned()
             });
-            let transport = match (entry.command, entry.url, entry.kind.as_deref()) {
+            // One match, not "build a transport, then read it back": a file
+            // entry always declares one, so the intermediate value would carry
+            // an `Unspecified` case that only the policy overlay below can
+            // produce, and the arm for it could only be `unreachable!`.
+            let mut config = match (entry.command, entry.url, entry.kind.as_deref()) {
                 (Some(command), None, None | Some("stdio")) => {
                     let mut argv = vec![command];
                     argv.extend(entry.args);
@@ -96,15 +100,11 @@ pub fn load_mcp_config_files(
                     // merge. Expanding here too would re-expand the result - a
                     // resolved secret then trips the "use ${VAR}" warning, and a
                     // legitimate `${` inside a value fails the whole load.
-                    McpTransport::Stdio {
-                        command: argv,
-                        env: entry.env,
-                    }
+                    McpServerConfig::stdio(&name, argv).with_env(entry.env)
                 }
-                (None, Some(url), None | Some("http")) => McpTransport::StreamableHttp {
-                    url,
-                    headers: entry.headers,
-                },
+                (None, Some(url), None | Some("http")) => {
+                    McpServerConfig::http(&name, url).with_headers(entry.headers)
+                }
                 (_, _, Some("sse")) => {
                     return Err(Error::invalid(format!(
                         "MCP server '{name}' uses SSE, which is not supported in V1"
@@ -115,15 +115,6 @@ pub fn load_mcp_config_files(
                         "MCP server '{name}' must declare one stdio command or HTTP url"
                     )));
                 }
-            };
-            let mut config = match transport {
-                McpTransport::Stdio { command, env } => {
-                    McpServerConfig::stdio(&name, command).with_env(env)
-                }
-                McpTransport::StreamableHttp { url, headers } => {
-                    McpServerConfig::http(&name, url).with_headers(headers)
-                }
-                McpTransport::Unspecified => unreachable!(),
             };
             config.cwd = cwd;
             if let Some(timeout) = entry.timeout {
