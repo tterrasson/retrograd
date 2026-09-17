@@ -39,6 +39,7 @@ pub mod execution;
 pub mod geometry;
 pub mod levers;
 pub mod merge;
+pub mod packing_tuning;
 pub mod provenance;
 pub mod recipe;
 pub mod resolver;

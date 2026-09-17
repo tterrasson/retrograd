@@ -140,6 +140,71 @@ fn packed_fanout_transaction_publishes_only_on_the_final_pass() {
 }
 
 #[test]
+fn auto_packing_trains_unequal_passes_in_one_optimizer_update() {
+    let _guard = serialize_models();
+    let Some(model) = common::model_path_if_available() else {
+        eprintln!("skipping: no local test model");
+        return;
+    };
+    let mut trainer = Trainer::new(model, config()).expect("load trainer");
+    trainer.create_lora(&lora()).expect("create LoRA");
+    assert!(trainer.supports_shared_prefix_packed_training().unwrap());
+    let token = *trainer
+        .tokenize_text("shared prefix")
+        .unwrap()
+        .last()
+        .unwrap();
+    let mut sequences = Vec::new();
+    for completion in [50, 8, 8, 8] {
+        let tokens = vec![token; 8 + completion];
+        let mut train_mask = vec![false; 8];
+        train_mask.extend(vec![true; completion]);
+        let old_logprobs = trainer.score_masked_tokens(&tokens, &train_mask).unwrap();
+        sequences.push(TrainSequence {
+            tokens,
+            train_mask,
+            old_logprobs,
+            reward: if completion == 50 { 1.0 } else { 0.0 },
+            group_id: 1,
+            intermediate_returns: Vec::new(),
+        });
+    }
+    // The long completion fits alone (7 + 50 + 3 = 60), but never
+    // beside a short one (7 + 50 + 8 + 2 = 67 > micro_batch=64).
+    let mut progress = Vec::new();
+    let metrics = train_grpo_batch(
+        &mut trainer,
+        &sequences,
+        &GrpoBatchParams {
+            epochs: 1,
+            clip_range_low: 0.2,
+            clip_range_high: 0.28,
+            kl_coefficient: 0.0,
+            loss_denominator: 50,
+            seed: 42,
+            scheduler_total_rollouts: None,
+        },
+        &config(),
+        &mut |event| progress.push(event),
+    )
+    .expect("train unequal packed passes");
+    assert_eq!(metrics.global_step, 1);
+    assert!(metrics.train_loss.is_finite());
+    assert_eq!(progress.len(), 1);
+    let notes = &progress[0].notes;
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.starts_with("shared-prefix packing: ")),
+        "{notes:?}"
+    );
+    assert!(
+        !notes.iter().any(|note| note.contains("packing disabled")),
+        "{notes:?}"
+    );
+}
+
+#[test]
 fn batched_generation_and_suffix_scoring_share_one_loaded_model() {
     let _guard = serialize_models();
     let Some(model) = common::model_path_if_available() else {
@@ -1090,4 +1155,40 @@ fn a_training_step_forgets_every_resident_prefix() {
         "a prefix decoded under the previous weights must not be reused"
     );
     assert_eq!(stats.prefilled_tokens, turn.len() as u64);
+}
+
+#[test]
+fn packing_geometry_benchmarks_complete_updates_on_disposable_adapters() {
+    use retrograd::training::packing_benchmark::PackingBenchmark;
+
+    let _guard = serialize_models();
+    let Some(model) = common::model_path_if_available() else {
+        eprintln!("skipping: no local test model");
+        return;
+    };
+    for (width, fanout) in [(64, 4), (32, 2)] {
+        let mut training = config();
+        training.n_ubatch = width;
+        training.shared_prefix_fanout = retrograd_core::SharedPrefixFanout::Exact(fanout);
+        let result =
+            retrograd::training::packing_benchmark::benchmark(&model, &training, &lora(), 8, 4, 4)
+                .expect("benchmark private packed trainer");
+        let PackingBenchmark::Measured { seconds, memory } = result else {
+            panic!("ubatch={width}, fanout={fanout} was refused: {result:?}");
+        };
+        assert_eq!(seconds.len(), 3);
+        assert!(seconds.iter().all(|s| s.is_finite() && *s > 0.0));
+        // The planner charges `device_bytes`; on this CPU fixture the runtime's
+        // buffers are host buffers, so the report is checked as a whole.
+        assert!(memory.device_bytes + memory.host_bytes > 0);
+        eprintln!("packed geometry ubatch={width}, fanout={fanout}: {seconds:?} seconds/update");
+    }
+    // A locked fanout the width cannot hold is a refusal, not an error.
+    let mut training = config();
+    training.n_ubatch = 16;
+    training.shared_prefix_fanout = retrograd_core::SharedPrefixFanout::Exact(4);
+    let result =
+        retrograd::training::packing_benchmark::benchmark(&model, &training, &lora(), 8, 4, 4)
+            .expect("a refused geometry is not an error");
+    assert!(matches!(result, PackingBenchmark::Refused(_)), "{result:?}");
 }

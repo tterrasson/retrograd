@@ -10,15 +10,74 @@ use super::step::ChunkMember;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PackRefusal {
-    FanoutDoesNotFit,
+    FanoutDoesNotFit { required: usize, available: usize },
     DivergentPrefix,
     InvalidLayout,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PackOutcome {
-    Packed { physical_tokens: usize },
+    Packed {
+        useful_tokens: usize,
+        shared_tokens: usize,
+    },
     Refused(PackRefusal),
+}
+
+/// The same compatible runs drive the size check and the physical packer.
+fn compatible_run_end(chunk: &[ChunkMember<'_>], start: usize) -> Result<usize> {
+    let first = &chunk[start];
+    let first_train = first.rollout.first_train_index()?;
+    let shared = &first.rollout.tokens[..first_train - 1];
+    let mut end = start + 1;
+    while end < chunk.len() {
+        let candidate = &chunk[end];
+        if candidate.group_id != first.group_id
+            || candidate.rollout.first_train_index()? != first_train
+            || candidate.rollout.tokens.get(..shared.len()) != Some(shared)
+        {
+            break;
+        }
+        end += 1;
+    }
+    Ok(end)
+}
+
+/// Exact width, including isolated tokens for unused sequence slots. No
+/// context-sized buffers or weights are built while choosing a geometry.
+pub(super) fn packed_width(
+    chunk: &[ChunkMember<'_>],
+    layout: &RowLayout,
+) -> Result<std::result::Result<usize, PackRefusal>> {
+    if chunk.is_empty() || chunk.len() > layout.n_seq_max {
+        return Ok(Err(PackRefusal::InvalidLayout));
+    }
+    let mut required = layout.n_seq_max - chunk.len();
+    let mut start = 0;
+    while start < chunk.len() {
+        let first_train = chunk[start].rollout.first_train_index()?;
+        if first_train < 2 {
+            return Ok(Err(PackRefusal::DivergentPrefix));
+        }
+        let end = compatible_run_end(chunk, start)?;
+        required = required
+            .checked_add(first_train - 1)
+            .ok_or_else(|| Error::overflow("packed prefix width overflows usize"))?;
+        for member in &chunk[start..end] {
+            required = required
+                .checked_add(member.rollout.training_span_len()?)
+                .ok_or_else(|| Error::overflow("packed training width overflows usize"))?;
+        }
+        start = end;
+    }
+    Ok(if required > layout.ubatch {
+        Err(PackRefusal::FanoutDoesNotFit {
+            required,
+            available: layout.ubatch,
+        })
+    } else {
+        Ok(required)
+    })
 }
 
 /// Packs one rollout into a fixed-width training row. Position `i` predicts
@@ -81,14 +140,21 @@ pub(crate) struct WeightedStepScratch {
     pub(crate) packing_shared_tokens: usize,
     pub(crate) packing_useful_tokens: usize,
     pub(crate) packing_physical_tokens: usize,
-    pub(super) packing_logged: bool,
-    /// One-shot packing lines, waiting for the next progress event to carry
+    pub(super) packing_status: Option<String>,
+    /// Packing state changes, waiting for the next progress event to carry
     /// them out rather than being printed over the caller's progress bar.
     /// See `Progress::notes`.
     pub(crate) notes: Vec<String>,
 }
 
 impl WeightedStepScratch {
+    pub(super) fn note_packing(&mut self, status: String, message: String) {
+        if self.packing_status.as_ref() != Some(&status) {
+            self.notes.push(message);
+            self.packing_status = Some(status);
+        }
+    }
+
     pub(crate) fn new(layout: &RowLayout) -> Self {
         Self {
             token_weights: Vec::new(),
@@ -121,7 +187,7 @@ impl WeightedStepScratch {
             packing_shared_tokens: 0,
             packing_useful_tokens: 0,
             packing_physical_tokens: 0,
-            packing_logged: false,
+            packing_status: None,
             notes: Vec::new(),
         }
     }
@@ -222,11 +288,22 @@ impl WeightedStepScratch {
         layout: &RowLayout,
         loss_denominator: usize,
     ) -> Result<PackOutcome> {
-        if chunk.is_empty() || member_weight_offset + chunk.len() > self.member_weights.len() {
+        if member_weight_offset > self.member_weights.len()
+            || chunk.len() > self.member_weights.len() - member_weight_offset
+        {
             return Ok(PackOutcome::Refused(PackRefusal::InvalidLayout));
         }
-        if chunk.len() > layout.n_seq_max {
-            return Ok(PackOutcome::Refused(PackRefusal::InvalidLayout));
+        let expected_width = match packed_width(chunk, layout)? {
+            Ok(width) => width,
+            Err(refusal) => return Ok(PackOutcome::Refused(refusal)),
+        };
+        for (member, weights) in chunk
+            .iter()
+            .zip(&self.member_weights[member_weight_offset..])
+        {
+            if member.rollout.completion_len() != weights.len() {
+                return Err(Error::tokenize("rollout does not match its token weights"));
+            }
         }
 
         let batch = &mut self.packed_sequence_batch;
@@ -246,36 +323,23 @@ impl WeightedStepScratch {
         batch.n_sequences = layout.n_seq_max;
 
         let mut cursor = 0_usize;
+        let mut shared_count = 0_usize;
         let mut group_start = 0_usize;
         while group_start < chunk.len() {
-            let group_id = chunk[group_start].group_id;
             let first_train = chunk[group_start].rollout.first_train_index()?;
-            if first_train < 2 {
-                return Ok(PackOutcome::Refused(PackRefusal::DivergentPrefix));
-            }
             let shared_len = first_train - 1;
             let shared_tokens = &chunk[group_start].rollout.tokens[..shared_len];
             // A reward group may contain externally supplied trajectories
             // with different prefixes. Share only the longest contiguous run
             // that is actually compatible; the remaining members become
             // independent physical prompt groups in the same packed ubatch.
-            let mut group_end = group_start + 1;
-            while group_end < chunk.len() {
-                let candidate = &chunk[group_end];
-                if candidate.group_id != group_id
-                    || candidate.rollout.first_train_index()? != first_train
-                    || candidate.rollout.tokens.get(..shared_len) != Some(shared_tokens)
-                {
-                    break;
-                }
-                group_end += 1;
-            }
+            let group_end = compatible_run_end(chunk, group_start)?;
             let members = &chunk[group_start..group_end];
+            if members.len() > 1 {
+                shared_count += shared_len;
+            }
 
             let sequence_ids = group_start..group_end;
-            if cursor + shared_len >= layout.ubatch {
-                return Ok(PackOutcome::Refused(PackRefusal::FanoutDoesNotFit));
-            }
             batch.tokens[cursor..cursor + shared_len].copy_from_slice(shared_tokens);
             for offset in 0..shared_len {
                 batch.positions[cursor] = offset as i32;
@@ -289,9 +353,6 @@ impl WeightedStepScratch {
             for (member_index, member) in (group_start..group_end).zip(members) {
                 let rollout = member.rollout;
                 let training_span = rollout.training_span_len()?;
-                if cursor + training_span > layout.ubatch {
-                    return Ok(PackOutcome::Refused(PackRefusal::FanoutDoesNotFit));
-                }
                 let input = &rollout.tokens[first_train - 1..first_train - 1 + training_span];
                 batch.tokens[cursor..cursor + training_span].copy_from_slice(input);
                 let mut weight_index = 0_usize;
@@ -320,14 +381,12 @@ impl WeightedStepScratch {
         // n_seqs_unq invariant without coupling unrelated active sequences or
         // violating llama.cpp's per-sequence position continuity check.
         for sequence in chunk.len()..layout.n_seq_max {
-            if cursor >= layout.ubatch {
-                return Ok(PackOutcome::Refused(PackRefusal::FanoutDoesNotFit));
-            }
             batch.positions[cursor] = 0;
             batch.seq_ids.push(sequence as i32);
             batch.seq_offsets.push(batch.seq_ids.len());
             cursor += 1;
         }
+        debug_assert_eq!(cursor, expected_width);
         // Tail padding continues sequence 0 from the last position actually
         // written for it, which is the input position of its last supervised
         // target (`last_train - 1`) - not `tokens.len() - 2`. The two coincide
@@ -360,7 +419,8 @@ impl WeightedStepScratch {
             }
         }
         Ok(PackOutcome::Packed {
-            physical_tokens: cursor,
+            useful_tokens: cursor - (layout.n_seq_max - chunk.len()),
+            shared_tokens: shared_count,
         })
     }
 }

@@ -6,6 +6,7 @@ pub mod distill;
 pub mod features;
 pub mod grpo;
 mod observe;
+pub mod packing_benchmark;
 pub mod ppo;
 mod rollout;
 pub mod sft;

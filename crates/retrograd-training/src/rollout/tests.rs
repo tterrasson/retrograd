@@ -761,6 +761,232 @@ fn shared_prefix_chunks_keep_groups_together_and_split_at_capacity() {
     assert_eq!(chunks, vec![vec![2, 3], vec![0, 1]]);
 }
 
+fn packing_layout(width: usize, sequences: usize) -> RowLayout {
+    RowLayout {
+        row_width: width,
+        window: width,
+        pad_token: 0,
+        batch: width,
+        ubatch: width,
+        n_seq_max: sequences,
+        shared_prefix_fanout: SharedPrefixFanout::Auto,
+        steps_per_row: 1,
+    }
+}
+
+fn packing_rollout(prompt: usize, completion: usize) -> Rollout {
+    let mut train_mask = vec![false; prompt];
+    train_mask.extend(vec![true; completion]);
+    Rollout {
+        tokens: vec![1; prompt + completion],
+        train_mask,
+        old_logprobs: vec![-1.0; completion],
+    }
+}
+
+fn packing_members(rollouts: &[Rollout]) -> Vec<ChunkMember<'_>> {
+    rollouts
+        .iter()
+        .map(|rollout| ChunkMember {
+            group_id: 1,
+            rollout,
+            advantage: 1.0,
+            token_advantages: None,
+            reference_logprobs: &[],
+        })
+        .collect()
+}
+
+#[test]
+fn packing_reports_exact_width_including_unused_sequence_slots() {
+    let rollouts = vec![packing_rollout(250, 15); 8];
+    let chunk = packing_members(&rollouts);
+    let narrow = packing_layout(256, 8);
+    assert_eq!(
+        packed_width(&chunk[..2], &narrow).unwrap(),
+        Err(PackRefusal::FanoutDoesNotFit {
+            required: 285,
+            available: 256
+        })
+    );
+    let PackingSelection::Rows { status, reason } = select_packing(&chunk, &narrow, true).unwrap()
+    else {
+        panic!("long prefix must refuse the narrow geometry");
+    };
+    assert_eq!(status, "width");
+    // Even a singleton needs 249 + 15 + 7 = 271 physical tokens.
+    assert!(reason.contains("requires 271 tokens"), "{reason}");
+    assert!(reason.contains("training.micro_batch"));
+    let wide = packing_layout(512, 8);
+    assert_eq!(packed_width(&chunk, &wide).unwrap(), Ok(369));
+    let PackingSelection::Packed(ranges) = select_packing(&chunk, &wide, true).unwrap() else {
+        panic!("wider geometry should pack all completions");
+    };
+    assert_eq!(ranges, vec![0..8]);
+}
+
+#[test]
+fn auto_packing_keeps_short_siblings_packed_beside_a_long_completion() {
+    // No uniform fanout >= 2 fits the first member, but [1, 3] does.
+    let rollouts = vec![
+        packing_rollout(5, 12),
+        packing_rollout(5, 3),
+        packing_rollout(5, 3),
+        packing_rollout(5, 3),
+    ];
+    let chunk = packing_members(&rollouts);
+    let layout = packing_layout(20, 4);
+    let PackingSelection::Packed(ranges) = select_packing(&chunk, &layout, true).unwrap() else {
+        panic!("the long sibling must not disable packing for the short ones");
+    };
+    assert_eq!(ranges, vec![0..1, 1..4]);
+    let mut scratch = WeightedStepScratch::new(&layout);
+    scratch.member_weights = vec![vec![2.0; 12], vec![3.0; 3], vec![4.0; 3], vec![5.0; 3]];
+    let mut reduction = 0.0;
+    for range in ranges {
+        let outcome = scratch
+            .pack_sequences(&chunk[range.clone()], range.start, &layout, 21)
+            .unwrap();
+        assert_eq!(
+            outcome,
+            if range.start == 0 {
+                PackOutcome::Packed {
+                    useful_tokens: 16,
+                    shared_tokens: 0,
+                }
+            } else {
+                PackOutcome::Packed {
+                    useful_tokens: 13,
+                    shared_tokens: 4,
+                }
+            }
+        );
+        let active = scratch
+            .packed_sequence_batch
+            .weights
+            .iter()
+            .filter(|&&w| w != 0.0)
+            .count();
+        // The transaction's 1/passes and step.rs's compensating passes
+        // cancel, leaving the same sum/denominator across unequal passes.
+        reduction += scratch.packed_sequence_batch.weights.iter().sum::<f32>() / active as f32;
+    }
+    assert!((reduction - 60.0 / 21.0).abs() < 1e-6);
+}
+
+#[test]
+fn forced_packing_reports_width_capability_and_sequence_capacity() {
+    let rollouts = vec![packing_rollout(5, 12); 4];
+    let chunk = packing_members(&rollouts);
+    for requested in [SharedPrefixFanout::Exact(2), SharedPrefixFanout::Max] {
+        let mut layout = packing_layout(20, 4);
+        layout.shared_prefix_fanout = requested;
+        let error = select_packing(&chunk, &layout, true)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("requires"), "{error}");
+        assert!(error.contains("available=20"), "{error}");
+        assert!(select_packing(&chunk, &layout, false).is_err());
+        layout.n_seq_max = 1;
+        assert!(select_packing(&chunk, &layout, true).is_err());
+    }
+}
+
+#[test]
+fn max_fanout_is_bounded_by_sequence_slots_but_an_integer_is_not() {
+    let rollouts = vec![packing_rollout(5, 3); 4];
+    let chunk = packing_members(&rollouts);
+    let mut layout = packing_layout(40, 2);
+    layout.shared_prefix_fanout = SharedPrefixFanout::Max;
+    let PackingSelection::Packed(ranges) = select_packing(&chunk, &layout, true).unwrap() else {
+        panic!("max must pack within the available sequence slots");
+    };
+    assert_eq!(ranges, vec![0..2, 2..4]);
+    layout.shared_prefix_fanout = SharedPrefixFanout::Exact(4);
+    let error = select_packing(&chunk, &layout, true)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("n_seq_max=2"), "{error}");
+}
+
+#[test]
+fn packing_fallback_reasons_and_state_changes_are_visible() {
+    let rollouts = vec![packing_rollout(5, 3); 2];
+    let chunk = packing_members(&rollouts);
+    let mut layout = packing_layout(20, 2);
+    let mut scratch = WeightedStepScratch::new(&layout);
+    for (capability, expected) in [
+        (false, "capability"),
+        (false, "capability"),
+        (true, "packed"),
+        (false, "capability"),
+    ] {
+        let status = match select_packing(&chunk, &layout, capability).unwrap() {
+            PackingSelection::Rows { status, .. } => status,
+            PackingSelection::Packed(_) => "packed",
+        };
+        assert_eq!(status, expected);
+        scratch.note_packing(status.into(), status.into());
+    }
+    assert_eq!(scratch.notes, ["capability", "packed", "capability"]);
+    layout.shared_prefix_fanout = SharedPrefixFanout::Off;
+    assert!(matches!(
+        select_packing(&chunk, &layout, true).unwrap(),
+        PackingSelection::Rows { status: "off", .. }
+    ));
+    layout.shared_prefix_fanout = SharedPrefixFanout::Auto;
+    assert!(matches!(
+        select_packing(&chunk[..1], &layout, true).unwrap(),
+        PackingSelection::Rows {
+            status: "members",
+            ..
+        }
+    ));
+    layout.n_seq_max = 1;
+    assert!(matches!(
+        select_packing(&chunk, &layout, true).unwrap(),
+        PackingSelection::Rows {
+            status: "sequences",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn packed_width_and_packer_agree_for_divergent_and_sparse_trajectories() {
+    let mut rollouts = vec![packing_rollout(5, 6); 3];
+    rollouts[1].tokens[0] = 7; // Independent prefix inside the same reward group.
+    rollouts[2].train_mask[7] = false; // Tool observation between trained segments.
+    rollouts[2].train_mask[10] = false; // Trailing observation is not an input.
+    let chunk = packing_members(&rollouts);
+    let mut layout = packing_layout(40, 4);
+    let required = packed_width(&chunk, &layout).unwrap().unwrap();
+    assert_eq!(required, 4 * 3 + 6 + 6 + 5 + 1);
+    layout.ubatch = required;
+    let mut scratch = WeightedStepScratch::new(&layout);
+    scratch.member_weights = rollouts
+        .iter()
+        .map(|r| vec![1.0; r.completion_len()])
+        .collect();
+    assert_eq!(
+        scratch.pack_sequences(&chunk, 0, &layout, 20).unwrap(),
+        PackOutcome::Packed {
+            useful_tokens: required - 1,
+            shared_tokens: 0
+        }
+    );
+    layout.ubatch -= 1;
+    assert_eq!(
+        scratch.pack_sequences(&chunk, 0, &layout, 20).unwrap(),
+        PackOutcome::Refused(PackRefusal::FanoutDoesNotFit {
+            required,
+            available: required - 1
+        })
+    );
+}
+
 #[test]
 fn packed_sequences_share_each_prompt_and_isolate_groups() {
     let a0 = Rollout {

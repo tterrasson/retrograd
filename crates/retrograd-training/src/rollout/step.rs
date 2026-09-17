@@ -5,7 +5,7 @@
 use retrograd_core::{Error, Result, SharedPrefixFanout, TrainMetrics};
 use retrograd_engine::Trainer;
 
-use super::packing::{PackOutcome, WeightedStepScratch};
+use super::packing::{PackOutcome, PackRefusal, WeightedStepScratch, packed_width};
 use super::sampling::{Rollout, RowLayout};
 use super::weights::{
     TokenStats, grpo_token_weights_into, ppo_token_weights_into, score_train_mask_into,
@@ -383,6 +383,136 @@ pub(crate) fn run_grpo_epoch(
     Ok(true)
 }
 
+pub(crate) enum PackingSelection {
+    Packed(Vec<std::ops::Range<usize>>),
+    Rows {
+        status: &'static str,
+        reason: String,
+    },
+}
+
+fn packing_refusal(refusal: PackRefusal) -> PackingSelection {
+    let (status, reason) = match refusal {
+        PackRefusal::FanoutDoesNotFit {
+            required,
+            available,
+        } => (
+            "width",
+            format!(
+                "physical micro-batch too small: requires {required} tokens, available={available} \
+                (including unused sequence slots); increase training.micro_batch and, if needed, \
+                training.ctx to a compatible size"
+            ),
+        ),
+        PackRefusal::DivergentPrefix => (
+            "prefix",
+            "a rollout has fewer than two prompt tokens; no shareable teacher-forcing prefix"
+                .into(),
+        ),
+        PackRefusal::InvalidLayout => ("layout", "invalid packed sequence layout".into()),
+    };
+    PackingSelection::Rows { status, reason }
+}
+
+/// Plan every pass before starting the optimizer transaction. Auto can keep
+/// short siblings packed while a longer member occupies a pass of its own.
+/// Never mix row and packed training inside an accumulation transaction.
+pub(crate) fn select_packing(
+    chunk: &[ChunkMember<'_>],
+    layout: &RowLayout,
+    capability: bool,
+) -> Result<PackingSelection> {
+    let requested = layout.shared_prefix_fanout;
+    if matches!(requested, SharedPrefixFanout::Exact(0 | 1)) {
+        return Err(Error::invalid(
+            "shared-prefix fanout must be at least two; use off to disable packing",
+        ));
+    }
+    let locked = matches!(
+        requested,
+        SharedPrefixFanout::Max | SharedPrefixFanout::Exact(_)
+    );
+    let disabled = if requested == SharedPrefixFanout::Off {
+        Some(("off", "disabled by training.shared_prefix_fanout=off"))
+    } else if !capability {
+        Some((
+            "capability",
+            "the model/device does not support shared-prefix packed training; inspect the runtime capability report",
+        ))
+    } else if chunk.len() < 2 {
+        Some((
+            "members",
+            "fewer than two live completions in this optimizer chunk",
+        ))
+    } else if layout.n_seq_max < 2 {
+        Some((
+            "sequences",
+            "the optimizer has fewer than two sequence slots (n_seq_max)",
+        ))
+    } else {
+        None
+    };
+    if let Some((status, reason)) = disabled {
+        if locked && (status == "capability" || status == "sequences") {
+            return Err(Error::invalid(reason));
+        }
+        return Ok(PackingSelection::Rows {
+            status,
+            reason: reason.into(),
+        });
+    }
+    let requested_fanout = match requested {
+        SharedPrefixFanout::Exact(value) => value as usize,
+        _ => chunk.len(),
+    }
+    .min(chunk.len());
+    // `max` is the widest fanout the sequence slots allow; only an explicit
+    // integer names a width the slots must hold.
+    if matches!(requested, SharedPrefixFanout::Exact(_)) && requested_fanout > layout.n_seq_max {
+        return Err(Error::invalid(format!(
+            "training.shared_prefix_fanout={requested:?} requires {requested_fanout} sequence slots, n_seq_max={}",
+            layout.n_seq_max
+        )));
+    }
+    let max_fanout = requested_fanout.min(layout.n_seq_max);
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    // Sizes are tried widest first, so the refusal kept is the narrowest one
+    // tried: the one that tells the user how far the width is from fitting.
+    let mut last_refusal = None;
+    while start < chunk.len() {
+        let max = max_fanout.min(chunk.len() - start);
+        let min = if locked { max } else { 1 };
+        let mut chosen = None;
+        for count in (min..=max).rev() {
+            match packed_width(&chunk[start..start + count], layout)? {
+                Ok(_) => {
+                    chosen = Some(count);
+                    break;
+                }
+                Err(refusal) => last_refusal = Some(refusal),
+            }
+        }
+        let Some(count) = chosen else {
+            let fallback = packing_refusal(last_refusal.expect("at least one candidate"));
+            if locked && let PackingSelection::Rows { reason, .. } = &fallback {
+                return Err(Error::invalid(format!(
+                    "training.shared_prefix_fanout={requested:?}: {reason}"
+                )));
+            }
+            return Ok(fallback);
+        };
+        ranges.push(start..start + count);
+        start += count;
+    }
+    if ranges.iter().all(|range| range.len() == 1) {
+        return Ok(packing_refusal(
+            last_refusal.expect("multi-member candidate refused"),
+        ));
+    }
+    Ok(PackingSelection::Packed(ranges))
+}
+
 /// One Dr. GRPO optimizer chunk: PPO clipping against the rollout policy and
 /// a k3 KL penalty against the frozen base-model reference policy. Every
 /// member is re-scored under the same current policy, packed as its own row,
@@ -444,81 +574,39 @@ pub(crate) fn grpo_chunk_step(
     }
     let capability = trainer.supports_shared_prefix_packed_training()?;
     let requested = layout.shared_prefix_fanout;
-    let locked = matches!(
-        requested,
-        SharedPrefixFanout::Max | SharedPrefixFanout::Exact(_)
-    );
-    if !capability && locked {
-        return Err(Error::invalid(
-            "the loaded model does not support shared-prefix packed training",
-        ));
-    }
-
-    let max_fanout = match requested {
-        SharedPrefixFanout::Off => 1,
-        SharedPrefixFanout::Auto | SharedPrefixFanout::Max => chunk.len(),
-        SharedPrefixFanout::Exact(value) => value as usize,
-    }
-    .min(chunk.len())
-    .min(layout.n_seq_max);
-
-    let mut chosen_fanout = None;
-    if capability && max_fanout >= 2 {
-        let candidates: Vec<usize> = if locked {
-            vec![max_fanout]
-        } else {
-            (2..=max_fanout).rev().collect()
-        };
-        'candidate: for fanout in candidates {
-            for (pass, subgroup) in chunk.chunks(fanout).enumerate() {
-                match scratch.pack_sequences(
-                    subgroup,
-                    pass * fanout,
-                    layout,
-                    params.objective.loss_denominator,
-                )? {
-                    PackOutcome::Packed { .. } => {}
-                    PackOutcome::Refused(_) => continue 'candidate,
-                }
-            }
-            chosen_fanout = Some(fanout);
-            break;
-        }
-        if chosen_fanout.is_none() && locked {
-            return Err(Error::invalid(format!(
-                "training.shared_prefix_fanout={max_fanout} does not fit in the configured physical micro-batch ({})",
-                layout.ubatch
-            )));
-        }
-    }
-
-    let (metrics, keep_training) = if let Some(fanout) = chosen_fanout {
-        let passes = chunk.len().div_ceil(fanout) as u32;
+    let selection = select_packing(chunk, layout, capability)?;
+    let (metrics, keep_training) = if let PackingSelection::Packed(ranges) = &selection {
+        let fanout = ranges.iter().map(|range| range.len()).max().unwrap_or(1);
+        let passes = u32::try_from(ranges.len())
+            .map_err(|_| Error::overflow("packed pass count exceeds u32"))?;
         scratch.packing_fanout = fanout;
-        scratch.packing_passes = passes as usize;
+        scratch.packing_passes = ranges.len();
         scratch.packing_shared_tokens = 0;
         scratch.packing_useful_tokens = 0;
-        scratch.packing_physical_tokens = passes as usize * layout.ubatch;
-        if !scratch.packing_logged {
-            scratch.notes.push(format!(
+        scratch.packing_physical_tokens = ranges.len() * layout.ubatch;
+        scratch.note_packing(
+            format!("packed:{fanout}:{}", ranges.len()),
+            format!(
                 "shared-prefix packing: fanout={fanout}, passes={passes}, physical_width={} (requested={requested:?})",
                 layout.ubatch
-            ));
-            scratch.packing_logged = true;
-        }
+            ),
+        );
         let mut latest = TrainMetrics::default();
         let mut keep = true;
-        for (pass, subgroup) in chunk.chunks(fanout).enumerate() {
+        for range in ranges {
+            let subgroup = &chunk[range.clone()];
             match scratch.pack_sequences(
                 subgroup,
-                pass * fanout,
+                range.start,
                 layout,
                 params.objective.loss_denominator,
             )? {
-                PackOutcome::Packed { physical_tokens } => {
-                    scratch.packing_useful_tokens += physical_tokens;
-                    scratch.packing_shared_tokens +=
-                        subgroup[0].rollout.first_train_index()?.saturating_sub(1);
+                PackOutcome::Packed {
+                    useful_tokens,
+                    shared_tokens,
+                } => {
+                    scratch.packing_useful_tokens += useful_tokens;
+                    scratch.packing_shared_tokens += shared_tokens;
                 }
                 PackOutcome::Refused(refusal) => {
                     return Err(Error::runtime(format!(
@@ -552,11 +640,17 @@ pub(crate) fn grpo_chunk_step(
         scratch.packing_useful_tokens =
             chunk.iter().map(|member| member.rollout.tokens.len()).sum();
         scratch.packing_physical_tokens = chunk.len() * layout.row_width;
-        if !scratch.packing_logged {
-            scratch.notes.push(format!(
-                "shared-prefix packing disabled: row path selected (requested={requested:?}, capability={capability})"
-            ));
-            scratch.packing_logged = true;
+        if let PackingSelection::Rows { status, reason } = selection {
+            scratch.note_packing(
+                status.into(),
+                format!(
+                    "shared-prefix packing disabled: {reason} (requested={requested:?}, \
+                    capability={capability}, live_completions={}, n_seq_max={}, physical_width={})",
+                    chunk.len(),
+                    layout.n_seq_max,
+                    layout.ubatch
+                ),
+            );
         }
         // Only the row path uses `scratch.batch`; sizing it is a resize of
         // three context-sized vectors, so the packed path never pays for it.

@@ -83,6 +83,9 @@ pub struct ResolveInput<'a> {
     /// Shape-specific measurements. Without a profile or a matching entry the
     /// analytical identity factor is used.
     pub calibrations: Option<&'a crate::CalibrationStore>,
+    /// Packed optimizer timings taken for this request only. Never persisted:
+    /// they do not transfer to another workload, device state or adapter.
+    pub packing_measurements: Option<&'a crate::packing_tuning::PackingMeasurements>,
     /// The reward command the catalogue resolved for `recipe.reward`. Empty for
     /// a supervised objective. The resolver never sees an id-to-command mapping;
     /// the caller substitutes, and redacts again on the way out.
@@ -99,6 +102,9 @@ pub struct ResolveInput<'a> {
 /// What the resolution produced.
 #[derive(Clone, Debug)]
 pub struct Resolution {
+    /// Bounded, fitting packing geometries for an optional measured planning
+    /// pass. Internal execution work, not part of the public plan schema.
+    pub packing_probes: Vec<crate::packing_tuning::PackingProbe>,
     /// The effective configuration, in the document schema - the same schema the
     /// CLI reads from TOML.
     pub document: ConfigDocument,
@@ -442,6 +448,8 @@ pub fn resolve(input: &ResolveInput<'_>) -> Result<Resolution, ResolveError> {
         min_ubatch,
         applied: mut candidate_applied,
         alternatives: candidate_alternatives,
+        packing_probes,
+        packing_note,
     } = search_candidates(
         &mut training,
         &sizing,
@@ -450,6 +458,13 @@ pub fn resolve(input: &ResolveInput<'_>) -> Result<Resolution, ResolveError> {
         &locked,
         &mut provenance,
     )?;
+    if let Some(message) = packing_note {
+        warnings.push(PlanWarning {
+            code: "packing_geometry_measured",
+            field: None,
+            message,
+        });
+    }
     // The rescue levers run after this search. Without the floor, the
     // `micro_batch` lever would halve the physical width below the packed
     // subgroup the search just validated and emit a graph the runtime refuses.
@@ -485,6 +500,7 @@ pub fn resolve(input: &ResolveInput<'_>) -> Result<Resolution, ResolveError> {
             applied,
             defaults_applied,
             alternatives: candidate_alternatives,
+            packing_probes,
             blocked,
         },
         input,
@@ -501,6 +517,7 @@ pub fn resolve(input: &ResolveInput<'_>) -> Result<Resolution, ResolveError> {
 /// the resolution or into the [`InsufficientMemory`] refusal, and the two
 /// destinations are what makes the split worth a struct.
 struct Tuned {
+    packing_probes: Vec<crate::packing_tuning::PackingProbe>,
     document: ConfigDocument,
     training: TrainConfig,
     provenance: Provenance,
@@ -530,6 +547,7 @@ fn rebuild_and_validate(
     is_locked: &dyn Fn(&str) -> bool,
 ) -> Result<Resolution, ResolveError> {
     let Tuned {
+        packing_probes,
         mut document,
         training,
         mut provenance,
@@ -647,6 +665,7 @@ fn rebuild_and_validate(
     };
 
     Ok(Resolution {
+        packing_probes,
         document,
         config,
         provenance,
@@ -711,6 +730,8 @@ struct Sizing<'a, 'i> {
 
 /// What the V2 candidate search decided, on top of the `training` it mutated.
 struct CandidateSearch {
+    packing_probes: Vec<crate::packing_tuning::PackingProbe>,
+    packing_note: Option<String>,
     /// Floor the rescue levers must not push the physical width below: the
     /// packed subgroup the winning candidate was validated on.
     min_ubatch: u32,
@@ -760,7 +781,7 @@ fn search_candidates(
             }
         }
     })?;
-    let evaluated = candidate_values
+    let mut evaluated: Vec<_> = candidate_values
         .into_iter()
         .map(|candidate| {
             let candidate_training = candidate.applied_to(training);
@@ -775,24 +796,85 @@ fn search_candidates(
             )
         })
         .collect();
-    let frontier = crate::candidate::eliminate_dominated(evaluated);
-    let chosen = crate::candidate::select(&frontier);
+    let shape = crate::packing_tuning::PackingShape::from_intent(&intent);
+    let empty_measurements = crate::packing_tuning::PackingMeasurements::new();
+    let measurements = input.packing_measurements.unwrap_or(&empty_measurements);
+    crate::packing_tuning::apply_measurements(&mut evaluated, shape, measurements, budgets);
+    let packing_probes = if matches!(
+        &run_config.algorithm,
+        retrograd_config::Algorithm::Grpo(_) | retrograd_config::Algorithm::AgentGrpo(_)
+    ) {
+        crate::packing_tuning::shortlist(&evaluated, shape)
+    } else {
+        Vec::new()
+    };
+    let chosen = crate::packing_tuning::select_measured(&evaluated, shape, measurements);
+    if chosen.is_none() && !measurements.is_empty() {
+        return Err(ResolveError::Invalid {
+            message: "no fitting execution candidate remains after the packed optimizer measurements; widen the memory budget or relax the locked geometry".into(),
+            path: None,
+        });
+    }
     let min_ubatch = chosen.map_or(1, |evaluation| evaluation.min_ubatch.max(1));
     let selected = chosen.map(|value| value.candidate.clone());
+    let packing_note = selected.as_ref().and_then(|candidate| {
+        let sample = measurements.get(&shape.key(candidate))?;
+        let (low, high) = sample.interval()?;
+        Some(format!(
+            "selected {} with packed optimizer timings {low:.6}..{high:.6} seconds per logical update \
+             on synthetic prompt/completion/group shape {}/{}/{}; one warm-up and three timed updates \
+             per measured candidate; switching requires a gain above 5% with non-overlapping timings; \
+             generation and reward evaluation are not timed",
+            candidate.canonical_key(), shape.prompt_tokens, shape.completion_tokens, shape.group_size
+        ))
+    });
     let mut applied = Vec::new();
     if let Some(selected) = &selected {
         let before = training.clone();
         selected.apply(training);
         record_candidate_transition(&before, training, &is_locked, provenance, &mut applied);
     }
-    let alternatives = frontier
+    let mut alternatives_candidates = if measurements.is_empty() {
+        crate::candidate::eliminate_dominated(evaluated)
+    } else {
+        evaluated
+    };
+    if !measurements.is_empty() {
+        alternatives_candidates.sort_by_key(|candidate| {
+            (
+                !measurements.contains_key(&shape.key(&candidate.candidate)),
+                candidate.candidate.canonical_key(),
+            )
+        });
+    }
+    let alternatives = alternatives_candidates
         .iter()
         .filter(|candidate| Some(&candidate.candidate) != selected.as_ref())
         .take(5)
         .map(|candidate| RejectedCandidateSummary {
-            code: candidate.rejection.unwrap_or("cost_superior").to_string(),
+            code: candidate
+                .rejection
+                .unwrap_or(
+                    if measurements.contains_key(&shape.key(&candidate.candidate)) {
+                        "packing_timing_alternative"
+                    } else {
+                        "cost_superior"
+                    },
+                )
+                .to_string(),
             candidate: candidate.candidate.canonical_key(),
-            reason: if candidate.valid {
+            reason: if let Some(sample) = measurements.get(&shape.key(&candidate.candidate)) {
+                if let Some(error) = &sample.failure {
+                    format!("packing benchmark failed: {error}")
+                } else {
+                    format!(
+                        "packed optimizer benchmark: seconds={:?}, device_bytes={}, status={}",
+                        sample.seconds,
+                        sample.device_bytes,
+                        candidate.rejection.unwrap_or("within_budget")
+                    )
+                }
+            } else if candidate.valid {
                 format!("predicted relative cost {}", candidate.execution_cost)
             } else {
                 candidate.rejection.unwrap_or("invalid").to_string()
@@ -800,6 +882,8 @@ fn search_candidates(
         })
         .collect::<Vec<_>>();
     Ok(CandidateSearch {
+        packing_probes,
+        packing_note,
         min_ubatch,
         applied,
         alternatives,

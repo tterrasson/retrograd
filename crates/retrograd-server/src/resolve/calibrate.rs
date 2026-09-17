@@ -27,6 +27,7 @@ use std::path::Path;
 use retrograd_config::RunConfig;
 use retrograd_core::{MemoryReport, ModelInfo};
 use retrograd_plan::cost::{Calibration, MemoryEstimate};
+use retrograd_plan::packing_tuning::{PackingMeasurement, PackingMeasurements, PackingProbe};
 use retrograd_plan::provenance::Provenance;
 use retrograd_plan::resolver::PlanSummary;
 use retrograd_plan::{DatasetStats, Observation};
@@ -34,6 +35,81 @@ use retrograd_plan::{DatasetStats, Observation};
 use crate::error::{ApiError, ApiResult, ProblemKind};
 use crate::lock::Recover as _;
 use crate::state::AppState;
+
+/// What the packed-geometry probes produced for one planning request.
+#[derive(Default)]
+pub struct PackingTuning {
+    pub measurements: PackingMeasurements,
+    /// Why no probe was compared: the analytical choice, which the preflight
+    /// already loaded, could not be benchmarked. The plan keeps that choice.
+    pub skipped: Option<String>,
+}
+
+/// All probes share one device permit and run sequentially. Their adapters
+/// belong to private trainers and are discarded; no live run is benchmarked.
+///
+/// The first probe is the analytical choice. Its error is not a verdict on a
+/// geometry - the preflight already ran it - so it skips tuning rather than
+/// rejecting every candidate. A challenger's error rejects that challenger.
+pub async fn tune_packing(
+    state: &AppState,
+    model_path: &Path,
+    config: &RunConfig,
+    probes: &[PackingProbe],
+) -> ApiResult<PackingTuning> {
+    if probes.len() < 2 {
+        return Ok(PackingTuning::default());
+    }
+    let permit = state
+        .device
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::new(ProblemKind::DeviceBusy, "the device queue is closed"))?;
+    let engine = state.probe.clone();
+    let model_path = model_path.to_path_buf();
+    let base = config.clone();
+    let probes = probes.to_vec();
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let mut measurements = PackingMeasurements::new();
+        for (index, probe) in probes.iter().enumerate() {
+            let mut config = base.clone();
+            probe.candidate.apply(&mut config.training);
+            let key = probe.key();
+            match engine.benchmark_packing(&model_path, &config, probe.shape) {
+                Ok(Some(sample)) => {
+                    measurements.insert(key, sample);
+                }
+                Ok(None) => break,
+                Err(error) if index == 0 => {
+                    tracing::warn!(%error, candidate = %key, "packing benchmark unavailable");
+                    return PackingTuning {
+                        measurements: PackingMeasurements::new(),
+                        skipped: Some(error.to_string()),
+                    };
+                }
+                Err(error) => {
+                    tracing::warn!(%error, candidate = %key, "packing benchmark failed");
+                    measurements.insert(
+                        key,
+                        PackingMeasurement {
+                            seconds: Vec::new(),
+                            device_bytes: 0,
+                            failure: Some(error.to_string()),
+                        },
+                    );
+                }
+            }
+        }
+        PackingTuning {
+            measurements,
+            skipped: None,
+        }
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("the packing benchmark task failed: {error}")))
+}
 
 /// What one measurement produced.
 pub struct Measurement {

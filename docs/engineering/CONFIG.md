@@ -121,6 +121,10 @@ overridden. Outside a rollout it defaults to `1`.
 `>= 2`. Physical completion fanout for differentiable shared-prefix training: the
 members of a group share their prompt's forward instead of each paying for it. An
 explicit integer above `group_size` is refused.
+`auto` adapts fanout per physical pass and reports why it falls back to rows;
+`max` and integer fanouts fail when their requested geometry cannot run.
+See [packing geometry and compatibility](../training/grpo.md#shared-prefix-packing-and-fallback)
+for the width formula, device restrictions, and padding costs.
 
 `threads` - default `0`, meaning "select performance cores automatically". The
 `RETRO_THREADS` environment variable takes precedence at runtime.

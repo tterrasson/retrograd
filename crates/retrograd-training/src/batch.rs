@@ -485,7 +485,7 @@ pub fn train_grpo_batch_observed(
         };
         on_progress(Progress {
             boundary: None,
-            notes: Vec::new(),
+            notes: std::mem::take(&mut scratch.notes),
             metrics: final_metrics,
             values: vec![
                 metric("reward/mean", reward_mean as f32),

@@ -267,6 +267,9 @@ pub async fn plan_recipe(
         _ => None,
     };
     let mut passes = 0;
+    let mut packing_tuned = false;
+    let mut packing_skipped = None;
+    let mut packing_measurements = retrograd_plan::packing_tuning::PackingMeasurements::new();
     let mut preflight = None;
     let mut preflight_key = None;
     let (mut resolution, measurement) = loop {
@@ -290,6 +293,7 @@ pub async fn plan_recipe(
             server_budgets: state.server_budgets(),
             margin: state.config.margin,
             calibrations: Some(&calibrations),
+            packing_measurements: Some(&packing_measurements),
             reward_command: reward_command.clone(),
             reward_protocol,
             root: PathBuf::from("."),
@@ -313,6 +317,23 @@ pub async fn plan_recipe(
         if !calibrate {
             break (resolution, None);
         }
+        if !packing_tuned {
+            packing_tuned = true;
+            let tuning = calibrate::tune_packing(
+                state,
+                &model_path,
+                &resolution.config,
+                &resolution.packing_probes,
+            )
+            .await?;
+            packing_measurements = tuning.measurements;
+            packing_skipped = tuning.skipped;
+            if !packing_measurements.is_empty() {
+                // The resolver applies the same locks, fidelity and memory
+                // rules again, now with comparable complete-update timings.
+                continue;
+            }
+        }
         let measurement =
             calibrate::measure(state, &model_path, &model, &resolution.config, &key).await?;
         passes += 1;
@@ -329,6 +350,16 @@ pub async fn plan_recipe(
         break (resolution, Some(measurement));
     };
 
+    if let Some(error) = packing_skipped {
+        resolution.plan.warnings.push(retrograd_plan::PlanWarning {
+            code: "packing_geometry_unmeasured",
+            field: None,
+            message: format!(
+                "kept the analytical packed geometry: the optimizer benchmark could not run \
+                 ({error})"
+            ),
+        });
+    }
     if let Some(measurement) = &measurement {
         if let Some(error) = calibrate::over_budget(measurement, &resolution.plan) {
             return Err(error);

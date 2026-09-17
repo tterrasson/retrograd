@@ -208,6 +208,7 @@ pub fn input_with_eval<'a>(
             floor_bytes: 0,
         },
         calibrations: None,
+        packing_measurements: None,
         reward_command: Vec::new(),
         root: PathBuf::from("."),
     }

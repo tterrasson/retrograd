@@ -44,6 +44,8 @@ struct FakeProbe {
     model: ModelInfo,
     compute_factor: f64,
     measured: AtomicUsize,
+    packing: bool,
+    packing_calls: std::sync::Mutex<Vec<u32>>,
 }
 
 impl FakeProbe {
@@ -52,6 +54,18 @@ impl FakeProbe {
             model: model(),
             compute_factor,
             measured: AtomicUsize::new(0),
+            packing: false,
+            packing_calls: Default::default(),
+        })
+    }
+
+    fn with_packing() -> Arc<Self> {
+        Arc::new(Self {
+            model: model(),
+            compute_factor: 1.0,
+            measured: AtomicUsize::new(0),
+            packing: true,
+            packing_calls: Default::default(),
         })
     }
 
@@ -61,6 +75,44 @@ impl FakeProbe {
 }
 
 impl ModelProbe for FakeProbe {
+    fn model_capabilities(
+        &self,
+        _model: &Path,
+        _device: Device,
+    ) -> CoreResult<retrograd_core::ModelCapabilities> {
+        Ok(retrograd_core::ModelCapabilities {
+            shared_prefix_packed_training: self.packing,
+            ..Default::default()
+        })
+    }
+
+    fn benchmark_packing(
+        &self,
+        _model: &Path,
+        config: &RunConfig,
+        _shape: retrograd_plan::packing_tuning::PackingShape,
+    ) -> CoreResult<Option<retrograd_plan::packing_tuning::PackingMeasurement>> {
+        if !self.packing {
+            return Ok(None);
+        }
+        let width = config.training.n_ubatch;
+        self.packing_calls
+            .lock()
+            .expect("no probe call panics while holding the lock")
+            .push(width);
+        let seconds = match width {
+            256 => 1.0,
+            128 => 5.0,
+            64 => 6.0,
+            _ => 10.0,
+        };
+        Ok(Some(retrograd_plan::packing_tuning::PackingMeasurement {
+            seconds: vec![seconds; 3],
+            device_bytes: GIB,
+            failure: None,
+        }))
+    }
+
     fn preflight(
         &self,
         _model: &Path,
@@ -949,4 +1001,64 @@ async fn a_plan_reports_the_defaults_it_applied_separately_from_its_levers() {
                 .is_some_and(|text| !text.is_empty())
         );
     }
+}
+
+#[tokio::test]
+async fn measured_packing_changes_geometry_and_preserves_explicit_locks() {
+    let fixture = Fixture::new("packing-measurements");
+    let declaration = format!(
+        r#"{}
+[[reward]]
+id = "packing-test"
+command = ["true"]
+"#,
+        fixture.state_dir_toml()
+    );
+    let request = json!({
+        "recipe": { "objective": "reasoning-rl", "model": fixture.path("model.gguf"),
+            "data": {"path": fixture.path("data.jsonl"), "format": "jsonl"},
+            "reward": {"id": "packing-test"}, "budget": {"updates": 1} },
+        "params": { "training": {"ctx": 512, "gradient_checkpointing": false},
+            "grpo": {"group_size": 8, "sampling": {"max_new_tokens": 16}} }
+    });
+    let probe = FakeProbe::with_packing();
+    let router = router_from(&declaration, 24 * GIB, probe.clone());
+    let (status, analytical) = post(router.clone(), "/v1/plan", request.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{analytical}");
+    assert!(probe.packing_calls.lock().unwrap().is_empty());
+    assert_eq!(
+        analytical["effective_config"]["training"]["micro_batch"],
+        512
+    );
+    let (status, measured) = post(router.clone(), "/v1/plan?calibrate=true", request.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{measured}");
+    assert_eq!(
+        measured["effective_config"]["training"]["micro_batch"], 256,
+        "{measured}"
+    );
+    assert!(
+        measured["plan"]["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["code"] == "packing_geometry_measured")
+    );
+    let calls = probe.packing_calls.lock().unwrap().clone();
+    assert!(
+        (2..=retrograd_plan::packing_tuning::MAX_PACKING_PROBES).contains(&calls.len()),
+        "{calls:?}"
+    );
+    assert!(calls.contains(&512) && calls.contains(&256), "{calls:?}");
+    probe.packing_calls.lock().unwrap().clear();
+    let mut locked = request;
+    locked["params"]["training"]["micro_batch"] = json!(512);
+    locked["params"]["training"]["shared_prefix_fanout"] = json!(8);
+    let (status, body) = post(router, "/v1/plan?calibrate=true", locked).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["effective_config"]["training"]["micro_batch"], 512);
+    assert_eq!(
+        body["effective_config"]["training"]["shared_prefix_fanout"],
+        8
+    );
+    assert!(probe.packing_calls.lock().unwrap().is_empty());
 }

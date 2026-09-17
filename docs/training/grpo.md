@@ -103,6 +103,42 @@ it to improve throughput when memory allows. `shared_prefix_fanout` changes
 physical packing of completions that share a prompt and does not change the
 group baseline.
 
+### Shared-prefix packing
+
+Completions of the same prompt can be packed into one pass so the prompt is
+processed once. This works on attention-only models and on LFM2/LFM2MoE (after
+a device check). Other models fall back to one row per completion.
+
+| `shared_prefix_fanout` | Behavior |
+| --- | --- |
+| `"auto"` | Packs as many completions per pass as fit; falls back to rows otherwise. |
+| `"off"` | Always uses rows. |
+| `"max"` | Requires the largest possible packing; errors if it does not fit. |
+| integer | Requires that many completions per pass; errors if it does not fit. |
+
+A pass needs this many tokens, and must fit in `micro_batch`:
+
+```text
+(prompt_tokens - 1) + sum(completion_tokens) + (n_seq_max - completions)
+```
+
+For example, a 250-token prompt (chat template included) with eight 15-token
+completions needs `249 + 8 * 15 = 369` tokens: `micro_batch = 512` fits,
+`256` does not. Raising `ctx` does not help; raise `micro_batch`.
+
+Training logs explain when and why packing falls back. Packing usually saves
+time, but not always: check optimizer timings.
+
+### Measuring packing geometry
+
+`POST /v1/plan?calibrate=true` benchmarks up to four `micro_batch`/fanout
+combinations for GRPO and agent GRPO, and keeps the fastest one if it is clearly
+(more than 5%) faster than the default choice. The benchmark times full
+optimizer updates on synthetic data, with a throwaway adapter, so it ignores
+generation and rewards. The result appears in the `packing_geometry_measured`
+plan warning (or `packing_geometry_unmeasured` if it could not run). Regular
+planning and `retrograd train` never run it.
+
 ## Optional group judge
 
 `[grpo.judge]` adds a second, *relative* score to the reward-command result.

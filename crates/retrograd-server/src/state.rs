@@ -382,6 +382,18 @@ pub trait ModelProbe: Send + Sync {
     /// the ones only an allocation produces.
     fn measure(&self, model: &Path, config: &RunConfig) -> CoreResult<MemoryReport>;
 
+    /// Optional disposable optimizer benchmark. Test and remote probes that
+    /// cannot execute packed graphs keep the analytical choice. A geometry the
+    /// benchmark refuses is a sample with a `failure`; `Err` is the probe's own.
+    fn benchmark_packing(
+        &self,
+        _model: &Path,
+        _config: &RunConfig,
+        _shape: retrograd_plan::packing_tuning::PackingShape,
+    ) -> CoreResult<Option<retrograd_plan::packing_tuning::PackingMeasurement>> {
+        Ok(None)
+    }
+
     /// Real per-example token lengths of `path`, using `model`'s own
     /// tokenizer and chat template rather than the character heuristic.
     /// Host-only: never touches a device.
@@ -397,6 +409,37 @@ pub trait ModelProbe: Send + Sync {
 pub struct EngineProbe;
 
 impl ModelProbe for EngineProbe {
+    fn benchmark_packing(
+        &self,
+        model: &Path,
+        config: &RunConfig,
+        shape: retrograd_plan::packing_tuning::PackingShape,
+    ) -> CoreResult<Option<retrograd_plan::packing_tuning::PackingMeasurement>> {
+        use retrograd_plan::packing_tuning::PackingMeasurement;
+        use retrograd_training::packing_benchmark::{PackingBenchmark, benchmark};
+
+        let sample = match benchmark(
+            model,
+            &config.training,
+            &config.lora.config,
+            shape.prompt_tokens,
+            shape.completion_tokens,
+            shape.group_size,
+        )? {
+            PackingBenchmark::Measured { seconds, memory } => PackingMeasurement {
+                seconds,
+                device_bytes: memory.device_bytes,
+                failure: None,
+            },
+            PackingBenchmark::Refused(reason) => PackingMeasurement {
+                seconds: Vec::new(),
+                device_bytes: 0,
+                failure: Some(reason),
+            },
+        };
+        Ok(Some(sample))
+    }
+
     fn preflight(
         &self,
         model: &Path,

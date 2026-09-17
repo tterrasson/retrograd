@@ -41,6 +41,7 @@ retrograd-engine.workspace = true
 retrograd-memory.workspace = true
 retrograd-metrics.workspace = true
 retrograd-plan.workspace = true
+retrograd-training.workspace = true
 retrograd-run = { workspace = true, features = ["agent"] }
 serde.workspace = true
 # `raw_value`: a run's rendered configuration, provenance and plan are stored and
