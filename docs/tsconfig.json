@@ -26,5 +26,8 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  // `**/*` skips dot-directories, and the only sources live in `.vitepress`.
+  "include": [".vitepress/**/*"],
+  "exclude": [".vitepress/cache", ".vitepress/dist"]
 }
