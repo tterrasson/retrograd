@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.8,<2"]
+requires = ["maturin>=1.15,<2"]
 build-backend = "maturin"
 
 [project]
@@ -16,13 +16,12 @@ dependencies = []
 [project.urls]
 Homepage = "https://github.com/tterrasson/retrograd"
 Repository = "https://github.com/tterrasson/retrograd"
-Changelog = "https://github.com/tterrasson/retrograd/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
-    "pytest-cov>=6.0",
-    "ruff>=0.9",
+    "pytest>=9.1",
+    "pytest-cov>=7.1",
+    "ruff>=0.16",
 ]
 
 [tool.maturin]
