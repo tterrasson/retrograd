@@ -8,19 +8,20 @@ impl Trainer {
             return Err(Error::tokenize("scoring requires at least two tokens"));
         }
         let len = tokens.len() - 1;
-        ffi_out_vec(len, |logprobs_out| {
-            // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
-            self.check(unsafe {
-                ffi::retro_trainer_score_tokens(
+        // SAFETY: the `Trainer` invariant holds, all borrowed arguments live
+        // through this synchronous call, and the runtime writes every target
+        // position on success.
+        unsafe {
+            ffi_out_vec(len, |logprobs_out| {
+                self.check(ffi::retro_trainer_score_tokens(
                     self.raw.as_ptr(),
                     tokens.as_ptr(),
                     tokens.len(),
                     logprobs_out,
-                )
-            })?;
-            // Every target position is written by the runtime on success.
-            Ok(len)
-        })
+                ))?;
+                Ok(len)
+            })
+        }
     }
 
     /// Teacher-forced scores selected by an explicit target-token mask.
@@ -58,19 +59,20 @@ impl Trainer {
     ) -> Result<()> {
         validate_suffix(tokens, n_prompt)?;
         let len = tokens.len() - n_prompt;
-        ffi_refill_vec(logprobs, len, |logprobs_out| {
-            // Every suffix position is written by the runtime on success.
-            // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
-            self.check(unsafe {
-                ffi::retro_trainer_score_token_suffix(
+        // SAFETY: the `Trainer` invariant holds, all borrowed arguments live
+        // through this synchronous call, and the runtime writes every suffix
+        // position on success.
+        unsafe {
+            ffi_refill_vec(logprobs, len, |logprobs_out| {
+                self.check(ffi::retro_trainer_score_token_suffix(
                     self.raw.as_ptr(),
                     tokens.as_ptr(),
                     tokens.len(),
                     n_prompt,
                     logprobs_out,
-                )
+                ))
             })
-        })
+        }
     }
 
     /// The truncated distribution this model puts on every completion target:
@@ -228,20 +230,21 @@ impl Trainer {
             .len()
             .checked_mul(n_embd)
             .ok_or_else(|| Error::overflow("hidden-state output size overflows usize"))?;
-        ffi_out_vec(len, |features_out| {
-            // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
-            self.check(unsafe {
-                ffi::retro_trainer_hidden_states(
+        // SAFETY: the `Trainer` invariant holds, all borrowed arguments live
+        // through this synchronous call, and the runtime writes every feature
+        // on success.
+        unsafe {
+            ffi_out_vec(len, |features_out| {
+                self.check(ffi::retro_trainer_hidden_states(
                     self.raw.as_ptr(),
                     tokens.as_ptr(),
                     tokens.len(),
                     features_out,
                     len,
-                )
-            })?;
-            // Every feature is written by the runtime on success.
-            Ok(len)
-        })
+                ))?;
+                Ok(len)
+            })
+        }
     }
 
     /// Scores completion targets and extracts the corresponding pre-token
@@ -265,12 +268,13 @@ impl Trainer {
         let feature_len = rows
             .checked_mul(n_embd)
             .ok_or_else(|| Error::overflow("combined feature output size overflows usize"))?;
-        ffi_refill_vec(logprobs, rows, |logprobs_out| {
-            ffi_extend_vec(features, feature_len, |features_out| {
-                // Both output buffers are completely written on success.
-                // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
-                self.check(unsafe {
-                    ffi::retro_trainer_score_token_suffix_and_hidden_states(
+        // SAFETY: the `Trainer` invariant holds, all borrowed arguments live
+        // through this synchronous call, and the runtime writes both output
+        // buffers completely on success.
+        unsafe {
+            ffi_refill_vec(logprobs, rows, |logprobs_out| {
+                ffi_extend_vec(features, feature_len, |features_out| {
+                    self.check(ffi::retro_trainer_score_token_suffix_and_hidden_states(
                         self.raw.as_ptr(),
                         tokens.as_ptr(),
                         tokens.len(),
@@ -278,9 +282,9 @@ impl Trainer {
                         logprobs_out,
                         features_out,
                         feature_len,
-                    )
+                    ))
                 })
             })
-        })
+        }
     }
 }

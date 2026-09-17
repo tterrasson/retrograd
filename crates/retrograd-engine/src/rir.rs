@@ -105,9 +105,9 @@ pub fn rir_runtime_policy() -> Result<(RirMode, bool)> {
 /// produces that on a pair whose native is still there.
 pub fn rir_variant_report() -> Result<String> {
     // SAFETY: the module contract keeps each scalar or buffer out-parameter live for the synchronous call.
-    read_string(|buffer, n_buffer, out| unsafe {
-        ffi::retro_rir_variant_report(buffer, n_buffer, out)
-    })
+    unsafe {
+        read_string(|buffer, n_buffer, out| ffi::retro_rir_variant_report(buffer, n_buffer, out))
+    }
 }
 
 /// The census of the ggml graphs computed so far, one row per `(ggml_op,
@@ -141,9 +141,9 @@ pub fn rir_variant_report() -> Result<String> {
 /// had already saved them.
 pub fn rir_census_report() -> Result<String> {
     // SAFETY: the module contract keeps each scalar or buffer out-parameter live for the synchronous call.
-    read_string(|buffer, n_buffer, out| unsafe {
-        ffi::retro_rir_census_report(buffer, n_buffer, out)
-    })
+    unsafe {
+        read_string(|buffer, n_buffer, out| ffi::retro_rir_census_report(buffer, n_buffer, out))
+    }
 }
 
 /// Runs the registry's variant-selection rule against synthetic tables and

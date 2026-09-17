@@ -19,17 +19,19 @@ impl Trainer {
         // when the runtime reports the exact size.
         let size_hint = tokens.len().saturating_mul(16).max(64);
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
-        read_string_sized_lossy(size_hint, |buffer, n_buffer, out| unsafe {
-            ffi::retro_trainer_detokenize(
-                self.raw.as_ptr(),
-                tokens.as_ptr(),
-                tokens.len(),
-                unparse_special,
-                buffer,
-                n_buffer,
-                out,
-            )
-        })
+        unsafe {
+            read_string_sized_lossy(size_hint, |buffer, n_buffer, out| {
+                ffi::retro_trainer_detokenize(
+                    self.raw.as_ptr(),
+                    tokens.as_ptr(),
+                    tokens.len(),
+                    unparse_special,
+                    buffer,
+                    n_buffer,
+                    out,
+                )
+            })
+        }
     }
 
     /// Tokenizes a complete text, prepending BOS. Compare
@@ -77,20 +79,22 @@ impl Trainer {
             return Ok(Vec::new());
         }
 
-        ffi_out_vec(needed, |tokens_out| {
-            let mut written = 0_usize;
-            // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
-            self.check(unsafe {
-                tokenize(
+        // SAFETY: the `Trainer` invariant holds, all borrowed arguments live
+        // through this synchronous call, and `tokenize` writes the `written`
+        // ids it reports.
+        unsafe {
+            ffi_out_vec(needed, |tokens_out| {
+                let mut written = 0_usize;
+                self.check(tokenize(
                     self.raw.as_ptr(),
                     text.as_ptr(),
                     tokens_out,
                     needed,
                     &mut written,
-                )
-            })?;
-            Ok(written)
-        })
+                ))?;
+                Ok(written)
+            })
+        }
     }
 
     pub fn eos_token(&self) -> Result<i32> {
@@ -147,18 +151,20 @@ impl Trainer {
             .map(|value| value.as_ptr())
             .collect::<Vec<_>>();
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
-        read_string(|buffer, n_buffer, out| unsafe {
-            ffi::retro_trainer_format_chat(
-                self.raw.as_ptr(),
-                role_ptrs.as_ptr(),
-                content_ptrs.as_ptr(),
-                messages.len(),
-                add_assistant,
-                buffer,
-                n_buffer,
-                out,
-            )
-        })
+        unsafe {
+            read_string(|buffer, n_buffer, out| {
+                ffi::retro_trainer_format_chat(
+                    self.raw.as_ptr(),
+                    role_ptrs.as_ptr(),
+                    content_ptrs.as_ptr(),
+                    messages.len(),
+                    add_assistant,
+                    buffer,
+                    n_buffer,
+                    out,
+                )
+            })
+        }
     }
 
     /// Formats messages given as a JSON array, so a message can carry the
@@ -186,17 +192,19 @@ impl Trainer {
             .as_ref()
             .map_or(std::ptr::null(), |tools| tools.as_ptr());
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
-        read_string(|buffer, n_buffer, out| unsafe {
-            ffi::retro_trainer_format_chat_messages(
-                self.raw.as_ptr(),
-                messages.as_ptr(),
-                tools_ptr,
-                add_assistant,
-                buffer,
-                n_buffer,
-                out,
-            )
-        })
+        unsafe {
+            read_string(|buffer, n_buffer, out| {
+                ffi::retro_trainer_format_chat_messages(
+                    self.raw.as_ptr(),
+                    messages.as_ptr(),
+                    tools_ptr,
+                    add_assistant,
+                    buffer,
+                    n_buffer,
+                    out,
+                )
+            })
+        }
     }
 
     /// Replaces chat-template variables and invalidates the cached tool-support probe.
@@ -246,12 +254,13 @@ impl Trainer {
         let tools_ptr = tools
             .as_ref()
             .map_or(std::ptr::null(), |tools| tools.as_ptr());
-        let parser = read_optional_string(
-            ffi::RETRO_CHAT_PARSER_UNAVAILABLE,
-            |buffer, n_buffer, out| {
-                // SAFETY: the `Trainer` invariant holds and all borrowed arguments
-                // live through this synchronous call.
-                unsafe {
+        // SAFETY: the `Trainer` invariant holds, all borrowed arguments live
+        // through this synchronous call, and the entry point writes the byte
+        // count it reports.
+        let parser = unsafe {
+            read_optional_string(
+                ffi::RETRO_CHAT_PARSER_UNAVAILABLE,
+                |buffer, n_buffer, out| {
                     ffi::retro_trainer_tool_call_parser(
                         self.raw.as_ptr(),
                         tools_ptr,
@@ -259,9 +268,9 @@ impl Trainer {
                         n_buffer,
                         out,
                     )
-                }
-            },
-        )?;
+                },
+            )
+        }?;
         if parser.is_none() {
             tracing::warn!(
                 "the chat template yields no tool-call parser; falling back to prompt rendering"
@@ -275,16 +284,21 @@ impl Trainer {
 /// Every other non-zero status remains an error; collapsing those together is
 /// so malformed catalogs and runtime failures remain errors rather than
 /// becoming a fallback.
-fn read_optional_string<F>(unavailable: i32, mut call: F) -> Result<Option<String>>
+///
+/// # Safety
+///
+/// Same obligation as [`read_string`].
+unsafe fn read_optional_string<F>(unavailable: i32, mut call: F) -> Result<Option<String>>
 where
     F: FnMut(*mut std::ffi::c_char, usize, *mut usize) -> i32,
 {
     let mut needed = 0_usize;
     match call(std::ptr::null_mut(), 0, &mut needed) {
         code if code == unavailable => Ok(None),
-        0 => Ok(Some(string_from_runtime(read_bytes_exact(
-            needed, &mut call,
-        )?)?)),
+        // SAFETY: the caller's obligation, restated on `read_optional_string`.
+        0 => Ok(Some(string_from_runtime(unsafe {
+            read_bytes_exact(needed, &mut call)
+        }?)?)),
         _ => Err(runtime_error()),
     }
 }
@@ -313,17 +327,19 @@ pub fn render_chat_template_source(
         .map_or(std::ptr::null(), |tools| tools.as_ptr());
     // SAFETY: every borrowed buffer lives through this synchronous call, and
     // the entry opens no model.
-    read_string(|buffer, n_buffer, out| unsafe {
-        ffi::retro_chat_template_render(
-            template.as_ptr(),
-            messages.as_ptr(),
-            tools_ptr,
-            add_assistant,
-            buffer,
-            n_buffer,
-            out,
-        )
-    })
+    unsafe {
+        read_string(|buffer, n_buffer, out| {
+            ffi::retro_chat_template_render(
+                template.as_ptr(),
+                messages.as_ptr(),
+                tools_ptr,
+                add_assistant,
+                buffer,
+                n_buffer,
+                out,
+            )
+        })
+    }
 }
 
 /// [`Trainer::tool_call_parser`] over a template given as Jinja source. Unlike
@@ -342,15 +358,17 @@ pub fn tool_call_parser_from_source(
         .map_or(std::ptr::null(), |tools| tools.as_ptr());
     // SAFETY: every borrowed buffer lives through this synchronous call, and
     // the entry opens no model.
-    read_string(|buffer, n_buffer, out| unsafe {
-        ffi::retro_chat_template_tool_call_parser(
-            template.as_ptr(),
-            tools_ptr,
-            buffer,
-            n_buffer,
-            out,
-        )
-    })
+    unsafe {
+        read_string(|buffer, n_buffer, out| {
+            ffi::retro_chat_template_tool_call_parser(
+                template.as_ptr(),
+                tools_ptr,
+                buffer,
+                n_buffer,
+                out,
+            )
+        })
+    }
 }
 
 /// Runs a parser from [`Trainer::tool_call_parser`] over one assistant output.
@@ -371,16 +389,18 @@ pub fn parse_assistant_output(parser: &str, text: &str) -> Result<String> {
     let text = CString::new(text).map_err(nul_error)?;
     // SAFETY: both borrowed buffers live through this synchronous call, and the
     // entry takes no trainer to invalidate.
-    read_string_sized_lossy(size_hint, |buffer, n_buffer, out| unsafe {
-        ffi::retro_chat_parse_assistant(
-            parser.as_ptr().cast(),
-            parser.len(),
-            text.as_ptr(),
-            buffer,
-            n_buffer,
-            out,
-        )
-    })
+    unsafe {
+        read_string_sized_lossy(size_hint, |buffer, n_buffer, out| {
+            ffi::retro_chat_parse_assistant(
+                parser.as_ptr().cast(),
+                parser.len(),
+                text.as_ptr(),
+                buffer,
+                n_buffer,
+                out,
+            )
+        })
+    }
 }
 
 #[cfg(test)]
@@ -389,11 +409,15 @@ mod optional_string_tests {
 
     #[test]
     fn only_the_unavailable_status_becomes_none() {
-        assert!(
-            read_optional_string(-3, |_buffer, _capacity, _needed| -3)
-                .expect("unavailable is nominal")
-                .is_none()
-        );
-        assert!(read_optional_string(-3, |_buffer, _capacity, _needed| -1).is_err());
+        // SAFETY: both closures return a non-zero status, so neither claims a
+        // write.
+        unsafe {
+            assert!(
+                read_optional_string(-3, |_buffer, _capacity, _needed| -3)
+                    .expect("unavailable is nominal")
+                    .is_none()
+            );
+            assert!(read_optional_string(-3, |_buffer, _capacity, _needed| -1).is_err());
+        }
     }
 }

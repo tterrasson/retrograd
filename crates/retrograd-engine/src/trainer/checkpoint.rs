@@ -37,17 +37,19 @@ impl Trainer {
             let mut shape = [0_i64; 4];
             let mut n_elements = 0_usize;
             // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
-            let name = read_string(|buffer, n_buffer, out| unsafe {
-                ffi::retro_trainer_momenta_info(
-                    self.raw.as_ptr(),
-                    index,
-                    buffer,
-                    n_buffer,
-                    out,
-                    shape.as_mut_ptr(),
-                    &mut n_elements,
-                )
-            })?;
+            let name = unsafe {
+                read_string(|buffer, n_buffer, out| {
+                    ffi::retro_trainer_momenta_info(
+                        self.raw.as_ptr(),
+                        index,
+                        buffer,
+                        n_buffer,
+                        out,
+                        shape.as_mut_ptr(),
+                        &mut n_elements,
+                    )
+                })
+            }?;
             let mut m = vec![0.0_f32; n_elements];
             let mut v = vec![0.0_f32; n_elements];
             // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.

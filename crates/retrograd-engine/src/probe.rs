@@ -247,6 +247,23 @@ pub fn fused_sparse_ce_probe_offloaded(
         assert_eq!(bias.len(), n_vocab, "bias must be [n_vocab]");
     }
 
+    // The runtime takes its extents as `i32`. The asserts above constrain the
+    // shapes against each other, not against that range, so the conversion is
+    // where an over-large extent has to be refused.
+    let extent = |value: usize, name: &'static str| -> Result<i32> {
+        i32::try_from(value).map_err(|_| {
+            Error::invalid(format!(
+                "{name} = {value} does not fit the runtime's i32 extent"
+            ))
+        })
+    };
+    let n_embd_ffi = extent(n_embd, "n_embd")?;
+    let n_tokens_ffi = extent(n_tokens, "n_tokens")?;
+    let n_vocab_ffi = extent(n_vocab, "n_vocab")?;
+    let n_topk_ffi = extent(n_topk, "n_topk")?;
+    let n_tiles_ffi = extent(n_tiles, "n_tiles")?;
+    let seq_chunk_ffi = extent(seq_chunk, "seq_chunk")?;
+
     let mut loss_full = 0.0_f32;
     let mut loss_fused = 0.0_f32;
     let mut grad_h_full = vec![0.0_f32; n_embd * n_tokens];
@@ -255,12 +272,12 @@ pub fn fused_sparse_ce_probe_offloaded(
     // SAFETY: the module contract validates input shapes and keeps every input/output allocation live.
     let code = unsafe {
         ffi::retro_fused_sparse_ce_probe(
-            n_embd as i32,
-            n_tokens as i32,
-            n_vocab as i32,
-            n_topk as i32,
-            n_tiles as i32,
-            seq_chunk as i32,
+            n_embd_ffi,
+            n_tokens_ffi,
+            n_vocab_ffi,
+            n_topk_ffi,
+            n_tiles_ffi,
+            seq_chunk_ffi,
             i32::from(offload_h),
             w_type.id(),
             i32::from(use_gpu),
@@ -348,7 +365,7 @@ pub(crate) fn fixed_name(field: &[c_char]) -> String {
 /// `type\tname\tdescription`. `type` is `cpu`, `gpu`, `accel`, or `other`.
 pub fn backend_list() -> Result<String> {
     // SAFETY: the module contract validates input shapes and keeps every input/output allocation live.
-    read_string(|buffer, n_buffer, out| unsafe { ffi::retro_backend_list(buffer, n_buffer, out) })
+    unsafe { read_string(|buffer, n_buffer, out| ffi::retro_backend_list(buffer, n_buffer, out)) }
 }
 
 /// Returns whether a registered GPU can create and synchronize a real backend

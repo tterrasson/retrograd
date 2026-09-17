@@ -144,9 +144,11 @@ impl Trainer {
     /// block. Available before a LoRA adapter is created.
     pub fn lora_candidate_targets(&self) -> Result<Vec<String>> {
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
-        let listing = read_string(|buffer, n_buffer, out| unsafe {
-            ffi::retro_trainer_lora_candidate_targets(self.raw.as_ptr(), buffer, n_buffer, out)
-        })?;
+        let listing = unsafe {
+            read_string(|buffer, n_buffer, out| {
+                ffi::retro_trainer_lora_candidate_targets(self.raw.as_ptr(), buffer, n_buffer, out)
+            })
+        }?;
         Ok(listing
             .lines()
             .map(str::trim)

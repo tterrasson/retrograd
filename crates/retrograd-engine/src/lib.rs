@@ -184,28 +184,40 @@ macro_rules! read_string_method {
     ($(#[$meta:meta])* $name:ident, $ffi_name:ident) => {
         $(#[$meta])*
         pub fn $name(&self) -> Result<String> {
-            // SAFETY: the local helper owns a live allocation for every raw pointer passed to the runtime.
-            read_string(|buffer, n_buffer, out| unsafe {
-                ffi::$ffi_name(self.raw.as_ptr(), buffer, n_buffer, out)
-            })
+            // SAFETY: the helper owns a live allocation for every raw pointer
+            // passed to the runtime, and `retro_*` string getters write the
+            // byte count they report.
+            unsafe {
+                read_string(|buffer, n_buffer, out| {
+                    ffi::$ffi_name(self.raw.as_ptr(), buffer, n_buffer, out)
+                })
+            }
         }
     };
     ($(#[$meta:meta])* $name:ident, $ffi_name:ident, mut) => {
         $(#[$meta])*
         pub fn $name(&mut self) -> Result<String> {
-            // SAFETY: the local helper owns a live allocation for every raw pointer passed to the runtime.
-            read_string(|buffer, n_buffer, out| unsafe {
-                ffi::$ffi_name(self.raw.as_ptr(), buffer, n_buffer, out)
-            })
+            // SAFETY: the helper owns a live allocation for every raw pointer
+            // passed to the runtime, and `retro_*` string getters write the
+            // byte count they report.
+            unsafe {
+                read_string(|buffer, n_buffer, out| {
+                    ffi::$ffi_name(self.raw.as_ptr(), buffer, n_buffer, out)
+                })
+            }
         }
     };
     (private $(#[$meta:meta])* $name:ident, $ffi_name:ident) => {
         $(#[$meta])*
         fn $name(&mut self) -> Result<String> {
-            // SAFETY: the local helper owns a live allocation for every raw pointer passed to the runtime.
-            read_string(|buffer, n_buffer, out| unsafe {
-                ffi::$ffi_name(self.raw.as_ptr(), buffer, n_buffer, out)
-            })
+            // SAFETY: the helper owns a live allocation for every raw pointer
+            // passed to the runtime, and `retro_*` string getters write the
+            // byte count they report.
+            unsafe {
+                read_string(|buffer, n_buffer, out| {
+                    ffi::$ffi_name(self.raw.as_ptr(), buffer, n_buffer, out)
+                })
+            }
         }
     };
 }
@@ -561,15 +573,24 @@ pub use trainer::{
     parse_assistant_output, render_chat_template_source, tool_call_parser_from_source,
 };
 
-// Single owner of the "uninitialized buffer filled through FFI" soundness
-// argument used by every output buffer in this module: the runtime writes the
-// reported number of entries through the raw pointer before returning
-// success, so marking them initialized afterwards never exposes uninitialized
-// memory, and a failed call leaves the buffer logically empty.
+// The "uninitialized buffer filled through FFI" helpers below each mark a
+// buffer initialized on the strength of what their closure reports. Nothing
+// they can check proves the write happened, so the obligation is the caller's
+// and the helpers are `unsafe fn`: calling one asserts that the runtime entry
+// point inside the closure initializes the entries it reports before returning
+// success. A failed call leaves the buffer logically empty.
 
 /// Allocates `capacity` uninitialized slots, lets the runtime fill them, and
 /// keeps the number of entries `fill` reports written.
-fn ffi_out_vec<T>(capacity: usize, fill: impl FnOnce(*mut T) -> Result<usize>) -> Result<Vec<T>> {
+///
+/// # Safety
+///
+/// `fill` must initialize `n` entries at the pointer it is given whenever it
+/// returns `Ok(n)`.
+unsafe fn ffi_out_vec<T>(
+    capacity: usize,
+    fill: impl FnOnce(*mut T) -> Result<usize>,
+) -> Result<Vec<T>> {
     let mut out = Vec::<T>::with_capacity(capacity);
     let written = fill(out.as_mut_ptr())?;
     if written > capacity {
@@ -577,42 +598,57 @@ fn ffi_out_vec<T>(capacity: usize, fill: impl FnOnce(*mut T) -> Result<usize>) -
             "runtime reported {written} output entries for a buffer of {capacity}"
         )));
     }
-    // SAFETY: module contract above - the runtime initialized `written` entries.
+    // SAFETY: the caller's obligation, and `written` fits the allocation.
     unsafe { out.set_len(written) };
     Ok(out)
 }
 
 /// [`ffi_out_vec`] into a reused buffer: clears it and has the runtime write
 /// exactly `len` entries.
-fn ffi_refill_vec<T>(
+///
+/// # Safety
+///
+/// `fill` must initialize `len` entries at the pointer it is given whenever it
+/// returns `Ok(())`.
+unsafe fn ffi_refill_vec<T>(
     out: &mut Vec<T>,
     len: usize,
     fill: impl FnOnce(*mut T) -> Result<()>,
 ) -> Result<()> {
     out.clear();
-    ffi_extend_vec(out, len, fill)
+    // SAFETY: forwarded to the caller, whose `fill` this is.
+    unsafe { ffi_extend_vec(out, len, fill) }
 }
 
 /// [`ffi_out_vec`] appending to a growing buffer: the runtime writes
 /// `additional` entries after the current end.
-fn ffi_extend_vec<T>(
+///
+/// # Safety
+///
+/// `fill` must initialize `additional` entries at the pointer it is given
+/// whenever it returns `Ok(())`.
+unsafe fn ffi_extend_vec<T>(
     out: &mut Vec<T>,
     additional: usize,
     fill: impl FnOnce(*mut T) -> Result<()>,
 ) -> Result<()> {
     out.reserve(additional);
     let start = out.len();
-    // SAFETY: the pointer stays inside the reserved allocation, and the
-    // module contract above covers the `additional` entries on success.
+    // SAFETY: `reserve` covers `additional` entries past `start`.
     fill(unsafe { out.as_mut_ptr().add(start) })?;
-    // SAFETY: `fill` initialized exactly the reserved `additional` entries.
+    // SAFETY: the caller's obligation.
     unsafe { out.set_len(start + additional) };
     Ok(())
 }
 
 /// Runs the two-call (size probe, then fill) pattern shared by the runtime's
 /// string-returning entry points.
-fn read_string<F>(mut call: F) -> Result<String>
+///
+/// # Safety
+///
+/// `call` must write `*out` content bytes plus a trailing NUL into the buffer
+/// it is given whenever it returns 0.
+unsafe fn read_string<F>(mut call: F) -> Result<String>
 where
     F: FnMut(*mut c_char, usize, *mut usize) -> i32,
 {
@@ -621,7 +657,8 @@ where
     if code != 0 {
         return Err(runtime_error());
     }
-    string_from_runtime(read_bytes_exact(needed, &mut call)?)
+    // SAFETY: forwarded to the caller, whose `call` this is.
+    string_from_runtime(unsafe { read_bytes_exact(needed, &mut call) }?)
 }
 
 /// Like [`read_string`], but skips the size probe by optimistically calling
@@ -631,7 +668,11 @@ where
 ///
 /// Decodes leniently: unlike the runtime's own diagnostics, rendered model
 /// text can legitimately end on a partial multi-byte character.
-fn read_string_sized_lossy<F>(size_hint: usize, mut call: F) -> Result<String>
+///
+/// # Safety
+///
+/// Same obligation as [`read_string`].
+unsafe fn read_string_sized_lossy<F>(size_hint: usize, mut call: F) -> Result<String>
 where
     F: FnMut(*mut c_char, usize, *mut usize) -> i32,
 {
@@ -645,8 +686,7 @@ where
                 "runtime reported a {needed}-byte string for a {capacity}-byte buffer"
             )));
         }
-        // SAFETY: module contract above - success with a non-empty buffer
-        // means the runtime wrote `needed` content bytes plus a NUL.
+        // SAFETY: the caller's obligation, and `needed` fits the allocation.
         unsafe { buffer.set_len(needed) };
         return Ok(string_from_runtime_lossy(buffer));
     }
@@ -654,26 +694,33 @@ where
         return Err(runtime_error());
     }
     // -2 reports the required size in `needed`.
-    Ok(string_from_runtime_lossy(read_bytes_exact(
-        needed, &mut call,
-    )?))
+    // SAFETY: forwarded to the caller, whose `call` this is.
+    Ok(string_from_runtime_lossy(unsafe {
+        read_bytes_exact(needed, &mut call)
+    }?))
 }
 
-fn read_bytes_exact<F>(needed: usize, call: &mut F) -> Result<Vec<u8>>
+/// # Safety
+///
+/// Same obligation as [`read_string`].
+unsafe fn read_bytes_exact<F>(needed: usize, call: &mut F) -> Result<Vec<u8>>
 where
     F: FnMut(*mut c_char, usize, *mut usize) -> i32,
 {
     let capacity = needed
         .checked_add(1)
         .ok_or_else(|| Error::runtime("runtime string size overflows usize"))?;
-    let buffer = ffi_out_vec::<u8>(capacity, |buffer| {
-        let mut written = 0_usize;
-        if call(buffer.cast(), capacity, &mut written) != 0 {
-            return Err(runtime_error());
-        }
-        // The runtime writes `written` content bytes plus a trailing NUL.
-        Ok(written)
-    })?;
+    // SAFETY: forwarded to the caller: `call` writes `written` content bytes
+    // plus a trailing NUL when it returns 0.
+    let buffer = unsafe {
+        ffi_out_vec::<u8>(capacity, |buffer| {
+            let mut written = 0_usize;
+            if call(buffer.cast(), capacity, &mut written) != 0 {
+                return Err(runtime_error());
+            }
+            Ok(written)
+        })
+    }?;
     Ok(buffer)
 }
 
@@ -1007,14 +1054,18 @@ mod tests {
 
     #[test]
     fn ffi_output_helpers_reject_lengths_larger_than_their_buffers() {
-        let error = ffi_out_vec::<u8>(1, |_| Ok(2)).unwrap_err();
+        // SAFETY: this is the over-report path, which both helpers reject
+        // before touching the buffer, so neither closure has to write.
+        let error = unsafe { ffi_out_vec::<u8>(1, |_| Ok(2)) }.unwrap_err();
         assert!(error.to_string().contains("2 output entries"), "{error}");
 
-        let error = read_string_sized_lossy(1, |_buffer, _capacity, needed| {
-            // SAFETY: `needed` is the helper's valid out-parameter.
-            unsafe { *needed = 2 };
-            0
-        })
+        // SAFETY: as above; `needed` is the helper's valid out-parameter.
+        let error = unsafe {
+            read_string_sized_lossy(1, |_buffer, _capacity, needed| {
+                *needed = 2;
+                0
+            })
+        }
         .unwrap_err();
         assert!(error.to_string().contains("2-byte string"), "{error}");
     }
