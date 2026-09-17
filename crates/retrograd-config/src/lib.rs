@@ -1952,12 +1952,12 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn write_config(source: &str) -> PathBuf {
-        // Tests run in parallel and a nanosecond timestamp is not unique on its
-        // own: two of them can land on the same directory and delete each
-        // other's config on teardown. The counter makes the name collision-free.
+        // A timestamp alone is not unique among parallel tests; the pid and
+        // counter make the directory unique across processes and tests.
         static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "retrograd-config-{}-{}",
+            "retrograd-config-{}-{}-{}",
+            std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
