@@ -10,7 +10,6 @@
 
 use std::time::Duration;
 
-use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Table};
 
@@ -21,7 +20,7 @@ use crate::stream::Better;
 pub fn base_table() -> Table {
     let mut table = Table::new();
     table
-        .load_preset(UTF8_FULL)
+        .load_style(UTF8_FULL)
         .set_content_arrangement(ContentArrangement::Dynamic);
     table
 }
@@ -32,8 +31,7 @@ pub fn base_table() -> Table {
 pub fn rounded_table() -> Table {
     let mut table = Table::new();
     table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
+        .load_style(UTF8_FULL.with_rounded_corners())
         .set_content_arrangement(ContentArrangement::Disabled);
     table
 }

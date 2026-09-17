@@ -17,6 +17,12 @@ serde_json.workspace = true
 rir-core.workspace = true
 # Compile CUDA with `nvcc -shared` and load it dynamically. A missing toolkit
 # remains recoverable, like a missing Vulkan driver.
+#
+# Held at 0.8, which is not the latest: `ash` depends on it to open
+# `libvulkan`, and 0.8 is what it asks for. Taking 0.9 here puts two copies of
+# the crate in a `--features cuda` build - both backends of this one crate
+# dlopen'ing through a different version of the same wrapper - for an API this
+# module uses two names of (`Library`, `Symbol`). Raise it when `ash` does.
 libloading = { version = "0.8", optional = true }
 
 [features]

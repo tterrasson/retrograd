@@ -35,7 +35,7 @@ pub mod task;
 
 pub use config::{EnvironmentConfig, LocalConfig};
 #[cfg(feature = "container")]
-pub use container::{ContainerEnvironmentConfig, ContainerPoolConfig};
+pub use container::{ContainerEnvironment, ContainerEnvironmentConfig, ContainerPoolConfig};
 #[cfg(feature = "http-env")]
 pub use http::{HttpEnvironment, HttpEnvironmentConfig, HttpEnvironmentFactory};
 #[cfg(feature = "local-sandbox")]

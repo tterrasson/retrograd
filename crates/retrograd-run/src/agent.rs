@@ -21,8 +21,13 @@ use std::sync::Arc;
 
 use retrograd_agent::{
     AgentFlow, AgenticRun, Environments, JudgeBackend, Result as AgentResult, Scenario,
-    ToolPlanResolve, UpdateBoundary, UpdateHook,
+    UpdateBoundary, UpdateHook,
 };
+// Only the `not(feature = "mcp")` half of `connect_tools` below calls
+// `local_catalog`; the MCP half resolves the whole plan instead. Same `cfg` on
+// the import, so the build that has the transport does not warn about it.
+#[cfg(not(feature = "mcp"))]
+use retrograd_agent::ToolPlanResolve;
 use retrograd_config::AgentRunConfig;
 use retrograd_core::{Error, Result, TrainMetrics};
 use retrograd_engine::Trainer;
@@ -783,13 +788,13 @@ fn connect_tools(
     // merged view of the inline declarations and every `mcp_config` file, and
     // reading those files is a property of the machine that runs the document,
     // not of the document.
-    if has_environment {
-        if let Some(server) = resolved.servers.iter().find(|server| !server.stateless) {
-            return Err(Error::config(format!(
-                "MCP server '{}' must set stateless = true before it can be shared with an environment; otherwise group members may contaminate each other",
-                server.name
-            )));
-        }
+    if has_environment
+        && let Some(server) = resolved.servers.iter().find(|server| !server.stateless)
+    {
+        return Err(Error::config(format!(
+            "MCP server '{}' must set stateless = true before it can be shared with an environment; otherwise group members may contaminate each other",
+            server.name
+        )));
     }
     for warning in &resolved.catalog.warnings {
         ctx.observer.info(warning);

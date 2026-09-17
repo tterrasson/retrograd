@@ -52,7 +52,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 toml.workspace = true
 tower = { workspace = true, features = ["limit"] }
-tower-http = { version = "0.6", features = ["limit", "timeout", "trace"] }
+tower-http = { version = "0.7", features = ["limit", "timeout", "trace"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 utoipa = { workspace = true, optional = true }

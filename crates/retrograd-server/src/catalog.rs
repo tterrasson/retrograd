@@ -176,6 +176,7 @@ impl EnvironmentEntry {
                 .build(),
             #[cfg(feature = "container")]
             EnvironmentConfig::Container(container) => {
+                use retrograd_agent::env::ContainerEnvironment;
                 container.tools(retrograd_agent::tools::ToolSet::builder())
             }
             _ => return Vec::new(),

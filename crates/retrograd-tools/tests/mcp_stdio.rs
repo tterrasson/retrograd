@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use retrograd_tools::{McpServerConfig, McpToolProvider, ToolCall, ToolProvider};
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
-use rmcp::model::{ServerCapabilities, ServerInfo};
+use rmcp::model::{ServerCapabilities, ServerConfig};
 use rmcp::{ServerHandler, ServiceExt, schemars, tool, tool_handler, tool_router};
 
 const HELPER_ENV: &str = "RETROGRAD_MCP_ECHO_HELPER";
@@ -59,8 +59,8 @@ impl EchoServer {
 
 #[tool_handler]
 impl ServerHandler for EchoServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions("Retrograd MCP integration test server")
     }
 }

@@ -21,8 +21,13 @@
 
 use std::sync::Arc;
 
+use retrograd_agent_core::Result;
 use retrograd_agent_core::env::EnvironmentFactory;
-use retrograd_agent_core::{Error, Result};
+// Only `unsupported` below names this type, and it is compiled out of a build
+// that has every backing. Same `cfg` on the import, so the build that drops the
+// function drops its import with it rather than warning about it.
+#[cfg(not(all(feature = "http-env", feature = "container", feature = "local-sandbox")))]
+use retrograd_agent_core::Error;
 
 pub use retrograd_spec::env::{
     ContainerConfig, EnvironmentConfig, HttpEnvironmentConfig, LocalConfig,

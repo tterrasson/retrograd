@@ -113,19 +113,21 @@ rir-sweep = { path = "crates/rir-sweep" }
 
 async-trait = "0.1"
 axum = "0.8"
+comfy-table = "8"
 futures = "0.3"
 http = "1"
 http-body-util = "0.1"
+indicatif = "0.18"
 libc = "0.2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-rmcp = "2.2"
+rmcp = "3.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # One version: two would put two copies of `sha2`, `digest`, `block-buffer` and
 # `crypto-common` in the tree.
 sha2 = "0.11"
 thiserror = "2"
-toml = "0.8"
+toml = "1"
 tokio = "1"
 tower = "0.5"
 tracing = "0.1"
@@ -150,8 +152,8 @@ path = "src/bin/profile/main.rs"
 unwrap_used = "deny"
 
 [dependencies]
-comfy-table = "7"
-indicatif = "0.18"
+comfy-table.workspace = true
+indicatif.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 retrograd-checkpoint.workspace = true
 retrograd-cli-ui.workspace = true

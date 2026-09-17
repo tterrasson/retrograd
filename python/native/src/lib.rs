@@ -415,7 +415,7 @@ impl PyTrainer {
                     return;
                 }
                 if let Some(callback) = callback.as_ref() {
-                    Python::with_gil(|py| {
+                    Python::attach(|py| {
                         if let Err(error) = callback.call1(py, (metrics_tuple(metrics),)) {
                             callback_error = Some(error);
                         }
@@ -561,7 +561,7 @@ impl PyTrainer {
                     return;
                 }
                 if let Some(callback) = callback.as_ref() {
-                    Python::with_gil(|py| {
+                    Python::attach(|py| {
                         if let Err(error) = callback.call1(py, (progress_tuple(progress),)) {
                             callback_error = Some(error);
                         }
@@ -659,7 +659,7 @@ impl PyTrainer {
                 return;
             }
             if let Some(callback) = callback.as_ref() {
-                Python::with_gil(|py| {
+                Python::attach(|py| {
                     if let Err(error) = callback.call1(py, (progress_tuple(progress),)) {
                         callback_error = Some(error);
                     }
@@ -745,7 +745,7 @@ impl PyTrainer {
                     return;
                 }
                 if let Some(callback) = callback.as_ref() {
-                    Python::with_gil(|py| {
+                    Python::attach(|py| {
                         if let Err(error) = callback.call1(py, (progress_tuple(progress),)) {
                             callback_error = Some(error);
                         }
@@ -830,7 +830,7 @@ impl PyTrainer {
                     return;
                 }
                 if let Some(callback) = callback.as_ref() {
-                    Python::with_gil(|py| {
+                    Python::attach(|py| {
                         if let Err(error) = callback.call1(py, (progress_tuple(progress),)) {
                             callback_error = Some(error);
                         }
@@ -1026,7 +1026,7 @@ impl PyTrainer {
                 return;
             }
             if let Some(callback) = callback.as_ref() {
-                Python::with_gil(|py| {
+                Python::attach(|py| {
                     if let Err(error) = callback.call1(py, (progress_tuple(progress),)) {
                         callback_error = Some(error);
                     }

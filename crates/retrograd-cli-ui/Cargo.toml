@@ -12,8 +12,8 @@ publish = false
 #. Anything that needs a domain type is a formatter and
 # stays in the binary that owns the type.
 [dependencies]
-comfy-table = "7"
-indicatif = "0.18"
+comfy-table.workspace = true
+indicatif.workspace = true
 
 [lints]
 workspace = true
