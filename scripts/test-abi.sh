@@ -13,6 +13,7 @@ backends="${RETRO_ABI_FEATURES-platform-gpu}"
 # build would: the explicit backend replaces `platform-gpu`, and FFI gets the
 # same feature set as under the root, so both groups share one native variant.
 root_args=(--no-default-features --features agent)
+
 ffi_args=()
 if [[ -n "$backends" ]]; then
   if [[ "$backends" == ,* || "$backends" == *, || "$backends" == *,,* || "$backends" == *[[:space:]]* ]]; then
@@ -34,13 +35,13 @@ fi
 # targets: retrograd-ffi's own lib tests need -p, the four root-package
 # `tests/*.rs` binaries need --test. Cargo rejects mixing -p with --test for
 # a different package in one invocation.
-timed_step compile:ffi-lib cargo test "${ffi_args[@]}" --no-run -p retrograd-ffi --lib
+timed_step compile:ffi-lib cargo test ${ffi_args[@]+"${ffi_args[@]}"} --no-run -p retrograd-ffi --lib
 timed_step compile:root-tests cargo test "${root_args[@]}" --no-run \
   --test backend_devices --test metal_ops --test weighted_ce \
   --test gated_delta_net_chunked --test flash_attn_back --test out_prod_quant \
   --test engine_contracts --test rir_probe --test rir_quant_oracle
 
-timed_step run:ffi-lib cargo test "${ffi_args[@]}" --lib -p retrograd-ffi
+timed_step run:ffi-lib cargo test ${ffi_args[@]+"${ffi_args[@]}"} --lib -p retrograd-ffi
 timed_step run:backend_devices cargo test "${root_args[@]}" --test backend_devices
 timed_step run:metal_ops cargo test "${root_args[@]}" --test metal_ops
 timed_step run:weighted_ce cargo test "${root_args[@]}" --test weighted_ce

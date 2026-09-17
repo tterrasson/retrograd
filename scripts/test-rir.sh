@@ -146,7 +146,8 @@ if [[ $force_build -eq 1 || ! -x "$bin" ]]; then
         rm -f "$build.probe.cu" "$build.probe.o"
     fi
     cmake -B "$build" -S "$fork" -DCMAKE_BUILD_TYPE=Release \
-        -DGGML_METAL=$metal -DGGML_VULKAN=ON -DGGML_CUDA=$cuda "${cuda_cmake[@]}" \
+        -DGGML_METAL=$metal -DGGML_VULKAN=ON -DGGML_CUDA=$cuda \
+        ${cuda_cmake[@]+"${cuda_cmake[@]}"} \
         -DLLAMA_BUILD_TESTS=ON >/dev/null
     cmake --build "$build" --target test-backend-ops -j "$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 fi
@@ -484,7 +485,7 @@ assert_counters() {
     local total=0 missing=""
     local -a declared=()
     while IFS= read -r v; do [[ -n "$v" ]] && declared+=("$v"); done < <(registry_variants "$op" "$be")
-    for v in "${declared[@]}"; do
+    for v in ${declared[@]+"${declared[@]}"}; do
         local n
         n="$(sed -nE "s/.*\[$v\]=([0-9]+).*/\1/p" <<<"$line")"
         n="${n:-0}"
@@ -620,7 +621,7 @@ has_undecided_refusal() {
     return 1
 }
 
-for pair in "${pairs[@]}"; do
+for pair in ${pairs[@]+"${pairs[@]}"}; do
     IFS=$'\t' read -r op be policy native <<<"$pair"
     [[ " ${selected[*]} " == *" $be "* ]] || continue
     if [[ -n "$ops_filter" && ",$ops_filter," != *",$op,"* ]]; then continue; fi
