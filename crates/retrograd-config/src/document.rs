@@ -21,12 +21,13 @@ use crate::sft::SftToml;
 /// Public because it is the one schema three frontends share: the CLI reads it
 /// from TOML, the server accepts it as JSON, and the resolver renders its own
 /// output back through it. The resolver builds one of these instead of a
-/// [`RunConfig`] directly, so that "the resolver cannot produce a config the
-/// CLI would refuse" holds *by construction*: the only way from a document to
-/// a `RunConfig` is [`build`], which is what `load` calls.
+/// [`RunConfig`](crate::RunConfig) directly, so that "the resolver cannot
+/// produce a config the CLI would refuse" holds *by construction*: the only way
+/// from a document to a `RunConfig` is [`build`](crate::build()), which is what
+/// `load` calls.
 ///
-/// [`RunConfig`], by contrast, stays internal: it is the engine's shape and
-/// changes at the engine's pace.
+/// [`RunConfig`](crate::RunConfig), by contrast, stays internal: it is the
+/// engine's shape and changes at the engine's pace.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigDocument {
@@ -65,7 +66,8 @@ pub struct RunToml {
 }
 /// `[model]` is optional as a *document* section because a frontend may supply
 /// the base model itself - the CLI's `--model`/`--device`, a request field.
-/// What is not optional is the resolved [`RunConfig::model`]: [`build_with`]
+/// What is not optional is the resolved
+/// [`RunConfig::model`](crate::RunConfig::model): [`build_with`](crate::build_with)
 /// refuses a document whose path is neither written nor overridden.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -219,9 +221,10 @@ pub struct SamplingToml {
 
 /// What a frontend may substitute for `[model]` without editing the document.
 ///
-/// It is an *input* to [`build_with`] rather than a patch applied to the
-/// resulting [`RunConfig`]: a document that names no `[model].path` must still
-/// build when the caller supplies one, and that decision belongs to the same
+/// It is an *input* to [`build_with`](crate::build_with) rather than a patch
+/// applied to the resulting [`RunConfig`](crate::RunConfig): a document that
+/// names no `[model].path` must still build when the caller supplies one, and
+/// that decision belongs to the same
 /// function that would otherwise refuse it. A path here comes from the caller's
 /// working directory, not the document's, so it is used as given.
 #[derive(Clone, Debug, Default)]
