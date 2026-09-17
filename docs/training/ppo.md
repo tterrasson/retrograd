@@ -127,11 +127,16 @@ for line in sys.stdin:
     batch = request.pop("_retrograd_batch")
     index = request.pop("_retrograd_index")
     score = 1.0 if request.get("completion", "").strip() else 0.0
-    print(json.dumps({
-        "reward": score,
-        "_retrograd_batch": batch,
-        "_retrograd_index": index,
-    }), flush=True)
+    print(
+        json.dumps(
+            {
+                "reward": score,
+                "_retrograd_batch": batch,
+                "_retrograd_index": index,
+            }
+        ),
+        flush=True,
+    )
 ```
 
 The default batch timeout is 300 seconds and includes startup time for the

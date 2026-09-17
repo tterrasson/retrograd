@@ -107,9 +107,7 @@ config = AgenticGRPOConfig(
         # ranking the whole group. See "Judging" below.
         mode="auto",
     ),
-    mcp_servers=(
-        McpServer(name="calc", command=("python", "calculator_server.py")),
-    ),
+    mcp_servers=(McpServer(name="calc", command=("python", "calculator_server.py")),),
     updates=10,
     scenarios_per_update=2,
     group_size=8,

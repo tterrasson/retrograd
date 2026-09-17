@@ -100,7 +100,7 @@ if handshake.get("protocol") != PROTOCOL:
     raise SystemExit(f"unsupported reward protocol: {handshake}")
 print(json.dumps({"protocol": PROTOCOL}), flush=True)
 
-references = load_references()          # paid once, not once per batch
+references = load_references()  # paid once, not once per batch
 
 for line in sys.stdin:
     request = json.loads(line)
@@ -109,11 +109,16 @@ for line in sys.stdin:
         continue
     batch = request.pop("_retrograd_batch")
     index = request.pop("_retrograd_index")
-    print(json.dumps({
-        "reward": score(request, references),
-        "_retrograd_batch": batch,
-        "_retrograd_index": index,
-    }), flush=True)
+    print(
+        json.dumps(
+            {
+                "reward": score(request, references),
+                "_retrograd_batch": batch,
+                "_retrograd_index": index,
+            }
+        ),
+        flush=True,
+    )
 ```
 
 The two reserved fields correlate every response with the request that caused
