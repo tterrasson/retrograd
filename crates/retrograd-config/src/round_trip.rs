@@ -26,7 +26,15 @@
 //! in their own crates. The fifteen types here are the ones `build` and its six
 //! `build_*` helpers copy by hand.
 
+use std::path::Path;
+
+use retrograd_core::{
+    CheckpointDtype, FeatureDtype, KvDtype, LoraDtype, LrScheduler, RewardMode, SharedPrefixFanout,
+};
+use retrograd_dataset::DataFormat;
+
 use super::*;
+use crate::grpo::build_grpo;
 
 /// Every key a fully-populated document serializes to, in dotted form and
 /// sorted. Frozen: adding a field to a `*Toml` type breaks
