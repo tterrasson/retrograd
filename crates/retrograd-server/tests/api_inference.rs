@@ -222,10 +222,13 @@ async fn a_run_that_is_not_executing_its_loop_refuses_both() {
 #[tokio::test]
 async fn a_request_that_outlives_its_bound_is_a_504() {
     let fixture = Fixture::new("inference-timeout");
-    // One iteration per two seconds against a one-second bound: the run is alive
-    // and healthy, it simply has not reached a callback yet. That is a timeout,
-    // not a failure of the run, and the two must not read the same.
-    let engine = FakeEngine::slow(10, Duration::from_millis(2000));
+    // Two seconds before the first poll against a one-second bound: the run is
+    // alive and healthy, it simply has not reached a callback yet. That is a
+    // timeout, not a failure of the run, and the two must not read the same.
+    // `stalled` rather than `slow`: with `slow` the first poll follows
+    // `running` at once, and a runner that schedules the engine thread late
+    // serves the request there, at step 5.
+    let engine = FakeEngine::stalled(10, Duration::from_millis(2000));
     let mut state = state_of(&fixture, engine, false);
     state.config = std::sync::Arc::new(retrograd_server::ServerConfig {
         command_timeout_seconds: Some(1),

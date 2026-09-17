@@ -256,6 +256,10 @@ pub struct FakeEngine {
     /// a few milliseconds for the ones that have to reach a live run with a
     /// command before it finishes.
     tick: Duration,
+    /// Wall time between `loop_started` where the run turns `running` and
+    /// the first poll. Zero except where a test needs no poll to be reachable
+    /// for a while after the run is visibly alive.
+    lead: Duration,
     gate: Option<Arc<Gate>>,
     runs: AtomicUsize,
     /// What the control plane turned, readable from the test after the run.
@@ -273,6 +277,7 @@ impl FakeEngine {
             behaviour,
             epochs,
             tick,
+            lead: Duration::ZERO,
             gate,
             runs: AtomicUsize::new(0),
             knobs: Arc::new(Mutex::new(Knobs::default())),
@@ -296,6 +301,15 @@ impl FakeEngine {
     /// boundaries, once at one).
     pub fn slow(epochs: u32, tick: Duration) -> Arc<Self> {
         Self::build(Behaviour::Succeeds, epochs, tick, None)
+    }
+
+    /// Like [`slow`](Self::slow), but also `tick` long before the first poll:
+    /// once the run reads `running`, no command can be served for a whole
+    /// `tick`, however the engine thread happens to be scheduled.
+    pub fn stalled(epochs: u32, tick: Duration) -> Arc<Self> {
+        let mut engine = Self::build(Behaviour::Succeeds, epochs, tick, None);
+        Arc::get_mut(&mut engine).expect("a fresh engine").lead = tick;
+        engine
     }
 
     pub fn executions(&self) -> usize {
@@ -322,6 +336,7 @@ impl RunEngine for FakeEngine {
         if let Some(gate) = &self.gate {
             gate.wait();
         }
+        std::thread::sleep(self.lead);
         if let Behaviour::Panics = self.behaviour {
             panic!("the fake engine was asked to panic");
         }
