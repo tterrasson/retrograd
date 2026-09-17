@@ -270,41 +270,21 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
             .await
             .into_iter()
             .collect::<Result<Vec<_>>>()?;
-        let mut attempted = 0_usize;
-        let mut failures = RolloutFailures::default();
-        let mut last_error = None;
-        let mut metric_totals = AgentMetricTotals::default();
-        let mut first_assistant_text = None;
-        let mut breakdown = DropBreakdown::default();
-        let mut withheld = Vec::new();
-        let mut groups = Vec::with_capacity(outcomes.len());
-        let mut judge_results = Vec::new();
-        let mut environment_scored = Vec::new();
-        let mut rollout_seconds = 0.0_f32;
-        let mut judge_first = f32::INFINITY;
-        let mut judge_last = 0.0_f32;
-        for (index, outcome) in outcomes.into_iter().enumerate() {
-            if let Some(export) = &mut export {
-                export.collected(index, outcome.group_id, outcome.drafts);
-            }
-            attempted += outcome.attempted;
-            failures.merge(outcome.failures);
-            last_error = outcome.last_error.or(last_error);
-            metric_totals.merge(outcome.metrics);
-            first_assistant_text = first_assistant_text.or(outcome.first_assistant_text);
-            breakdown.truncated += outcome.truncated;
-            withheld.extend(outcome.withheld);
-            rollout_seconds = rollout_seconds.max(outcome.rollout_done_at);
-            if let Some((start, end)) = outcome.judge_window {
-                judge_first = judge_first.min(start);
-                judge_last = judge_last.max(end);
-            }
-            if let Some((group, result)) = outcome.judged {
-                groups.push(group);
-                judge_results.push(result);
-            }
-            environment_scored.extend(outcome.environment_scored);
-        }
+        let Collected {
+            attempted,
+            failures,
+            last_error,
+            metric_totals,
+            first_assistant_text,
+            mut breakdown,
+            withheld,
+            mut groups,
+            judge_results,
+            mut environment_scored,
+            rollout_seconds,
+            judge_first,
+            judge_last,
+        } = collect(outcomes, export.as_mut());
         // Only the first update needs the compatibility diagnostic. It is a
         // warning, not a refusal: answering directly is valid, and calls from a
         // group that lost its baseline are no longer present in these metrics.
@@ -423,7 +403,6 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
                 environments,
             )
         };
-        let mut summary = None;
         // A skipped update still falls through to the boundary below: it
         // consumed its scenarios, and it is the one place the run can be
         // checkpointed or stopped - a run whose updates all come back empty has
@@ -431,104 +410,28 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
         if let UpdateFate::Skip(report) = &fate {
             tracing::warn!("{report}; skipping this update (agent.skip_empty_updates)");
         }
-        if fate == UpdateFate::Train {
-            let sequences = RolloutEngine::groups_to_train_sequences(&groups, config.truncation)?;
-            let params = GrpoBatchParams {
-                epochs: config.epochs,
-                clip_range_low: config.clip_range_low,
-                clip_range_high: config.clip_range_high,
-                kl_coefficient: config.kl_coefficient,
-                loss_denominator: config.loss_denominator()?,
-                seed: config.seed ^ ((update as u64 + 1) << 32),
-                // The learning-rate horizon covers the *run*, not this batch:
-                // the runtime's scheduler step accumulates from one update to
-                // the next, so a per-batch horizon would decay the rate to
-                // zero after the first one. Counted on the nominal slots, like
-                // the GRPO CLI, so the timeline does not move with how many
-                // trajectories a given update happened to keep.
-                scheduler_total_rollouts: Some(
-                    config.updates as u64
-                        * config.scenarios_per_update as u64
-                        * config.group_size as u64,
-                ),
-            };
-            // The optimizer step is dead time on the environment side, and it is
-            // the only window wide enough to pay for a container start. Warming the
-            // *next* update's sandboxes here is what turns `env/acquire_ms_mean`
-            // from a container creation into a hash-map lookup. A failure is not
-            // one: the pool creates on demand anyway.
-            let training_step = async {
-                let started = Instant::now();
-                let result = policy
-                    .train_grpo_batch(sequences, params, training.clone(), observation)
-                    .await;
-                (result, started.elapsed().as_secs_f32())
-            };
-            let ((metrics, progress), optimizer_seconds) = match environments
-                .filter(|_| update + 1 < config.updates)
-            {
-                Some(environments) => {
-                    let wanted = config.scenarios_per_update * config.group_size;
-                    let prewarm = async {
-                        if let Err(error) = environments.prewarm(wanted).await {
-                            tracing::warn!(%error, "prewarming the next update's environments failed");
-                        }
-                    };
-                    let (training, ()) = futures::future::join(training_step, prewarm).await;
-                    let (result, seconds) = training;
-                    (result?, seconds)
-                }
-                None => {
-                    let (result, seconds) = training_step.await;
-                    (result?, seconds)
-                }
-            };
-            let generation = policy
-                .generation_stats()
-                .await?
-                .delta_since(generation_before);
+        let summary = if fate == UpdateFate::Train {
+            let (metrics, summary) = train_update(
+                policy,
+                config,
+                training,
+                environments,
+                observer.as_ref(),
+                &groups,
+                observation,
+                generation_before,
+                update,
+                &boundary,
+                on_progress,
+            )
+            .await?;
             final_metrics = metrics;
-            final_metrics.epoch = update + 1;
-            let last = progress.len().saturating_sub(1);
-            for (position, mut event) in progress.into_iter().enumerate() {
-                event.metrics.epoch = update + 1;
-                event.values.extend(boundary());
-                event.values.extend([
-                    MetricValue {
-                        name: "timing/optimizer_wall_seconds".into(),
-                        value: optimizer_seconds,
-                    },
-                    // The share of what the rollout asked to be resident that was
-                    // already there. Zero on a single-turn run, where every
-                    // prompt is new; it is the multi-turn one where the ratio is
-                    // the cost model, since a trajectory that re-decodes its
-                    // prefix every turn spends prefill in the square of its
-                    // turn count.
-                    MetricValue {
-                        name: "generation/prefill_reuse_fraction".into(),
-                        value: ratio_or_zero(generation.reused_tokens, generation.prompt_tokens),
-                    },
-                    MetricValue {
-                        name: "generation/prefilled_tokens".into(),
-                        value: generation.prefilled_tokens as f32,
-                    },
-                    // Non-zero means the generation context has fewer sequences
-                    // than the update has live trajectories, so slots are being
-                    // taken from trajectories that will come back for them.
-                    // `generation_concurrency` is the only lever for it.
-                    MetricValue {
-                        name: "generation/kv_eviction_fraction".into(),
-                        value: ratio_or_zero(generation.evictions, generation.sequences),
-                    },
-                ]);
-                if observer.is_some() && position == last {
-                    summary = Some((UpdateStatus::Completed, event.values.clone()));
-                }
-                on_progress(event);
-            }
+            summary
         } else if observer.is_some() {
-            summary = Some((UpdateStatus::Skipped, boundary()));
-        }
+            Some((UpdateStatus::Skipped, boundary()))
+        } else {
+            None
+        };
         if let (Some(observer), Some((status, values))) = (&observer, summary) {
             observer.observe(ObserveBatch::Update(UpdateSummary::new(
                 update + 1,
@@ -545,36 +448,237 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
         let Some(hook) = hook.as_deref_mut() else {
             continue;
         };
-        let completed = update + 1;
-        let measured = if !evaluation.is_empty() && hook.should_evaluate(completed, config.updates)
-        {
-            // Derived from the update, not from a running counter: two
-            // evaluations of the same policy at the same point must sample the
-            // same way, including after a resume.
-            let seed = config.seed ^ ((completed as u64) << 16);
-            Some(evaluate_scenarios(engine, evaluation, seed).await?)
-        } else {
-            None
-        };
-        let global_step = final_metrics.global_step;
-        let scenarios_consumed = completed as u64 * config.scenarios_per_update as u64;
-        let flow = lender
-            .with_trainer(|trainer| {
-                hook.update_finished(UpdateBoundary {
-                    update: completed,
-                    updates: config.updates,
-                    global_step,
-                    scenarios_consumed,
-                    trainer,
-                    evaluation: measured,
-                })
-            })
-            .await?;
+        let flow = cross_boundary(
+            hook,
+            &lender,
+            engine,
+            evaluation,
+            config,
+            update,
+            final_metrics.global_step,
+        )
+        .await?;
         if flow == AgentFlow::Stop {
             break;
         }
     }
     Ok(final_metrics)
+}
+
+/// The boundary of one update: evaluate if the hook asks, then hand it the
+/// trainer. The only point at which the run can be checkpointed or stopped.
+async fn cross_boundary(
+    hook: &mut dyn UpdateHook,
+    lender: &TrainerLender,
+    engine: &RolloutEngine,
+    evaluation: &[Scenario],
+    config: &AgentGrpoConfig,
+    update: u32,
+    global_step: u64,
+) -> Result<AgentFlow> {
+    let completed = update + 1;
+    let measured = if !evaluation.is_empty() && hook.should_evaluate(completed, config.updates) {
+        // Derived from the update, not from a running counter: two evaluations
+        // of the same policy at the same point must sample the same way,
+        // including after a resume.
+        let seed = config.seed ^ ((completed as u64) << 16);
+        Some(evaluate_scenarios(engine, evaluation, seed).await?)
+    } else {
+        None
+    };
+    let scenarios_consumed = completed as u64 * config.scenarios_per_update as u64;
+    lender
+        .with_trainer(|trainer| {
+            hook.update_finished(UpdateBoundary {
+                update: completed,
+                updates: config.updates,
+                global_step,
+                scenarios_consumed,
+                trainer,
+                evaluation: measured,
+            })
+        })
+        .await
+}
+
+/// What one update's rollouts produced, folded out of the per-group outcomes.
+///
+/// A struct rather than thirteen accumulators in the loop: every field is a
+/// separate reduction over the same sequence, and naming the result is what
+/// lets the update's own body read as the five phases it is.
+struct Collected {
+    attempted: usize,
+    failures: RolloutFailures,
+    /// The last rollout error, reported ahead of a judge refusal: it happened
+    /// earlier and explains more.
+    last_error: Option<String>,
+    metric_totals: AgentMetricTotals,
+    first_assistant_text: Option<String>,
+    breakdown: DropBreakdown,
+    withheld: Vec<(u64, Vec<Trajectory>)>,
+    /// Judged groups, paired index for index with `judge_results`.
+    groups: Vec<TrajectoryGroup>,
+    judge_results: Vec<Result<Vec<Score>>>,
+    environment_scored: Vec<TrajectoryGroup>,
+    /// Wall seconds to the last group's rollout, and the window the judging of
+    /// all of them spans. `judge_first` stays infinite when nothing was judged.
+    rollout_seconds: f32,
+    judge_first: f32,
+    judge_last: f32,
+}
+
+fn collect(outcomes: Vec<CollectedGroup>, mut export: Option<&mut UpdateExport>) -> Collected {
+    let mut c = Collected {
+        attempted: 0,
+        failures: RolloutFailures::default(),
+        last_error: None,
+        metric_totals: AgentMetricTotals::default(),
+        first_assistant_text: None,
+        breakdown: DropBreakdown::default(),
+        withheld: Vec::new(),
+        groups: Vec::with_capacity(outcomes.len()),
+        judge_results: Vec::new(),
+        environment_scored: Vec::new(),
+        rollout_seconds: 0.0,
+        judge_first: f32::INFINITY,
+        judge_last: 0.0,
+    };
+    for (index, outcome) in outcomes.into_iter().enumerate() {
+        if let Some(export) = &mut export {
+            export.collected(index, outcome.group_id, outcome.drafts);
+        }
+        c.attempted += outcome.attempted;
+        c.failures.merge(outcome.failures);
+        c.last_error = outcome.last_error.or(c.last_error);
+        c.metric_totals.merge(outcome.metrics);
+        c.first_assistant_text = c.first_assistant_text.or(outcome.first_assistant_text);
+        c.breakdown.truncated += outcome.truncated;
+        c.withheld.extend(outcome.withheld);
+        c.rollout_seconds = c.rollout_seconds.max(outcome.rollout_done_at);
+        if let Some((start, end)) = outcome.judge_window {
+            c.judge_first = c.judge_first.min(start);
+            c.judge_last = c.judge_last.max(end);
+        }
+        if let Some((group, result)) = outcome.judged {
+            c.groups.push(group);
+            c.judge_results.push(result);
+        }
+        c.environment_scored.extend(outcome.environment_scored);
+    }
+    c
+}
+
+/// The optimizer step of one update, and the progress events it produces.
+///
+/// Returns the metrics the run carries forward and, when an observer is
+/// listening, the summary values of the last event.
+#[expect(clippy::too_many_arguments)]
+async fn train_update(
+    policy: &PolicyHandle,
+    config: &AgentGrpoConfig,
+    training: &TrainConfig,
+    environments: Option<&Arc<dyn EnvironmentFactory>>,
+    observer: Option<&Arc<dyn TrajectoryObserver>>,
+    groups: &[TrajectoryGroup],
+    observation: Option<BatchObservation>,
+    generation_before: retrograd_engine::GenerationStats,
+    update: u32,
+    boundary: &dyn Fn() -> Vec<MetricValue>,
+    on_progress: &mut dyn FnMut(Progress),
+) -> Result<(TrainMetrics, Option<(UpdateStatus, Vec<MetricValue>)>)> {
+    let mut summary = None;
+    let sequences = RolloutEngine::groups_to_train_sequences(groups, config.truncation)?;
+    let params = GrpoBatchParams {
+        epochs: config.epochs,
+        clip_range_low: config.clip_range_low,
+        clip_range_high: config.clip_range_high,
+        kl_coefficient: config.kl_coefficient,
+        loss_denominator: config.loss_denominator()?,
+        seed: config.seed ^ ((update as u64 + 1) << 32),
+        // The learning-rate horizon covers the *run*, not this batch:
+        // the runtime's scheduler step accumulates from one update to
+        // the next, so a per-batch horizon would decay the rate to
+        // zero after the first one. Counted on the nominal slots, like
+        // the GRPO CLI, so the timeline does not move with how many
+        // trajectories a given update happened to keep.
+        scheduler_total_rollouts: Some(
+            config.updates as u64 * config.scenarios_per_update as u64 * config.group_size as u64,
+        ),
+    };
+    // The optimizer step is dead time on the environment side, and it is
+    // the only window wide enough to pay for a container start. Warming the
+    // *next* update's sandboxes here is what turns `env/acquire_ms_mean`
+    // from a container creation into a hash-map lookup. A failure is not
+    // one: the pool creates on demand anyway.
+    let training_step = async {
+        let started = Instant::now();
+        let result = policy
+            .train_grpo_batch(sequences, params, training.clone(), observation)
+            .await;
+        (result, started.elapsed().as_secs_f32())
+    };
+    let ((metrics, progress), optimizer_seconds) =
+        match environments.filter(|_| update + 1 < config.updates) {
+            Some(environments) => {
+                let wanted = config.scenarios_per_update * config.group_size;
+                let prewarm = async {
+                    if let Err(error) = environments.prewarm(wanted).await {
+                        tracing::warn!(%error, "prewarming the next update's environments failed");
+                    }
+                };
+                let (training, ()) = futures::future::join(training_step, prewarm).await;
+                let (result, seconds) = training;
+                (result?, seconds)
+            }
+            None => {
+                let (result, seconds) = training_step.await;
+                (result?, seconds)
+            }
+        };
+    let generation = policy
+        .generation_stats()
+        .await?
+        .delta_since(generation_before);
+    let mut final_metrics = metrics;
+    final_metrics.epoch = update + 1;
+    let last = progress.len().saturating_sub(1);
+    for (position, mut event) in progress.into_iter().enumerate() {
+        event.metrics.epoch = update + 1;
+        event.values.extend(boundary());
+        event.values.extend([
+            MetricValue {
+                name: "timing/optimizer_wall_seconds".into(),
+                value: optimizer_seconds,
+            },
+            // The share of what the rollout asked to be resident that was
+            // already there. Zero on a single-turn run, where every
+            // prompt is new; it is the multi-turn one where the ratio is
+            // the cost model, since a trajectory that re-decodes its
+            // prefix every turn spends prefill in the square of its
+            // turn count.
+            MetricValue {
+                name: "generation/prefill_reuse_fraction".into(),
+                value: ratio_or_zero(generation.reused_tokens, generation.prompt_tokens),
+            },
+            MetricValue {
+                name: "generation/prefilled_tokens".into(),
+                value: generation.prefilled_tokens as f32,
+            },
+            // Non-zero means the generation context has fewer sequences
+            // than the update has live trajectories, so slots are being
+            // taken from trajectories that will come back for them.
+            // `generation_concurrency` is the only lever for it.
+            MetricValue {
+                name: "generation/kv_eviction_fraction".into(),
+                value: ratio_or_zero(generation.evictions, generation.sequences),
+            },
+        ]);
+        if observer.is_some() && position == last {
+            summary = Some((UpdateStatus::Completed, event.values.clone()));
+        }
+        on_progress(event);
+    }
+    Ok((final_metrics, summary))
 }
 
 #[cfg(test)]
