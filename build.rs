@@ -1,12 +1,16 @@
-#[path = "crates/retrograd-ffi/build/backend_selection.rs"]
-mod backend_selection;
-
-use backend_selection::Backends;
+use std::env;
 
 fn main() {
-    // Dependency build-script cfgs do not propagate to this package. Mirror
-    // retrograd-ffi's selection so backend-gated integration tests are built.
-    println!("cargo:rerun-if-changed=crates/retrograd-ffi/build/backend_selection.rs");
-    backend_selection::declare_cargo_inputs();
-    Backends::detect().emit_cfgs();
+    println!("cargo:rerun-if-changed=build.rs");
+    // Read the actual native selection, including features enabled transitively.
+    // DEP_* comes from the direct dependency's `links` metadata, not the shell.
+    for backend in ["metal", "vulkan", "cuda"] {
+        println!("cargo:rustc-check-cfg=cfg(retro_{backend})");
+        let key = format!("DEP_RETRO_RUNTIME_{}", backend.to_ascii_uppercase());
+        match env::var(&key).as_deref() {
+            Ok("1") => println!("cargo:rustc-cfg=retro_{backend}"),
+            Ok("0") => {}
+            other => panic!("expected {key}=0 or 1 from retrograd-ffi, got {other:?}"),
+        }
+    }
 }

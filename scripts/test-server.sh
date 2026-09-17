@@ -15,8 +15,6 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$repo_root/scripts/lib-step-timing.sh"
 
-export RETRO_BACKENDS=cpu
-
 # Kept in one array so a new test binary is added once.
 binaries=(
   --test api_discovery

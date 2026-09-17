@@ -11,9 +11,16 @@ publish = false
 name = "_native"
 crate-type = ["cdylib"]
 
+[features]
+default = ["platform-gpu"]
+platform-gpu = ["retrograd/platform-gpu"]
+metal = ["retrograd/metal"]
+vulkan = ["retrograd/vulkan"]
+cuda = ["retrograd/cuda"]
+
 [dependencies]
 pyo3 = { version = "0.29", features = ["abi3-py311"] }
-retrograd = { path = "../.." }
+retrograd = { path = "../..", default-features = false, features = ["agent"] }
 retrograd-agent = { workspace = true, features = ["mcp", "http-env"] }
 serde.workspace = true
 serde_json.workspace = true

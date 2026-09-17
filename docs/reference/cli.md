@@ -177,7 +177,7 @@ accept them:
 
 `--model` paths supplied on the command line resolve against the shell's working
 directory. Paths written in TOML resolve against the TOML file's directory.
-Device values select `auto`, `cpu`, or `gpu`; use `RETRO_BACKENDS` at build time
+Device values select `auto`, `cpu`, or `gpu`; use Cargo features at build time
 to choose which GPU backend is compiled into the binary.
 
 ## Runtime environment variables
@@ -196,8 +196,8 @@ The most relevant runtime controls are:
 | `RETRO_RECURRENT_ROLLBACK=auto` | Applies the derived recurrent-state rollback depth instead of leaving it at zero. Off by default; the derivation is reported either way. |
 | `RETRO_RECURRENT_ROLLBACK_BUDGET_MB` | Byte budget bounding that depth (default 64). |
 
-`RETRO_BACKENDS` selects compiled backends when Cargo builds the binary; it has
-no effect when set only while launching an existing binary. `RETRO_NATIVE=1`
+Cargo features select compiled backends when Cargo builds the binary; runtime
+settings cannot add a backend to an existing binary. `RETRO_NATIVE=1`
 is also a build input and enables host-specific CPU kernels. See [Build
 variants](./builds) for backend build commands. A compiled GPU backend must
 still be available on the machine at runtime.

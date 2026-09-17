@@ -6,8 +6,9 @@ existence of a code path elsewhere. A row that says *manual* is a row with no
 automatic coverage: it is run by hand, and it is a release criterion (§Release
 criteria) rather than a guarantee.
 
-Backends are chosen at build time with `RETRO_BACKENDS` (`cpu`, `metal`,
-`vulkan`, `cuda`; default `cpu,metal` on macOS, `cpu` elsewhere). `metal` is
+Backends are chosen at build time with Cargo features (`metal`, `vulkan`,
+`cuda`; CPU is always included, and `platform-gpu` defaults to Metal on macOS
+for the root and Python packages, CPU elsewhere). `metal` is
 macOS-only and `cuda` is refused there.
 
 ## Backends
@@ -38,7 +39,7 @@ macOS-only and `cuda` is refused there.
 - **[7]** Native by default; a kernel is promoted only after parity and timing
   validation, per a spec.
 - **[8]** Single device (`CUDA0`); no sharding, NCCL or peer-copy.
-- **[9]** `RETRO_BACKENDS=cpu`, fast Rust and Python lanes. A *manual* row is run
+- **[9]** CPU-only features, fast Rust and Python lanes. A *manual* row is run
   by hand on the reference hardware (§Release criteria).
 
 The RIR registry states a policy per kernel *and* per backend

@@ -25,7 +25,22 @@ uv sync
 ```
 
 The native build honors the same environment variables as Cargo, notably
-`LLAMA_CPP_DIR`, `RETRO_BACKENDS`, and `RETRO_STRICT_LLAMA`.
+`LLAMA_CPP_DIR` and `RETRO_STRICT_LLAMA`. Wheels enable Metal on macOS by
+default and CPU elsewhere. For an editable CPU-only build from `python/`:
+
+```sh
+uv run --config-settings-package 'retrograd:build-args=--no-default-features' --reinstall-package retrograd python -c 'import retrograd; print(retrograd.list_backends())'
+```
+
+GPU features are `platform-gpu`, `metal`, `vulkan`, and `cuda`. For example,
+set the per-package value to
+`retrograd:build-args=--features vulkan` for Vulkan instead of the platform
+default (a named backend replaces `platform-gpu`).
+Force reinstallation whenever changing the selection. To restore the platform
+default, run `uv run --reinstall-package retrograd python -c
+'import retrograd; print(retrograd.list_backends())'` without the CPU setting.
+The extension stays statically linked in `python/target` (unless
+`CARGO_TARGET_DIR` overrides it).
 
 Run the checks with:
 

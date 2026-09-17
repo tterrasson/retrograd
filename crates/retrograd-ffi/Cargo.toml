@@ -6,6 +6,7 @@ license.workspace = true
 description = "Retrograd - raw FFI to the C++ runtime and the build of the llama.cpp fork"
 publish = false
 build = "build.rs"
+links = "retro_runtime"
 # What `cargo package --list` reports, and so what the Python sdist copies: the
 # build inputs, not the whole submodule. Of the fork, `build.rs` and
 # `runtime/CMakeLists.txt` read the top-level CMake project and these six
@@ -30,6 +31,14 @@ include = [
     "/runtime/vendor/llama.cpp/src/**",
     "/runtime/vendor/llama.cpp/vendor/**",
 ]
+
+[features]
+# CPU is always compiled. Only the user-facing packages enable this by default.
+# Metal on macOS, nothing elsewhere
+platform-gpu = []
+metal = []
+vulkan = []
+cuda = []
 
 [dependencies]
 

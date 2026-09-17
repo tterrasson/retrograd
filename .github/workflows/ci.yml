@@ -22,9 +22,6 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  RETRO_BACKENDS: cpu
-
 jobs:
   licenses:
     name: licenses (cargo-deny, see deny.toml)
@@ -45,11 +42,6 @@ jobs:
   rust:
     name: rust (fast lane + clippy + rustdoc)
     runs-on: ubuntu-latest
-    env:
-      # The fast lane's own build tree, so clippy and rustdoc below do not
-      # configure llama.cpp a second time. Scoped to this job: the python job's
-      # `python/.cargo/config.toml` picks its own target directory.
-      CARGO_TARGET_DIR: target/lanes/fast
     steps:
       - uses: actions/checkout@v7
         with:
@@ -69,19 +61,28 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target/lanes/fast
-          key: rust-fast-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+            target/
+          key: rust-features-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            rust-fast-${{ runner.os }}-
+            rust-features-v1-${{ runner.os }}-
 
       - name: Fast Rust lane
         run: scripts/test-fast-rust.sh
 
+      # The fast lane's three CPU selections, so retrograd-ffi resolves to the
+      # variant the lane already built: the root's `platform-gpu` default would
+      # configure llama.cpp a second time, for the same CPU-only runtime.
       - name: Clippy (unwrap_used = deny, workspace lint table)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: |
+          cargo clippy --workspace --exclude retrograd --exclude retrograd-python --all-targets -- -D warnings
+          cargo clippy -p retrograd --no-default-features --features agent --all-targets -- -D warnings
+          cargo clippy -p retrograd-python --no-default-features --all-targets -- -D warnings
 
       - name: Rustdoc (a broken intra-doc link fails the build)
-        run: cargo doc --workspace --no-deps
+        run: |
+          cargo doc --workspace --exclude retrograd --exclude retrograd-python --no-deps
+          cargo doc -p retrograd --no-default-features --features agent --no-deps
+          cargo doc -p retrograd-python --no-default-features --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -118,12 +119,6 @@ jobs:
 
       - name: Fast Python lane
         run: scripts/test-fast-python.sh
-
-      - name: Ruff
-        working-directory: python
-        run: |
-          uv run ruff check . ../examples ../scripts
-          uv run ruff format --check . ../examples ../scripts
 
   sdist:
     name: python sdist (contents + wheel built from it)

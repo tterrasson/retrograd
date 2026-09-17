@@ -14,7 +14,6 @@ source "$repo_root/scripts/lib-step-timing.sh"
 export RETRO_CPU_FIXTURE="${RETRO_CPU_FIXTURE:-$repo_root/tests/fixtures/LFM2.5-230M-Q4_K_M.gguf}"
 export RETRO_REQUIRE_CPU_FIXTURE=1
 export RETRO_RUNTIME_LOCK_PATH="${RETRO_RUNTIME_LOCK_PATH:-${TMPDIR:-/tmp}/retrograd-runtime.lock}"
-export RETRO_BACKENDS=cpu
 export RETRO_THREADS="${RETRO_TEST_CPU_THREADS:-4}"
 export RETRO_TEST_TIMING="${RETRO_TEST_TIMING:-1}"
 
@@ -23,14 +22,14 @@ export RETRO_TEST_TIMING="${RETRO_TEST_TIMING:-1}"
 if [[ $# -gt 0 ]]; then
   test_binary="$1"
   shift
-  exec cargo test --test "$test_binary" -- --test-threads=1 "$@"
+  exec cargo test --no-default-features --features agent --test "$test_binary" -- --test-threads=1 "$@"
 fi
 
 # Compilation profiling is optional: a normal `cargo test` already builds
 # missing artifacts, so unconditional `--no-run` passes only add Cargo startup
 # and dependency-scanning overhead to warm lane runs.
 if [[ "${RETRO_PROFILE_TESTS:-0}" == "1" ]]; then
-  timed_step compile cargo test --no-run \
+  timed_step compile cargo test --no-default-features --features agent --no-run \
     --test capabilities \
     --test ppo_runtime \
     --test grpo_runtime \
@@ -54,7 +53,7 @@ fi
 # GRPO, distillation-teacher, offline top-k distillation, checkpoint and CLI
 # smoke tests. Cargo may start them concurrently; `serialize_models` supplies
 # the cross-process runtime lock.
-timed_step run:capabilities-suite cargo test \
+timed_step run:capabilities-suite cargo test --no-default-features --features agent \
   --test capabilities \
   --test ppo_runtime \
   --test grpo_runtime \
@@ -77,7 +76,7 @@ timed_step run:capabilities-suite cargo test \
 # in the same file). `fused_ce_parity` and `ubatch_parity` have no non-CPU
 # sibling tests, so their test names are listed as filters too rather than
 # left unfiltered, since any filter argument restricts every selected binary.
-timed_step run:cpu-slices cargo test \
+timed_step run:cpu-slices cargo test --no-default-features --features agent \
   --test lora_resume \
   --test lora_f16 \
   --test train_parity \

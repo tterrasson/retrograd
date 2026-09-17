@@ -78,6 +78,10 @@ impl GgmlLink {
 }
 
 fn main() {
+    backend_selection::declare_cargo_inputs();
+    let backends = Backends::detect();
+    backends.emit_cfgs();
+
     // Vendored runtime sources are part of this build's input set.
     println!("cargo:rerun-if-changed=build/backend_selection.rs");
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
@@ -173,8 +177,6 @@ fn main() {
         GgmlLink::Shared => "libretro_lora_train.so",
     });
 
-    backend_selection::declare_cargo_inputs();
-
     for source in runtime_sources {
         println!(
             "cargo:rerun-if-changed={}",
@@ -226,8 +228,6 @@ fn main() {
     // Checkpoint manifests record the runtime commit used to build the C++ side.
     println!("cargo:rustc-env=RETRO_LLAMA_CPP_COMMIT={fork_commit}");
 
-    let backends = Backends::detect();
-    backends.emit_cfgs();
     if backends.metal {
         println!("cargo:warning=retrograd: building llama.cpp with Metal GPU backend enabled");
     }
@@ -684,7 +684,7 @@ fn configure_llama_cpp(
 ) {
     // Reconfigure the existing tree so changing a runtime source or rerunning
     // Cargo does not regenerate every Vulkan shader. CMake updates backend
-    // options correctly when RETRO_BACKENDS changes.
+    // options explicitly for each Cargo feature variant.
     fs::create_dir_all(build_dir).expect("create llama.cpp build dir");
     let metal_flag = if backends.metal {
         "-DGGML_METAL=ON"

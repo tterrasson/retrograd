@@ -1,16 +1,22 @@
 # Build variants
 
-The backend set is selected when Cargo builds the project. Setting
-`RETRO_BACKENDS` only when launching an existing binary cannot add a backend
-that was not compiled into it. CPU is always compiled; list any GPU backend
-alongside it in `RETRO_BACKENDS`.
+The backend set is selected by Cargo features at build time. CPU is always
+compiled. The default `platform-gpu` feature means Metal on macOS and no GPU
+elsewhere; naming a backend replaces it, so `--features vulkan` on a Mac builds
+Vulkan without Metal. Name several to combine them (`--features metal,vulkan`).
+Only a CPU-only build needs the defaults off, keeping `agent` explicitly.
 
-| Backend | Supported targets | Build selection |
+| Backend | Supported targets | Root build selection |
 | --- | --- | --- |
-| CPU | all | always available |
-| CUDA | Linux and Windows with NVIDIA CUDA | `RETRO_BACKENDS=cpu,cuda` |
-| Vulkan | platforms with a usable Vulkan SDK and driver | `RETRO_BACKENDS=cpu,vulkan` |
-| Metal | macOS only | `RETRO_BACKENDS=cpu,metal` (the macOS default) |
+| CPU | all | `--no-default-features --features agent` |
+| CUDA | Linux and Windows with NVIDIA CUDA | `--features cuda` |
+| Vulkan | platforms with a usable Vulkan SDK and driver | `--features vulkan` |
+| Metal | macOS only | default build, or `--features metal` |
+
+Keep to one spelling per selection. The feature set is part of Cargo's artifact
+hash, so the same runtime spelled two ways is built twice, in two output
+directories: `--features cuda` and `--no-default-features --features agent,cuda`,
+or, on macOS, the plain `cargo build` and `--features metal`.
 
 At runtime, use `--device auto` to prefer an available compiled GPU and fall
 back to CPU, `--device cpu` to force CPU execution, or `--device gpu` to fail
@@ -27,6 +33,15 @@ cargo build --release
 CPU is always available. On macOS, the default build enables Metal. On other
 systems, the default build is CPU-only.
 
+The root and Python packages enable `platform-gpu` by default; FFI has no
+default features. Direct builds of `retrograd-ffi`, `retrograd-engine`,
+`retrograd-memory`, and `retrograd-server` therefore use CPU alone. Add
+`--features retrograd-ffi/platform-gpu` (or the explicit GPU feature) to those
+commands to enable acceleration.
+
+`--all-features` enables both Metal and CUDA and cannot compile on any target.
+Graph-only commands such as `cargo deny --all-features` remain usable.
+
 Check the resulting binary and its backend capabilities before training:
 
 ```bash
@@ -42,18 +57,16 @@ CUDA Toolkit with `nvcc`. CUDA is not supported on macOS.
 For a local build, target the compute capability of the installed GPU:
 
 ```bash
-RETRO_BACKENDS=cpu,cuda \
 RETRO_CUDA_ARCHITECTURES=89-real \
-  cargo build --release
+  cargo build --features cuda --release
 ```
 
 For a distributable build, list every target that must load the binary instead
 of using `native`:
 
 ```bash
-RETRO_BACKENDS=cpu,cuda \
 RETRO_CUDA_ARCHITECTURES="75-real;80-real;86-real;89-real" \
-  cargo build --release
+  cargo build --features cuda --release
 ```
 
 `RETRO_CUDA_ARCHITECTURES` defaults to `native`, which is convenient locally
@@ -63,10 +76,9 @@ the build. Pin explicit architectures for an artifact that must run elsewhere.
 CUDA Graphs are opt-in:
 
 ```bash
-RETRO_BACKENDS=cpu,cuda \
 RETRO_CUDA_ARCHITECTURES=89-real \
 RETRO_CUDA_GRAPHS=1 \
-  cargo build --release
+  cargo build --features cuda --release
 ```
 
 The current CUDA implementation is single-device. What runs on CUDA, kernel by
@@ -84,7 +96,7 @@ Vulkan requires a Vulkan SDK with the loader, headers, `glslc`, and SPIR-V
 headers. Build the binary with CPU and Vulkan support:
 
 ```bash
-RETRO_BACKENDS=cpu,vulkan cargo build --release
+cargo build --features vulkan --release
 ```
 
 On macOS, MoltenVK supplies the Vulkan implementation. If the loader does not
@@ -102,7 +114,7 @@ Verify the selected device:
 ```
 
 If the command fails, the binary either lacks the Vulkan backend or the loader
-cannot register a Vulkan device. Rebuild after changing `RETRO_BACKENDS`.
+cannot register a Vulkan device. Rebuild with the Vulkan feature enabled.
 
 Adapter export and reload are validated on Vulkan; a comparison of the logits
 before saving and after reloading is not implemented yet.
@@ -120,7 +132,7 @@ Set the backend explicitly when making a reproducible build command or when
 switching back from another backend:
 
 ```bash
-RETRO_BACKENDS=cpu,metal cargo build --release
+cargo build --features metal --release
 ```
 
 Verify that a Metal device is available before training:
@@ -131,7 +143,7 @@ Verify that a Metal device is available before training:
 ```
 
 The build rejects `metal` on non-macOS targets. To use Vulkan on a Mac instead,
-select `RETRO_BACKENDS=cpu,vulkan` and configure MoltenVK as described above.
+select `--features vulkan` and configure MoltenVK as described above.
 
 Upstream Metal has no training backward ops, so the fork carries hand-written
 kernels for `SILU_BACK`, `RMS_NORM_BACK`, `L2_NORM_BACK`, `OUT_PROD` (F32 and
@@ -173,6 +185,14 @@ A **release** binary is static in both cases, so nothing you ship or copy
 depends on a build tree. The Python wheel is static for the same reason,
 whatever the profile - `python/.cargo/config.toml` pins it.
 
+Cargo backend features give native variants separate hashes and output paths
+inside the shared `target/`. Keep `LLAMA_CPP_DIR`, `RETRO_NATIVE`,
+`RETRO_STRICT_LLAMA`, `RETRO_GGML_LINK`, `RETRO_CUDA_*`, and caller `RUSTFLAGS`
+constant when comparing builds: those environment inputs are not part of the
+feature hash. The Python static build remains in `python/target`, unless
+`CARGO_TARGET_DIR` overrides it. The graph lane defaults CUDA architectures to
+`native` and preserves caller `RUSTFLAGS` without adding a CUDA cfg.
+
 With Metal, the link also takes `libclang_rt.osx.a` from the resource directory
 of the C++ compiler (`CXX`, default `c++`). ggml-metal's `@available` checks
 call `___isPlatformVersionAtLeast`, which only compiler-rt defines. A binary
@@ -187,7 +207,7 @@ The root package defines these relevant Cargo features:
 
 | Feature | Purpose |
 | --- | --- |
-| default | Enables the agentic loop. |
+| default | Enables the agentic loop and `platform-gpu` (Metal on macOS, CPU elsewhere). |
 | `mcp` | Adds MCP transports. |
 | `container` | Enables the Docker-compatible container pool and the agentic loop. |
 

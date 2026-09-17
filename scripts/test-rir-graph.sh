@@ -98,24 +98,18 @@ esac
 # backend list are both read once, before the first context exists, so two
 # backends in one process would measure whichever one the scheduler picked.
 #
-# The cost is worth knowing before running this without `--backend`: RETRO_BACKENDS
-# is a *build-time* input of retrograd-ffi, so switching from one backend to the
-# next relinks the native runtime - tens of minutes cold, against about a minute
-# for the measurement itself. Run one backend at a time while iterating, and the
-# pair before a PR.
+# Feature variants keep their native outputs separate in the shared Cargo tree.
+# CUDA still sets native inputs; keep those and caller RUSTFLAGS constant when timing.
 for be in "${wanted[@]}"; do
     echo "== real graph on $be"
-    env=(RETRO_BACKENDS="cpu,$be")
+    native_env=(env)
     if [[ "$be" == "cuda" ]]; then
-        # The two inputs the CUDA build needs, and they are the ones
-        # worth writing down rather than two more to remember.
         # One architecture and not the whole list, for the reason `test-rir.sh`
         # gives: a fat binary costs minutes of `nvcc` per translation unit and
         # this lane measures the GPU that is here.
-        env+=(RETRO_CUDA_ARCHITECTURES="${RETRO_CUDA_ARCHITECTURES:-native}")
-        env+=(RUSTFLAGS="${RUSTFLAGS:---cfg retro_cuda}")
+        native_env+=(RETRO_CUDA_ARCHITECTURES="${RETRO_CUDA_ARCHITECTURES:-native}")
     fi
-    timed_step "run:$be" env "${env[@]}" cargo test --release \
+    timed_step "run:$be" "${native_env[@]}" cargo test --release --features "$be" \
         --test rir_graph_coverage -- --nocapture --test-threads=1 \
         the_real_graph_never_falls_back_silently_under_prefer
 done

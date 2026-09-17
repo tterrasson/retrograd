@@ -189,7 +189,11 @@ rir-lower.workspace = true
 # `train` runs every algorithm the one schema describes, including
 # `agent_grpo`. The two costly transports stay opt-in: rmcp for MCP tools,
 # bollard for the container pool.
-default = ["agent"]
+default = ["agent", "platform-gpu"]
+platform-gpu = ["retrograd-ffi/platform-gpu"]
+metal = ["retrograd-ffi/metal"]
+vulkan = ["retrograd-ffi/vulkan"]
+cuda = ["retrograd-ffi/cuda"]
 agent = ["retrograd-run/agent", "dep:retrograd-agent", "dep:tokio"]
 mcp = ["agent", "retrograd-run/mcp", "retrograd-tools/mcp", "retrograd-agent/mcp"]
 container = ["agent", "retrograd-run/container", "retrograd-agent/container"]

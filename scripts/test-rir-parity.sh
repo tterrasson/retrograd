@@ -21,8 +21,7 @@
 # interpreted oracle, which is only affordable in **release** - a debug build
 # takes over fifteen minutes. It builds in the shared `target/`: release
 # artifacts live in `target/release`, apart from the debug ones, and
-# `rir-runtime` does not depend on `retrograd-ffi`, so the `RETRO_BACKENDS` this
-# lane pins reconfigures nothing another build uses.
+# `rir-runtime` does not depend on `retrograd-ffi`; it selects its own device.
 #
 #   scripts/test-rir-parity.sh              # all three binaries
 #   scripts/test-rir-parity.sh out_prod     # a filter, while iterating
@@ -37,7 +36,6 @@ source "$repo_root/scripts/lib-step-timing.sh"
 
 # No GPU is requested from the *ggml* runtime here: nothing in this lane loads a
 # model. The device these tests open is opened by `rir-runtime` directly.
-export RETRO_BACKENDS=cpu
 export CARGO_TARGET_DIR="${RIR_PARITY_TARGET_DIR:-$repo_root/target}"
 
 timed_step compile cargo test --release -p rir-runtime \

@@ -3,8 +3,8 @@
 //! Every `#[repr(C)]` struct here mirrors the published header, which
 //! `c_struct_layouts_match_the_published_header` checks field by field.
 //! `build.rs` compiles the vendored llama.cpp fork and the runtime for the
-//! backends `RETRO_BACKENDS` names. The safe API over these calls is
-//! `retrograd-engine`.
+//! backends selected by Cargo features (`metal`, `vulkan`, `cuda`, `platform-gpu`).
+//! The safe API over these calls is `retrograd-engine`.
 
 use std::ffi::{CStr, c_char, c_double, c_float, c_int, c_void};
 
@@ -1933,3 +1933,9 @@ mod contract_tests {
         assert!(!last_error().contains("must be greater than zero"));
     }
 }
+
+// Exercise build-time platform rules in the normal fast lane.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../build/backend_selection.rs"]
+mod backend_selection;

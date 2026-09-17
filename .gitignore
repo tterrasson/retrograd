@@ -1,4 +1,4 @@
-# Build trees, one per lane under `target/lanes/` so switching lanes stays warm.
+# Shared Cargo build tree; backend feature variants coexist here.
 /target/
 
 # Per-lane build trees left at the repository root by older scripts.

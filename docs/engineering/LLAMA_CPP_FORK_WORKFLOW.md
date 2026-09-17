@@ -83,7 +83,7 @@ Then:
 
 1. `cargo test` + the relevant CPU/Metal smoke checks; explicitly audit the
    deltas under `ggml/src/ggml-cuda`, then run on the NVIDIA runner:
-   `RETRO_BACKENDS=cpu,cuda cargo test --test cuda_backend -- --test-threads=1`
+   `cargo test --features cuda --test cuda_backend -- --test-threads=1`
    and `cargo test --test fused_ce -- --test-threads=1`;
 2. update `upstream_commit` in `crates/retrograd-ffi/runtime/llama.cpp.lock`
    (`git -C crates/retrograd-ffi/runtime/vendor/llama.cpp rev-parse upstream/master`) and remove

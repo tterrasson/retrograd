@@ -23,19 +23,35 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$repo_root/scripts/lib-step-timing.sh"
 
-export RETRO_BACKENDS=cpu
-# A build tree of this lane's own, for the reason `.gitignore` already gives the
-# per-backend ones: `RETRO_BACKENDS` is part of the build fingerprint, and this
-# lane pins `cpu` while a plain `cargo build` on macOS resolves to `cpu,metal`
-# and `scripts/test-abi.sh` asks for it explicitly. Sharing one tree with them
-# means reconfiguring llama.cpp and relinking the workspace on every alternation
-# -- 25 to 60 s per flip, measured, for nothing this lane uses.
-# It lives *under* `target/` rather than beside it: separate fingerprints, one
-# directory to size, ignore and clean. Set RETRO_FAST_TARGET_DIR=target to share
-# the default tree back (one build tree instead of two, at that price per switch).
-export CARGO_TARGET_DIR="${RETRO_FAST_TARGET_DIR:-$repo_root/target/lanes/fast}"
+# Keep package selections identical for graph checks, compilation and execution.
+# Disabling defaults workspace-wide would also remove the judge's HTTP coverage.
+workspace_cpu=(--workspace --exclude retrograd --exclude retrograd-python)
+root_cpu=(-p retrograd --no-default-features --features agent)
+python_cpu=(-p retrograd-python --no-default-features)
+assert_cpu_graph() {
+  local tree line found=0
+  tree="$(cargo tree "$@" -e normal,build,dev --prefix none --format '{p} features=[{f}]')" || return
+  while IFS= read -r line; do
+    if [[ "$line" == retrograd-ffi\ * ]]; then
+      found=1
+      if [[ "$line" =~ features=\[[^]]*(platform-gpu|metal|vulkan|cuda) ]]; then
+        echo "GPU feature reached the CPU lane: $line" >&2
+        return 1
+      fi
+    fi
+  done <<<"$tree"
+  if [[ "$found" != 1 ]]; then
+    echo "retrograd-ffi missing from the CPU lane graph: $*" >&2
+    return 1
+  fi
+}
+assert_cpu_graph "${workspace_cpu[@]}"
+assert_cpu_graph "${root_cpu[@]}"
+assert_cpu_graph "${python_cpu[@]}"
 
-timed_step compile cargo test --workspace --lib --bins --no-run
+timed_step compile cargo test "${workspace_cpu[@]}" --lib --bins --no-run
+timed_step compile:root cargo test "${root_cpu[@]}" --lib --bins --no-run
+timed_step compile:python cargo test "${python_cpu[@]}" --lib --bins --no-run
 timed_step compile:plan cargo test -p retrograd-plan --tests --no-run
 timed_step compile:mcp cargo test -p retrograd-tools --test mcp_stdio --no-run
 # The other half of the judge's `http` feature: the graph check
@@ -61,7 +77,9 @@ timed_step compile:contracts cargo test \
   -p retrograd-training --test value_head \
   --no-run
 
-timed_step run cargo test --workspace --lib --bins
+timed_step run cargo test "${workspace_cpu[@]}" --lib --bins
+timed_step run:root cargo test "${root_cpu[@]}" --lib --bins
+timed_step run:python cargo test "${python_cpu[@]}" --lib --bins
 timed_step run:plan cargo test -p retrograd-plan --tests
 # The stdio MCP transport end to end: the test re-executes this same binary as
 # the server, so it needs no daemon and no network.

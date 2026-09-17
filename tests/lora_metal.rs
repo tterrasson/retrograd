@@ -6,7 +6,7 @@ mod common;
 
 // Every test in this binary is `#[cfg(retro_metal)]`, and so is everything they
 // use. A helper compiled without Metal is not dead code, it is off-topic code:
-// gating it here is what keeps a `RETRO_BACKENDS=cpu` build free of warnings
+// gating it here is what keeps a CPU-only build free of warnings
 // without a blanket `allow(dead_code)` that would also hide a real one.
 #[cfg(retro_metal)]
 use retrograd::Trainer;

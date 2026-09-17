@@ -11,7 +11,7 @@ use retrograd::{ProbeInputs, ProbeOp, probe_op};
 
 // The helpers below serve only `#[cfg(retro_metal)]` tests, so they carry the
 // same gate. A helper compiled without Metal is not dead code, it is off-topic
-// code - gating it is what keeps a `RETRO_BACKENDS=cpu` build warning-free
+// code - gating it is what keeps a CPU-only build warning-free
 // without a blanket `allow(dead_code)` that would also hide a real one.
 
 /// Deterministic pseudo-random f32s in [-range, range] (no rand dependency).

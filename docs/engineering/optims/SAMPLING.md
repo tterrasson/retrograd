@@ -122,7 +122,7 @@ from one version to another.
 ## Measurement protocol
 
 ```sh
-RETRO_BACKENDS=cpu,metal cargo run --bin profile --release -- examples/smoke_tiny_grpo.toml
+cargo run --features metal --bin profile --release -- examples/smoke_tiny_grpo.toml
 ```
 
 Two discriminating measurements to verify prefill stays fixed:

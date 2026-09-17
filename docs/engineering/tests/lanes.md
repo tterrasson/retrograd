@@ -30,29 +30,25 @@ handler, so a one-line change does not recompile the workspace.
 
 ### Each lane keeps the build tree it needs warm
 
-`RETRO_BACKENDS` is part of Cargo's build fingerprint, so two lanes asking for
-different backends in one `target/` reconfigure llama.cpp and relink the
-workspace on every alternation - 25 to 60 s per flip, for nothing either lane
-uses. The GPU lanes each have a tree of their own for that reason, and so does
-the lane that pins a backend set against the whole workspace. They live *under*
-`target/`, so the whole build cost is still one directory to size, ignore and
-clean. A profile is not a reason: Cargo already keeps `target/debug` and
-`target/release` apart.
+Backend features create separate native variants in the shared Cargo tree.
+The CPU fast lane and the default macOS Metal build reuse their warmed variants
+without reconfiguring the same native output at every switch. Common Rust
+dependencies are shared; feature unification can still produce several Rust
+variants. Keep other native environment inputs constant when measuring.
 
 | lane | target dir | why |
 | --- | --- | --- |
-| `fast-rust` (and `server`, which it calls) | `target/lanes/fast` | pins `RETRO_BACKENDS=cpu`, while a plain `cargo build` on macOS resolves to `cpu,metal` |
-| `rir-parity` | `target` | `--release` lands in `target/release`, and `rir-runtime` does not depend on `retrograd-ffi`, so its `RETRO_BACKENDS=cpu` rebuilds nothing |
-| everything else | `target` | shares the backend set of an ordinary build |
+| `fast-rust`, `server`, `abi`, `cpu-integration` | `target` | Cargo backend features distinguish CPU and GPU variants |
+| `rir-parity` | `target` | release artifacts; no dependency on `retrograd-ffi` |
+| `fast-python` | `python/target` | the extension requires static native linking |
+| docs CI | `target/lanes/docs` | separate cache, outside the local alternation |
 
-`RETRO_FAST_TARGET_DIR=target` shares the fast lane's tree back if you would
-rather pay the relink than the disk; `RIR_PARITY_TARGET_DIR` still moves the
-parity lane elsewhere. The first run of each is a cold build.
-
-Two warm trees is several gigabytes. A debug build on macOS links llama.cpp
-and the C++ runtime *shared*, so the test binaries reference the native side
-instead of each embedding it (`docs/reference/builds.md`, `RETRO_GGML_LINK`).
-`rm -rf target/lanes/<lane>` drops one lane's tree without touching the others.
+`CARGO_TARGET_DIR` still overrides Cargo's tree; `RIR_PARITY_TARGET_DIR` selects
+the parity tree. GPU trees configured externally should only be merged after
+auditing native variables and `RUSTFLAGS`. The old `target/lanes/fast` cache can
+be removed after comparing measurements; it is no longer used by the lane.
+On macOS debug the native libraries remain shared, each binary referencing its
+own feature variant's paths (see [build variants](../../reference/builds)).
 
 Within a lane's log, `step=<name> duration=<n>s` lines (via
 `scripts/lib-step-timing.sh`) split compile time from run time per test binary.
@@ -61,9 +57,18 @@ Within a lane's log, `step=<name> duration=<n>s` lines (via
 
 ### `fast-rust` - Rust unit tests
 
-`cargo test --workspace --lib --bins` with `RETRO_BACKENDS=cpu` pinned (macOS
-otherwise defaults to `cpu,metal`, compiling Metal for no benefit here). No GPU
-and no model.
+Three CPU-only package selections compile and run library and binary tests:
+
+```sh
+cargo test --workspace --exclude retrograd --exclude retrograd-python --lib --bins
+cargo test -p retrograd --no-default-features --features agent --lib --bins
+cargo test -p retrograd-python --no-default-features --lib --bins
+```
+
+Before compilation, each selection's resolved graph (including dev-dependencies)
+is checked with `cargo tree`: FFI must be present and none of `platform-gpu`,
+`metal`, `vulkan`, `cuda` may be enabled. Workspace defaults remain on for the
+judge's HTTP coverage. No GPU and no model are required.
 
 Some integration binaries are included anyway, for the same reason: they need
 neither a GGUF nor a device, and what they cover is the kind of thing that
@@ -159,12 +164,20 @@ CPU fixture - see `cpu-integration`.
 
 Runs `ruff check` and `ruff format --check` over `python/`, `examples/` and
 `scripts/` (configuration in the root `ruff.toml`), builds the native PyO3
-extension with `RETRO_BACKENDS=cpu`
-(`uv run --reinstall-package retrograd python -c "import retrograd"`), then runs
-the full `pytest` suite. **`RETRO_BACKENDS=cpu` is required, not optional**: the
+extension with defaults disabled via a common
+`uv run --config-settings-package 'retrograd:build-args=--no-default-features'`
+command for lint, format, reinstall and tests. After forced reinstall, a fresh
+process calls `retrograd.list_backends()` and requires CPU present / GPU absent.
+Then it runs the full `pytest` suite. **The CPU selection is required**: the
 suite includes a real smoke test against the compiled extension, and building it
 with the macOS default (`cpu,metal`) instead can segfault the whole `pytest`
 process on a Metal buffer allocation when no usable Metal queue exists.
+
+The CPU-only extension stays installed after the lane: a plain `uv run` does
+not rebuild it, because uv does not treat a change of build settings as a
+reason to reinstall. To get the platform default (Metal on macOS) back, run
+`uv run --reinstall-package retrograd python -c "import retrograd"` from
+`python/`.
 
 Extra `pytest` args can be appended, e.g.
 `scripts/test-fast-python.sh tests/test_trainer.py -k grpo`.
@@ -178,9 +191,13 @@ never needs the CPU fixture. This is also where the C ABI is pinned:
 `contract_tests::c_struct_layouts_match_the_published_header` asserts the size,
 alignment and field offsets of every `#[repr(C)]` struct in `retrograd-ffi`, and
 the error paths of the introspection entry points (`retro_read_model_info`) are
-checked here because they need no model either. `RETRO_BACKENDS` defaults to
-`cpu,metal` on macOS and `cpu` elsewhere (override it to validate another backend
-combination).
+checked here because they need no model either. `RETRO_ABI_FEATURES` defaults to
+`platform-gpu` (Metal on macOS, CPU elsewhere). Set `RETRO_ABI_FEATURES=` for
+CPU alone, or a comma-separated list of `platform-gpu`, `metal`, `vulkan`,
+`cuda`. The lane validates names before Cargo and applies the same backend
+selection to both FFI and root tests, including every RIR mode pass. A named
+list is passed as `--features <list>` with the root's defaults kept, as a user
+build would spell it, so the lane reuses that build's native variant.
 
 `gated_delta_net_chunked` compares two *CPU* implementations of
 `GGML_OP_GATED_DELTA_NET_BACK` - the per-token reverse scan and a chunkwise
@@ -213,7 +230,9 @@ quantizer, not the decoder.
 Fetches and checksum-verifies the CPU GGUF fixture, then runs CLI,
 capabilities, PPO/GRPO, checkpoint/resume, `engine_contracts`,
 `kv_projection_gradients`, the CPU-only LoRA/generation/parity tests, and
-`retrograd-server`'s `tests/e2e_cpu.rs`, with `RETRO_BACKENDS=cpu` and
+`retrograd-server`'s `tests/e2e_cpu.rs`. The root test binaries are built with
+`--no-default-features --features agent` (the `-p retrograd-server` ones need
+nothing: that package is CPU-only by default), and every run sets
 `RETRO_REQUIRE_CPU_FIXTURE=1` (missing fixture is a hard failure, not a silent
 skip). Model-loading tests share process-global llama.cpp runtime state, so
 this lane runs with `--test-threads=1` and a cross-process file lock
@@ -376,7 +395,7 @@ Both skip themselves without a GPU device, which is why neither belongs to the
 CPU lanes:
 
 ```sh
-RETRO_REQUIRE_GPU_RESIDENT=1 RETRO_BACKENDS=cpu,metal cargo test --release \
+RETRO_REQUIRE_GPU_RESIDENT=1 cargo test --features metal --release \
   --test metal_ops --test lora_metal --test fused_ce --test scoring_logprobs \
   -- --test-threads=1
 ```
@@ -389,10 +408,10 @@ fused cross-entropy and export/resume included, is in
 [CUDA status](../cuda/STATUS).
 
 ```sh
-RETRO_REQUIRE_GPU_RESIDENT=1 RETRO_BACKENDS=cpu,vulkan \
-  cargo test --test vulkan_backend -- --test-threads=1
-RETRO_REQUIRE_GPU_RESIDENT=1 RETRO_BACKENDS=cpu,cuda \
-  cargo test --test cuda_backend -- --test-threads=1
+RETRO_REQUIRE_GPU_RESIDENT=1 \
+  cargo test --features vulkan --test vulkan_backend -- --test-threads=1
+RETRO_REQUIRE_GPU_RESIDENT=1 \
+  cargo test --features cuda --test cuda_backend -- --test-threads=1
 ```
 
 The model-free Vulkan GDN chunking coverage can be run on its own; it compares
@@ -400,7 +419,7 @@ the chunked default, its local adverse-gate fallback and the retained sequential
 pipeline against the CPU oracle:
 
 ```sh
-RETRO_REQUIRE_GPU_RESIDENT=1 RETRO_BACKENDS=vulkan cargo test --test vulkan_backend \
+RETRO_REQUIRE_GPU_RESIDENT=1 cargo test --features vulkan --test vulkan_backend \
   gated_delta_net_back_vulkan -- --test-threads=1
 ```
 
@@ -409,9 +428,9 @@ The cases compare the matrix path against the CPU oracle, the forced scalar
 fallback and a repetition, by tolerance (Q/dO are rounded to F16 before MMA):
 
 ```sh
-RETRO_REQUIRE_GPU_RESIDENT=1 RETRO_BACKENDS=cpu,cuda cargo test --test cuda_backend \
+RETRO_REQUIRE_GPU_RESIDENT=1 cargo test --features cuda --test cuda_backend \
   flash_attn_back_cuda_ -- --test-threads=1
-RETRO_REQUIRE_GPU_RESIDENT=1 RETRO_BACKENDS=vulkan cargo test --test vulkan_backend \
+RETRO_REQUIRE_GPU_RESIDENT=1 cargo test --features vulkan --test vulkan_backend \
   flash_attn_back_vulkan_ -- --test-threads=1
 ```
 
@@ -438,11 +457,12 @@ reproducible; `RETRO_RIR_TEST_MODEL` overrides it. One process per backend,
 because the RIR mode and the backend list are both read once, before the first
 context exists.
 
-**Budget it before running it without `--backend`.** `RETRO_BACKENDS` is a
-build-time input of `retrograd-ffi`, so going from one backend to the next
-relinks the native runtime - tens of minutes cold, against about a minute for
-the measurement itself. Use `--backend metal` (or `vulkan`) while iterating and
-the full pair before a PR.
+Each backend is built with `--features <backend>`.
+The first build of a variant is expensive; later runs reuse it. CUDA's native
+architecture setting and caller `RUSTFLAGS` remain inputs outside the feature
+hash; their values must be held constant when comparing timings. The script
+adds no CUDA cfg: the root gets it from FFI metadata. CUDA validation requires
+a real CUDA machine and the fixture, with counters and no skipped test.
 
 **A lane that skips is a lane that lies**, so `RETRO_REQUIRE_RIR_GRAPH=1` (which
 the script sets) turns every reason the test has to step aside - no GPU, no
@@ -450,9 +470,8 @@ model, a graph with no registered op - into a failure. Run by hand, the same
 test still skips loudly:
 
 ```sh
-RETRO_BACKENDS=cpu,metal \
   RETRO_RIR_TEST_MODEL=tests/fixtures/LFM2.5-230M-Q4_K_M.gguf \
-  cargo test --release --test rir_graph_coverage -- --nocapture
+  cargo test --features metal --release --test rir_graph_coverage -- --nocapture
 ```
 
 It publishes the per-site coverage - the number to read before touching a
@@ -678,7 +697,7 @@ that needs the native kernel on the same shapes, which only `test-rir.sh` runs.
 ```sh
 RETRO_RIR_CENSUS=1 RETRO_RIR_MODE=prefer \
 RETRO_RIR_TEST_MODEL=/path/to/model.gguf \
-  cargo test --release --test rir_graph_coverage -- --nocapture the_backward_graph_census
+  cargo test --features metal --release --test rir_graph_coverage -- --nocapture the_backward_graph_census
 ```
 
 The two lanes above are about the ops RIR **already covers**. The census is
@@ -702,8 +721,11 @@ which times them in isolation.
 
 `.github/workflows/ci.yml` runs on demand (`workflow_dispatch`), CPU-only, on
 `ubuntu-latest`: no GPU, no model fixture. It runs `fast-rust` and
-`fast-python`, plus `cargo clippy --workspace --all-targets -- -D warnings`,
-`cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-D warnings`, and
+`fast-python`, plus `cargo clippy --all-targets -- -D warnings` and
+`cargo doc --no-deps` (with `RUSTDOCFLAGS=-D warnings`) over the same three
+CPU package selections as `fast-rust`, so they reuse its `retrograd-ffi`
+variant instead of configuring llama.cpp again for the root's `platform-gpu`
+default, and
 `ruff check` / `ruff format --check`. It builds the llama.cpp submodule from a
 clean checkout, which is what makes `RETRO_STRICT_LLAMA`'s "in CI" half of its
 own description true (`crates/retrograd-ffi/build.rs` reads the `CI` env var

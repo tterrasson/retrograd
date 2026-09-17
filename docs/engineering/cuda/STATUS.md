@@ -10,10 +10,10 @@ For the comparison with CPU, Metal and Vulkan, see [SUPPORT.md](../SUPPORT.md).
 
 ## Building
 
-Add `cuda` to `RETRO_BACKENDS`:
+Enable the Cargo feature `cuda`:
 
 ```sh
-RETRO_BACKENDS=cpu,cuda cargo build
+cargo build --features cuda
 ```
 
 | Variable | Default | Effect |
@@ -64,16 +64,16 @@ The runtime detects these capabilities from the device itself.
 
 ```sh
 # Device detection
-RETRO_BACKENDS=cpu,cuda RETRO_CUDA_ARCHITECTURES=89-real cargo test --test backend_devices
+RETRO_CUDA_ARCHITECTURES=89-real cargo test --features cuda --test backend_devices
 
 # Kernel parity against the CPU
-RETRO_BACKENDS=cpu,cuda RETRO_CUDA_ARCHITECTURES=89-real cargo test --test cuda_backend -- --test-threads=1
+RETRO_CUDA_ARCHITECTURES=89-real cargo test --features cuda --test cuda_backend -- --test-threads=1
 
 # Same, with CUDA Graphs
-RETRO_BACKENDS=cpu,cuda RETRO_CUDA_ARCHITECTURES=89-real RETRO_CUDA_GRAPHS=1 cargo test --test cuda_backend -- --test-threads=1
+RETRO_CUDA_ARCHITECTURES=89-real RETRO_CUDA_GRAPHS=1 cargo test --features cuda --test cuda_backend -- --test-threads=1
 
 # CPU non-regression
-RETRO_BACKENDS=cpu cargo test
+cargo test --no-default-features --features agent
 ```
 
 Replace `89-real` with the compute capability of your GPU.

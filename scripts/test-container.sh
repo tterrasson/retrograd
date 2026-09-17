@@ -22,7 +22,6 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$repo_root/scripts/lib-step-timing.sh"
 
-export RETRO_BACKENDS=cpu
 image="${RETRO_CONTAINER_TEST_IMAGE:-debian:bookworm-slim}"
 
 probe() {

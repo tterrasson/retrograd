@@ -10,10 +10,10 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$repo_root/scripts/lib-step-timing.sh"
 cd "$repo_root/python"
 
-export RETRO_BACKENDS=cpu
+uv_cpu=(uv run --config-settings-package 'retrograd:build-args=--no-default-features')
 
 # Every tracked Python file, not only the package: `ruff.toml` sits at the root.
-timed_step lint uv run ruff check . ../examples ../scripts
-timed_step format uv run ruff format --check . ../examples ../scripts
-timed_step compile uv run --reinstall-package retrograd python -c "import retrograd"
-timed_step run uv run pytest -q "$@"
+timed_step lint "${uv_cpu[@]}" ruff check . ../examples ../scripts
+timed_step format "${uv_cpu[@]}" ruff format --check . ../examples ../scripts
+timed_step compile "${uv_cpu[@]}" --reinstall-package retrograd python -c "import retrograd; b = retrograd.list_backends(); assert any(x.kind == 'cpu' for x in b) and not any(x.kind == 'gpu' for x in b), b"
+timed_step run "${uv_cpu[@]}" pytest -q "$@"

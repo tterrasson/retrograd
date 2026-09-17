@@ -746,9 +746,9 @@ bool load_model_and_context(trainer_state & state) {
         case RETRO_DEVICE_GPU:
             if (!gpu_available) {
                 set_error("device=gpu requested but no GPU backend is available; "
-                          "rebuild with one of RETRO_BACKENDS=cpu,metal (Apple hardware), "
-                          "RETRO_BACKENDS=cpu,vulkan (Vulkan SDK), or "
-                          "RETRO_BACKENDS=cpu,cuda (NVIDIA CUDA toolkit), and confirm a "
+                          "rebuild with Cargo features metal (Apple hardware), "
+                          "vulkan (Vulkan SDK), or "
+                          "cuda (NVIDIA CUDA toolkit), and confirm a "
                           "supported GPU is present");
                 return false;
             }

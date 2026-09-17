@@ -44,12 +44,12 @@ In a clone made without `--recurse-submodules`, run `scripts/setup-llama-cpp.sh`
 (or `git submodule update --init`) before building.
 
 The build enables the GPU backend that matches the platform (Metal on macOS).
-Select backends explicitly at build time with `RETRO_BACKENDS`:
+Select backends at build time with Cargo features (CPU is always included):
 
 ```sh
-RETRO_BACKENDS=cpu,metal cargo build --release    # macOS default
-RETRO_BACKENDS=cpu,vulkan cargo build --release   # needs the Vulkan SDK
-RETRO_BACKENDS=cpu,cuda cargo build --release     # needs the CUDA Toolkit
+cargo build --release                     # platform default: Metal on macOS, CPU elsewhere
+cargo build --features vulkan --release   # Vulkan instead of the default; needs the Vulkan SDK
+cargo build --features cuda --release     # needs the CUDA Toolkit
 ```
 
 Per-backend requirements and options are in

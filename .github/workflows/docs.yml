@@ -32,9 +32,6 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
-env:
-  RETRO_BACKENDS: cpu
-
 jobs:
   build:
     name: build (vitepress + rustdoc)
