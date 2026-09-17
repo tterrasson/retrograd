@@ -26,8 +26,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use libloading::{Library, Symbol};
+use rir_core::Backend;
 
-use crate::manifest::{BoundArg, Manifest, ManifestDispatch, ManifestReader};
+use crate::manifest::{BoundArg, Manifest, ManifestDispatch};
 use crate::{Arg, RuntimeError, Values};
 
 /// The host half, compiled once per process. Everything a dispatch needs from
@@ -448,10 +449,10 @@ impl Gpu {
         manifest: &Manifest,
         unit: &Unit<'_>,
     ) -> Result<Pipeline<'_>, RuntimeError> {
-        if manifest.backend != "cuda" {
+        if manifest.backend != Backend::Cuda {
             return Err(RuntimeError::BadManifest(format!(
                 "backend '{}': this pipeline executes cuda",
-                manifest.backend
+                manifest.backend.name()
             )));
         }
         self.check_features(manifest)?;
