@@ -19,16 +19,17 @@
 # and no GLSL compiler. On a machine that has the stack (a macOS laptop with
 # MoltenVK and glslc is enough) they run the whole registry through an
 # interpreted oracle, which is only affordable in **release** - a debug build
-# takes over fifteen minutes. The lane keeps a target directory of its own so it
-# never invalidates the debug artifacts the other lanes share (flipping a
-# profile or `RETRO_BACKENDS` relinks the workspace -- ~25-60 s, measured).
+# takes over fifteen minutes. It builds in the shared `target/`: release
+# artifacts live in `target/release`, apart from the debug ones, and
+# `rir-runtime` does not depend on `retrograd-ffi`, so the `RETRO_BACKENDS` this
+# lane pins reconfigures nothing another build uses.
 #
 #   scripts/test-rir-parity.sh              # all three binaries
 #   scripts/test-rir-parity.sh out_prod     # a filter, while iterating
 #
 # Environment:
 #   RIR_PARITY_THREADS    workers in family_parity (default: the machine's cores)
-#   RIR_PARITY_TARGET_DIR where to build (default: target/lanes/rir-parity)
+#   RIR_PARITY_TARGET_DIR where to build (default: the workspace's target/)
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -37,7 +38,7 @@ source "$repo_root/scripts/lib-step-timing.sh"
 # No GPU is requested from the *ggml* runtime here: nothing in this lane loads a
 # model. The device these tests open is opened by `rir-runtime` directly.
 export RETRO_BACKENDS=cpu
-export CARGO_TARGET_DIR="${RIR_PARITY_TARGET_DIR:-$repo_root/target/lanes/rir-parity}"
+export CARGO_TARGET_DIR="${RIR_PARITY_TARGET_DIR:-$repo_root/target}"
 
 timed_step compile cargo test --release -p rir-runtime \
   --test device_parity --test family_parity --test dispatch_plan --no-run

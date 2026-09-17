@@ -33,21 +33,23 @@ handler, so a one-line change does not recompile the workspace.
 `RETRO_BACKENDS` is part of Cargo's build fingerprint, so two lanes asking for
 different backends in one `target/` reconfigure llama.cpp and relink the
 workspace on every alternation - 25 to 60 s per flip, for nothing either lane
-uses. The GPU lanes each have a tree of their own for that reason, and so do the
-two lanes that pin a profile or a backend set. They live *under* `target/`, so
-the whole build cost is still one directory to size, ignore and clean:
+uses. The GPU lanes each have a tree of their own for that reason, and so does
+the lane that pins a backend set against the whole workspace. They live *under*
+`target/`, so the whole build cost is still one directory to size, ignore and
+clean. A profile is not a reason: Cargo already keeps `target/debug` and
+`target/release` apart.
 
 | lane | target dir | why |
 | --- | --- | --- |
 | `fast-rust` (and `server`, which it calls) | `target/lanes/fast` | pins `RETRO_BACKENDS=cpu`, while a plain `cargo build` on macOS resolves to `cpu,metal` |
-| `rir-parity` | `target/lanes/rir-parity` | builds `--release`, which is a second profile whatever the backends |
+| `rir-parity` | `target` | `--release` lands in `target/release`, and `rir-runtime` does not depend on `retrograd-ffi`, so its `RETRO_BACKENDS=cpu` rebuilds nothing |
 | everything else | `target` | shares the backend set of an ordinary build |
 
-Both are overridable - `RETRO_FAST_TARGET_DIR=target`,
-`RIR_PARITY_TARGET_DIR=target` - if you would rather pay the relink than the
-disk. The first run of each is a cold build.
+`RETRO_FAST_TARGET_DIR=target` shares the fast lane's tree back if you would
+rather pay the relink than the disk; `RIR_PARITY_TARGET_DIR` still moves the
+parity lane elsewhere. The first run of each is a cold build.
 
-Three warm trees is several gigabytes. A debug build on macOS links llama.cpp
+Two warm trees is several gigabytes. A debug build on macOS links llama.cpp
 and the C++ runtime *shared*, so the test binaries reference the native side
 instead of each embedding it (`docs/reference/builds.md`, `RETRO_GGML_LINK`).
 `rm -rf target/lanes/<lane>` drops one lane's tree without touching the others.

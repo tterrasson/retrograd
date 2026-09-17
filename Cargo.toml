@@ -202,7 +202,7 @@ codegen-units = 1
 # tree: keeps backtraces readable while cutting the size of `target/debug`
 # and the link time (dsymutil on macOS).
 [profile.dev]
-debug = 1
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
