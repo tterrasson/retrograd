@@ -36,7 +36,7 @@ pub fn spawn(
     device: Arc<Semaphore>,
     handle: Arc<RunHandle>,
     config: Box<RunConfig>,
-    commands: mpsc::UnboundedReceiver<RunCommand>,
+    commands: mpsc::Receiver<RunCommand>,
 ) {
     tokio::spawn(async move {
         // `queued` until a permit is free. With `max_concurrent_runs = 1` - the

@@ -27,7 +27,7 @@ use crate::dto;
 use crate::error::{ApiError, ApiResult, ErrorCode, ProblemKind};
 use crate::extract::Json as RequestJson;
 use crate::runtime::RunHandle;
-use crate::runtime::control::{At, RunCommand};
+use crate::runtime::control::{At, Refused, RunCommand};
 use crate::state::AppState;
 
 /// Sampling defaults for an ad-hoc generation.
@@ -181,11 +181,17 @@ fn require_live(handle: &RunHandle, action: &str) -> ApiResult<()> {
 }
 
 fn dispatch(handle: &Arc<RunHandle>, command: RunCommand) -> ApiResult<()> {
-    let sent = handle
-        .control()
-        .is_some_and(|control| control.send(command));
-    if sent {
-        return Ok(());
+    match handle.control().map(|control| control.send(command)) {
+        Some(Ok(())) => return Ok(()),
+        // Commands are arriving faster than the run reads them; the run itself
+        // is healthy, so this is a retry rather than a refusal.
+        Some(Err(Refused::Saturated)) => {
+            return Err(ApiError::new(
+                ProblemKind::DeviceBusy,
+                "this run has too many pending commands",
+            ));
+        }
+        Some(Err(Refused::Gone)) | None => {}
     }
     Err(ApiError::new(
         ProblemKind::Conflict,

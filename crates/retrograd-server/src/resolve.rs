@@ -62,15 +62,16 @@ const PLANNING_CACHE_ENTRIES: usize = 32;
 /// one-by-one when it is full: every entry is recomputable from the engine, so
 /// the cost of being wrong about which one to drop is one cold probe, and an
 /// insertion-order queue for that is machinery this does not need.
+///
+/// Poisoning is recovered, like every other lock in this crate: the map holds
+/// only recomputable entries, so a panicking writer leaves nothing half-applied
+/// and refusing to plan afterwards would turn one failed request into an outage.
 fn remember<T>(
     cache: &std::sync::RwLock<std::collections::BTreeMap<String, T>>,
     key: String,
     value: T,
-    what: &str,
 ) {
-    let mut cache = cache
-        .write()
-        .unwrap_or_else(|_| panic!("{what} cache lock"));
+    let mut cache = cache.write().recover();
     if cache.len() >= PLANNING_CACHE_ENTRIES {
         cache.clear();
     }
@@ -731,12 +732,7 @@ pub(crate) async fn execution_profile(
         kernels: catalog.kernels.clone(),
         capabilities,
     };
-    remember(
-        &state.execution_profiles,
-        cache_key,
-        profile.clone(),
-        "execution profile",
-    );
+    remember(&state.execution_profiles, cache_key, profile.clone());
     Ok(profile)
 }
 
@@ -769,12 +765,7 @@ async fn preflight_candidate(
     report
         .validate()
         .map_err(|error| ApiError::internal(format!("invalid preflight report: {error}")))?;
-    remember(
-        &state.preflights,
-        cache_key.to_string(),
-        report.clone(),
-        "preflight",
-    );
+    remember(&state.preflights, cache_key.to_string(), report.clone());
     Ok(report)
 }
 

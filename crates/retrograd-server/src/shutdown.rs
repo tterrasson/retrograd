@@ -52,11 +52,13 @@ pub async fn drain(state: &AppState, bound: Duration) -> usize {
         // run; `Cancel { checkpoint: true }` alone would be enough, but sending the
         // request first means a run that reaches its boundary between the two
         // messages still writes one.
-        control.send(RunCommand::Checkpoint);
-        control.send(RunCommand::Cancel {
-            at: CancelAt::Boundary,
-            checkpoint: true,
-        });
+        let _ = control.send_waiting(RunCommand::Checkpoint).await;
+        let _ = control
+            .send_waiting(RunCommand::Cancel {
+                at: CancelAt::Boundary,
+                checkpoint: true,
+            })
+            .await;
         handle.emit(dto::RunEventPayload::Log {
             message: "the server is shutting down: checkpointing and stopping at the next \
                       boundary"

@@ -6,10 +6,12 @@
 //! stopping is safe. Nothing here kills a thread, and nothing here touches
 //! the `Trainer` from the outside.
 //!
-//! The channel is unbounded on purpose. It carries control messages, which are
-//! human-paced and tiny; a bounded one would make a handler either block on a
-//! run that is mid-generation or drop a cancellation, and both are worse than
-//! holding a handful of enum values.
+//! The channel is bounded and never awaited: a handler `try_send`s, so it is
+//! never blocked by a run that is mid-generation, and a full queue is refused
+//! with a 503 rather than buffered. The bound is a backstop against a client
+//! looping on a fire-and-forget route - `pause`, `checkpoint`, `adjust` return
+//! as soon as the command is queued - not flow control for normal use, which is
+//! human-paced and could not reach it.
 
 use std::sync::Arc;
 
@@ -118,25 +120,50 @@ pub enum RunCommand {
     Generate(Box<GenerationRequest>, Reply<GenerationOutput>),
 }
 
+/// How many unread commands a run may hold.
+///
+/// A run drains the whole queue at every progress callback, so this many unread
+/// commands means a caller that is not reading its own answers. Large enough
+/// that no legitimate sequence of operator actions reaches it.
+const QUEUE_DEPTH: usize = 64;
+
+/// Why a command was not queued.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// The run's thread is gone - it finished or never started.
+    Gone,
+    /// The queue is full: commands are arriving faster than the run reads them.
+    Saturated,
+}
+
 /// The sending half, held by the registry for the life of the run.
 ///
 /// Cloneable and `Sync`, so several handlers may command the same run without a
 /// lock; ordering between two concurrent commands is the channel's, which is the
 /// order they were sent.
 #[derive(Clone)]
-pub struct ControlSender(mpsc::UnboundedSender<RunCommand>);
+pub struct ControlSender(mpsc::Sender<RunCommand>);
 
 impl ControlSender {
-    /// Queues a command. `false` means the run's thread is gone - it finished or
-    /// never started - which a handler turns into a 409 rather than a silent
-    /// success.
-    pub fn send(&self, command: RunCommand) -> bool {
-        self.0.send(command).is_ok()
+    /// Queues a command without waiting. Each [`Refused`] reason is a different
+    /// status: a gone run is a 409, a saturated queue a 503.
+    pub fn send(&self, command: RunCommand) -> Result<(), Refused> {
+        self.0.try_send(command).map_err(|error| match error {
+            mpsc::error::TrySendError::Closed(_) => Refused::Gone,
+            mpsc::error::TrySendError::Full(_) => Refused::Saturated,
+        })
+    }
+
+    /// Queues a command, waiting for room. For the shutdown drain, which is the
+    /// one caller that must not lose its cancellation to a queue somebody else
+    /// filled, and the one that has a deadline of its own to bound the wait.
+    pub async fn send_waiting(&self, command: RunCommand) -> Result<(), Refused> {
+        self.0.send(command).await.map_err(|_| Refused::Gone)
     }
 }
 
-pub fn channel() -> (ControlSender, mpsc::UnboundedReceiver<RunCommand>) {
-    let (tx, rx) = mpsc::unbounded_channel();
+pub fn channel() -> (ControlSender, mpsc::Receiver<RunCommand>) {
+    let (tx, rx) = mpsc::channel(QUEUE_DEPTH);
     (ControlSender(tx), rx)
 }
 
@@ -146,7 +173,7 @@ pub fn channel() -> (ControlSender, mpsc::UnboundedReceiver<RunCommand>) {
 /// the channel, applies what it finds, blocks while paused, and reports whether
 /// the loop should carry on.
 pub struct ChannelControl {
-    commands: mpsc::UnboundedReceiver<RunCommand>,
+    commands: mpsc::Receiver<RunCommand>,
     handle: Arc<RunHandle>,
     paused: bool,
     cancel: Option<PendingCancel>,
@@ -159,7 +186,7 @@ struct PendingCancel {
 }
 
 impl ChannelControl {
-    pub fn new(commands: mpsc::UnboundedReceiver<RunCommand>, handle: Arc<RunHandle>) -> Self {
+    pub fn new(commands: mpsc::Receiver<RunCommand>, handle: Arc<RunHandle>) -> Self {
         Self {
             commands,
             handle,
@@ -410,10 +437,12 @@ mod tests {
     fn a_boundary_cancel_waits_for_a_boundary_and_a_now_cancel_does_not() {
         let (sender, mut control) = wired();
         let mut recorder = Recorder::default();
-        sender.send(RunCommand::Cancel {
-            at: CancelAt::Boundary,
-            checkpoint: true,
-        });
+        sender
+            .send(RunCommand::Cancel {
+                at: CancelAt::Boundary,
+                checkpoint: true,
+            })
+            .expect("the receiver is live");
         assert_eq!(
             control.poll(&mut recorder, at(false)).unwrap(),
             Flow::Continue
@@ -425,10 +454,12 @@ mod tests {
 
         let (sender, mut control) = wired();
         let mut recorder = Recorder::default();
-        sender.send(RunCommand::Cancel {
-            at: CancelAt::Now,
-            checkpoint: false,
-        });
+        sender
+            .send(RunCommand::Cancel {
+                at: CancelAt::Now,
+                checkpoint: false,
+            })
+            .expect("the receiver is live");
         assert_eq!(control.poll(&mut recorder, at(false)).unwrap(), Flow::Stop);
         assert_eq!(
             recorder.checkpoints_requested, 0,
@@ -440,15 +471,19 @@ mod tests {
     fn a_second_cancel_never_asks_for_less_than_the_first() {
         let (sender, mut control) = wired();
         let mut recorder = Recorder::default();
-        sender.send(RunCommand::Cancel {
-            at: CancelAt::Now,
-            checkpoint: true,
-        });
+        sender
+            .send(RunCommand::Cancel {
+                at: CancelAt::Now,
+                checkpoint: true,
+            })
+            .expect("the receiver is live");
         // A retry that asks for the gentler form must not undo the urgent one.
-        sender.send(RunCommand::Cancel {
-            at: CancelAt::Boundary,
-            checkpoint: false,
-        });
+        sender
+            .send(RunCommand::Cancel {
+                at: CancelAt::Boundary,
+                checkpoint: false,
+            })
+            .expect("the receiver is live");
         assert_eq!(control.poll(&mut recorder, at(false)).unwrap(), Flow::Stop);
     }
 
@@ -459,12 +494,14 @@ mod tests {
             refuse_evaluation: true,
             ..Default::default()
         };
-        sender.send(RunCommand::Adjust(Adjustments {
-            learning_rate: Some(5.0e-5),
-            evaluation_every_iterations: Some(2),
-            evaluation_patience: Some(4),
-            ..Default::default()
-        }));
+        sender
+            .send(RunCommand::Adjust(Adjustments {
+                learning_rate: Some(5.0e-5),
+                evaluation_every_iterations: Some(2),
+                evaluation_patience: Some(4),
+                ..Default::default()
+            }))
+            .expect("the receiver is live");
         assert_eq!(
             control.poll(&mut recorder, at(true)).unwrap(),
             Flow::Continue
@@ -481,11 +518,15 @@ mod tests {
     fn a_pause_blocks_the_callback_until_it_is_told_otherwise() {
         let (sender, mut control) = wired();
         let mut recorder = Recorder::default();
-        sender.send(RunCommand::Pause);
+        sender
+            .send(RunCommand::Pause)
+            .expect("the receiver is live");
         let resumer = sender.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(30));
-            resumer.send(RunCommand::Resume);
+            resumer
+                .send(RunCommand::Resume)
+                .expect("the receiver is live");
         });
         let started = std::time::Instant::now();
         assert_eq!(
@@ -503,12 +544,16 @@ mod tests {
         let canceller = sender.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(30));
-            canceller.send(RunCommand::Cancel {
-                at: CancelAt::Now,
-                checkpoint: false,
-            });
+            canceller
+                .send(RunCommand::Cancel {
+                    at: CancelAt::Now,
+                    checkpoint: false,
+                })
+                .expect("the receiver is live");
         });
-        sender.send(RunCommand::Pause);
+        sender
+            .send(RunCommand::Pause)
+            .expect("the receiver is live");
         assert_eq!(control.poll(&mut recorder, at(false)).unwrap(), Flow::Stop);
     }
 
@@ -517,20 +562,24 @@ mod tests {
         let (sender, mut control) = wired();
         let mut recorder = Recorder::default();
         let (reply, answer) = oneshot::channel();
-        sender.send(RunCommand::Evaluate(reply));
+        sender
+            .send(RunCommand::Evaluate(reply))
+            .expect("the receiver is live");
         let (generate_reply, generated) = oneshot::channel();
-        sender.send(RunCommand::Generate(
-            Box::new(GenerationRequest {
-                prompt: "hello".into(),
-                chat: true,
-                max_new_tokens: 4,
-                temperature: 1.0,
-                top_p: 1.0,
-                seed: 1,
-                include_base: false,
-            }),
-            generate_reply,
-        ));
+        sender
+            .send(RunCommand::Generate(
+                Box::new(GenerationRequest {
+                    prompt: "hello".into(),
+                    chat: true,
+                    max_new_tokens: 4,
+                    temperature: 1.0,
+                    top_p: 1.0,
+                    seed: 1,
+                    include_base: false,
+                }),
+                generate_reply,
+            ))
+            .expect("the receiver is live");
         assert_eq!(
             control.poll(&mut recorder, at(false)).unwrap(),
             Flow::Continue
@@ -551,7 +600,9 @@ mod tests {
         let (sender, mut control) = wired();
         let mut recorder = Recorder::default();
         let (reply, answer) = oneshot::channel();
-        sender.send(RunCommand::Evaluate(reply));
+        sender
+            .send(RunCommand::Evaluate(reply))
+            .expect("the receiver is live");
         // The handler gave up - a timeout, or a disconnected client. Evaluating
         // for nobody would spend a full pass over the dataset.
         drop(answer);
@@ -570,7 +621,9 @@ mod tests {
             ..Default::default()
         };
         let (reply, answer) = oneshot::channel();
-        sender.send(RunCommand::Evaluate(reply));
+        sender
+            .send(RunCommand::Evaluate(reply))
+            .expect("the receiver is live");
         assert_eq!(
             control.poll(&mut recorder, at(true)).unwrap(),
             Flow::Continue,
