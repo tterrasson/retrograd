@@ -309,172 +309,173 @@ fn decode_block(format: QuantType, b: &[u8], y: &mut [f32]) {
     }
 }
 
-/// K-quant super-blocks. Each layout is spelled out because each is genuinely
-/// different; parameterizing them would hide the very bit shifts a decoder can
-/// get wrong.
+/// K-quant super-blocks. Each layout gets its own decoder because each is
+/// genuinely different; parameterizing them would hide the very bit shifts a
+/// decoder can get wrong.
 fn decode_super_block(format: QuantType, b: &[u8], y: &mut [f32]) {
     match format {
-        // scales[16] | qs[64] | d, dmin (F16)
-        QuantType::Q2_K => {
-            let (d, dmin) = (f16(b, 80), f16(b, 82));
-            let mut o = 0usize;
-            let mut is = 0usize;
-            for n in (0..256).step_by(128) {
-                let q = &b[16 + n / 4..];
-                for j in 0..4 {
-                    let shift = 2 * j;
-                    for half in 0..2 {
-                        let sc = b[is];
-                        is += 1;
-                        let dl = d * (sc & 0xF) as f32;
-                        let ml = dmin * (sc >> 4) as f32;
-                        for l in 0..16 {
-                            let qv = (q[l + 16 * half] >> shift) & 3;
-                            y[o] = dl * qv as f32 - ml;
-                            o += 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        // hmask[32] | qs[64] | scales[12] | d (F16)
-        QuantType::Q3_K => {
-            let d_all = f16(b, 108);
-            let hm = &b[0..32];
-            // The 12 packed bytes hold sixteen 6-bit scales, split 4+2 bits.
-            let mut aux = [0u32; 4];
-            // Only three words are stored; aux[3] is *computed* below, as in
-            // ggml's `memcpy(aux, x[i].scales, 12)`.
-            for (i, a) in aux.iter_mut().take(3).enumerate() {
-                *a = u32::from_le_bytes([
-                    b[96 + 4 * i],
-                    b[97 + 4 * i],
-                    b[98 + 4 * i],
-                    b[99 + 4 * i],
-                ]);
-            }
-            let (kmask1, kmask2) = (0x0303_0303u32, 0x0f0f_0f0fu32);
-            let tmp = aux[2];
-            aux[2] = ((aux[0] >> 4) & kmask2) | (((tmp >> 4) & kmask1) << 4);
-            aux[3] = ((aux[1] >> 4) & kmask2) | (((tmp >> 6) & kmask1) << 4);
-            aux[0] = (aux[0] & kmask2) | ((tmp & kmask1) << 4);
-            aux[1] = (aux[1] & kmask2) | (((tmp >> 2) & kmask1) << 4);
-            let mut scales = [0i8; 16];
-            for i in 0..4 {
-                for (j, s) in aux[i].to_le_bytes().iter().enumerate() {
-                    scales[4 * i + j] = *s as i8;
-                }
-            }
-
-            let mut o = 0usize;
-            let mut is = 0usize;
-            let mut m: u8 = 1;
-            for n in (0..256).step_by(128) {
-                let q = &b[32 + n / 4..];
-                for j in 0..4 {
-                    let shift = 2 * j;
-                    for half in 0..2 {
-                        let dl = d_all * (scales[is] as i32 - 32) as f32;
-                        is += 1;
-                        for l in 0..16 {
-                            let idx = l + 16 * half;
-                            let qv = ((q[idx] >> shift) & 3) as i32;
-                            let hi = if hm[idx] & m != 0 { 0 } else { 4 };
-                            y[o] = dl * (qv - hi) as f32;
-                            o += 1;
-                        }
-                    }
-                    m <<= 1;
-                }
-            }
-        }
-
-        // d, dmin (F16) | scales[12] | qs[128]
-        QuantType::Q4_K => {
-            let (d, dmin) = (f16(b, 0), f16(b, 2));
-            let scales = &b[4..16];
-            let qs = &b[16..];
-            let mut o = 0usize;
-            for (blk, is) in (0..256).step_by(64).zip((0..8).step_by(2)) {
-                let q = &qs[blk / 2..];
-                let (sc1, m1) = scale_min_k4(is, scales);
-                let (sc2, m2) = scale_min_k4(is + 1, scales);
-                let (d1, mm1) = (d * sc1 as f32, dmin * m1 as f32);
-                let (d2, mm2) = (d * sc2 as f32, dmin * m2 as f32);
-                for l in 0..32 {
-                    y[o + l] = d1 * (q[l] & 0xF) as f32 - mm1;
-                    y[o + 32 + l] = d2 * (q[l] >> 4) as f32 - mm2;
-                }
-                o += 64;
-            }
-        }
-
-        // d, dmin (F16) | scales[12] | qh[32] | qs[128]
-        QuantType::Q5_K => {
-            let (d, dmin) = (f16(b, 0), f16(b, 2));
-            let scales = &b[4..16];
-            let qh = &b[16..48];
-            let qs = &b[48..];
-            let mut o = 0usize;
-            let (mut u1, mut u2) = (1u8, 2u8);
-            for (blk, is) in (0..256).step_by(64).zip((0..8).step_by(2)) {
-                let ql = &qs[blk / 2..];
-                let (sc1, m1) = scale_min_k4(is, scales);
-                let (sc2, m2) = scale_min_k4(is + 1, scales);
-                let (d1, mm1) = (d * sc1 as f32, dmin * m1 as f32);
-                let (d2, mm2) = (d * sc2 as f32, dmin * m2 as f32);
-                for l in 0..32 {
-                    let h1 = if qh[l] & u1 != 0 { 16 } else { 0 };
-                    let h2 = if qh[l] & u2 != 0 { 16 } else { 0 };
-                    y[o + l] = d1 * ((ql[l] & 0xF) as i32 + h1) as f32 - mm1;
-                    y[o + 32 + l] = d2 * ((ql[l] >> 4) as i32 + h2) as f32 - mm2;
-                }
-                o += 64;
-                u1 <<= 2;
-                u2 <<= 2;
-            }
-        }
-
-        // ql[128] | qh[64] | scales[16] (i8) | d (F16)
-        QuantType::Q6_K => {
-            let d = f16(b, 208);
-            for n in (0..256).step_by(128) {
-                let ql = &b[n / 2..];
-                let qh = &b[128 + n / 4..];
-                let sc = &b[192 + n / 16..];
-                for l in 0..32 {
-                    let is = l / 16;
-                    let q1 = ((ql[l] & 0xF) as i32 | ((qh[l] & 3) as i32) << 4) - 32;
-                    let q2 = ((ql[l + 32] & 0xF) as i32 | (((qh[l] >> 2) & 3) as i32) << 4) - 32;
-                    let q3 = ((ql[l] >> 4) as i32 | (((qh[l] >> 4) & 3) as i32) << 4) - 32;
-                    let q4 = ((ql[l + 32] >> 4) as i32 | (((qh[l] >> 6) & 3) as i32) << 4) - 32;
-                    y[n + l] = d * (sc[is] as i8) as f32 * q1 as f32;
-                    y[n + l + 32] = d * (sc[is + 2] as i8) as f32 * q2 as f32;
-                    y[n + l + 64] = d * (sc[is + 4] as i8) as f32 * q3 as f32;
-                    y[n + l + 96] = d * (sc[is + 6] as i8) as f32 * q4 as f32;
-                }
-            }
-        }
-
-        // d (F16) | scales_h (u16) | scales_l[4] | qs[128]
-        QuantType::IQ4_XS => {
-            let d = f16(b, 0);
-            let scales_h = u16::from_le_bytes([b[2], b[3]]);
-            let scales_l = &b[4..8];
-            for ib in 0..8usize {
-                let ls = ((scales_l[ib / 2] >> (4 * (ib % 2))) & 0xf) as i32
-                    | (((scales_h >> (2 * ib)) & 3) as i32) << 4;
-                let dl = d * (ls - 32) as f32;
-                let qs = &b[8 + 16 * ib..];
-                for j in 0..16 {
-                    y[32 * ib + j] = dl * KVALUES_IQ4NL[(qs[j] & 0xf) as usize] as f32;
-                    y[32 * ib + j + 16] = dl * KVALUES_IQ4NL[(qs[j] >> 4) as usize] as f32;
-                }
-            }
-        }
-
+        QuantType::Q2_K => decode_q2_k(b, y),
+        QuantType::Q3_K => decode_q3_k(b, y),
+        QuantType::Q4_K => decode_q4_k(b, y),
+        QuantType::Q5_K => decode_q5_k(b, y),
+        QuantType::Q6_K => decode_q6_k(b, y),
+        QuantType::IQ4_XS => decode_iq4_xs(b, y),
         other => unreachable!("{}: SuperBlock without a decoder", other.desc().name),
+    }
+}
+
+/// `Q2_K` super-block: scales[16] | qs[64] | d, dmin (F16)
+fn decode_q2_k(b: &[u8], y: &mut [f32]) {
+    let (d, dmin) = (f16(b, 80), f16(b, 82));
+    let mut o = 0usize;
+    let mut is = 0usize;
+    for n in (0..256).step_by(128) {
+        let q = &b[16 + n / 4..];
+        for j in 0..4 {
+            let shift = 2 * j;
+            for half in 0..2 {
+                let sc = b[is];
+                is += 1;
+                let dl = d * (sc & 0xF) as f32;
+                let ml = dmin * (sc >> 4) as f32;
+                for l in 0..16 {
+                    let qv = (q[l + 16 * half] >> shift) & 3;
+                    y[o] = dl * qv as f32 - ml;
+                    o += 1;
+                }
+            }
+        }
+    }
+}
+
+/// `Q3_K` super-block: hmask[32] | qs[64] | scales[12] | d (F16)
+fn decode_q3_k(b: &[u8], y: &mut [f32]) {
+    let d_all = f16(b, 108);
+    let hm = &b[0..32];
+    // The 12 packed bytes hold sixteen 6-bit scales, split 4+2 bits.
+    let mut aux = [0u32; 4];
+    // Only three words are stored; aux[3] is *computed* below, as in
+    // ggml's `memcpy(aux, x[i].scales, 12)`.
+    for (i, a) in aux.iter_mut().take(3).enumerate() {
+        *a = u32::from_le_bytes([b[96 + 4 * i], b[97 + 4 * i], b[98 + 4 * i], b[99 + 4 * i]]);
+    }
+    let (kmask1, kmask2) = (0x0303_0303u32, 0x0f0f_0f0fu32);
+    let tmp = aux[2];
+    aux[2] = ((aux[0] >> 4) & kmask2) | (((tmp >> 4) & kmask1) << 4);
+    aux[3] = ((aux[1] >> 4) & kmask2) | (((tmp >> 6) & kmask1) << 4);
+    aux[0] = (aux[0] & kmask2) | ((tmp & kmask1) << 4);
+    aux[1] = (aux[1] & kmask2) | (((tmp >> 2) & kmask1) << 4);
+    let mut scales = [0i8; 16];
+    for i in 0..4 {
+        for (j, s) in aux[i].to_le_bytes().iter().enumerate() {
+            scales[4 * i + j] = *s as i8;
+        }
+    }
+
+    let mut o = 0usize;
+    let mut is = 0usize;
+    let mut m: u8 = 1;
+    for n in (0..256).step_by(128) {
+        let q = &b[32 + n / 4..];
+        for j in 0..4 {
+            let shift = 2 * j;
+            for half in 0..2 {
+                let dl = d_all * (scales[is] as i32 - 32) as f32;
+                is += 1;
+                for l in 0..16 {
+                    let idx = l + 16 * half;
+                    let qv = ((q[idx] >> shift) & 3) as i32;
+                    let hi = if hm[idx] & m != 0 { 0 } else { 4 };
+                    y[o] = dl * (qv - hi) as f32;
+                    o += 1;
+                }
+            }
+            m <<= 1;
+        }
+    }
+}
+
+/// `Q4_K` super-block: d, dmin (F16) | scales[12] | qs[128]
+fn decode_q4_k(b: &[u8], y: &mut [f32]) {
+    let (d, dmin) = (f16(b, 0), f16(b, 2));
+    let scales = &b[4..16];
+    let qs = &b[16..];
+    let mut o = 0usize;
+    for (blk, is) in (0..256).step_by(64).zip((0..8).step_by(2)) {
+        let q = &qs[blk / 2..];
+        let (sc1, m1) = scale_min_k4(is, scales);
+        let (sc2, m2) = scale_min_k4(is + 1, scales);
+        let (d1, mm1) = (d * sc1 as f32, dmin * m1 as f32);
+        let (d2, mm2) = (d * sc2 as f32, dmin * m2 as f32);
+        for l in 0..32 {
+            y[o + l] = d1 * (q[l] & 0xF) as f32 - mm1;
+            y[o + 32 + l] = d2 * (q[l] >> 4) as f32 - mm2;
+        }
+        o += 64;
+    }
+}
+
+/// `Q5_K` super-block: d, dmin (F16) | scales[12] | qh[32] | qs[128]
+fn decode_q5_k(b: &[u8], y: &mut [f32]) {
+    let (d, dmin) = (f16(b, 0), f16(b, 2));
+    let scales = &b[4..16];
+    let qh = &b[16..48];
+    let qs = &b[48..];
+    let mut o = 0usize;
+    let (mut u1, mut u2) = (1u8, 2u8);
+    for (blk, is) in (0..256).step_by(64).zip((0..8).step_by(2)) {
+        let ql = &qs[blk / 2..];
+        let (sc1, m1) = scale_min_k4(is, scales);
+        let (sc2, m2) = scale_min_k4(is + 1, scales);
+        let (d1, mm1) = (d * sc1 as f32, dmin * m1 as f32);
+        let (d2, mm2) = (d * sc2 as f32, dmin * m2 as f32);
+        for l in 0..32 {
+            let h1 = if qh[l] & u1 != 0 { 16 } else { 0 };
+            let h2 = if qh[l] & u2 != 0 { 16 } else { 0 };
+            y[o + l] = d1 * ((ql[l] & 0xF) as i32 + h1) as f32 - mm1;
+            y[o + 32 + l] = d2 * ((ql[l] >> 4) as i32 + h2) as f32 - mm2;
+        }
+        o += 64;
+        u1 <<= 2;
+        u2 <<= 2;
+    }
+}
+
+/// `Q6_K` super-block: ql[128] | qh[64] | scales[16] (i8) | d (F16)
+fn decode_q6_k(b: &[u8], y: &mut [f32]) {
+    let d = f16(b, 208);
+    for n in (0..256).step_by(128) {
+        let ql = &b[n / 2..];
+        let qh = &b[128 + n / 4..];
+        let sc = &b[192 + n / 16..];
+        for l in 0..32 {
+            let is = l / 16;
+            let q1 = ((ql[l] & 0xF) as i32 | ((qh[l] & 3) as i32) << 4) - 32;
+            let q2 = ((ql[l + 32] & 0xF) as i32 | (((qh[l] >> 2) & 3) as i32) << 4) - 32;
+            let q3 = ((ql[l] >> 4) as i32 | (((qh[l] >> 4) & 3) as i32) << 4) - 32;
+            let q4 = ((ql[l + 32] >> 4) as i32 | (((qh[l] >> 6) & 3) as i32) << 4) - 32;
+            y[n + l] = d * (sc[is] as i8) as f32 * q1 as f32;
+            y[n + l + 32] = d * (sc[is + 2] as i8) as f32 * q2 as f32;
+            y[n + l + 64] = d * (sc[is + 4] as i8) as f32 * q3 as f32;
+            y[n + l + 96] = d * (sc[is + 6] as i8) as f32 * q4 as f32;
+        }
+    }
+}
+
+/// `IQ4_XS` super-block: d (F16) | scales_h (u16) | scales_l[4] | qs[128]
+fn decode_iq4_xs(b: &[u8], y: &mut [f32]) {
+    let d = f16(b, 0);
+    let scales_h = u16::from_le_bytes([b[2], b[3]]);
+    let scales_l = &b[4..8];
+    for ib in 0..8usize {
+        let ls = ((scales_l[ib / 2] >> (4 * (ib % 2))) & 0xf) as i32
+            | (((scales_h >> (2 * ib)) & 3) as i32) << 4;
+        let dl = d * (ls - 32) as f32;
+        let qs = &b[8 + 16 * ib..];
+        for j in 0..16 {
+            y[32 * ib + j] = dl * KVALUES_IQ4NL[(qs[j] & 0xf) as usize] as f32;
+            y[32 * ib + j + 16] = dl * KVALUES_IQ4NL[(qs[j] >> 4) as usize] as f32;
+        }
     }
 }
 
