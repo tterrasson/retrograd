@@ -39,6 +39,13 @@ const TRUNCATION_MARKER: &str = "\n[output truncated]";
 /// our heap, and an episode is free to generate a gigabyte.
 const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
 
+/// Docker reports an exec's status as `i64`; a POSIX exit code is a byte, and
+/// the `Option` already means "no status". A value that does not fit `i32` is
+/// therefore not an exit code, and reads as absent rather than as a truncation.
+fn exit_code(reported: Option<i64>) -> Option<i32> {
+    reported.and_then(|code| i32::try_from(code).ok())
+}
+
 /// What [`ContainerSandbox::exec_bytes`] observed.
 struct RawExec {
     exit_code: Option<i32>,
@@ -277,7 +284,7 @@ impl ContainerSandbox {
                 docker_error("inspect an exec in the sandbox", error)
             })?;
         Ok(RawExec {
-            exit_code: inspected.exit_code.map(|code| code as i32),
+            exit_code: exit_code(inspected.exit_code),
             stdout,
             stderr,
             overflowed,
@@ -401,7 +408,7 @@ impl ContainerSandbox {
                 self.poison();
                 docker_error("inspect an exec in the sandbox", error)
             })?;
-        let exit_code = inspected.exit_code.map(|code| code as i32);
+        let exit_code = exit_code(inspected.exit_code);
         // 124 is what coreutils `timeout` exits with when it fires. Turning it
         // back into a timeout is what makes the in-container kill invisible to
         // the caller, who sees the same observation either way.
