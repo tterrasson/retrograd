@@ -109,9 +109,15 @@ mod tests {
 
     #[test]
     fn an_explicit_backend_replaces_the_platform_default() {
-        let b = select("macos", &["CARGO_FEATURE_PLATFORM_GPU", "CARGO_FEATURE_VULKAN"]);
+        let b = select(
+            "macos",
+            &["CARGO_FEATURE_PLATFORM_GPU", "CARGO_FEATURE_VULKAN"],
+        );
         assert!(!b.metal && b.vulkan && !b.cuda);
-        let b = select("macos", &["CARGO_FEATURE_PLATFORM_GPU", "CARGO_FEATURE_METAL"]);
+        let b = select(
+            "macos",
+            &["CARGO_FEATURE_PLATFORM_GPU", "CARGO_FEATURE_METAL"],
+        );
         assert!(b.metal && !b.vulkan && !b.cuda);
     }
 
