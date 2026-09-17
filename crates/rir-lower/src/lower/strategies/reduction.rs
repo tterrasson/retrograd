@@ -264,7 +264,7 @@ pub(crate) fn collect_result_deps(k: &Kernel, v: ValueId, out: &mut Vec<ValueId>
             collect_result_deps(k, *t, out);
             collect_result_deps(k, *f, out);
         }
-        Op::Write { .. } => unreachable!(),
+        Op::Write { .. } => unreachable!("Write is not a value"),
     }
 }
 

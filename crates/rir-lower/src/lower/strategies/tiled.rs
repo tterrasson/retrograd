@@ -102,40 +102,14 @@ pub(crate) fn lower_tiled(
     schedule: &Schedule,
 ) -> Result<Vec<Stmt>, LowerError> {
     let unsupported = |why: &'static str| LowerError::TilingUnsupported { why };
-
-    if schedule.par_map != ParallelMapping::Invocation {
-        return Err(unsupported(
-            "invocation mapping required: a tile is shared by workgroup invocations",
-        ));
-    }
-    // A width here is **register tiling**: one invocation owns `w` consecutive
-    // indices of grid x, so its tile is `w` times taller and its share of the
-    // cooperative load `w` times wider - which is the whole point, a staged row
-    // read in one transaction instead of four (ADR-2 section 6).
-    let vector = schedule.vector_width;
-    if vector > 4 {
-        return Err(unsupported(
-            "width exceeds the four native components of GPU emitters",
-        ));
-    }
-    let depth = schedule.tile_depth;
-    let Some(inner_axis) = a.inner_axis else {
-        return Err(unsupported("reduction axis required - nothing to contract"));
-    };
-    if !a.scans.is_empty() || !a.inner_writes.is_empty() {
-        return Err(unsupported(
-            "only a contraction closed within the invocation is staged",
-        ));
-    }
-    if a.reduces.len() != 1 {
-        return Err(unsupported("only one reduction"));
-    }
-    let (rv, rop, rin) = a.reduces[0];
-    if rop != rir_core::ReduceOp::Sum {
-        return Err(unsupported(
-            "sum required: a partial tile is completed with the additive identity",
-        ));
-    }
+    let Staging {
+        vector,
+        depth,
+        inner_axis,
+        rv,
+        rop,
+        rin,
+    } = staging_of(a, schedule)?;
 
     let n_grid = a.par_axes.len().min(schedule.grid_dims);
     let grid_of =
@@ -205,6 +179,161 @@ pub(crate) fn lower_tiled(
     let inner_name = lo.k.axes()[inner_axis.0 as usize].name.clone();
     let k0 = lo.new_var(&format!("{inner_name}0"), VarKind::Idx);
 
+    let (tiles, tile_index) = stage_tiles(lo, &staged, k0, inner_axis, depth)?;
+    let (kk, mut consume) = consume_tiles(lo, &tile_index, &inner_name, vector, rin, acc, rop)?;
+
+    // ---- the epilogue, under the bound the early return no longer carries.
+    lo.results_env.insert(rv, acc);
+    lo.axis_vars.remove(&inner_axis);
+    let mut stores = lower_writes(lo, &a.row_writes)?;
+
+    // Register widths, propagated once over the two halves in the order they
+    // execute: what the wide tile reads seed, the arithmetic carries, the
+    // accumulator inherits, and the write finally has to honour.
+    let vec_axis = (vector > 1).then(|| (par_vars[0], a.par_axes[0]));
+    if let Some((vec_var, vec_ax)) = vec_axis {
+        let mut is_vec: Vec<Option<VecShape>> = vec![None; lo.var_names.len()];
+        widen_tiled(lo, &mut consume, &mut is_vec, vector)?;
+        widen_tiled(lo, &mut stores, &mut is_vec, vector)?;
+        for s in stores.iter_mut() {
+            let Stmt::Store {
+                addr,
+                value,
+                width,
+                bound,
+                ..
+            } = s
+            else {
+                continue;
+            };
+            if is_vec[value.0 as usize].is_none() {
+                return Err(unsupported(
+                    "scalar write while the invocation covers multiple indices",
+                ));
+            }
+            // Same address rule as the elementwise widening: `w` consecutive
+            // indices are `w` consecutive addresses only at the dimension whose
+            // stride the contract pins to one element.
+            let indexed =
+                matches!(addr.first(), Some(AddrTerm::VarNb { var, dim: 0 }) if *var == vec_var);
+            if !indexed {
+                return Err(unsupported(
+                    "the write is not indexed by the vectorized axis on its contiguous dimension",
+                ));
+            }
+            *width = vector;
+            *bound = Some((vec_var, vec_ax));
+        }
+    }
+
+    out.push(Stmt::ForTiled {
+        var: k0,
+        axis: inner_axis,
+        step: depth,
+        body: vec![Stmt::StageTiles {
+            tiles,
+            threads,
+            body: vec![Stmt::ForConst {
+                var: kk,
+                count: depth,
+                body: consume,
+            }],
+        }],
+    });
+
+    // The vectorized axis is **not** listed: its bound is per component, and
+    // the store carries it. Listing it here would drop the whole vector as soon
+    // as its first index was in range and its last was not.
+    let bounds: Vec<(VarId, AxisId)> = (0..n_grid)
+        .filter(|&d| schedule.block[d] > 1 && !(d == 0 && vector > 1))
+        .map(|d| (par_vars[d], a.par_axes[d]))
+        .collect();
+    out.push(Stmt::InBounds {
+        bounds,
+        body: stores,
+    });
+    Ok(out)
+}
+
+/// What the tiled strategy needs out of the analysis and the schedule, once
+/// every condition it cannot lower under has been refused.
+struct Staging {
+    /// Register tiling: one invocation owns `vector` consecutive indices of
+    /// grid x, so its tile is that many times taller and its share of the
+    /// cooperative load that many times wider - a staged row read in one
+    /// transaction instead of four (ADR-2 section 6).
+    vector: u32,
+    depth: u32,
+    inner_axis: AxisId,
+    /// The single sum reduction: its value, its operator and the expression it
+    /// folds. `rop` is `Sum` by construction and kept so the emitted
+    /// `InitAcc`/`Reduce` still name it rather than re-assert it.
+    rv: ValueId,
+    rop: rir_core::ReduceOp,
+    rin: ValueId,
+}
+
+fn staging_of(a: &Analysis, schedule: &Schedule) -> Result<Staging, LowerError> {
+    let unsupported = |why: &'static str| LowerError::TilingUnsupported { why };
+
+    if schedule.par_map != ParallelMapping::Invocation {
+        return Err(unsupported(
+            "invocation mapping required: a tile is shared by workgroup invocations",
+        ));
+    }
+    if schedule.vector_width > 4 {
+        return Err(unsupported(
+            "width exceeds the four native components of GPU emitters",
+        ));
+    }
+    let Some(inner_axis) = a.inner_axis else {
+        return Err(unsupported("reduction axis required - nothing to contract"));
+    };
+    if !a.scans.is_empty() || !a.inner_writes.is_empty() {
+        return Err(unsupported(
+            "only a contraction closed within the invocation is staged",
+        ));
+    }
+    if a.reduces.len() != 1 {
+        return Err(unsupported("only one reduction"));
+    }
+    let (rv, rop, rin) = a.reduces[0];
+    if rop != rir_core::ReduceOp::Sum {
+        return Err(unsupported(
+            "sum required: a partial tile is completed with the additive identity",
+        ));
+    }
+    Ok(Staging {
+        vector: schedule.vector_width,
+        depth: schedule.tile_depth,
+        inner_axis,
+        rv,
+        rop,
+        rin,
+    })
+}
+
+/// One staged operand's shared tile, as the consuming loop reads it.
+struct TileBinding {
+    value: ValueId,
+    tile: VarId,
+    /// Rows of the tile, and this invocation's row inside it.
+    rows: u32,
+    local: VarId,
+    /// The grid dimension the rows walk; `0` is the vectorized one.
+    grid: usize,
+}
+
+/// What the workgroup stages: one shared tile per operand, cooperatively
+/// filled. Returns the statements and the bindings the consuming loop reads
+/// them back through.
+fn stage_tiles(
+    lo: &mut Lowerer,
+    staged: &[StagedOperand],
+    k0: VarId,
+    inner_axis: AxisId,
+    depth: u32,
+) -> Result<(Vec<TileStage>, Vec<TileBinding>), LowerError> {
     let mut tiles = Vec::new();
     let mut tile_index = Vec::new();
     for StagedOperand {
@@ -216,7 +345,7 @@ pub(crate) fn lower_tiled(
         rows,
         origin,
         local,
-    } in &staged
+    } in staged
     {
         let name = lo.k.args()[arg.0 as usize].name.clone();
         let tile = lo.new_var(&format!("tile_{name}"), VarKind::Idx);
@@ -343,12 +472,39 @@ pub(crate) fn lower_tiled(
             n_rows: *rows,
             n_depth: depth,
         });
-        tile_index.push((*rvalue, tile, *rows, *local, *grid));
+        tile_index.push(TileBinding {
+            value: *rvalue,
+            tile,
+            rows: *rows,
+            local: *local,
+            grid: *grid,
+        });
     }
+    Ok((tiles, tile_index))
+}
 
+/// What each invocation accumulates out of the staged tiles. Seeding `lo.env`
+/// with the loaded registers is what makes the body below the *same* expression
+/// the untiled lowering builds, with its reads answered from shared memory.
+fn consume_tiles(
+    lo: &mut Lowerer,
+    tile_index: &[TileBinding],
+    inner_name: &str,
+    vector: u32,
+    rin: ValueId,
+    acc: VarId,
+    rop: rir_core::ReduceOp,
+) -> Result<(VarId, Vec<Stmt>), LowerError> {
     let kk = lo.new_var(&format!("{inner_name}k"), VarKind::Idx);
     lo.begin_scope(true);
-    for (rvalue, tile, rows, local, grid) in &tile_index {
+    for TileBinding {
+        value: rvalue,
+        tile,
+        rows,
+        local,
+        grid,
+    } in tile_index
+    {
         let scaled = lo.emit("row", VarKind::Idx, LExpr::IMulC(kk, *rows));
         let index = lo.emit("at", VarKind::Idx, LExpr::IAdd(scaled, *local));
         // Only the tile whose rows walk the vectorized axis is read wide: `w`
@@ -380,77 +536,5 @@ pub(crate) fn lower_tiled(
         op: rop,
         value: term,
     });
-    let mut consume = lo.take_body();
-
-    // ---- the epilogue, under the bound the early return no longer carries.
-    lo.results_env.insert(rv, acc);
-    lo.axis_vars.remove(&inner_axis);
-    let mut stores = lower_writes(lo, &a.row_writes)?;
-
-    // Register widths, propagated once over the two halves in the order they
-    // execute: what the wide tile reads seed, the arithmetic carries, the
-    // accumulator inherits, and the write finally has to honour.
-    let vec_axis = (vector > 1).then(|| (par_vars[0], a.par_axes[0]));
-    if let Some((vec_var, vec_ax)) = vec_axis {
-        let mut is_vec: Vec<Option<VecShape>> = vec![None; lo.var_names.len()];
-        widen_tiled(lo, &mut consume, &mut is_vec, vector)?;
-        widen_tiled(lo, &mut stores, &mut is_vec, vector)?;
-        for s in stores.iter_mut() {
-            let Stmt::Store {
-                addr,
-                value,
-                width,
-                bound,
-                ..
-            } = s
-            else {
-                continue;
-            };
-            if is_vec[value.0 as usize].is_none() {
-                return Err(unsupported(
-                    "scalar write while the invocation covers multiple indices",
-                ));
-            }
-            // Same address rule as the elementwise widening: `w` consecutive
-            // indices are `w` consecutive addresses only at the dimension whose
-            // stride the contract pins to one element.
-            let indexed =
-                matches!(addr.first(), Some(AddrTerm::VarNb { var, dim: 0 }) if *var == vec_var);
-            if !indexed {
-                return Err(unsupported(
-                    "the write is not indexed by the vectorized axis on its contiguous dimension",
-                ));
-            }
-            *width = vector;
-            *bound = Some((vec_var, vec_ax));
-        }
-    }
-
-    out.push(Stmt::ForTiled {
-        var: k0,
-        axis: inner_axis,
-        step: depth,
-        body: vec![Stmt::StageTiles {
-            tiles,
-            threads,
-            body: vec![Stmt::ForConst {
-                var: kk,
-                count: depth,
-                body: consume,
-            }],
-        }],
-    });
-
-    // The vectorized axis is **not** listed: its bound is per component, and
-    // the store carries it. Listing it here would drop the whole vector as soon
-    // as its first index was in range and its last was not.
-    let bounds: Vec<(VarId, AxisId)> = (0..n_grid)
-        .filter(|&d| schedule.block[d] > 1 && !(d == 0 && vector > 1))
-        .map(|d| (par_vars[d], a.par_axes[d]))
-        .collect();
-    out.push(Stmt::InBounds {
-        bounds,
-        body: stores,
-    });
-    Ok(out)
+    Ok((kk, lo.take_body()))
 }

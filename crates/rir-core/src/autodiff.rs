@@ -525,7 +525,7 @@ pub fn derive_backward(k: &Kernel) -> Result<crate::ValidatedKernel, AutodiffErr
                 let gs = ad.scan(ScanOp::Sum, axis, dir.flipped(), g);
                 contribs.entry(value).or_default().push(gs);
             }
-            Op::Write { .. } => unreachable!(),
+            Op::Write { .. } => unreachable!("Write is not a value"),
         }
     }
 
