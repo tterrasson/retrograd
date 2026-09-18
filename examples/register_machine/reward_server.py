@@ -101,10 +101,7 @@ def score(prompt: str, completion: str) -> Score:
     parses = [parse_command(line) is not None for line in lines]
     syntax = sum(parses) / len(parses) if parses else 0.0
     well_formed = (
-        len(blocks) == 1
-        and not PROGRAM.sub("", completion).strip()
-        and bool(lines)
-        and all(parses)
+        len(blocks) == 1 and not PROGRAM.sub("", completion).strip() and bool(lines) and all(parses)
     )
 
     result = run(task, lines)

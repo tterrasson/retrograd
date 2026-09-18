@@ -554,8 +554,7 @@ fn gated_delta_net_back_inputs(
 
 #[cfg(retro_metal)]
 fn gated_delta_net_back_case(kda: bool, snapshots: i64, geometry: (i64, i64, i64, i64)) {
-    let (ne_src0, ne_src1, packed, out_len) =
-        gated_delta_net_back_inputs(kda, snapshots, geometry);
+    let (ne_src0, ne_src1, packed, out_len) = gated_delta_net_back_inputs(kda, snapshots, geometry);
     let dummy = [0.0_f32];
     let cpu = probe_op(
         ProbeOp::GatedDeltaNetBack,
@@ -653,8 +652,7 @@ fn gated_delta_net_back_metal_timing() {
     }
     // (state width, heads, tokens, sequences): Qwen3.5 at ctx 512.
     for geometry in [(128_i64, 16_i64, 512_i64, 1_i64), (128, 16, 512, 4)] {
-        let (ne_src0, ne_src1, packed, out_len) =
-            gated_delta_net_back_inputs(false, 1, geometry);
+        let (ne_src0, ne_src1, packed, out_len) = gated_delta_net_back_inputs(false, 1, geometry);
         let dummy = [0.0_f32];
         let run = || {
             probe_op(

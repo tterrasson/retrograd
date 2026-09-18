@@ -187,9 +187,7 @@ def main() -> None:
     # The held-out set is drawn first, so its tasks never reach the training file.
     eval_tiers = [
         sample_tier(rng, tier, size, seen)
-        for tier, size in zip(
-            TIERS, counts(arguments.eval, arguments.eval_hard_extra), strict=True
-        )
+        for tier, size in zip(TIERS, counts(arguments.eval, arguments.eval_hard_extra), strict=True)
     ]
     # Round-robin over the tiers: `evaluation.max_examples` takes evenly
     # spaced lines. Interleaving spreads difficulty across the file, though
