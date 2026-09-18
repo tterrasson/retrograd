@@ -11,7 +11,7 @@ publish = false
 # bridge and its whole surface is testable against a fake HTTP endpoint.
 [dependencies]
 async-trait.workspace = true
-futures.workspace = true
+futures-util.workspace = true
 retrograd-agent-core.workspace = true
 # The reward protocol's vocabulary (`RewardMode`, `RewardProtocol`) and the
 # applicative error façade its `From` lands in.

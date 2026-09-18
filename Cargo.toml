@@ -114,7 +114,11 @@ rir-sweep = { path = "crates/rir-sweep" }
 async-trait = "0.1"
 axum = "0.8"
 comfy-table = "8"
-futures = "0.3"
+# Not the `futures` facade: the whole workspace uses `join_all`, `join`,
+# `StreamExt` and `stream::iter`, all of which live here. The facade adds
+# `futures-executor`, `futures-io`, `futures-sink` and the `futures-macro`
+# proc-macro on top, for an `async`/`select!` surface nothing here writes.
+futures-util = { version = "0.3.33", default-features = false, features = ["std"] }
 http = "1"
 http-body-util = "0.1"
 indicatif = "0.18"
@@ -140,10 +144,15 @@ path = "src/lib.rs"
 [[bin]]
 name = "retrograd"
 path = "src/main.rs"
+# Skipped rather than broken when `cli` is off. Note that this makes
+# `--bins` silently build nothing: a lane that selects the binaries has
+# to ask for `cli` explicitly, which `scripts/test-fast-rust.sh` does.
+required-features = ["cli"]
 
 [[bin]]
 name = "profile"
 path = "src/bin/profile/main.rs"
+required-features = ["cli"]
 
 
 [workspace.lints.clippy]
@@ -152,11 +161,13 @@ path = "src/bin/profile/main.rs"
 unwrap_used = "deny"
 
 [dependencies]
-comfy-table.workspace = true
-indicatif.workspace = true
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# The terminal presentation layer, behind `cli`. See the feature below:
+# `src/lib.rs` is a re-export facade and touches none of these three.
+comfy-table = { workspace = true, optional = true }
+indicatif = { workspace = true, optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 retrograd-checkpoint.workspace = true
-retrograd-cli-ui.workspace = true
+retrograd-cli-ui = { workspace = true, optional = true }
 retrograd-config.workspace = true
 retrograd-core.workspace = true
 retrograd-dataset.workspace = true
@@ -189,11 +200,19 @@ rir-lower.workspace = true
 # `train` runs every algorithm the one schema describes, including
 # `agent_grpo`. The two costly transports stay opt-in: rmcp for MCP tools,
 # bollard for the container pool.
-default = ["agent", "platform-gpu"]
+default = ["agent", "platform-gpu", "cli"]
 platform-gpu = ["retrograd-ffi/platform-gpu"]
 metal = ["retrograd-ffi/metal"]
 vulkan = ["retrograd-ffi/vulkan"]
 cuda = ["retrograd-ffi/cuda"]
+# Everything the two binaries print with, and nothing the library needs:
+# `src/lib.rs` re-exports crates and declares no `mod`, so the progress
+# bars, the tables and the log subscriber are reachable only from
+# `main.rs`'s module tree. Off, they take 24 crates out of the build --
+# `env-filter`'s regex engine and `indicatif`'s terminal stack among them.
+# That is what `python/native` asks for: it links the library, never a
+# binary, and has no terminal to draw on.
+cli = ["dep:comfy-table", "dep:indicatif", "dep:tracing-subscriber", "dep:retrograd-cli-ui"]
 agent = ["retrograd-run/agent", "dep:retrograd-agent", "dep:tokio"]
 mcp = ["agent", "retrograd-run/mcp", "retrograd-tools/mcp", "retrograd-agent/mcp"]
 container = ["agent", "retrograd-run/container", "retrograd-agent/container"]

@@ -1,7 +1,7 @@
 //! Getting an image, and pinning what was got.
 
 use bollard::query_parameters::CreateImageOptionsBuilder;
-use futures::StreamExt;
+use futures_util::StreamExt;
 use retrograd_agent_core::{Error, Result};
 
 use crate::client::{DockerClient, docker_error, is_not_found};

@@ -60,7 +60,7 @@ impl RulerJudge {
         // The request index is the chunk index, so two chunks of the same group
         // get different presentation orders and a member's position is not
         // decided by which chunk it landed in.
-        let results = futures::future::join_all(
+        let results = futures_util::future::join_all(
             selections
                 .iter()
                 .enumerate()

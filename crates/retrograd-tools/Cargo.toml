@@ -11,7 +11,7 @@ publish = false
 # FFI bridge, and a user-supplied tool is testable without either.
 [dependencies]
 async-trait.workspace = true
-futures = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
 retrograd-agent-core.workspace = true
 retrograd-spec.workspace = true
@@ -27,7 +27,7 @@ tracing.workspace = true
 default = ["mcp"]
 # MCP pulls rmcp, and with it hyper/tower/reqwest. A run whose tools all live
 # in its own sandbox has no use for any of that.
-mcp = ["dep:rmcp", "dep:http", "dep:futures"]
+mcp = ["dep:rmcp", "dep:http", "dep:futures-util"]
 
 [dev-dependencies]
 rmcp = { workspace = true, features = ["macros", "server", "transport-io"] }

@@ -25,7 +25,7 @@ async-stream = "0.3"
 axum.workspace = true
 bytes = "1.12.1"
 futures-core = "0.3.33"
-futures-util = { version = "0.3.33", default-features = false, features = ["std"] }
+futures-util.workspace = true
 http.workspace = true
 # For `LengthLimitError`: recognizing the body-limit layer's own rejection by
 # its type rather than by the wording of its message.

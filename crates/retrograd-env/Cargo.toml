@@ -12,7 +12,6 @@ publish = false
 # tools are all read-only never compiles bollard.
 [dependencies]
 async-trait.workspace = true
-futures.workspace = true
 http = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 retrograd-agent-core.workspace = true

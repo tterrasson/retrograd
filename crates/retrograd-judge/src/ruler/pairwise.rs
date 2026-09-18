@@ -29,7 +29,7 @@ impl RulerJudge {
             ));
         }
         let rubric = self.config.pairwise_rubric(rendered);
-        let verdicts = futures::future::join_all(schedule.iter().map(|&(left, right)| {
+        let verdicts = futures_util::future::join_all(schedule.iter().map(|&(left, right)| {
             let rubric = rubric.as_str();
             async move {
                 let (winner, explanation) = self.compare(rendered, rubric, left, right).await?;

@@ -10,7 +10,7 @@ use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::query_parameters::{
     CreateContainerOptions, RemoveContainerOptionsBuilder, StartContainerOptions,
 };
-use futures::StreamExt;
+use futures_util::StreamExt;
 use retrograd_agent_core::text::truncate_utf8;
 use retrograd_agent_core::{
     DirEntry, Error, ExecOutput, ExecRequest, FileKind, Result, Sandbox, SandboxLimits,

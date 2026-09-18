@@ -4,6 +4,8 @@
 // configuration parser. Every import here is therefore gated, including the
 // ones a `use` at the top of the file would make look unconditional.
 #[cfg(feature = "http")]
+use futures_util::future::join_all;
+#[cfg(feature = "http")]
 use std::collections::HashMap;
 #[cfg(feature = "http")]
 use std::fs::{File, OpenOptions};
@@ -362,7 +364,7 @@ impl RulerJudge {
         if !compact::plan_group(config, &sizes) {
             return Ok(());
         }
-        let summaries = futures::future::join_all(rendered.trajectories.iter().map(|trajectory| {
+        let summaries = join_all(rendered.trajectories.iter().map(|trajectory| {
             let range = config.middle(trajectory.messages.len());
             async move {
                 if range.is_empty() {

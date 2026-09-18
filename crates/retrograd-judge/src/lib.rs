@@ -181,7 +181,7 @@ pub async fn score_groups(
     drop_degenerate_groups: bool,
 ) -> Result<JudgeBatchMetrics> {
     let results =
-        futures::future::join_all(groups.iter().map(|group| backend.score_group(group))).await;
+        futures_util::future::join_all(groups.iter().map(|group| backend.score_group(group))).await;
     apply_group_scores(
         groups,
         results,

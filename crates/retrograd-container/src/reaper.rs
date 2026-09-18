@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use bollard::query_parameters::{ListContainersOptionsBuilder, RemoveContainerOptionsBuilder};
-use futures::StreamExt;
+use futures_util::StreamExt;
 use retrograd_agent_core::Result;
 
 use crate::client::{DockerClient, docker_error};
@@ -161,7 +161,7 @@ const REMOVE_CONCURRENCY: usize = 8;
 /// the sweep: it usually means someone else - a racing reaper, `AutoRemove`,
 /// got there first, which is the outcome we wanted anyway.
 async fn remove_all(client: &DockerClient, ids: Vec<String>) -> usize {
-    futures::stream::iter(ids)
+    futures_util::stream::iter(ids)
         .map(|id| async move {
             let options = RemoveContainerOptionsBuilder::default()
                 .force(true)

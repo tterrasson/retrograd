@@ -15,7 +15,7 @@ publish = false
 [dependencies]
 async-trait.workspace = true
 bollard = "0.21"
-futures.workspace = true
+futures-util.workspace = true
 retrograd-agent-core.workspace = true
 retrograd-metrics.workspace = true
 serde.workspace = true

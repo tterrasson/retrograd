@@ -1524,7 +1524,7 @@ name = "retrograd-agent"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "futures",
+ "futures-util",
  "retrograd-agent-core",
  "retrograd-core",
  "retrograd-engine",
@@ -1593,7 +1593,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bollard",
- "futures",
+ "futures-util",
  "retrograd-agent-core",
  "retrograd-metrics",
  "serde",
@@ -1640,7 +1640,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
- "futures",
  "http",
  "libc",
  "reqwest",
@@ -1667,7 +1666,7 @@ name = "retrograd-judge"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "futures",
+ "futures-util",
  "libc",
  "retrograd-agent-core",
  "retrograd-core",
@@ -1839,7 +1838,7 @@ name = "retrograd-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "futures",
+ "futures-util",
  "http",
  "retrograd-agent-core",
  "retrograd-spec",

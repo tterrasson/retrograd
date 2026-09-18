@@ -11,6 +11,7 @@ use std::io::{self, Write};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures_util::future::join_all;
 use http::{HeaderName, HeaderValue};
 use rmcp::model::{CallToolRequestParams, ContentBlock, JsonObject};
 use rmcp::service::RunningService;
@@ -104,7 +105,7 @@ impl McpToolProvider {
             }
         }
 
-        let connected = futures::future::join_all(configs.into_iter().map(|config| async move {
+        let connected = join_all(configs.into_iter().map(|config| async move {
             let outcome = async {
                 let client = connect_client(&config).await?;
                 let remote_tools = client.list_all_tools().await.map_err(|error| {

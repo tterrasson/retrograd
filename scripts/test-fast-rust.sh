@@ -26,7 +26,10 @@ source "$repo_root/scripts/lib-step-timing.sh"
 # Keep package selections identical for graph checks, compilation and execution.
 # Disabling defaults workspace-wide would also remove the judge's HTTP coverage.
 workspace_cpu=(--workspace --exclude retrograd --exclude retrograd-python)
-root_cpu=(-p retrograd --no-default-features --features agent)
+# `cli` is named explicitly because the two binaries carry
+# `required-features = ["cli"]`: without it `--bins` below would select
+# nothing and the lane would stop compiling them without saying so.
+root_cpu=(-p retrograd --no-default-features --features agent,cli)
 python_cpu=(-p retrograd-python --no-default-features)
 assert_cpu_graph() {
   local tree line found=0
@@ -164,5 +167,22 @@ timed_step run:graph bash -c '
   # only ever says "absent" would also pass if the server stopped using axum.
   if ! cargo tree -e no-dev -p retrograd-server --prefix none | awk "{print \$1}" | grep -qx axum; then
     echo "axum is no longer in retrograd-server: the assertion above proves nothing" >&2
+    exit 1
+  fi
+  # The Python extension links the library and never a binary, so the terminal
+  # presentation layer behind `cli` must not reach it. The regex engine comes
+  # from `tracing-subscriber/env-filter` and the terminal stack from
+  # `indicatif`; neither has anything to draw on inside a Python process.
+  wheel_tree="$(cargo tree -e no-dev -p retrograd-python --prefix none | awk "{print \$1}")"
+  for forbidden in comfy-table indicatif retrograd-cli-ui tracing-subscriber crossterm console unicode-width regex-automata; do
+    if grep -qx "$forbidden" <<<"$wheel_tree"; then
+      echo "$forbidden reached the Python extension: the cli feature leaked" >&2
+      exit 1
+    fi
+  done
+  # And the CLI still gets them, so the assertion above is about placement
+  # rather than about nobody depending on them any more.
+  if ! cargo tree -e no-dev -p retrograd --prefix none | awk "{print \$1}" | grep -qx comfy-table; then
+    echo "comfy-table left the CLI: the cli feature no longer carries anything" >&2
     exit 1
   fi'
