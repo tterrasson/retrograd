@@ -508,9 +508,21 @@ fn ssm_scan_back_metal_matches_cpu() {
     }
 }
 
+/// `geometry` is `(state_width, heads, tokens, sequences)`. The Metal grid's x
+/// axis is `ceil(state_width / GDN_BACK_COLS)` column blocks, so the geometry
+/// decides whether grad_q/grad_k/grad_g/grad_beta accumulate in one threadgroup
+/// or across several via device atomics: pass a geometry that yields several
+/// blocks to cover the atomic path.
+/// Returns the packed `[q|k|v|g|beta|state|grad]` input the probe takes, the two
+/// shape vectors that describe it, and the length of the packed gradient it
+/// produces. Shared by the comparison cases and the timing benchmark.
 #[cfg(retro_metal)]
-fn gated_delta_net_back_case(kda: bool, snapshots: i64) {
-    let (state_width, heads, tokens, sequences) = (32_i64, 4_i64, 20_i64, 2_i64);
+fn gated_delta_net_back_inputs(
+    kda: bool,
+    snapshots: i64,
+    geometry: (i64, i64, i64, i64),
+) -> ([i64; 4], [i64; 4], Vec<f32>, usize) {
+    let (state_width, heads, tokens, sequences) = geometry;
     let ne_src0 = [state_width, heads, tokens, sequences];
     let ne_src1 = [snapshots, if kda { 1 } else { 0 }, 1, 1];
     let n_qkv = state_width * heads * tokens * sequences;
@@ -537,6 +549,13 @@ fn gated_delta_net_back_case(kda: bool, snapshots: i64) {
     packed.extend(pseudo_random(n_grad as usize, 0x6607, 0.5));
 
     let out_len = (3 * n_qkv + n_gate + n_beta + n_state) as usize;
+    (ne_src0, ne_src1, packed, out_len)
+}
+
+#[cfg(retro_metal)]
+fn gated_delta_net_back_case(kda: bool, snapshots: i64, geometry: (i64, i64, i64, i64)) {
+    let (ne_src0, ne_src1, packed, out_len) =
+        gated_delta_net_back_inputs(kda, snapshots, geometry);
     let dummy = [0.0_f32];
     let cpu = probe_op(
         ProbeOp::GatedDeltaNetBack,
@@ -570,8 +589,99 @@ fn gated_delta_net_back_metal_matches_cpu() {
         eprintln!("skipping: no GPU device registered at runtime");
         return;
     }
-    gated_delta_net_back_case(false, 1);
-    gated_delta_net_back_case(true, 3);
+    gated_delta_net_back_case(false, 1, (32, 4, 20, 2));
+    gated_delta_net_back_case(true, 3, (32, 4, 20, 2));
+}
+
+/// The head dimension Qwen3.5 and Qwen3-Next train at, and the widest column
+/// split the kernel takes: 128 columns over blocks of `GDN_BACK_COLS`, so every
+/// cross-column output is accumulated by 32 threadgroups at once.
+#[cfg(retro_metal)]
+#[test]
+fn gated_delta_net_back_metal_matches_cpu_at_the_production_head_dim() {
+    if !common::gpu_device_present() {
+        eprintln!("skipping: no GPU device registered at runtime");
+        return;
+    }
+    gated_delta_net_back_case(false, 1, (128, 4, 12, 1));
+    gated_delta_net_back_case(true, 2, (128, 4, 12, 1));
+}
+
+/// A state width the split does not divide, so the last column block is short.
+/// 17 columns become four blocks of `GDN_BACK_COLS` and a tail of one: that
+/// tail is the only place where a thread can walk past the end of its slice.
+#[cfg(retro_metal)]
+#[test]
+fn gated_delta_net_back_metal_matches_cpu_on_a_ragged_column_block() {
+    if !common::gpu_device_present() {
+        eprintln!("skipping: no GPU device registered at runtime");
+        return;
+    }
+    gated_delta_net_back_case(false, 1, (17, 3, 9, 2));
+    gated_delta_net_back_case(true, 3, (17, 3, 9, 2));
+}
+
+/// A state too narrow to split, which is the pre-split kernel: one threadgroup
+/// owns every column, and the atomics on grad_g/grad_beta have a single
+/// contributor. Keeps that path tested now that it is no longer the only one.
+#[cfg(retro_metal)]
+#[test]
+fn gated_delta_net_back_metal_keeps_the_unsplit_path() {
+    if !common::gpu_device_present() {
+        eprintln!("skipping: no GPU device registered at runtime");
+        return;
+    }
+    gated_delta_net_back_case(false, 1, (4, 3, 9, 2));
+    gated_delta_net_back_case(true, 2, (4, 3, 9, 2));
+}
+
+/// Wall-clock smoke benchmark for the backward scan, not a correctness test:
+/// `#[ignore]`d so no lane pays for it. Run it with
+/// `cargo test --release --test metal_ops -- --ignored --nocapture gated_delta_net_back_metal_timing`.
+///
+/// The shapes are the two a Qwen3.5 optimizer step dispatches: one sequence
+/// (the model cannot pack) and four (the packed case). They differ only on the
+/// grid's second axis. The one-sequence row is what `GDN_BACK_COLS` was sized
+/// for: without the column split its grid is 16 threadgroups.
+#[cfg(retro_metal)]
+#[test]
+#[ignore]
+fn gated_delta_net_back_metal_timing() {
+    if !common::gpu_device_present() {
+        eprintln!("skipping: no GPU device registered at runtime");
+        return;
+    }
+    // (state width, heads, tokens, sequences): Qwen3.5 at ctx 512.
+    for geometry in [(128_i64, 16_i64, 512_i64, 1_i64), (128, 16, 512, 4)] {
+        let (ne_src0, ne_src1, packed, out_len) =
+            gated_delta_net_back_inputs(false, 1, geometry);
+        let dummy = [0.0_f32];
+        let run = || {
+            probe_op(
+                ProbeOp::GatedDeltaNetBack,
+                true,
+                ProbeInputs::pair(ne_src0, &packed, ne_src1, &dummy),
+                [0.0, 0.0],
+                out_len,
+            )
+            .expect("metal gated_delta_net_back")
+        };
+        // One warm-up run so pipeline compilation is not in the measurement.
+        run();
+
+        let runs = 5;
+        let start = std::time::Instant::now();
+        for _ in 0..runs {
+            run();
+        }
+        let elapsed = start.elapsed();
+        let (s_v, h, t, n) = geometry;
+        eprintln!(
+            "gated_delta_net_back metal [S_v={s_v} H={h} tokens={t} seqs={n}]: \
+             {:.1} ms/run over {runs} runs",
+            elapsed.as_secs_f64() * 1000.0 / f64::from(runs)
+        );
+    }
 }
 
 #[cfg(retro_metal)]
