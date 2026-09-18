@@ -116,7 +116,7 @@ The reward is at most `1.0` and is the sum of five parts:
 
 | Part | Weight | Earned when |
 | --- | ---: | --- |
-| syntax | 0.05 | Share of the lines inside the block that parse as a command. The only part that is neither gated nor all-or-nothing. |
+| syntax | 0.05 | Share of the lines inside the block that parse as a command, scaled by `min(1, lines / shortest length)` and forfeited by a program that ends farther from the goal than it started. The only part that is neither gated nor all-or-nothing. |
 | format | 0.05 | The reply is exactly one `<program>…</program>` block with nothing around it, every line is a command, **and the program made some progress**. |
 | progress | 0.5 | Share of the distance to the goal covered by the commands that ran. Halved if the program stopped on an error. |
 | solved | 0.3 | The program ran to its end, within the limit, and left the machine in the goal state. |
@@ -125,7 +125,7 @@ The reward is at most `1.0` and is the sum of five parts:
 **Without a `<program>` block, the reward is 0.** A reply cut off by
 `max_new_tokens` has no closing tag, so it also scores 0.
 
-The reward is built this way for six reasons:
+The reward is built this way for seven reasons:
 
 - **Progress uses the real distance, not digit differences.** The distance of a
   state is the exact number of commands still needed. It comes from one
@@ -151,6 +151,20 @@ The reward is built this way for six reasons:
   parse makes one valid command out of two beat none, which is a direction to
   walk. It is the smallest part on purpose, and it saturates as soon as the
   grammar is learned - identical across a group, so it cancels in the baseline.
+- **The syntax credit is scaled by length, and lost by going backwards.**
+  Ungated, it is the part a collapsing policy hunts for: one valid command
+  parses on every task, so a single line of `swap A B` collected the whole 0.05
+  whatever was asked, on every prompt, and a weak policy settled there - every
+  member of every group the same completion, zero standard deviation, no
+  gradient. Scaling by `min(1, lines / shortest length)` makes one command out
+  of the three a task needs worth a third of the credit, so the way up is to
+  write a program of the length the task asks for; forfeiting the credit
+  entirely when the program ends farther from the goal than it started (a dead
+  end included) makes a reply that ignores the task score 0 on the prompts it
+  moves away from. A program that stops on its first line, or that takes a
+  detour and undoes it, keeps the credit: the way in stays open for a policy
+  that has not learned the grammar and closes on one that writes the grammar to
+  go nowhere.
 - **The format point is conditioned on progress.** Unconditional, it is the one
   answer that scores on *every* task: the shortest well-formed program that goes
   nowhere collects it whatever was asked. That is a local optimum with global
@@ -166,20 +180,23 @@ limit: 3):
 | `swap A B` / `add C 4` | 0.05 | 0.05 | 0.5 | 0.3 | 0.1 | **1.0** | |
 | `add A 4` / `sub B 4` / `add C 4` | 0.05 | 0.05 | 0.5 | 0.3 | 0.067 | **0.967** | |
 | the optimal program, with a sentence before it | 0.05 | 0 | 0.5 | 0.3 | 0.1 | **0.95** | |
-| `swap A B` | 0.05 | 0.05 | 0.25 | 0 | 0 | **0.35** | |
+| `swap A B` | 0.025 | 0.05 | 0.25 | 0 | 0 | **0.325** | half the syntax credit: one command of two |
 | `add A 1` / `sub A 1` / `swap A B` | 0.05 | 0.05 | 0.25 | 0 | 0 | **0.35** | |
 | `swap A B` / `add C 9` | 0.05 | 0.05 | 0.125 | 0 | 0 | **0.225** | `C` would be 10 |
 | `add A 1` / `sub A 1` / `swap A B` / `add C 4` | 0.05 | 0.05 | 0.125 | 0 | 0 | **0.225** | more than 3 commands |
 | `swap A B` / `add C to 5` | 0.025 | 0 | 0.125 | 0 | 0 | **0.15** | not a command |
-| `sub C 1` | 0.05 | 0 | 0 | 0 | 0 | **0.05** | no progress, so no format point |
+| `sub C 1` | 0.025 | 0 | 0 | 0 | 0 | **0.025** | no progress, so no format point |
+| `add A 1` | 0 | 0 | 0 | 0 | 0 | **0** | one command farther from the goal |
 | `A=7 B=9 C=0` in a block | 0 | 0 | 0 | 0 | 0 | **0** | no line is a command |
 | the optimal program without tags | 0 | 0 | 0 | 0 | 0 | **0** | no block |
 
 GRPO only uses differences within a group, so the scale matters less than the
 order. The format point is small on purpose: once every member of a group has
 the format right, it cancels out and the ranking comes from progress and
-solving. It is also the only part that is gated rather than added, so the
-cheapest reply that satisfies every task is worth the syntax credit alone.
+solving. It is also the only part that is gated rather than added, and the
+syntax credit behind it is worth its full 0.05 only to a program of the length
+the task needs that does not walk away from the goal - so no reply scores the
+same on every task without reading it.
 
 To see how a completion was scored, pass request lines to the server with
 `--explain`:

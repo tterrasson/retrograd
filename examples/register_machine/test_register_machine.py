@@ -223,8 +223,9 @@ class RewardTest(unittest.TestCase):
         self.assertAlmostEqual(
             self.reward(program("add A 4", "sub B 4", "add C 4")), 0.9 + 0.2 / 3, places=6
         )
-        # Half the way, cleanly: syntax, format and half the progress.
-        self.assertAlmostEqual(self.reward(program("swap A B")), 0.05 + 0.05 + 0.25)
+        # Half the way, cleanly: format, half the progress, and half the
+        # syntax credit - one command of the two the task needs.
+        self.assertAlmostEqual(self.reward(program("swap A B")), 0.025 + 0.05 + 0.25)
         # The same half, then a command that breaks: the progress is halved.
         self.assertAlmostEqual(self.reward(program("swap A B", "add C 9")), 0.05 + 0.05 + 0.125)
         # ... and a line outside the grammar costs the format point and half the
@@ -255,14 +256,28 @@ class RewardTest(unittest.TestCase):
             with self.subTest(completion=completion):
                 self.assertEqual(self.reward(completion), 0.0)
 
-    def test_padding_and_detours_earn_nothing(self) -> None:
-        half = self.reward(program("swap A B"))
-        self.assertEqual(self.reward(program("add A 1", "sub A 1", "swap A B")), half)
+    def test_padding_and_detours_earn_no_progress(self) -> None:
+        # A detour that is undone nets zero: the two programs stop at the same
+        # state, and only the grammar credit, scaled by length, tells them
+        # apart - padding can fill that 0.05 and nothing else.
+        half = score(PROMPT, program("swap A B"))
+        padded = score(PROMPT, program("add A 1", "sub A 1", "swap A B"))
+        self.assertEqual((half.progress, half.solved), (padded.progress, padded.solved))
+        self.assertEqual((half.syntax, padded.syntax), (0.025, 0.05))
         # No progress, so no format point: a well-formed program that goes
         # nowhere is left with the syntax credit alone.
         self.assertEqual(self.reward(program("swap A C", "swap A C")), 0.05)
-        # Moving away is not negative progress below the start.
-        self.assertEqual(self.reward(program("sub C 1")), 0.05)
+        # Standing still keeps that credit, at the share the length earns.
+        self.assertEqual(self.reward(program("sub C 1")), 0.025)
+
+    def test_a_program_that_moves_away_forfeits_the_syntax_credit(self) -> None:
+        # `add A 1` leaves A=4 with the goal at 7 and B and C still to fix: one
+        # command farther than the start, so the reply scores nothing at all.
+        away = score(PROMPT, program("add A 1"))
+        self.assertEqual((away.distance_start, away.distance_end), (2, 3))
+        self.assertEqual((away.syntax, away.reward), (0.0, 0.0))
+        # Two commands of the right length, ending farther: nothing either.
+        self.assertEqual(self.reward(program("add A 1", "sub C 1")), 0.0)
 
     def test_limit(self) -> None:
         # The goal is reached, but only at the fourth command of three.
@@ -281,7 +296,8 @@ class RewardTest(unittest.TestCase):
         # Copying 4 over the only 7 leaves no way to write 7 into A.
         dead = score(prompt, program("copy A B"))
         self.assertIsNone(dead.distance_end)
-        self.assertEqual((dead.syntax, dead.format, dead.reward), (0.05, 0.0, 0.05))
+        # Unreachable is worse than the start, so not even the grammar credit.
+        self.assertEqual((dead.syntax, dead.format, dead.reward), (0.0, 0.0, 0.0))
 
     def test_ranking(self) -> None:
         ladder = [
@@ -437,7 +453,7 @@ class ProtocolTest(unittest.TestCase):
             [
                 {"reward": 1.0, "_retrograd_batch": 7, "_retrograd_index": 0},
                 {"reward": 0.0, "_retrograd_batch": 7, "_retrograd_index": 1},
-                {"reward": 0.35, "_retrograd_batch": 7, "_retrograd_index": 2},
+                {"reward": 0.325, "_retrograd_batch": 7, "_retrograd_index": 2},
             ],
         )
         self.assertEqual(lines[4], {"_retrograd_batch_end": 7})

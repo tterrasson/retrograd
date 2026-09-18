@@ -8,7 +8,9 @@ last user message - the task as `machine.Task.render` wrote it.
 
 The reward, at most 1.0, is the sum of five parts:
 
-    syntax     0.05  share of the lines of the block that parse as a command
+    syntax     0.05  share of the lines of the block that parse as a command,
+                     scaled by the length the task needs and forfeited by a
+                     program that ends farther from the goal than it started
     format     0.05  one <program> block, nothing around it, every line a command
                      - and only for a program that made some progress
     progress    0.5  share of the way to the goal covered by the commands that ran,
@@ -38,6 +40,27 @@ every group is uniform and there is no gradient to escape with. Crediting the
 is a direction. It is the smallest part on purpose, and it saturates as soon as
 the grammar is learned - at which point it is identical across a group and
 cancels in the baseline.
+
+Being ungated, it is also the part a collapsing policy hunts for - a single
+valid command parses on every task, so the credit was the same 0.05 whatever
+was asked, and a weak policy settled on one line of `swap A B` for every
+prompt. Two factors now stop it from being earned the same way twice:
+
+  * it is scaled by `min(1, lines / d_start)`, because a program with fewer
+    commands than the shortest solution cannot be right whatever it holds. One
+    command where three are needed is worth a third of the credit, and the way
+    out of that third is to write a program of the length the task asks for.
+  * it is forfeited when the program ends farther from the goal than it
+    started, dead ends included. A reply that ignores the task moves away on
+    part of the prompts and scores 0 on those, while a program that stops on
+    its first line, or takes a detour and undoes it, keeps the credit: the way
+    in stays open for a policy that has not learned the grammar and closes on
+    one that uses the grammar to go nowhere.
+
+Both are per-task, so what was one flat value across the whole dataset is now
+a spread the group baseline can work against: on the committed prompts, that
+one line of `swap A B` scores between 0 and 0.025 wherever it makes no
+progress, and a well-formed program of the right length beats it there.
 
     python3 reward_server.py --explain < requests.jsonl
 
@@ -99,7 +122,6 @@ def score(prompt: str, completion: str) -> Score:
 
     lines = [line for line in blocks[0].splitlines() if line.strip()]
     parses = [parse_command(line) is not None for line in lines]
-    syntax = sum(parses) / len(parses) if parses else 0.0
     well_formed = (
         len(blocks) == 1 and not PROGRAM.sub("", completion).strip() and bool(lines) and all(parses)
     )
@@ -111,6 +133,15 @@ def score(prompt: str, completion: str) -> Score:
         progress *= STOPPED_PROGRESS
     solved = result.error is None and result.state == task.goal and result.executed > 0
     efficiency = start / result.executed if solved else 0.0
+
+    # The grammar credit: the share of the lines that parse, scaled by the
+    # length the task needs, and forfeited by a program that ends farther from
+    # the goal than it started (a dead end included). Both factors are what
+    # keeps it from being earned the same way on every task - see the module
+    # docstring.
+    syntax = 0.0
+    if parses and (end is not None and end <= start):
+        syntax = sum(parses) / len(parses) * min(1.0, len(lines) / start)
 
     parts = (
         SYNTAX_WEIGHT * syntax,
