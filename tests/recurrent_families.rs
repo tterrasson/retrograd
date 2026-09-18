@@ -29,6 +29,45 @@ fn config() -> TrainConfig {
     }
 }
 
+/// The unfused diagnostic path must build a backward graph too. In-place SET
+/// used to abort in ggml_build_backward_expand before preflight could return.
+#[test]
+fn unfused_gated_delta_net_survives_preflight_and_a_step() {
+    let family = common::RECURRENT_FAMILIES
+        .iter()
+        .find(|family| family.family == "gated_delta_net")
+        .expect("gated delta net fixture definition");
+    let Some(model) = family.path_if_available() else {
+        eprintln!("skipping unfused gated delta net: set {}", family.env);
+        return;
+    };
+    let _guard = common::serialize_models();
+    let _unfused = common::EnvGuard::set("RETRO_GDN_UNFUSED", "1");
+    // A padded chunk and multiple chunks exercise both output assembly cases.
+    for width in [16, 128] {
+        let mut trainer = Trainer::new(
+            &model,
+            TrainConfig {
+                n_batch: 128,
+                n_ubatch: width,
+                ..config()
+            },
+        )
+        .expect("load unfused gated delta net");
+        trainer
+            .create_lora(&LoraConfig::auto(2, 4.0))
+            .expect("create unfused LoRA");
+        let report = trainer.train_preflight().expect("unfused preflight");
+        assert!(report.contains("missing_gradient_rules: 0"), "{report}");
+        let mut tokens = trainer
+            .tokenize_text(&"A short run of tokens for the recurrent family lane. ".repeat(24))
+            .expect("tokenize unfused input");
+        tokens.truncate(128);
+        let metrics = trainer.train_tokens(&tokens).expect("unfused train step");
+        assert!(metrics.train_loss.is_finite(), "{metrics:?}");
+    }
+}
+
 /// The report and the ABI struct must not be able to disagree: the resolver
 /// branches on the struct, a human reads the report, and a run where the two
 /// say different things is unsupportable.

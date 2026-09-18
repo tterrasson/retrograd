@@ -304,10 +304,9 @@ fn out_prod_q8_0_cuda_matches_cpu_in_isolation() {
     compare_out_prod_quant(ProbeOp::OutProdQ80, [64, 40, 1, 1], [16, 40, 1, 1], 2.0e-3);
 }
 
-/// OUT_PROD decodes `src0` directly into the CUDA kernel's shared-memory tile. The
-/// scratch budget must therefore be completely inert for production quant types.
-/// The shared helper deliberately uses a shape where the retained compatibility
-/// fallback would split, so equality also proves that Q4_K took the native path.
+/// Small OUT_PROD reductions still decode into the shared-memory tile. The
+/// scratch budget must remain inert there, even when the weight is large enough
+/// that dequantize+SGEMM would split it.
 #[cfg(retro_cuda)]
 #[test]
 fn out_prod_quant_cuda_native_is_independent_of_the_dequant_budget() {

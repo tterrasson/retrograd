@@ -637,7 +637,7 @@ pub fn assert_out_prod_quant_budget_independent(use_gpu: bool, backend: &str) {
 /// Deterministic pseudo-random f32s in [-1, 1] (xorshift64*, no rand dependency).
 /// Each backend test file has its own copy for its local cases; this one exists so
 /// the shared sweep above does not depend on which file calls it.
-fn deterministic_f32s(n: usize, seed: u64) -> Vec<f32> {
+pub fn deterministic_f32s(n: usize, seed: u64) -> Vec<f32> {
     let mut state = seed | 1;
     (0..n)
         .map(|_| {
