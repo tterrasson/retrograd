@@ -29,8 +29,8 @@ with before the model solves anything.
 | `machine.py` | The world: commands, task format, execution, shortest-path search. The generator and the reward both use it. |
 | `reward_server.py` | The reward command, using Retrograd's persistent protocol (`retrograd-reward/1`). |
 | `generate.py` | Writes `prompts.jsonl` and `eval.jsonl` (seeded, reproducible). |
-| `prompts.jsonl` | 520 training tasks, in easy-first order. |
-| `eval.jsonl` | 66 held-out tasks, each ending with one shortest program as the assistant reference. |
+| `prompts.jsonl` | 600 training tasks, in easy-first order. |
+| `eval.jsonl` | 78 held-out tasks, each ending with one shortest program as the assistant reference. |
 | `grpo.toml` | The training configuration. |
 | `test_register_machine.py` | Standard-library tests: the machine, the reward, the generator, the shipped data and the protocol. |
 
@@ -83,9 +83,15 @@ registers to change. A `swap` has to fix two registers at once, so counting the 
 
 | Tier | Share | Registers | Depth | Slack | Commands | Shortcut tasks |
 | --- | ---: | --- | --- | --- | --- | ---: |
-| easy | 30% | 2 | 1-2 | 1 | both directions | 20% |
-| medium | 40% | 3 | 2-3 | 1 | both directions, or one direction + `copy` or `swap` | 40% |
-| hard | 30% | 3-4 | 3-5 | 0-1 | one direction only, or all four | 20% |
+| easy | 20% | 2 | 1-2 | 1 | both directions | 20% |
+| medium | 35% | 3 | 2-3 | 1 | both directions, or one direction + `copy` or `swap` | 40% |
+| hard | 45% | 3-4 | 3-5 | 0-1 | one direction only, or all four | 20% |
+
+`--train-hard-extra` and `--eval-hard-extra` then draw more hard tasks on top of
+those shares, which is what the committed files hold: 314 hard of 600 training
+tasks (52%) and 42 of 78 held-out ones (54%). The partial-progress reward is
+what a weak policy earns on the easy tasks early; the hard ones are what still
+separates a group's rewards once it stops failing them.
 
 The training file is a soft curriculum. Each task is sorted by its tier rank
 plus a random jitter wider than one tier, so easy tasks come first but the
@@ -98,18 +104,20 @@ and no evaluation task is in the training file.
 Regenerate the files, or make other sizes, with:
 
 ```bash
-python3 examples/register_machine/generate.py --train 520 --eval 66 --seed 7
+python3 examples/register_machine/generate.py --train 520 --eval 66 \
+  --train-hard-extra 80 --eval-hard-extra 12 --seed 7
 ```
 
 To change the difficulty, edit the `TIERS` table in `generate.py`.
 
 ## Reward
 
-The reward is at most `1.0` and is the sum of four parts:
+The reward is at most `1.0` and is the sum of five parts:
 
 | Part | Weight | Earned when |
 | --- | ---: | --- |
-| format | 0.1 | The reply is exactly one `<program>…</program>` block with nothing around it, and every line is a command. |
+| syntax | 0.05 | Share of the lines inside the block that parse as a command. The only part that is neither gated nor all-or-nothing. |
+| format | 0.05 | The reply is exactly one `<program>…</program>` block with nothing around it, every line is a command, **and the program made some progress**. |
 | progress | 0.5 | Share of the distance to the goal covered by the commands that ran. Halved if the program stopped on an error. |
 | solved | 0.3 | The program ran to its end, within the limit, and left the machine in the goal state. |
 | efficiency | 0.1 | Only for a solved program: `shortest length / commands used`. |
@@ -117,7 +125,7 @@ The reward is at most `1.0` and is the sum of four parts:
 **Without a `<program>` block, the reward is 0.** A reply cut off by
 `max_new_tokens` has no closing tag, so it also scores 0.
 
-The reward is built this way for four reasons:
+The reward is built this way for six reasons:
 
 - **Progress uses the real distance, not digit differences.** The distance of a
   state is the exact number of commands still needed. It comes from one
@@ -136,27 +144,42 @@ The reward is built this way for four reasons:
   the work".
 - **The limit is part of the task.** A command beyond it is a failing line, so
   reaching the goal one command too late is not a solve.
+- **The syntax credit is partial, and it is the way in.** A policy that has not
+  yet learned the command grammar writes nothing a gated reward can grade: it
+  echoes the task back (`A=9 B=0 C=3`), every part scores 0, every group is
+  uniform and GRPO has no gradient at all. Crediting the *share* of lines that
+  parse makes one valid command out of two beat none, which is a direction to
+  walk. It is the smallest part on purpose, and it saturates as soon as the
+  grammar is learned - identical across a group, so it cancels in the baseline.
+- **The format point is conditioned on progress.** Unconditional, it is the one
+  answer that scores on *every* task: the shortest well-formed program that goes
+  nowhere collects it whatever was asked. That is a local optimum with global
+  support, and a policy that cannot yet solve anything collapses onto it - every
+  group then samples the same completion, the group standard deviation is zero,
+  and GRPO has no gradient left to escape with.
 
 Examples for the task at the top of this page (shortest program: 2 commands,
 limit: 3):
 
-| Program | Format | Progress | Solved | Efficiency | Reward | Stopped by |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `swap A B` / `add C 4` | 0.1 | 0.5 | 0.3 | 0.1 | **1.0** | |
-| `add A 4` / `sub B 4` / `add C 4` | 0.1 | 0.5 | 0.3 | 0.067 | **0.967** | |
-| the optimal program, with a sentence before it | 0 | 0.5 | 0.3 | 0.1 | **0.9** | |
-| `swap A B` | 0.1 | 0.25 | 0 | 0 | **0.35** | |
-| `add A 1` / `sub A 1` / `swap A B` | 0.1 | 0.25 | 0 | 0 | **0.35** | |
-| `swap A B` / `add C 9` | 0.1 | 0.125 | 0 | 0 | **0.225** | `C` would be 10 |
-| `add A 1` / `sub A 1` / `swap A B` / `add C 4` | 0.1 | 0.125 | 0 | 0 | **0.225** | more than 3 commands |
-| `swap A B` / `add C to 5` | 0 | 0.125 | 0 | 0 | **0.125** | not a command |
-| `sub C 1` | 0.1 | 0 | 0 | 0 | **0.1** | |
-| the optimal program without tags | 0 | 0 | 0 | 0 | **0** | no block |
+| Program | Syntax | Format | Progress | Solved | Efficiency | Reward | Stopped by |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `swap A B` / `add C 4` | 0.05 | 0.05 | 0.5 | 0.3 | 0.1 | **1.0** | |
+| `add A 4` / `sub B 4` / `add C 4` | 0.05 | 0.05 | 0.5 | 0.3 | 0.067 | **0.967** | |
+| the optimal program, with a sentence before it | 0.05 | 0 | 0.5 | 0.3 | 0.1 | **0.95** | |
+| `swap A B` | 0.05 | 0.05 | 0.25 | 0 | 0 | **0.35** | |
+| `add A 1` / `sub A 1` / `swap A B` | 0.05 | 0.05 | 0.25 | 0 | 0 | **0.35** | |
+| `swap A B` / `add C 9` | 0.05 | 0.05 | 0.125 | 0 | 0 | **0.225** | `C` would be 10 |
+| `add A 1` / `sub A 1` / `swap A B` / `add C 4` | 0.05 | 0.05 | 0.125 | 0 | 0 | **0.225** | more than 3 commands |
+| `swap A B` / `add C to 5` | 0.025 | 0 | 0.125 | 0 | 0 | **0.15** | not a command |
+| `sub C 1` | 0.05 | 0 | 0 | 0 | 0 | **0.05** | no progress, so no format point |
+| `A=7 B=9 C=0` in a block | 0 | 0 | 0 | 0 | 0 | **0** | no line is a command |
+| the optimal program without tags | 0 | 0 | 0 | 0 | 0 | **0** | no block |
 
 GRPO only uses differences within a group, so the scale matters less than the
 order. The format point is small on purpose: once every member of a group has
 the format right, it cancels out and the ranking comes from progress and
-solving.
+solving. It is also the only part that is gated rather than added, so the
+cheapest reply that satisfies every task is worth the syntax credit alone.
 
 To see how a completion was scored, pass request lines to the server with
 `--explain`:

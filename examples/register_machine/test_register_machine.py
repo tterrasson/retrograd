@@ -213,8 +213,8 @@ class RewardTest(unittest.TestCase):
     def test_parts(self) -> None:
         optimal = score(PROMPT, program("swap A B", "add C 4"))
         self.assertEqual(
-            (optimal.format, optimal.progress, optimal.solved, optimal.efficiency),
-            (0.1, 0.5, 0.3, 0.1),
+            (optimal.syntax, optimal.format, optimal.progress, optimal.solved, optimal.efficiency),
+            (0.05, 0.05, 0.5, 0.3, 0.1),
         )
         self.assertEqual(optimal.reward, 1.0)
         self.assertEqual((optimal.distance_start, optimal.distance_end), (2, 0))
@@ -223,15 +223,18 @@ class RewardTest(unittest.TestCase):
         self.assertAlmostEqual(
             self.reward(program("add A 4", "sub B 4", "add C 4")), 0.9 + 0.2 / 3, places=6
         )
-        # Half the way, cleanly: format and half the progress.
-        self.assertAlmostEqual(self.reward(program("swap A B")), 0.1 + 0.25)
+        # Half the way, cleanly: syntax, format and half the progress.
+        self.assertAlmostEqual(self.reward(program("swap A B")), 0.05 + 0.05 + 0.25)
         # The same half, then a command that breaks: the progress is halved.
-        self.assertAlmostEqual(self.reward(program("swap A B", "add C 9")), 0.1 + 0.125)
-        # ... and a line outside the grammar also costs the format point.
-        self.assertAlmostEqual(self.reward(program("swap A B", "add C to 5")), 0.125)
+        self.assertAlmostEqual(self.reward(program("swap A B", "add C 9")), 0.05 + 0.05 + 0.125)
+        # ... and a line outside the grammar costs the format point and half the
+        # syntax credit, which is a share of the lines that parse.
+        self.assertAlmostEqual(self.reward(program("swap A B", "add C to 5")), 0.025 + 0.125)
 
     def test_format(self) -> None:
-        solved = 0.9
+        # The envelope is what the format point buys: the commands still parse,
+        # so the syntax credit is untouched.
+        solved = 0.95
         self.assertAlmostEqual(self.reward("Sure!\n" + program("swap A B", "add C 4")), solved)
         self.assertAlmostEqual(self.reward(program("swap A B", "add C 4") + "\nDone."), solved)
         self.assertAlmostEqual(
@@ -255,9 +258,11 @@ class RewardTest(unittest.TestCase):
     def test_padding_and_detours_earn_nothing(self) -> None:
         half = self.reward(program("swap A B"))
         self.assertEqual(self.reward(program("add A 1", "sub A 1", "swap A B")), half)
-        self.assertEqual(self.reward(program("swap A C", "swap A C")), 0.1)
+        # No progress, so no format point: a well-formed program that goes
+        # nowhere is left with the syntax credit alone.
+        self.assertEqual(self.reward(program("swap A C", "swap A C")), 0.05)
         # Moving away is not negative progress below the start.
-        self.assertEqual(self.reward(program("sub C 1")), 0.1)
+        self.assertEqual(self.reward(program("sub C 1")), 0.05)
 
     def test_limit(self) -> None:
         # The goal is reached, but only at the fourth command of three.
@@ -276,7 +281,7 @@ class RewardTest(unittest.TestCase):
         # Copying 4 over the only 7 leaves no way to write 7 into A.
         dead = score(prompt, program("copy A B"))
         self.assertIsNone(dead.distance_end)
-        self.assertEqual(dead.reward, 0.1)
+        self.assertEqual((dead.syntax, dead.format, dead.reward), (0.05, 0.0, 0.05))
 
     def test_ranking(self) -> None:
         ladder = [
@@ -285,7 +290,8 @@ class RewardTest(unittest.TestCase):
             "Here it is:\n" + program("swap A B", "add C 4"),
             program("swap A B"),
             program("swap A B", "add C 9"),
-            program("sub C 1"),
+            # Progress, halved by the line that cannot run, and no format point.
+            program("add C 4", "nope"),
             "swap A B\nadd C 4",
         ]
         rewards = [self.reward(completion) for completion in ladder]
@@ -321,7 +327,12 @@ class GeneratorTest(unittest.TestCase):
                     self.assertIn(task.operations, tier.operation_sets)
 
     def test_negative_sizes_do_not_write_files(self) -> None:
-        for argument in ("--train=-1", "--eval=-1"):
+        for argument in (
+            "--train=-1",
+            "--eval=-1",
+            "--train-hard-extra=-1",
+            "--eval-hard-extra=-1",
+        ):
             with tempfile.TemporaryDirectory() as directory:
                 result = subprocess.run(
                     [sys.executable, str(HERE / "generate.py"), argument, f"--out-dir={directory}"],
@@ -341,6 +352,8 @@ class GeneratorTest(unittest.TestCase):
                         str(HERE / "generate.py"),
                         "--train=40",
                         "--eval=9",
+                        "--train-hard-extra=6",
+                        "--eval-hard-extra=2",
                         "--seed=11",
                         f"--out-dir={directory}",
                     ],
@@ -353,7 +366,8 @@ class GeneratorTest(unittest.TestCase):
                 )
             train = read_tasks(Path(first) / "prompts.jsonl")
             held_out = read_tasks(Path(first) / "eval.jsonl")
-            self.assertEqual((len(train), len(held_out)), (40, 9))
+            # The hard extras sit on top of the requested totals.
+            self.assertEqual((len(train), len(held_out)), (46, 11))
             keys = [(task.start, task.goal, task.operations) for task in train + held_out]
             self.assertEqual(len(set(keys)), len(keys))
 

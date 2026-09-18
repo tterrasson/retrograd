@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Writes the prompt files of the GRPO register-machine example.
 
-    python3 generate.py [--train 520] [--eval 66] [--seed 7] [--out-dir .]
+    python3 generate.py [--train 520] [--eval 66] [--train-hard-extra 80]
+                        [--eval-hard-extra 12] [--seed 7] [--out-dir .]
+
+The `--*-hard-extra` counts are drawn from the hard tier on top of the tier
+shares: a weak policy earns the partial-progress reward on the easy tasks
+early, and the hard ones are what keeps a group's rewards apart once it does.
 
 Difficulty is set by four knobs, grouped into three tiers:
 
@@ -71,9 +76,9 @@ class Tier:
 
 
 TIERS = (
-    Tier("easy", 0.3, (2,), (1, 2), (1,), BOTH_WAYS, shortcut=0.2),
-    Tier("medium", 0.4, (3,), (2, 3), (1,), BOTH_WAYS + ONE_WAY[:4], shortcut=0.4),
-    Tier("hard", 0.3, (3, 4), (3, 4, 5), (0, 1), (*ONE_WAY, OPERATIONS), shortcut=0.2),
+    Tier("easy", 0.2, (2,), (1, 2), (1,), BOTH_WAYS, shortcut=0.2),
+    Tier("medium", 0.35, (3,), (2, 3), (1,), BOTH_WAYS + ONE_WAY[:4], shortcut=0.4),
+    Tier("hard", 0.45, (3, 4), (3, 4, 5), (0, 1), (*ONE_WAY, OPERATIONS), shortcut=0.2),
 )
 
 
@@ -133,9 +138,11 @@ def sample_tier(
     return tasks
 
 
-def counts(total: int) -> list[int]:
+def counts(total: int, hard_extra: int = 0) -> list[int]:
+    """Splits `total` over the tiers, then adds `hard_extra` tasks to the last
+    one. The extras sit on top: the file holds `total + hard_extra` lines."""
     sizes = [int(total * tier.share) for tier in TIERS]
-    sizes[-1] += total - sum(sizes)
+    sizes[-1] += total - sum(sizes) + hard_extra
     return sizes
 
 
@@ -153,12 +160,26 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--train", type=int, default=520, help="training prompts")
     parser.add_argument("--eval", type=int, default=66, help="held-out prompts")
+    parser.add_argument(
+        "--train-hard-extra",
+        type=int,
+        default=80,
+        help="hard training tasks drawn on top of the tier shares",
+    )
+    parser.add_argument(
+        "--eval-hard-extra",
+        type=int,
+        default=12,
+        help="hard held-out tasks drawn on top of the tier shares",
+    )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--out-dir", type=Path, default=Path(__file__).resolve().parent)
     arguments = parser.parse_args()
 
     if arguments.train < 0 or arguments.eval < 0:
         parser.error("--train and --eval must be non-negative")
+    if arguments.train_hard_extra < 0 or arguments.eval_hard_extra < 0:
+        parser.error("--train-hard-extra and --eval-hard-extra must be non-negative")
 
     rng = random.Random(arguments.seed)
     seen: set[Task] = set()
@@ -166,7 +187,9 @@ def main() -> None:
     # The held-out set is drawn first, so its tasks never reach the training file.
     eval_tiers = [
         sample_tier(rng, tier, size, seen)
-        for tier, size in zip(TIERS, counts(arguments.eval), strict=True)
+        for tier, size in zip(
+            TIERS, counts(arguments.eval, arguments.eval_hard_extra), strict=True
+        )
     ]
     # Round-robin over the tiers: `evaluation.max_examples` takes evenly
     # spaced lines. Interleaving spreads difficulty across the file, though
@@ -180,7 +203,9 @@ def main() -> None:
 
     training = [
         entry
-        for tier, size in zip(TIERS, counts(arguments.train), strict=True)
+        for tier, size in zip(
+            TIERS, counts(arguments.train, arguments.train_hard_extra), strict=True
+        )
         for entry in sample_tier(rng, tier, size, seen)
     ]
     # A soft curriculum: the tier rank plus a jitter wider than one tier, so

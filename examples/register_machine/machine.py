@@ -36,17 +36,10 @@ sub X n   subtracts n from register X (n is 1 to 9)
 copy X Y  copies the value of X into Y (X keeps its value)
 swap X Y  exchanges the values of X and Y
 
-Rules:
-- Use only the allowed commands and the registers listed in the task.
-- A command that would take a register below 0 or above 9 is an error and stops the program.
-- Never use more commands than the task allows.
+Use only the allowed commands and the registers listed in the task.
 
-Reply with the program only: one command per line, between <program> and </program>.
-Example reply:
-<program>
-swap A B
-add C 2
-</program>"""
+Reply with the program only: one command per line, between a line holding
+<program> and a line holding </program>."""
 
 
 class IllegalCommand(ValueError):

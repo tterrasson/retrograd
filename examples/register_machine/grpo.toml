@@ -37,7 +37,7 @@ weight_decay = 0.0
 max_grad_norm = 1.0
 
 [grpo]
-# 520 tasks written easy-first by generate.py; `sequential` keeps that order,
+# 600 tasks written easy-first by generate.py; `sequential` keeps that order,
 # and 250 updates draw 1,000 prompts before dynamic resampling.
 prompts = "prompts.jsonl"
 prompt_order = "sequential"
@@ -49,7 +49,7 @@ group_size = 8
 grpo_epochs = 1
 clip_range_low = 0.2
 clip_range_high = 0.28
-kl_coefficient = 0.005
+kl_coefficient = 0.0
 # A cut-off program has no closing </program> and scores 0: rambling is a
 # mistake to learn from, so truncated members stay in the group.
 mask_truncated = false

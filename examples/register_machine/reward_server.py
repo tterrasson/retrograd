@@ -6,9 +6,11 @@ the handshake once, then one *flushed* JSON line per
 {"prompt": ..., "completion": ...} request, for the whole run. `prompt` is the
 last user message - the task as `machine.Task.render` wrote it.
 
-The reward, at most 1.0, is the sum of four parts:
+The reward, at most 1.0, is the sum of five parts:
 
-    format      0.1  one <program> block, nothing around it, every line a command
+    syntax     0.05  share of the lines of the block that parse as a command
+    format     0.05  one <program> block, nothing around it, every line a command
+                     - and only for a program that made some progress
     progress    0.5  share of the way to the goal covered by the commands that ran,
                      halved when the program stopped on an error
     solved      0.3  the program ran to its end, within the limit, onto the goal
@@ -23,7 +25,19 @@ and the commands after the first one that cannot run earn nothing either. The
 halving keeps a program that breaks below the same progress made cleanly: the
 task asks for a program that runs, not for a good first half.
 
-Without a <program> block the reward is 0 and nothing else is looked at.
+Without a <program> block the reward is 0 and nothing else is looked at. The
+format point is conditioned on progress for the same reason: a well-formed
+program that goes nowhere is the one answer that scores on *every* task, and an
+unconditional bonus makes it a local optimum a weak policy collapses onto.
+
+`syntax` is the one part that is neither gated nor all-or-nothing, because a
+policy that has not yet learned the command grammar writes nothing a gated
+reward can grade: it echoes the task back ("A=9 B=0 C=3"), every part scores 0,
+every group is uniform and there is no gradient to escape with. Crediting the
+*share* of lines that parse makes one valid command out of two beat none, which
+is a direction. It is the smallest part on purpose, and it saturates as soon as
+the grammar is learned - at which point it is identical across a group and
+cancels in the baseline.
 
     python3 reward_server.py --explain < requests.jsonl
 
@@ -43,7 +57,8 @@ from machine import Task, distances, parse_command, run
 
 PROTOCOL = "retrograd-reward/1"
 
-FORMAT_WEIGHT = 0.1
+SYNTAX_WEIGHT = 0.05
+FORMAT_WEIGHT = 0.05
 PROGRESS_WEIGHT = 0.5
 SOLVED_WEIGHT = 0.3
 EFFICIENCY_WEIGHT = 0.1
@@ -57,6 +72,7 @@ PROGRAM = re.compile(r"<program>(.*?)</program>", re.DOTALL)
 class Score:
     reward: float
     # Each part already weighted: `reward` is their sum.
+    syntax: float
     format: float
     progress: float
     solved: float
@@ -79,14 +95,16 @@ def score(prompt: str, completion: str) -> Score:
 
     blocks = PROGRAM.findall(completion)
     if not blocks:
-        return Score(0.0, 0.0, 0.0, 0.0, 0.0, 0, "no <program> block", start, start)
+        return Score(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, "no <program> block", start, start)
 
     lines = [line for line in blocks[0].splitlines() if line.strip()]
+    parses = [parse_command(line) is not None for line in lines]
+    syntax = sum(parses) / len(parses) if parses else 0.0
     well_formed = (
         len(blocks) == 1
         and not PROGRAM.sub("", completion).strip()
         and bool(lines)
-        and all(parse_command(line) is not None for line in lines)
+        and all(parses)
     )
 
     result = run(task, lines)
@@ -98,7 +116,8 @@ def score(prompt: str, completion: str) -> Score:
     efficiency = start / result.executed if solved else 0.0
 
     parts = (
-        FORMAT_WEIGHT * well_formed,
+        SYNTAX_WEIGHT * syntax,
+        FORMAT_WEIGHT * (well_formed and progress > 0),
         PROGRESS_WEIGHT * progress,
         SOLVED_WEIGHT * solved,
         EFFICIENCY_WEIGHT * efficiency,
