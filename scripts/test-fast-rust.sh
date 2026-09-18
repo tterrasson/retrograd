@@ -107,11 +107,17 @@ timed_step run:server "$repo_root/scripts/test-server.sh"
 # rather than trusted: "MCP tools only" must not compile the container backend.
 # It is one distracted `[dependencies]` line away from being lost, and nothing
 # else in the lane would notice.
+#
+# Every tree is captured into a variable and matched with a here-string rather
+# than piped into `grep -q`: `grep -q` exits at the first match, the writer
+# upstream dies of SIGPIPE, and `pipefail` turns that into a failed pipeline --
+# a coin flip on the size of the tree, read as "the dependency is absent".
 timed_step run:graph bash -c '
   set -euo pipefail
   for spec in "--no-default-features --features mcp" ""; do
     # shellcheck disable=SC2086
-    if cargo tree -e no-dev -p retrograd-agent $spec | grep -q bollard; then
+    agent_tree="$(cargo tree -e no-dev -p retrograd-agent $spec)"
+    if grep -q bollard <<<"$agent_tree"; then
       echo "bollard reached retrograd-agent with features: ${spec:-default}" >&2
       exit 1
     fi
@@ -120,20 +126,23 @@ timed_step run:graph bash -c '
   # that must not drag the container backend into every build of it.
   for spec in "--no-default-features" "" "--features mcp"; do
     # shellcheck disable=SC2086
-    if cargo tree -e no-dev -p retrograd $spec | grep -q bollard; then
+    cli_tree="$(cargo tree -e no-dev -p retrograd $spec)"
+    if grep -q bollard <<<"$cli_tree"; then
       echo "bollard reached the retrograd binary with features: ${spec:-default}" >&2
       exit 1
     fi
   done
   # And the switch still works: asking for it compiles it.
-  if ! cargo tree -e no-dev -p retrograd --features container | grep -q bollard; then
+  container_tree="$(cargo tree -e no-dev -p retrograd --features container)"
+  if ! grep -q bollard <<<"$container_tree"; then
     echo "--features container did not reach bollard" >&2
     exit 1
   fi
   # A judge build whose rewards are all `command` links no TLS stack. The
   # transport lives behind `retrograd-llm-client`, so the optional dependency
   # this asserts on is that crate rather than `reqwest`.
-  if cargo tree -e no-dev -p retrograd-judge --no-default-features | grep -q rustls; then
+  judge_tree="$(cargo tree -e no-dev -p retrograd-judge --no-default-features)"
+  if grep -q rustls <<<"$judge_tree"; then
     echo "rustls reached retrograd-judge without the http feature" >&2
     exit 1
   fi
@@ -165,7 +174,8 @@ timed_step run:graph bash -c '
   done
   # And the crate that is supposed to carry it still does: an assertion that
   # only ever says "absent" would also pass if the server stopped using axum.
-  if ! cargo tree -e no-dev -p retrograd-server --prefix none | awk "{print \$1}" | grep -qx axum; then
+  carrier_tree="$(cargo tree -e no-dev -p retrograd-server --prefix none | awk "{print \$1}")"
+  if ! grep -qx axum <<<"$carrier_tree"; then
     echo "axum is no longer in retrograd-server: the assertion above proves nothing" >&2
     exit 1
   fi
@@ -182,7 +192,8 @@ timed_step run:graph bash -c '
   done
   # And the CLI still gets them, so the assertion above is about placement
   # rather than about nobody depending on them any more.
-  if ! cargo tree -e no-dev -p retrograd --prefix none | awk "{print \$1}" | grep -qx comfy-table; then
+  cli_ui_tree="$(cargo tree -e no-dev -p retrograd --prefix none | awk "{print \$1}")"
+  if ! grep -qx comfy-table <<<"$cli_ui_tree"; then
     echo "comfy-table left the CLI: the cli feature no longer carries anything" >&2
     exit 1
   fi'
