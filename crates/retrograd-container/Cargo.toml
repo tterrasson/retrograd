@@ -20,7 +20,6 @@ retrograd-agent-core.workspace = true
 retrograd-metrics.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tar = "0.4"
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing.workspace = true
 

@@ -140,4 +140,29 @@ timed_step run:graph bash -c '
       echo "$forbidden reached retrograd-scenario-gen" >&2
       exit 1
     fi
-  done'
+  done
+  # The HTTP control plane is a leaf crate with its own binary, and nothing in
+  # the workspace depends on it. That is what keeps axum, matchit, utoipa and
+  # the OpenAPI derive out of every build of the CLI -- a stronger guarantee
+  # than a feature would give, since `--all-features` cannot turn it back on.
+  # But `retrograd-server` already has a `[workspace.dependencies]` entry that
+  # no manifest consumes, so one absent-minded `retrograd-server.workspace =
+  # true` in the root manifest would pull the whole stack back in silently.
+  # Matched on names unique to that stack: `tower-http` and `uuid` are *not*
+  # among them -- they reach the CLI legitimately through reqwest and rmcp.
+  for spec in "--no-default-features" "" "--features mcp" "--features container" "--all-features"; do
+    # shellcheck disable=SC2086
+    server_tree="$(cargo tree -e no-dev -p retrograd $spec --prefix none | awk "{print \$1}")"
+    for forbidden in retrograd-server axum axum-core matchit utoipa utoipa-gen async-stream serde_path_to_error; do
+      if grep -qx "$forbidden" <<<"$server_tree"; then
+        echo "$forbidden reached the retrograd binary with features: ${spec:-default}" >&2
+        exit 1
+      fi
+    done
+  done
+  # And the crate that is supposed to carry it still does: an assertion that
+  # only ever says "absent" would also pass if the server stopped using axum.
+  if ! cargo tree -e no-dev -p retrograd-server --prefix none | awk "{print \$1}" | grep -qx axum; then
+    echo "axum is no longer in retrograd-server: the assertion above proves nothing" >&2
+    exit 1
+  fi'
