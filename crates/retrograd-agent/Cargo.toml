@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 async-trait.workspace = true
-futures.workspace = true
+futures-util.workspace = true
 retrograd-agent-core.workspace = true
 retrograd-core.workspace = true
 retrograd-engine.workspace = true

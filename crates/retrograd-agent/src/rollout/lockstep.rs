@@ -1,6 +1,6 @@
 //! The turn loop: one decode batch per turn over the live members of a group.
 
-use futures::future::join_all;
+use futures_util::future::join_all;
 use retrograd_core::SamplingParams;
 use tokio::time::Instant;
 

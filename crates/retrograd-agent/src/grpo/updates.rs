@@ -266,7 +266,7 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
                 .await
             }
         });
-        let outcomes = futures::future::join_all(selected)
+        let outcomes = futures_util::future::join_all(selected)
             .await
             .into_iter()
             .collect::<Result<Vec<_>>>()?;
@@ -626,7 +626,7 @@ async fn train_update(
                         tracing::warn!(%error, "prewarming the next update's environments failed");
                     }
                 };
-                let (training, ()) = futures::future::join(training_step, prewarm).await;
+                let (training, ()) = futures_util::future::join(training_step, prewarm).await;
                 let (result, seconds) = training;
                 (result?, seconds)
             }
@@ -738,7 +738,7 @@ mod tests {
         };
         let (first, second) = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            futures::future::join(first, second),
+            futures_util::future::join(first, second),
         )
         .await
         .expect("the second rollout waits for the first judge to start");

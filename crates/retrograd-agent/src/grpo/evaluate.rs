@@ -60,7 +60,7 @@ pub(super) async fn evaluate_scenarios(
         .iter()
         .enumerate()
         .map(|(index, scenario)| engine.rollout(scenario, seed.wrapping_add(index as u64)));
-    let trajectories = futures::future::join_all(passes).await;
+    let trajectories = futures_util::future::join_all(passes).await;
 
     let mut rewards = Vec::with_capacity(trajectories.len());
     let mut ungraded = 0;

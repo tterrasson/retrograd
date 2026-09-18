@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use futures::future::join_all;
+use futures_util::future::join_all;
 use tokio::time::Instant;
 
 use super::deadline::before_deadline;
