@@ -93,7 +93,7 @@ const RECOMPUTED_SEGMENTS: u64 = 1;
 /// published on the wire, so a reader that keys on a post name must be able to
 /// tell an answer from an older model version rather than silently miss a
 /// renamed line.
-pub const COST_MODEL_VERSION: u32 = 3;
+pub const COST_MODEL_VERSION: u32 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -496,6 +496,23 @@ impl<'a> Trainable<'a> {
             base: Some(set),
         }
     }
+
+    /// How many of the model's `n_layer` blocks the backward graph reaches.
+    ///
+    /// The whole model unless a base-only selection has a lowest trainable
+    /// block above zero. An adapter never prunes: its factors sit in every
+    /// block it targets. A `full` policy answers "all" through the same call.
+    pub fn backward_layers(&self, n_layer: u64) -> u64 {
+        if self.adapter.is_some() {
+            return n_layer;
+        }
+        let Some(set) = self.base.filter(|set| !set.is_empty()) else {
+            return n_layer;
+        };
+        set.lowest_trainable_layer()
+            .map_or(n_layer, |lowest| n_layer.saturating_sub(u64::from(lowest)))
+            .clamp(1, n_layer)
+    }
 }
 
 impl<'a> From<Option<&'a LoraConfig>> for Trainable<'a> {
@@ -540,25 +557,35 @@ pub fn estimate(
     ]);
 
     // --- Activations -------------------------------------------------------
-    // Retained layer outputs, plus the segment currently being recomputed.
+    // Retained layer outputs, plus the segment currently being recomputed, over
+    // the layers the backward actually reaches. The blocks below the lowest
+    // trainable one carry no backward node, so their forward tensors are freed
+    // as they are consumed (see the `the_backward_prunes_the_blocks_below_...`
+    // test in `tests/base_training.rs`).
+    let backward_layers = trainable.backward_layers(n_layer);
     let per_layer_tokens = product([n_ubatch, n_embd]);
     let activation_bytes = if training.gradient_checkpointing {
         let every = training.checkpoint_every_n_layers.max(1) as u64;
-        let retained = n_layer.div_ceil(every);
+        let retained = backward_layers.div_ceil(every);
         let checkpoints = product([
             retained,
             per_layer_tokens,
             checkpoint_element_bytes(training.checkpoint_dtype),
         ]);
         let recompute = product([
-            product([every, RECOMPUTED_SEGMENTS]).min(n_layer),
+            product([every, RECOMPUTED_SEGMENTS]).min(backward_layers),
             per_layer_tokens,
             ACTIVATION_TENSORS_PER_LAYER,
             4,
         ]);
         total([checkpoints, recompute])
     } else {
-        product([n_layer, per_layer_tokens, ACTIVATION_TENSORS_PER_LAYER, 4])
+        product([
+            backward_layers,
+            per_layer_tokens,
+            ACTIVATION_TENSORS_PER_LAYER,
+            4,
+        ])
     };
 
     // --- Attention scores --------------------------------------------------
@@ -1047,6 +1074,77 @@ mod tests {
                 + priced.trainable_gradient_bytes
                 + priced.optimizer_state_bytes
                 + priced.trainable_parameter_bytes
+        );
+    }
+
+    /// A partial selection that starts above the first block is charged only
+    /// for the blocks its backward reaches: the activation term is over the
+    /// span, not over the model.
+    #[test]
+    fn a_partial_selection_is_charged_for_the_layers_its_backward_reaches() {
+        use retrograd_core::{TensorDtype, TensorRole, TrainableEntry};
+        let norm = |name: &str| {
+            let n_elements = 512_u64;
+            TrainableEntry {
+                name: name.to_string(),
+                role: TensorRole::Base,
+                ne: [512, 1, 1, 1],
+                dtype: TensorDtype::F32,
+                n_elements,
+                n_bytes: n_elements * 4,
+                storage_id: 0,
+            }
+        };
+        let of = |entries: Vec<TrainableEntry>| TrainableSet {
+            policy: retrograd_core::TrainablePolicy::Partial,
+            entries,
+            exclusions: Vec::new(),
+        };
+        let priced = |set: &TrainableSet| {
+            estimate(
+                &tiny_model(),
+                &training(1024),
+                Trainable::base(set),
+                &sft_workload(),
+                Calibration::default(),
+            )
+            .activation_bytes
+        };
+
+        // 24 blocks, so the last four cost a sixth of all of them.
+        let bottom = of(vec![norm("blk.0.attn_norm.weight")]);
+        let top = of(vec![norm("blk.20.attn_norm.weight")]);
+        assert_eq!(priced(&bottom), priced(&top) * 6);
+
+        // The lowest selected block decides, not the highest.
+        let both = of(vec![
+            norm("blk.0.attn_norm.weight"),
+            norm("blk.20.attn_norm.weight"),
+        ]);
+        assert_eq!(priced(&both), priced(&bottom));
+
+        // A tensor outside every block gets the conservative answer.
+        let with_global = of(vec![
+            norm("blk.20.attn_norm.weight"),
+            norm("output_norm.weight"),
+        ]);
+        assert_eq!(priced(&with_global), priced(&bottom));
+
+        // An adapter never prunes.
+        let hybrid = Trainable {
+            adapter: Some(&LoraConfig::auto(8, 16.0)),
+            base: Some(&top),
+        };
+        assert_eq!(
+            estimate(
+                &tiny_model(),
+                &training(1024),
+                hybrid,
+                &sft_workload(),
+                Calibration::default(),
+            )
+            .activation_bytes,
+            priced(&bottom)
         );
     }
 

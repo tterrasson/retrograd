@@ -179,6 +179,12 @@ extern "C" int retro_trainer_optimizer_state(
         out_state->scheduler_step = state->scheduler_step;
         out_state->scheduler_total_steps = state->scheduler_total_steps;
         out_state->last_learning_rate = state->last_learning_rate;
+        // Built from the same config ensure_opt_context() builds the graph,
+        // so a cold checkpoint and one after a step report the same values.
+        const ggml_opt_optimizer_params params = retro::configured_optimizer_params(*state);
+        out_state->adamw_beta1 = params.adamw.beta1;
+        out_state->adamw_beta2 = params.adamw.beta2;
+        out_state->adamw_eps = params.adamw.eps;
         return 0;
     });
 }

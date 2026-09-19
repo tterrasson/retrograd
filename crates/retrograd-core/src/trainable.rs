@@ -128,9 +128,7 @@ pub struct TensorDesc {
 impl TensorDesc {
     /// `blk.<N>.` prefix, if this is a per-layer tensor.
     pub fn layer(&self) -> Option<u32> {
-        let rest = self.name.strip_prefix("blk.")?;
-        let (digits, _) = rest.split_once('.')?;
-        digits.parse().ok()
+        block_index(&self.name)
     }
 
     /// The module stem: what is left after the `blk.<N>.` prefix and the
@@ -549,6 +547,22 @@ impl TrainableSet {
         })
     }
 
+    /// The lowest block the backward has to reach.
+    ///
+    /// `Some(n)` when every trainable tensor sits in a block and `n` is the
+    /// first of them: the blocks below it are a frozen prefix with no backward
+    /// node. `None` when the set contains a tensor outside every block (a
+    /// model-wide norm), since its position is not recorded; callers budget
+    /// the full backward for it.
+    pub fn lowest_trainable_layer(&self) -> Option<u32> {
+        let mut lowest = None;
+        for entry in self.base_entries() {
+            let layer = block_index(&entry.name)?;
+            lowest = Some(lowest.map_or(layer, |current: u32| current.min(layer)));
+        }
+        lowest
+    }
+
     pub fn n_parameters(&self) -> u64 {
         self.entries
             .iter()
@@ -783,9 +797,7 @@ fn resolve_selected(
             wanted = true;
         }
         // Projection and bias together: the fused loss differentiates neither.
-        if selector.output_head
-            && (tensor.name == OUTPUT_HEAD || tensor.name == OUTPUT_HEAD_BIAS)
-        {
+        if selector.output_head && (tensor.name == OUTPUT_HEAD || tensor.name == OUTPUT_HEAD_BIAS) {
             wanted = true;
         }
         if !wanted {
@@ -940,8 +952,14 @@ fn unsupported_dtype_error(policy: &str, unsupported: &[(&str, &TensorDtype)]) -
     ))
 }
 
-/// The wildcard grammar the LoRA targets already use: `*` matches any run of
-/// characters, everything else is literal.
+/// The block a tensor name belongs to, or `None` for a name outside every
+/// block. Shared by the inventory and the resolved set.
+pub fn block_index(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix("blk.")?;
+    let (digits, _) = rest.split_once('.')?;
+    digits.parse().ok()
+}
+
 fn wildcard_match(pattern: &str, value: &str) -> bool {
     let pattern: Vec<char> = pattern.chars().collect();
     let value: Vec<char> = value.chars().collect();

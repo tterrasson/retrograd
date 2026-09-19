@@ -84,6 +84,11 @@ fn metadata(model: &Path, global_step: u64) -> CheckpointMetadata {
 }
 
 fn compatibility(trainer: &mut Trainer, model: &Path) -> checkpoint::Compatibility {
+    // From the trainer: the descriptor declares more coefficients than a
+    // document spells.
+    let hyperparameters = trainer
+        .optimizer_hyperparameters()
+        .expect("optimizer hyperparameters");
     checkpoint::Compatibility {
         model_signature: trainer.model_signature().expect("model signature"),
         model_bytes: std::fs::metadata(model).map(|meta| meta.len()).unwrap_or(0),
@@ -96,6 +101,8 @@ fn compatibility(trainer: &mut Trainer, model: &Path) -> checkpoint::Compatibili
         warmup_steps: 0,
         total_steps: None,
         optimizer_kind: config().trainable.optimizer.to_string(),
+        optimizer_layout_version: hyperparameters.optimizer().layout_version(),
+        optimizer_hyperparameters: hyperparameters.lines(),
         weight_decay: config().weight_decay,
         max_grad_norm: config().max_grad_norm,
         trainable_policy: trainer.trainable_policy().as_str().to_string(),
@@ -218,6 +225,17 @@ fn a_checkpoint_after_a_step_carries_named_slots_that_restore_verbatim() {
             slot.shape
         );
     }
+    // Recorded layout and coefficients: three of the six are the run's own,
+    // `beta1`, `beta2` and `eps` are the runtime's.
+    assert_eq!(saved.optimizer.layout_version, 1);
+    assert_eq!(saved.optimizer.hyperparameter("beta1"), Some("0.9"));
+    assert_eq!(saved.optimizer.hyperparameter("beta2"), Some("0.999"));
+    assert_eq!(saved.optimizer.hyperparameter("eps"), Some("1e-8"));
+    assert_eq!(
+        saved.optimizer.hyperparameter("learning_rate"),
+        Some(config().learning_rate.to_string().as_str())
+    );
+
     // Every marked parameter is named by the assignment table, including the
     // optimizer that owns it - the row a mixed run would compare on resume.
     assert!(!saved.optimizer.assignment.is_empty());
@@ -487,6 +505,24 @@ fn an_incompatible_run_is_refused_before_anything_is_written_into_the_trainer() 
         .load_checkpoint(&state, &wrong_lr)
         .expect_err("a different learning rate must be refused");
     assert!(error.to_string().contains("schedule"), "{error}");
+
+    // A coefficient no document spells, moved: everything else still agrees.
+    let mut wrong_beta = base.clone();
+    wrong_beta.optimizer_hyperparameters = wrong_beta
+        .optimizer_hyperparameters
+        .iter()
+        .map(|line| {
+            if line.starts_with("beta2=") {
+                "beta2=0.95".to_string()
+            } else {
+                line.clone()
+            }
+        })
+        .collect();
+    let error = resumed
+        .load_checkpoint(&state, &wrong_beta)
+        .expect_err("a different second moment decay must be refused");
+    assert!(error.to_string().contains("beta2=0.95"), "{error}");
 
     // A refusal is total: the adapter was never loaded, so the trainer is still
     // the blank one it was before.

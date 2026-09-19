@@ -169,6 +169,15 @@ pub struct Optimizer {
     pub version: u32,
     /// `adamw` or `sgd`.
     pub kind: String,
+    /// The optimizer's slot layout version. Recorded beside the name because
+    /// the name alone does not pin what a slot payload means.
+    #[serde(default)]
+    pub layout_version: u32,
+    /// Every hyperparameter the update read, rendered `name=value` in
+    /// declaration order. Includes the optimizer's own defaults, not only the
+    /// three a document spells, so a changed coefficient is caught on resume.
+    #[serde(default)]
+    pub hyperparameters: Vec<String>,
     pub learning_rate: f32,
     pub weight_decay: f32,
     pub max_grad_norm: f32,
@@ -196,6 +205,13 @@ impl Optimizer {
     /// Slots of one scope, in file order.
     pub fn slots_in(&self, scope: SlotScope) -> impl Iterator<Item = &StateSlot> {
         self.slots.iter().filter(move |slot| slot.scope == scope)
+    }
+
+    /// One recorded hyperparameter by name.
+    pub fn hyperparameter(&self, name: &str) -> Option<&str> {
+        self.hyperparameters
+            .iter()
+            .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
     }
 
     /// The `(m, v)` pair of one parameter, for a reader that still thinks in
@@ -283,6 +299,11 @@ pub struct StateSlot {
 pub struct ParameterAssignment {
     pub parameter: String,
     pub optimizer: String,
+    /// The layout version of the optimizer that wrote this row's slots, not of
+    /// the run's chosen one: a run with a fallback carries two layouts in one
+    /// table.
+    #[serde(default)]
+    pub layout_version: u32,
 }
 
 /// The trained base tensors of a checkpoint, and how to check the file is the
@@ -967,6 +988,27 @@ impl Checkpoint {
                 expected.optimizer_kind.clone(),
             );
         }
+        // Then the layout and the coefficients it declares, both skipped for a
+        // cold checkpoint: nothing has run, so nothing has been committed to.
+        if self.optimizer.graph_ready
+            && self.optimizer.layout_version != expected.optimizer_layout_version
+        {
+            return mismatch(
+                "optimizer layout version",
+                self.optimizer.layout_version.to_string(),
+                expected.optimizer_layout_version.to_string(),
+            );
+        }
+        if self.optimizer.graph_ready
+            && self.optimizer.hyperparameters != expected.optimizer_hyperparameters
+        {
+            // Name the row that differs so the error says which coefficient.
+            let (saved, found) = first_difference(
+                &self.optimizer.hyperparameters,
+                &expected.optimizer_hyperparameters,
+            );
+            return mismatch("optimizer hyperparameters", saved, found);
+        }
         if self.optimizer.weight_decay != expected.weight_decay
             || self.optimizer.max_grad_norm != expected.max_grad_norm
         {
@@ -992,6 +1034,23 @@ impl Checkpoint {
     }
 }
 
+/// The first `name=value` row two vectors disagree on, as `(saved, found)`.
+/// A row present on one side only is reported against `absent`.
+fn first_difference(saved: &[String], found: &[String]) -> (String, String) {
+    let missing = || "absent".to_string();
+    for index in 0..saved.len().max(found.len()) {
+        let left = saved.get(index);
+        let right = found.get(index);
+        if left != right {
+            return (
+                left.cloned().unwrap_or_else(missing),
+                right.cloned().unwrap_or_else(missing),
+            );
+        }
+    }
+    (saved.join(" "), found.join(" "))
+}
+
 /// The run-side values a checkpoint is validated against.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Compatibility {
@@ -1013,6 +1072,12 @@ pub struct Compatibility {
     /// `adamw` or `sgd`, as the run configures it. Compared with what the
     /// checkpoint recorded rather than with what the runtime happens to build.
     pub optimizer_kind: String,
+    /// That optimizer's declared layout version, compared beside the name.
+    pub optimizer_layout_version: u32,
+    /// This run's hyperparameter vector, in the same rendering the checkpoint
+    /// stores. Empty on both sides compares equal, which keeps records written
+    /// before the field existed resumable.
+    pub optimizer_hyperparameters: Vec<String>,
     pub weight_decay: f32,
     pub max_grad_norm: f32,
     /// `lora`, `full`, `partial` or `hybrid`.
@@ -1142,6 +1207,8 @@ mod tests {
             optimizer: Optimizer {
                 version: FORMAT_VERSION,
                 kind: "adamw".into(),
+                layout_version: 1,
+                hyperparameters: sample_hyperparameters(),
                 learning_rate: 2.0e-4,
                 weight_decay: 0.01,
                 max_grad_norm: 1.0,
@@ -1170,6 +1237,7 @@ mod tests {
                 assignment: vec![ParameterAssignment {
                     parameter: "blk.0.attn_q.weight.lora_a".into(),
                     optimizer: "adamw".into(),
+                    layout_version: 1,
                 }],
                 state_bytes: 256,
             },
@@ -1192,6 +1260,22 @@ mod tests {
         }
     }
 
+    /// AdamW's declared vector, spelled out here rather than imported so a
+    /// layout change fails the comparisons in this crate.
+    fn sample_hyperparameters() -> Vec<String> {
+        [
+            "learning_rate=0.0002",
+            "beta1=0.9",
+            "beta2=0.999",
+            "eps=1e-8",
+            "weight_decay=0.01",
+            "max_grad_norm=1.0",
+        ]
+        .iter()
+        .map(|line| (*line).to_string())
+        .collect()
+    }
+
     fn compatibility() -> Compatibility {
         Compatibility {
             model_signature: "arch=llama n_embd=64".into(),
@@ -1205,6 +1289,8 @@ mod tests {
             warmup_steps: 5,
             total_steps: Some(100),
             optimizer_kind: "adamw".into(),
+            optimizer_layout_version: 1,
+            optimizer_hyperparameters: sample_hyperparameters(),
             weight_decay: 0.01,
             max_grad_norm: 1.0,
             trainable_policy: "lora".into(),
@@ -1644,6 +1730,42 @@ mod tests {
                 "expected a {field} mismatch, got {error}"
             );
         }
+    }
+
+    /// The name, the layout version and the vector pin three different things;
+    /// a resume comparing only the first would restore a payload written under
+    /// different arithmetic.
+    #[test]
+    fn a_changed_layout_or_coefficient_is_refused_by_the_row_that_moved() {
+        let mut expected = compatibility();
+        expected.optimizer_layout_version = 2;
+        let error = sample().check_compatible(&expected).unwrap_err();
+        assert!(error.to_string().contains("layout version"), "{error}");
+
+        // A coefficient no document spells moved: the run configuration is
+        // unchanged, the trajectory is not.
+        let mut expected = compatibility();
+        expected.optimizer_hyperparameters[1] = "beta1=0.95".into();
+        let error = sample().check_compatible(&expected).unwrap_err();
+        assert!(error.to_string().contains("beta1=0.9,"), "{error}");
+        assert!(error.to_string().contains("beta1=0.95"), "{error}");
+
+        // A layout that lost a knob is reported against its absence.
+        let mut expected = compatibility();
+        expected.optimizer_hyperparameters.pop();
+        let error = sample().check_compatible(&expected).unwrap_err();
+        assert!(error.to_string().contains("absent"), "{error}");
+    }
+
+    /// Like the name, a cold checkpoint commits to no layout and no
+    /// coefficients: it allocated nothing and counted no step.
+    #[test]
+    fn a_cold_checkpoint_pins_neither_layout_nor_coefficients() {
+        let mut checkpoint = sample();
+        checkpoint.optimizer.graph_ready = false;
+        checkpoint.optimizer.layout_version = 7;
+        checkpoint.optimizer.hyperparameters = vec!["beta1=0.5".into()];
+        checkpoint.check_compatible(&compatibility()).unwrap();
     }
 
     #[test]

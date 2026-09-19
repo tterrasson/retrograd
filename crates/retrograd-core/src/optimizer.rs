@@ -104,6 +104,61 @@ impl OptimizerKind {
         }
     }
 
+    /// The version of this optimizer's layout: its slot table and the
+    /// arithmetic of its update. Recorded beside the optimizer's name in the
+    /// checkpoint and compared on resume, because the name alone does not pin
+    /// what a slot payload means.
+    ///
+    /// All layouts are `1` today. The first fork is the pending Gefen `variant`
+    /// key, which should move this number rather than the optimizer name.
+    pub fn layout_version(self) -> u32 {
+        match self {
+            Self::AdamW | Self::Sgd | Self::Muon | Self::Gefen => 1,
+        }
+    }
+
+    /// The hyperparameters this optimizer's update reads, with their defaults
+    /// and the range each one is valid in.
+    ///
+    /// Every layout declares `learning_rate`, `weight_decay` and
+    /// `max_grad_norm`; the rest are the optimizer's own. Structural values
+    /// (block size, iteration count, codebook width) stay integers: a power of
+    /// two is not a property a float has.
+    pub fn hyperparameters(self) -> &'static [HyperparameterDefinition] {
+        match self {
+            Self::AdamW => &ADAMW_HYPERPARAMETERS,
+            Self::Sgd => &SGD_HYPERPARAMETERS,
+            Self::Muon => &MUON_HYPERPARAMETERS,
+            Self::Gefen => &GEFEN_HYPERPARAMETERS,
+        }
+    }
+
+    /// This optimizer's hyperparameters at their declared defaults, ready to
+    /// be overwritten with the values a run configures.
+    pub fn declared_hyperparameters(self) -> HyperparameterVector {
+        HyperparameterVector {
+            optimizer: self,
+            values: self
+                .hyperparameters()
+                .iter()
+                .map(|declared| (declared.name, declared.default))
+                .collect(),
+        }
+    }
+
+    /// The optimizer's declarative description: identity, layout version,
+    /// slot tables and hyperparameters. No graphs, so it exists before any
+    /// kernel does.
+    pub fn descriptor(self) -> OptimizerDescriptor {
+        OptimizerDescriptor {
+            id: self.as_str(),
+            layout_version: self.layout_version(),
+            slots: self.slot_definitions(),
+            shared_slots: self.shared_slot_definitions(),
+            hyperparameters: self.hyperparameters(),
+        }
+    }
+
     /// The persistent per-parameter slots this optimizer keeps, in the order the
     /// state API enumerates them.
     ///
@@ -359,13 +414,16 @@ impl OptimizerKind {
         let shared = owners
             .iter()
             .flat_map(|owner| {
-                owner.shared_slot_definitions().iter().map(|slot| SharedSlot {
-                    owner: *owner,
-                    slot: slot.name,
-                    dtype: slot.dtype,
-                    n_elements: slot.shared_elements(),
-                    n_bytes: slot.shared_elements().saturating_mul(slot.dtype.bytes()),
-                })
+                owner
+                    .shared_slot_definitions()
+                    .iter()
+                    .map(|slot| SharedSlot {
+                        owner: *owner,
+                        slot: slot.name,
+                        dtype: slot.dtype,
+                        n_elements: slot.shared_elements(),
+                        n_bytes: slot.shared_elements().saturating_mul(slot.dtype.bytes()),
+                    })
             })
             .collect();
         OptimizerPlan {
@@ -373,6 +431,241 @@ impl OptimizerKind {
             parameters,
             shared,
         }
+    }
+}
+
+/// The declarative description of one optimizer, assembled from the tables
+/// above rather than stored: one definition, one reader.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OptimizerDescriptor {
+    /// The name a document writes and a checkpoint records.
+    pub id: &'static str,
+    /// The slot layout version, see [`OptimizerKind::layout_version`].
+    pub layout_version: u32,
+    pub slots: &'static [SlotDefinition],
+    pub shared_slots: &'static [SlotDefinition],
+    pub hyperparameters: &'static [HyperparameterDefinition],
+}
+
+/// One hyperparameter value, typed by what it is. `f32` for scalars: these
+/// are the numbers the update kernel reads, and matching widths keep a
+/// recorded value equal to a declared default bit for bit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HyperparameterValue {
+    /// A rate, a decay, an epsilon.
+    Scalar(f32),
+    /// A block size, an iteration count, a codebook width.
+    Structural(i64),
+    /// A binary choice, e.g. Nesterov momentum.
+    Toggle(bool),
+}
+
+impl HyperparameterValue {
+    /// The variant name, for errors that say what was expected.
+    pub fn type_name(self) -> &'static str {
+        match self {
+            Self::Scalar(_) => "scalar",
+            Self::Structural(_) => "structural",
+            Self::Toggle(_) => "toggle",
+        }
+    }
+
+    /// Canonical rendering, the same way for the same value. This is what a
+    /// checkpoint stores and a resume compares.
+    pub fn render(self) -> String {
+        match self {
+            Self::Scalar(value) => format!("{value:?}"),
+            Self::Structural(value) => value.to_string(),
+            Self::Toggle(value) => value.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for HyperparameterValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.render())
+    }
+}
+
+/// The valid range of one hyperparameter. Checked when the value is set, not
+/// when the step runs: an out of range beta aborts inside ggml instead of
+/// surfacing as an error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HyperparameterBound {
+    /// No range check; the type is the whole constraint (toggles).
+    Free,
+    /// Finite and strictly greater than zero.
+    Positive,
+    /// Finite and not negative.
+    NonNegative,
+    /// `0 <= x <= 1`.
+    UnitInterval,
+    /// A positive power of two.
+    PowerOfTwo,
+    /// An integer of at least this value.
+    AtLeast(i64),
+}
+
+impl HyperparameterBound {
+    fn check(self, name: &str, value: HyperparameterValue) -> Result<()> {
+        let refuse = |requirement: &str| {
+            Err(Error::invalid(format!(
+                "optimizer hyperparameter '{name}' must be {requirement}; got {value}"
+            )))
+        };
+        match (self, value) {
+            (Self::Free, _) => Ok(()),
+            (Self::Positive, HyperparameterValue::Scalar(scalar)) => {
+                if scalar.is_finite() && scalar > 0.0 {
+                    Ok(())
+                } else {
+                    refuse("finite and greater than zero")
+                }
+            }
+            (Self::NonNegative, HyperparameterValue::Scalar(scalar)) => {
+                if scalar.is_finite() && scalar >= 0.0 {
+                    Ok(())
+                } else {
+                    refuse("finite and not negative")
+                }
+            }
+            (Self::UnitInterval, HyperparameterValue::Scalar(scalar)) => {
+                if scalar.is_finite() && (0.0..=1.0).contains(&scalar) {
+                    Ok(())
+                } else {
+                    refuse("between zero and one")
+                }
+            }
+            (Self::PowerOfTwo, HyperparameterValue::Structural(integer)) => {
+                if integer > 0 && integer.count_ones() == 1 {
+                    Ok(())
+                } else {
+                    refuse("a positive power of two")
+                }
+            }
+            (Self::AtLeast(least), HyperparameterValue::Structural(integer)) => {
+                if integer >= least {
+                    Ok(())
+                } else {
+                    refuse(&format!("at least {least}"))
+                }
+            }
+            // A bound and a value of different shapes: the definition is wrong.
+            (bound, value) => Err(Error::invalid(format!(
+                "optimizer hyperparameter '{name}' is declared {bound:?} and cannot hold a {} value",
+                value.type_name()
+            ))),
+        }
+    }
+}
+
+/// One declared hyperparameter: its name, its default and its valid range.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HyperparameterDefinition {
+    pub name: &'static str,
+    pub default: HyperparameterValue,
+    pub bound: HyperparameterBound,
+}
+
+impl HyperparameterDefinition {
+    const fn new(
+        name: &'static str,
+        default: HyperparameterValue,
+        bound: HyperparameterBound,
+    ) -> Self {
+        Self {
+            name,
+            default,
+            bound,
+        }
+    }
+
+    const fn toggle(name: &'static str, default: bool) -> Self {
+        Self {
+            name,
+            default: HyperparameterValue::Toggle(default),
+            bound: HyperparameterBound::Free,
+        }
+    }
+}
+
+/// One optimizer's hyperparameters, filled in for one run. Built from the
+/// declaration and overwritten with the run's values; a name the optimizer
+/// does not declare is refused. Order is the declaration's, which makes
+/// [`Self::lines`] canonical.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HyperparameterVector {
+    optimizer: OptimizerKind,
+    values: Vec<(&'static str, HyperparameterValue)>,
+}
+
+impl HyperparameterVector {
+    pub fn optimizer(&self) -> OptimizerKind {
+        self.optimizer
+    }
+
+    /// Set one declared value. Refuses an unknown name, a value of the wrong
+    /// shape and a value outside its bound.
+    pub fn set(&mut self, name: &str, value: HyperparameterValue) -> Result<()> {
+        let declared = self
+            .optimizer
+            .hyperparameters()
+            .iter()
+            .find(|declared| declared.name == name)
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "optimizer {} has no hyperparameter '{name}'",
+                    self.optimizer
+                ))
+            })?;
+        if declared.default.type_name() != value.type_name() {
+            return Err(Error::invalid(format!(
+                "optimizer hyperparameter '{name}' is a {} and was given a {} value",
+                declared.default.type_name(),
+                value.type_name()
+            )));
+        }
+        declared.bound.check(name, value)?;
+        for entry in &mut self.values {
+            if entry.0 == name {
+                entry.1 = value;
+                return Ok(());
+            }
+        }
+        self.values.push((declared.name, value));
+        Ok(())
+    }
+
+    /// Convenience for setting a scalar value.
+    pub fn set_scalar(&mut self, name: &str, value: f32) -> Result<()> {
+        self.set(name, HyperparameterValue::Scalar(value))
+    }
+
+    pub fn get(&self, name: &str) -> Option<HyperparameterValue> {
+        self.values
+            .iter()
+            .find(|(declared, _)| *declared == name)
+            .map(|(_, value)| *value)
+    }
+
+    /// Name and rendering pairs, in declaration order.
+    pub fn rows(&self) -> impl Iterator<Item = (&'static str, String)> + '_ {
+        self.values
+            .iter()
+            .map(|(name, value)| (*name, value.render()))
+    }
+
+    /// The canonical `name=value` lines a checkpoint stores.
+    pub fn lines(&self) -> Vec<String> {
+        self.rows()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect()
+    }
+}
+
+impl fmt::Display for HyperparameterVector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.lines().join(" "))
     }
 }
 
@@ -489,6 +782,14 @@ pub struct PlannedParameter {
     /// `None` when no optimizer in this run's policy can write it.
     pub optimizer: Option<OptimizerKind>,
     pub slots: Vec<PlannedSlot>,
+}
+
+impl PlannedParameter {
+    /// The layout version of the optimizer that owns this parameter. Derived
+    /// from [`OptimizerKind::layout_version`] so a row cannot disagree with it.
+    pub fn layout_version(&self) -> Option<u32> {
+        self.optimizer.map(OptimizerKind::layout_version)
+    }
 }
 
 /// One resolved shared slot, allocated once per owning optimizer.
@@ -626,6 +927,151 @@ impl fmt::Display for OptimizerKind {
         f.write_str(self.as_str())
     }
 }
+
+/// AdamW. `beta1`, `beta2` and `eps` come from ggml's defaults; declaring
+/// them lets a checkpoint record the values the update actually read.
+const ADAMW_HYPERPARAMETERS: [HyperparameterDefinition; 6] = [
+    HyperparameterDefinition::new(
+        "learning_rate",
+        HyperparameterValue::Scalar(1.0e-3),
+        HyperparameterBound::Positive,
+    ),
+    HyperparameterDefinition::new(
+        "beta1",
+        HyperparameterValue::Scalar(0.9),
+        HyperparameterBound::UnitInterval,
+    ),
+    HyperparameterDefinition::new(
+        "beta2",
+        HyperparameterValue::Scalar(0.999),
+        HyperparameterBound::UnitInterval,
+    ),
+    HyperparameterDefinition::new(
+        "eps",
+        HyperparameterValue::Scalar(1.0e-8),
+        HyperparameterBound::Positive,
+    ),
+    HyperparameterDefinition::new(
+        "weight_decay",
+        HyperparameterValue::Scalar(0.0),
+        HyperparameterBound::NonNegative,
+    ),
+    HyperparameterDefinition::new(
+        "max_grad_norm",
+        HyperparameterValue::Scalar(1.0),
+        HyperparameterBound::Positive,
+    ),
+];
+
+/// SGD: the universal three and nothing else.
+const SGD_HYPERPARAMETERS: [HyperparameterDefinition; 3] = [
+    HyperparameterDefinition::new(
+        "learning_rate",
+        HyperparameterValue::Scalar(1.0e-3),
+        HyperparameterBound::Positive,
+    ),
+    HyperparameterDefinition::new(
+        "weight_decay",
+        HyperparameterValue::Scalar(0.0),
+        HyperparameterBound::NonNegative,
+    ),
+    HyperparameterDefinition::new(
+        "max_grad_norm",
+        HyperparameterValue::Scalar(1.0),
+        HyperparameterBound::Positive,
+    ),
+];
+
+/// Muon v1. The fallback rate is its own value, not a ratio of `learning_rate`:
+/// an orthogonalized update and an AdamW one are not in the same units.
+const MUON_HYPERPARAMETERS: [HyperparameterDefinition; 8] = [
+    HyperparameterDefinition::new(
+        "learning_rate",
+        HyperparameterValue::Scalar(0.02),
+        HyperparameterBound::Positive,
+    ),
+    HyperparameterDefinition::new(
+        "momentum",
+        HyperparameterValue::Scalar(0.95),
+        HyperparameterBound::UnitInterval,
+    ),
+    HyperparameterDefinition::toggle("nesterov", true),
+    HyperparameterDefinition::new(
+        "ns_steps",
+        HyperparameterValue::Structural(5),
+        HyperparameterBound::AtLeast(1),
+    ),
+    HyperparameterDefinition::new(
+        "ns_epsilon",
+        HyperparameterValue::Scalar(1.0e-7),
+        HyperparameterBound::Positive,
+    ),
+    HyperparameterDefinition::new(
+        "fallback_learning_rate",
+        HyperparameterValue::Scalar(1.0e-3),
+        HyperparameterBound::Positive,
+    ),
+    HyperparameterDefinition::new(
+        "weight_decay",
+        HyperparameterValue::Scalar(0.0),
+        HyperparameterBound::NonNegative,
+    ),
+    HyperparameterDefinition::new(
+        "max_grad_norm",
+        HyperparameterValue::Scalar(1.0),
+        HyperparameterBound::Positive,
+    ),
+];
+
+/// Gefen. `block_size` and `codebook_levels` describe shapes, so they are
+/// integers; `block_size` is additionally a power of two.
+const GEFEN_HYPERPARAMETERS: [HyperparameterDefinition; 9] = [
+    HyperparameterDefinition::new(
+        "learning_rate",
+        HyperparameterValue::Scalar(1.0e-3),
+        HyperparameterBound::Positive,
+    ),
+    HyperparameterDefinition::new(
+        "beta1",
+        HyperparameterValue::Scalar(0.9),
+        HyperparameterBound::UnitInterval,
+    ),
+    HyperparameterDefinition::new(
+        "beta2",
+        HyperparameterValue::Scalar(0.999),
+        HyperparameterBound::UnitInterval,
+    ),
+    HyperparameterDefinition::new(
+        "eps",
+        HyperparameterValue::Scalar(1.0e-8),
+        HyperparameterBound::Positive,
+    ),
+    HyperparameterDefinition::new(
+        "block_size",
+        HyperparameterValue::Structural(GEFEN_DEFAULT_BLOCK_SIZE as i64),
+        HyperparameterBound::PowerOfTwo,
+    ),
+    HyperparameterDefinition::new(
+        "min_numel",
+        HyperparameterValue::Structural(GEFEN_DEFAULT_MIN_NUMEL as i64),
+        HyperparameterBound::AtLeast(1),
+    ),
+    HyperparameterDefinition::new(
+        "codebook_levels",
+        HyperparameterValue::Structural(GEFEN_CODEBOOK_LEVELS as i64),
+        HyperparameterBound::AtLeast(2),
+    ),
+    HyperparameterDefinition::new(
+        "weight_decay",
+        HyperparameterValue::Scalar(0.0),
+        HyperparameterBound::NonNegative,
+    ),
+    HyperparameterDefinition::new(
+        "max_grad_norm",
+        HyperparameterValue::Scalar(1.0),
+        HyperparameterBound::Positive,
+    ),
+];
 
 /// Default `min_numel` below which a Gefen-selected parameter falls back to
 /// AdamW. Named rather than inlined because the plan's own warning depends on
@@ -885,7 +1331,11 @@ mod tests {
         assert_eq!(plan.shared[0].slot, "codebook");
         assert_eq!(plan.shared[0].n_bytes, GEFEN_CODEBOOK_LEVELS * 4);
         // A partial trailing block is a block: 4097 elements is five, not four.
-        let odd = set(vec![entry("blk.0.ssm_a", TensorRole::Base, [4097, 1, 1, 1])]);
+        let odd = set(vec![entry(
+            "blk.0.ssm_a",
+            TensorRole::Base,
+            [4097, 1, 1, 1],
+        )]);
         let plan = OptimizerKind::Gefen.plan(&odd);
         assert_eq!(plan.slot_rows()[1].1.n_elements, 5);
     }
@@ -936,6 +1386,135 @@ mod tests {
         // The plan's own correction: 16 x 1024 is 16384, not "below 4096".
         let factor = entry("a.lora_a", TensorRole::LoraA, [1024, 16, 1, 1]);
         assert!(OptimizerKind::Gefen.is_eligible(&factor));
+    }
+
+    const ALL: [OptimizerKind; 4] = [
+        OptimizerKind::AdamW,
+        OptimizerKind::Sgd,
+        OptimizerKind::Muon,
+        OptimizerKind::Gefen,
+    ];
+
+    /// Every layout declares the three scalars a run configures, so the
+    /// schedule and the gradient-norm ceiling stay per-run rather than
+    /// per-owner in a mixed run.
+    #[test]
+    fn every_layout_declares_the_three_scalars_a_run_configures() {
+        for kind in ALL {
+            let vector = kind.declared_hyperparameters();
+            for name in ["learning_rate", "weight_decay", "max_grad_norm"] {
+                assert!(
+                    matches!(vector.get(name), Some(HyperparameterValue::Scalar(_))),
+                    "{kind} declares no scalar '{name}'"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_descriptor_is_the_tables_its_optimizer_declares() {
+        for kind in ALL {
+            let descriptor = kind.descriptor();
+            assert_eq!(descriptor.id, kind.as_str());
+            assert_eq!(descriptor.layout_version, kind.layout_version());
+            assert_eq!(descriptor.slots, kind.slot_definitions());
+            assert_eq!(descriptor.shared_slots, kind.shared_slot_definitions());
+            assert_eq!(descriptor.hyperparameters, kind.hyperparameters());
+            // One layout each, so far. The first fork is Gefen's `variant`.
+            assert_eq!(descriptor.layout_version, 1);
+        }
+    }
+
+    #[test]
+    fn a_value_outside_its_bound_is_refused_by_name() {
+        let mut adamw = OptimizerKind::AdamW.declared_hyperparameters();
+        let refused = adamw.set_scalar("beta1", 1.5).expect_err("out of range");
+        assert!(refused.to_string().contains("beta1"), "{refused}");
+        assert!(adamw.set_scalar("eps", 0.0).is_err());
+        assert!(adamw.set_scalar("learning_rate", f32::NAN).is_err());
+        assert!(adamw.set_scalar("weight_decay", 0.0).is_ok());
+
+        let mut gefen = OptimizerKind::Gefen.declared_hyperparameters();
+        assert!(
+            gefen
+                .set("block_size", HyperparameterValue::Structural(1000))
+                .is_err(),
+            "a block size that is not a power of two was accepted"
+        );
+        assert!(
+            gefen
+                .set("block_size", HyperparameterValue::Structural(512))
+                .is_ok()
+        );
+        let mut muon = OptimizerKind::Muon.declared_hyperparameters();
+        assert!(
+            muon.set("ns_steps", HyperparameterValue::Structural(0))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_knob_the_layout_does_not_declare_is_refused() {
+        let mut sgd = OptimizerKind::Sgd.declared_hyperparameters();
+        let refused = sgd.set_scalar("beta1", 0.9).expect_err("sgd has no beta1");
+        assert!(refused.to_string().contains("beta1"), "{refused}");
+        // A value of the wrong shape is refused too.
+        let mut gefen = OptimizerKind::Gefen.declared_hyperparameters();
+        let refused = gefen
+            .set("block_size", HyperparameterValue::Scalar(1024.0))
+            .expect_err("a structural knob is not a float");
+        assert!(refused.to_string().contains("block_size"), "{refused}");
+    }
+
+    /// The rendering is stable and in declaration order.
+    #[test]
+    fn the_vector_renders_in_declaration_order() {
+        let mut adamw = OptimizerKind::AdamW.declared_hyperparameters();
+        adamw.set_scalar("learning_rate", 2.0e-4).unwrap();
+        adamw.set_scalar("weight_decay", 0.01).unwrap();
+        assert_eq!(
+            adamw.lines(),
+            vec![
+                "learning_rate=0.0002",
+                "beta1=0.9",
+                "beta2=0.999",
+                "eps=1e-8",
+                "weight_decay=0.01",
+                "max_grad_norm=1.0",
+            ]
+        );
+        // Setting twice replaces rather than appends.
+        adamw.set_scalar("weight_decay", 0.02).unwrap();
+        assert_eq!(adamw.lines().len(), 6);
+        assert_eq!(
+            adamw.get("weight_decay"),
+            Some(HyperparameterValue::Scalar(0.02))
+        );
+    }
+
+    /// In a mixed run each parameter carries the layout of its own optimizer.
+    #[test]
+    fn a_planned_parameter_carries_the_layout_of_its_owner() {
+        let mixed = set(vec![
+            entry("blk.0.attn_q.weight", TensorRole::Base, [64, 64, 1, 1]),
+            entry("blk.0.attn_norm.weight", TensorRole::Base, [64, 1, 1, 1]),
+        ]);
+        let plan = OptimizerKind::Muon.plan(&mixed);
+        assert_eq!(plan.parameters[0].optimizer, Some(OptimizerKind::Muon));
+        assert_eq!(plan.parameters[1].optimizer, Some(OptimizerKind::AdamW));
+        for parameter in &plan.parameters {
+            assert_eq!(
+                parameter.layout_version(),
+                parameter.optimizer.map(OptimizerKind::layout_version)
+            );
+        }
+        // A parameter nothing can write has no layout.
+        let unwritable = TrainableEntry {
+            dtype: TensorDtype::Other("Q4_K".to_string()),
+            ..entry("blk.0.ffn_up.weight", TensorRole::Base, [64, 64, 1, 1])
+        };
+        let plan = OptimizerKind::Sgd.plan(&set(vec![unwritable]));
+        assert_eq!(plan.parameters[0].layout_version(), None);
     }
 
     #[test]

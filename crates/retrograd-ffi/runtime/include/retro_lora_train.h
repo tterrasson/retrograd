@@ -1634,6 +1634,13 @@ typedef struct retro_optimizer_state {
     uint64_t scheduler_step;
     uint64_t scheduler_total_steps;
     float last_learning_rate;
+    // AdamW's own coefficients, as the update step reads them. Reported, not
+    // configured: nothing in retro_train_config sets them, so a checkpoint
+    // records the values that ran. Meaningless for optimizers without such a
+    // knob (SGD).
+    float adamw_beta1;
+    float adamw_beta2;
+    float adamw_eps;
 } retro_optimizer_state;
 
 // Reads the optimizer and scheduler scalars. Never fails for a live trainer.

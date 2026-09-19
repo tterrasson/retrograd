@@ -160,6 +160,7 @@ impl RunController {
         else {
             return Ok(None);
         };
+        let optimizer_hyperparameters = trainer.optimizer_hyperparameters()?;
         let expected = checkpoint::Compatibility {
             model_signature: trainer.model_signature()?,
             model_bytes: model_bytes(&self.context.model_path),
@@ -172,6 +173,10 @@ impl RunController {
             warmup_steps: self.context.warmup_steps,
             total_steps: Some(total_steps),
             optimizer_kind: self.context.optimizer_kind.clone(),
+            // From the trainer, like the trainable signature below: only the
+            // runtime knows the coefficients no document spells.
+            optimizer_layout_version: optimizer_hyperparameters.optimizer().layout_version(),
+            optimizer_hyperparameters: optimizer_hyperparameters.lines(),
             weight_decay: self.context.weight_decay,
             max_grad_norm: self.context.max_grad_norm,
             // Read from the trainer rather than from the document: the

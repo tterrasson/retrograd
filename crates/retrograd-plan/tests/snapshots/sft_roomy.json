@@ -48,7 +48,7 @@
     "iterations": 1,
     "memory": {
       "resources": {
-        "cost_model_version": 3,
+        "cost_model_version": 4,
         "persistent_device": {
           "bytes": 590872576,
           "posts": [

@@ -524,6 +524,10 @@ int train_preflight_impl(
         size_t n_buffer,
         size_t * out_n_bytes);
 int preflight_summary_impl(retro_trainer * trainer, retro_preflight_summary * out_summary);
+// The optimizer parameters this configuration asks for, before the schedule
+// scales the rate. Answerable before the optimizer graph exists, so a cold
+// trainer reports the values its first step will read.
+ggml_opt_optimizer_params configured_optimizer_params(const trainer_state & state);
 ggml_opt_optimizer_params scheduled_optimizer_params(void * userdata);
 int train_tokens_impl(
         retro_trainer * trainer,

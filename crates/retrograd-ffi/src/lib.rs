@@ -560,6 +560,11 @@ pub struct RetroOptimizerState {
     pub scheduler_step: u64,
     pub scheduler_total_steps: u64,
     pub last_learning_rate: c_float,
+    /// AdamW's coefficients as the update step reads them. Reported, not
+    /// configured: a checkpoint records the values that ran.
+    pub adamw_beta1: c_float,
+    pub adamw_beta2: c_float,
+    pub adamw_eps: c_float,
 }
 
 #[repr(C)]
@@ -1641,6 +1646,18 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroOptimizerSlot, ne), 256);
         assert_eq!(offset_of!(RetroOptimizerSlot, n_elements), 288);
         assert_eq!(offset_of!(RetroOptimizerSlot, n_bytes), 296);
+
+        // `graph_ready` sits in the padding beside `has_momenta` and the three
+        // AdamW coefficients are a tail addition, so nothing before them moved:
+        // `optimizer` at 12 pins that, and the size catches a header resized on
+        // one side.
+        assert_eq!(offset_of!(RetroOptimizerState, has_momenta), 8);
+        assert_eq!(offset_of!(RetroOptimizerState, graph_ready), 9);
+        assert_eq!(offset_of!(RetroOptimizerState, optimizer), 12);
+        assert_eq!(offset_of!(RetroOptimizerState, last_learning_rate), 48);
+        assert_eq!(offset_of!(RetroOptimizerState, adamw_beta1), 52);
+        assert_eq!(offset_of!(RetroOptimizerState, adamw_eps), 60);
+        assert_eq!(size_of::<RetroOptimizerState>(), 64);
     }
 
     /// `retro_read_tensor_inventory` on its error paths only, for the same

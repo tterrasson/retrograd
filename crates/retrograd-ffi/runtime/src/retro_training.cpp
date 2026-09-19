@@ -293,6 +293,16 @@ bool seed_epoch_shuffle(ggml_opt_context_t opt, uint64_t seed, uint32_t epoch) {
 
 } // namespace
 
+ggml_opt_optimizer_params configured_optimizer_params(const trainer_state & state) {
+    ggml_opt_optimizer_params params = ggml_opt_get_default_optimizer_params(nullptr);
+    params.max_grad_norm = state.train_config.max_grad_norm;
+    params.adamw.alpha = state.train_config.learning_rate;
+    params.adamw.wd = state.train_config.weight_decay;
+    params.sgd.alpha = state.train_config.learning_rate;
+    params.sgd.wd = state.train_config.weight_decay;
+    return params;
+}
+
 ggml_opt_optimizer_params scheduled_optimizer_params(void * userdata) {
     trainer_state * state = static_cast<trainer_state *>(userdata);
     ggml_opt_optimizer_params params = state->optimizer_params;
@@ -341,12 +351,7 @@ bool ensure_opt_context(trainer_state & state) {
                 && optimizer_supports_marked_dtypes(state);
     }
 
-    state.optimizer_params = ggml_opt_get_default_optimizer_params(nullptr);
-    state.optimizer_params.max_grad_norm = state.train_config.max_grad_norm;
-    state.optimizer_params.adamw.alpha = state.train_config.learning_rate;
-    state.optimizer_params.adamw.wd = state.train_config.weight_decay;
-    state.optimizer_params.sgd.alpha = state.train_config.learning_rate;
-    state.optimizer_params.sgd.wd = state.train_config.weight_decay;
+    state.optimizer_params = configured_optimizer_params(state);
 
     // The optimizer the document asked for, not the one this function used to
     // hard-code. Validated at trainer creation, so anything else here would be

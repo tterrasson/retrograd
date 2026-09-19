@@ -1,6 +1,6 @@
 use super::*;
 
-use retrograd_core::{TensorDtype, TensorRole, TrainableEntry, TrainableSet};
+use retrograd_core::{HyperparameterVector, TensorDtype, TensorRole, TrainableEntry, TrainableSet};
 
 impl Trainer {
     /// Declares that `completed_epochs` SFT epochs are already done, so the
@@ -26,6 +26,28 @@ impl Trainer {
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
         self.check(unsafe { ffi::retro_trainer_optimizer_state(self.raw.as_ptr(), &mut state) })?;
         Ok(state)
+    }
+
+    /// The hyperparameters this run's optimizer reads, at the values it reads
+    /// them.
+    ///
+    /// The declared layout filled in from the live runtime, never from the
+    /// document: a configuration spells only part of the vector, the rest is
+    /// ggml's own. Recorded in the checkpoint and compared on resume.
+    pub fn optimizer_hyperparameters(&mut self) -> Result<HyperparameterVector> {
+        let state = self.optimizer_state()?;
+        let kind = OptimizerKind::from_ffi(state.optimizer)?;
+        let mut vector = kind.declared_hyperparameters();
+        vector.set_scalar("learning_rate", state.learning_rate)?;
+        vector.set_scalar("weight_decay", state.weight_decay)?;
+        vector.set_scalar("max_grad_norm", state.max_grad_norm)?;
+        // The C structure only publishes AdamW's own coefficients.
+        if kind == OptimizerKind::AdamW {
+            vector.set_scalar("beta1", state.adamw_beta1)?;
+            vector.set_scalar("beta2", state.adamw_beta2)?;
+            vector.set_scalar("eps", state.adamw_eps)?;
+        }
+        Ok(vector)
     }
 
     /// Every tensor the optimizer marked trainable, as a resolved set.
@@ -336,6 +358,9 @@ impl Trainer {
             TrainableSet::default()
         };
         let optimizer_kind = OptimizerKind::from_ffi(optimizer_state.optimizer)?;
+        // Filled in from the same live state as the scalars above, so the
+        // record and the resume comparison read one answer.
+        let hyperparameters = self.optimizer_hyperparameters()?;
         // The declared state table, built before the live one is read, so the
         // two can be compared.
         let plan = optimizer_kind.plan(&marked);
@@ -430,6 +455,8 @@ impl Trainer {
             optimizer: checkpoint::Optimizer {
                 version: checkpoint::FORMAT_VERSION,
                 kind: optimizer_kind.to_string(),
+                layout_version: optimizer_kind.layout_version(),
+                hyperparameters: hyperparameters.lines(),
                 learning_rate: optimizer_state.learning_rate,
                 weight_decay: optimizer_state.weight_decay,
                 max_grad_norm: optimizer_state.max_grad_norm,
@@ -538,6 +565,10 @@ impl Trainer {
             scheduler_step: record.scheduler.step,
             scheduler_total_steps: record.scheduler.total_steps,
             last_learning_rate: record.scheduler.last_learning_rate,
+            // Reported, never restored: the coefficients belong to the run
+            // configuration, and the compatibility check above refuses a
+            // record that disagrees with it.
+            ..ffi::RetroOptimizerState::default()
         };
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
         self.check(unsafe {
@@ -618,6 +649,9 @@ fn assignment_of(plan: &retrograd_core::OptimizerPlan) -> Vec<checkpoint::Parame
                 .optimizer
                 .unwrap_or(OptimizerKind::AdamW)
                 .to_string(),
+            layout_version: parameter
+                .layout_version()
+                .unwrap_or_else(|| OptimizerKind::AdamW.layout_version()),
         })
         .collect()
 }

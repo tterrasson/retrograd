@@ -229,7 +229,10 @@ fn the_preflight_audits_each_selected_family_and_names_the_loss_path() {
     assert!(preflight.contains("loss_path: fused"), "{preflight}");
     assert!(preflight.contains("trainable_families:"), "{preflight}");
     assert!(
-        preflight.contains(&format!("norms: {} tensor(s), backward ready", selected.len())),
+        preflight.contains(&format!(
+            "norms: {} tensor(s), backward ready",
+            selected.len()
+        )),
         "{preflight}"
     );
 }
@@ -338,9 +341,22 @@ fn sgd_is_the_optimizer_the_graph_builds_and_the_checkpoint_records() {
             .optimizer
             .assignment
             .iter()
-            .all(|row| row.optimizer == "sgd")
+            .all(|row| row.optimizer == "sgd" && row.layout_version == 1)
     );
     assert!(record.rng.runtime_mt19937.is_some());
+
+    // The recorded vector is SGD's own: SGD declares no coefficients, so
+    // AdamW's betas are absent.
+    assert_eq!(record.optimizer.layout_version, 1);
+    assert_eq!(
+        record.optimizer.hyperparameters,
+        vec![
+            "learning_rate=0.001",
+            "weight_decay=0.0",
+            "max_grad_norm=1.0"
+        ]
+    );
+    assert_eq!(record.optimizer.hyperparameter("beta1"), None);
 
     // And the trajectory it names is checked: AdamW cannot resume it.
     let mut expected = compatibility_for(&mut reader, &model, "sgd");
@@ -439,6 +455,10 @@ fn compatibility_for(
     optimizer: &str,
 ) -> checkpoint::Compatibility {
     let config = base_config(TrainablePolicy::Lora, OptimizerKind::Sgd);
+    // From the trainer, the same side that records it.
+    let hyperparameters = trainer
+        .optimizer_hyperparameters()
+        .expect("optimizer hyperparameters");
     checkpoint::Compatibility {
         model_signature: trainer.model_signature().expect("model signature"),
         model_bytes: std::fs::metadata(model).map(|meta| meta.len()).unwrap_or(0),
@@ -451,6 +471,8 @@ fn compatibility_for(
         warmup_steps: 0,
         total_steps: None,
         optimizer_kind: optimizer.into(),
+        optimizer_layout_version: hyperparameters.optimizer().layout_version(),
+        optimizer_hyperparameters: hyperparameters.lines(),
         weight_decay: config.weight_decay,
         max_grad_norm: config.max_grad_norm,
         trainable_policy: trainer.trainable_policy().as_str().to_string(),
@@ -768,4 +790,69 @@ fn a_trainable_bundle_must_match_the_run_it_is_restored_into() {
         .load_lora(&bundle)
         .expect_err("a bundle is not an adapter");
     assert!(!error.to_string().is_empty());
+}
+
+/// What a frozen prefix costs. Same-size selections (one block's norms) at
+/// different heights: the parameter, gradient and state halves are identical by
+/// construction, so anything that differs is the backward graph. `norms =
+/// true` cannot ask this, since the model-wide norms sit below every block.
+///
+/// Measured on this fixture: the optimizer context's compute buffer falls from
+/// about 25 MB for block 0 of 14 to about 4.4 MB for the last, roughly
+/// linearly. The blocks below the lowest trainable one carry no backward node,
+/// and `retrograd_plan::cost` charges the activation term over the span
+/// because of this.
+#[test]
+fn the_backward_prunes_the_blocks_below_the_lowest_trainable_one() {
+    let model = fixture!();
+    let _guard = common::serialize_models();
+    let inventory = tensor_inventory(&model, Device::Cpu).expect("inventory");
+    let last = inventory.n_layer - 1;
+    assert!(last >= 3, "the fixture is too shallow to have a prefix");
+
+    // One measurement per height.
+    let measure = |block: u32| -> (usize, u64, u64) {
+        let mut config = base_config(TrainablePolicy::Partial, OptimizerKind::AdamW);
+        config.trainable.selector = TrainableSelector {
+            modules: vec![format!("blk.{block}.*norm.weight")],
+            ..Default::default()
+        };
+        let set = resolve_base(
+            &inventory,
+            TrainablePolicy::Partial,
+            &config.trainable.selector,
+        )
+        .expect("one block's norms resolve");
+        let mut trainer = Trainer::new(&model, config).expect("load trainer");
+        trainer
+            .set_trainable_base(&names(&set.entries))
+            .expect("declare the set");
+        trainer.prepare_optimizer().expect("build the graph");
+        let report = trainer.memory_report().expect("memory report");
+        (
+            set.entries.len(),
+            report.trainable_gradient_bytes,
+            report.optimizer_compute_bytes,
+        )
+    };
+
+    let (bottom_tensors, bottom_gradient, bottom_compute) = measure(0);
+    let (top_tensors, top_gradient, top_compute) = measure(last);
+    // Same work: if the tensors or gradients differ, the comparison below is
+    // measuring the selection instead.
+    assert_eq!(bottom_tensors, top_tensors);
+    assert_eq!(bottom_gradient, top_gradient);
+    assert!(
+        top_compute * 2 < bottom_compute,
+        "the frozen prefix was not pruned: {bottom_compute} bytes at block 0, \
+         {top_compute} at block {last}"
+    );
+
+    // A middle selection costs strictly between the two ends.
+    let (_, _, middle_compute) = measure(last / 2);
+    assert!(
+        top_compute < middle_compute && middle_compute < bottom_compute,
+        "compute is not monotonic in the lowest trainable block: \
+         {bottom_compute} / {middle_compute} / {top_compute}"
+    );
 }
