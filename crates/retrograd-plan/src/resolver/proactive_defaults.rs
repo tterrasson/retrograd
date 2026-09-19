@@ -19,7 +19,7 @@ pub(super) fn apply_defaults(
         input,
         algorithm,
         budgets,
-        lora,
+        trainable,
         workload,
         is_locked,
     } = sizing;
@@ -31,7 +31,7 @@ pub(super) fn apply_defaults(
         let usage = estimate(
             input.model,
             training,
-            Some(lora),
+            trainable,
             workload,
             calibration_for(input, algorithm, training),
         );

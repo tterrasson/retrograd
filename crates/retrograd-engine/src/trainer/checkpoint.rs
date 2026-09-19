@@ -336,6 +336,23 @@ impl Trainer {
             TrainableSet::default()
         };
         let optimizer_kind = OptimizerKind::from_ffi(optimizer_state.optimizer)?;
+        // The declared state table, built before the live one is read, so the
+        // two can be compared.
+        let plan = optimizer_kind.plan(&marked);
+        let unwritable = plan.unwritable();
+        if !unwritable.is_empty() {
+            return Err(Error::invalid(format!(
+                "optimizer {optimizer_kind} has no update step for {} marked parameter(s), \
+                 starting with '{}': a checkpoint that recorded another optimizer for them \
+                 would describe a trajectory this run did not take",
+                unwritable.len(),
+                unwritable[0]
+            )));
+        }
+        if optimizer_state.graph_ready {
+            plan.check_live(&live_rows(&slots, checkpoint::SlotScope::Parameter))?;
+            plan.check_live_shared(&live_rows(&slots, checkpoint::SlotScope::Shared))?;
+        }
         // The same source a resume reads, so the two sides compare what they
         // both can see rather than two renderings of the same set.
         let trainable_signature = self.trainable_signature()?;
@@ -419,7 +436,7 @@ impl Trainer {
                 iter: optimizer_state.iter,
                 graph_ready: optimizer_state.graph_ready,
                 slots: slots.clone(),
-                assignment: assignment_of(&marked, optimizer_kind),
+                assignment: assignment_of(&plan),
                 state_bytes,
             },
             rng: checkpoint::Rng {
@@ -590,19 +607,29 @@ fn set_signature(set: &TrainableSet) -> String {
 /// Written even when every row is the same name: the table is what a mixed run
 /// compares on resume, and one that listed only the parameters an optimizer
 /// accepted could not express a fallback.
-fn assignment_of(
-    set: &TrainableSet,
-    optimizer: OptimizerKind,
-) -> Vec<checkpoint::ParameterAssignment> {
-    set.entries
+fn assignment_of(plan: &retrograd_core::OptimizerPlan) -> Vec<checkpoint::ParameterAssignment> {
+    plan.parameters
         .iter()
-        .map(|entry| checkpoint::ParameterAssignment {
-            parameter: entry.name.clone(),
-            optimizer: if optimizer.is_eligible(entry) {
-                optimizer.to_string()
-            } else {
-                OptimizerKind::AdamW.to_string()
-            },
+        .map(|parameter| checkpoint::ParameterAssignment {
+            parameter: parameter.name.clone(),
+            // `None` is refused before this is reached, so the fallback is
+            // unreachable.
+            optimizer: parameter
+                .optimizer
+                .unwrap_or(OptimizerKind::AdamW)
+                .to_string(),
         })
+        .collect()
+}
+
+/// The live slot table of one scope, as `(owner, slot, bytes)`.
+fn live_rows(
+    slots: &[checkpoint::StateSlot],
+    scope: checkpoint::SlotScope,
+) -> Vec<(String, String, u64)> {
+    slots
+        .iter()
+        .filter(|slot| slot.scope == scope)
+        .map(|slot| (slot.owner.clone(), slot.slot.clone(), slot.n_bytes))
         .collect()
 }

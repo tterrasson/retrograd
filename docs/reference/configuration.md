@@ -67,15 +67,23 @@ supported eligible tensor and takes no narrowing selector.
 | `modules` | none | Module aliases (`attn`, `ffn`), individual stems (`attn_q`), or explicit tensor patterns. Norms are not modules: they follow `norms`. |
 | `norms` | `false` | Every norm: the in-range block norms, and every norm carrying no block index. |
 | `biases` | `false` | The `.bias` tensors of the selected modules. |
-| `output_head` | `false` | The output projection, independently of the layer range. A head sharing the input-embedding storage stays frozen and asking for it is an error. |
+| `output_head` | `false` | The output projection **and its bias**, independently of the layer range. A head sharing the input-embedding storage stays frozen and asking for it is an error. |
 
 At least one of `modules`, `norms`, `biases` or `output_head` must select
 something. `hybrid` initially permits only `norms` and `biases` beside the
 adapter. Quantized tensors are never selected; a quantized model may still
 carry trainable F32 norms, and selection validates the *selected* tensors
 rather than the model's dominant dtype. The resolved exclusions - input
-embedding, rotary constants, a tied head, unsupported dtypes, duplicate
-storage - are reported at the start of the run.
+embedding, rotary constants (wherever they sit, including inside a block), a
+tied head, unsupported dtypes, duplicate storage - are reported at the start of
+the run.
+
+Selecting the output head changes the loss graph. The fused cross-entropy
+folds the projection into the loss and differentiates only its input, so a run
+that trains the head takes the dense path instead: `training.chunked_cross_entropy`
+is honoured for every other selection and resolved off for this one. The
+backend report and the training preflight both name the result as `loss_path`,
+and the planner budgets the vocabulary buffer the dense path allocates.
 
 ### `[training]`
 
@@ -98,7 +106,7 @@ storage - are reported at the start of the run.
 | `kv_dtype` | `f16` | Optimizer-context KV storage: `f16` or `f32`. The runtime may fall back to F32 when the device cannot use the requested path. |
 | `generation_concurrency` | derived for GRPO | Live rollout sequences. Supported for GRPO and agent GRPO; bounded by the optimizer window, rollout count, and `256`. |
 | `generation_batch` | derived | Generation batch size. The runtime derives a value within its output-logits memory budget. |
-| `chunked_cross_entropy` | `true` | Stream vocabulary tiles for packed GRPO/agent training. |
+| `chunked_cross_entropy` | `true` | Stream vocabulary tiles for packed GRPO/agent training. Resolved off for a run that trains the output head, which needs the dense loss path. |
 | `chunked_ce_tiles` | `8` | Number of vocabulary tiles when chunked cross entropy is enabled. |
 | `chunked_ce_seq_chunk` | `512` | Flattened token chunk size for the tiled intermediate; `0` processes all tokens at once. |
 | `gradient_checkpointing` | `false` | Recompute transformer activations to reduce the activation peak. |

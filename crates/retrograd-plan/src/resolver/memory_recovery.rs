@@ -20,7 +20,7 @@ pub(super) fn apply_levers(
         input,
         algorithm,
         budgets,
-        lora,
+        trainable,
         workload,
         is_locked,
     } = sizing;
@@ -30,7 +30,7 @@ pub(super) fn apply_levers(
         let usage = estimate(
             input.model,
             training,
-            Some(lora),
+            trainable,
             workload,
             calibration_for(input, algorithm, training),
         );

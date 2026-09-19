@@ -28,7 +28,62 @@ struct preflight_data {
     // because the device has no in-place decoder. This exposes the cause and
     // suggested remedy directly in the report.
     std::map<std::string, std::set<enum ggml_type>> device_undecodable;
+    // The run whose selection is audited; null for a LoRA run.
+    const trainer_state * state = nullptr;
+    // Which part of the selection a reported node could not run, by
+    // selector family.
+    std::map<std::string, size_t> family_missing_grad;
+    std::map<std::string, size_t> family_device_fallback;
 };
+
+// The selector family a name belongs to, mirroring the resolver's rules and
+// order, so a refusal uses the names the user wrote.
+std::string trainable_family(const std::string & name) {
+    if (name == "output.weight" || name == "output.bias") {
+        return "output_head";
+    }
+    std::string rest = name;
+    if (rest.rfind("blk.", 0) == 0) {
+        const size_t dot = rest.find('.', 4);
+        if (dot != std::string::npos) {
+            rest = rest.substr(dot + 1);
+        }
+    }
+    const auto ends_with = [](const std::string & value, const char * suffix) {
+        const size_t n = std::strlen(suffix);
+        return value.size() >= n && value.compare(value.size() - n, n, suffix) == 0;
+    };
+    if (ends_with(rest, ".bias")) {
+        return "biases";
+    }
+    const std::string stem =
+            ends_with(rest, ".weight") ? rest.substr(0, rest.size() - 7) : rest;
+    if (stem == "norm" || ends_with(stem, "_norm")) {
+        return "norms";
+    }
+    return stem.empty() ? name : stem;
+}
+
+// Attributes a node to the selected tensors it reads directly; one level of
+// sources because a weight is always a direct operand.
+void attribute_to_families(
+        preflight_data & data, const ggml_tensor * node, std::map<std::string, size_t> & counts) {
+    if (!data.state || data.state->trainable_base.empty()) {
+        return;
+    }
+    std::set<std::string> families;
+    for (int i = 0; i < GGML_MAX_SRC && node->src[i]; ++i) {
+        const std::string name = node->src[i]->name;
+        for (const std::string & selected : data.state->trainable_base) {
+            if (selected == name) {
+                families.insert(trainable_family(name));
+            }
+        }
+    }
+    for (const std::string & family : families) {
+        ++counts[family];
+    }
+}
 
 // The tensor an op reads through a per-type decoder, or null for ops that have
 // none. These are the ops driven by GGML_RETRO_DEQUANT_TYPES.
@@ -89,14 +144,21 @@ void preflight_callback(
     switch (check) {
         case LLAMA_OPT_PREFLIGHT_MISSING_GRAD:
             record_issue(data->missing_grad, node);
+            attribute_to_families(*data, node, data->family_missing_grad);
             break;
         case LLAMA_OPT_PREFLIGHT_DEVICE_FORWARD:
             record_issue(data->device_forward[ggml_backend_dev_name(dev)], node);
             record_undecodable(*data, dev, node);
+            if (data->state && data->state->backend_name == ggml_backend_dev_name(dev)) {
+                attribute_to_families(*data, node, data->family_device_fallback);
+            }
             break;
         case LLAMA_OPT_PREFLIGHT_DEVICE_BACKWARD:
             record_issue(data->device_backward[ggml_backend_dev_name(dev)], node);
             record_undecodable(*data, dev, node);
+            if (data->state && data->state->backend_name == ggml_backend_dev_name(dev)) {
+                attribute_to_families(*data, node, data->family_device_fallback);
+            }
             break;
         default:
             break;
@@ -164,9 +226,38 @@ std::string format_preflight_report(
     if (!state.target_patterns.empty()) {
         out << "  lora_target_patterns: [" << join_patterns(state.target_patterns) << "]\n";
     }
+    // The option alone does not decide the loss graph; a run that trains the
+    // head takes the dense path.
+    out << "  loss_path: " << (fused_loss_enabled(state) ? "fused" : "dense") << "\n";
     out << "  missing_gradient_rules: " << n_missing << "\n";
     if (!data.missing_grad.empty()) {
         append_issues(out, data.missing_grad, "    ");
+    }
+
+    // An op signature says what the graph could not do; this says which part
+    // of the selection, in the selector's vocabulary.
+    if (!state.trainable_base.empty()) {
+        std::map<std::string, size_t> families;
+        for (const std::string & name : state.trainable_base) {
+            ++families[trainable_family(name)];
+        }
+        out << "  trainable_families:\n";
+        for (const auto & family : families) {
+            out << "    " << family.first << ": " << family.second << " tensor(s), ";
+            const auto missing = data.family_missing_grad.find(family.first);
+            const auto fallback = data.family_device_fallback.find(family.first);
+            if (missing != data.family_missing_grad.end()) {
+                out << missing->second << " node(s) reading them have no gradient rule\n";
+            } else if (n_missing != 0) {
+                // The backward was never built, so nothing checked these nodes.
+                out << "not audited (the backward graph was not built)\n";
+            } else if (fallback != data.family_device_fallback.end()) {
+                out << fallback->second << " node(s) reading them fall back off "
+                    << state.backend_name << "\n";
+            } else {
+                out << "backward ready\n";
+            }
+        }
     }
 
     out << "  devices:\n";
@@ -256,6 +347,7 @@ bool ensure_train_preflight(trainer_state & state) {
     }
 
     preflight_data data;
+    data.state = &state;
     const int32_t n_missing = llama_opt_preflight(state.ctx.get(), preflight_callback, &data);
     if (n_missing < 0) {
         set_error("training preflight failed to build the forward graph");

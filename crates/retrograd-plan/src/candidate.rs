@@ -7,13 +7,13 @@
 use std::collections::BTreeSet;
 
 use retrograd_core::{
-    CheckpointDtype, ExecutionProfile, LoraConfig, ModelInfo, SharedPrefixFanout, TrainConfig,
+    CheckpointDtype, ExecutionProfile, ModelInfo, SharedPrefixFanout, TrainConfig,
     checkpoint_stride_for,
 };
 use serde::Serialize;
 
 use crate::budget::Budgets;
-use crate::cost::{Calibration, MemoryEstimate, ResourceEstimate, Workload, estimate};
+use crate::cost::{Calibration, MemoryEstimate, ResourceEstimate, Trainable, Workload, estimate};
 
 pub const MAX_CANDIDATES: usize = 4096;
 
@@ -267,14 +267,14 @@ pub fn evaluate(
     candidate: Candidate,
     intent: &NormalizedIntent,
     model: &ModelInfo,
-    lora: &LoraConfig,
+    trainable: Trainable<'_>,
     workload: &Workload,
     budgets: &Budgets,
     calibration: Calibration,
 ) -> CandidateEvaluation {
     let mut training = intent.training.clone();
     candidate.apply(&mut training);
-    let estimate = estimate(model, &training, Some(lora), workload, calibration);
+    let estimate = estimate(model, &training, trainable, workload, calibration);
     let resources = estimate.resources();
     let packing = packing_cost(&candidate, intent);
     let Packing {
@@ -506,7 +506,7 @@ mod tests {
                     candidate,
                     &intent,
                     &model,
-                    &LoraConfig::auto(2, 4.0),
+                    crate::cost::Trainable::adapter(&retrograd_core::LoraConfig::auto(2, 4.0)),
                     &sft_workload(),
                     &budgets,
                     Calibration::default(),

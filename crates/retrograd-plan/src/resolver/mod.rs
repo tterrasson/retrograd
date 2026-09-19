@@ -18,7 +18,7 @@ use retrograd_config::{
     TrainingToml, build as build_run_config,
 };
 use retrograd_core::{
-    ExecutionProfile, LoraConfig, LrScheduler, ModelInfo, PreflightReport, RewardProtocol,
+    ExecutionProfile, LrScheduler, ModelInfo, PreflightReport, RewardProtocol,
     SharedPrefixFanout, TargetSet, TrainConfig, saturating_dim, saturating_dim_product,
 };
 use retrograd_dataset::DataFormat;
@@ -26,7 +26,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::budget::{BudgetRequest, Budgets, MarginPolicy, MemoryBaseline, Overflow};
-use crate::cost::{Calibration, MemoryEstimate, Workload, WorkloadKind, estimate};
+use crate::cost::{
+    Calibration, MemoryEstimate, Trainable, Workload, WorkloadKind, estimate, resolve_trainable_set,
+};
 use crate::dataset::DatasetStats;
 use crate::defaults::{self, ACTIVE_DEFAULTS, AppliedDefault, Verdict};
 use crate::execution::{ExecutionPlan, RejectedCandidateSummary, explain_execution};
@@ -81,6 +83,12 @@ pub struct ResolveInput<'a> {
     /// that arrives without one is warned about rather than quietly sized as if
     /// one model were resident.
     pub teacher: Option<&'a ModelInfo>,
+    /// The model's own tensor table, when the caller could read one.
+    ///
+    /// What a base-weight policy is priced from; a `lora` document never needs
+    /// it, and a base document without one is refused by
+    /// [`crate::base_training_unpriced`].
+    pub inventory: Option<&'a retrograd_core::TensorInventory>,
     pub data: &'a DatasetStats,
     pub eval: Option<&'a DatasetStats>,
     pub data_format: DataFormat,
@@ -406,28 +414,21 @@ pub fn resolve(input: &ResolveInput<'_>) -> Result<Resolution, ResolveError> {
     )?;
     apply_params(&mut document, input.params)?;
     let run_config = build_run_config(document.clone(), &input.root)?;
-    if run_config.training.trainable.policy.trains_base_weights() {
-        return Err(ResolveError::Invalid {
-            message: crate::base_training_unpriced(run_config.training.trainable.policy),
+    // The base half of the trainable set, resolved once and priced everywhere
+    // downstream, so the budget and the run it describes cannot disagree.
+    let base_trainable = resolve_trainable_set(&run_config.training.trainable, input.inventory)
+        .map_err(|error| ResolveError::Invalid {
+            message: error.to_string(),
             path: Some("training.trainable".to_string()),
-        });
-    }
+        })?;
 
     // Search geometry, apply defaults, and recover from memory pressure.
     let workload = workload_of(input, &run_config);
     let algorithm = crate::calibration::algorithm_slug(&run_config.algorithm);
     let mut training = run_config.training.clone();
-    // The cost model sizes an adapter analytically, from the model's geometry
-    // and the target set. A base-weight policy has neither - its gradients and
-    // optimizer state follow a resolved trainable set, which needs the GGUF's
-    // per-tensor inventory - so planning one would answer with a budget short
-    // by the largest term the run pays. Refused rather than answered.
-    let Some(lora) = run_config.lora.as_ref().map(|lora| lora.config.clone()) else {
-        return Err(ResolveError::Invalid {
-            message: crate::base_training_unpriced(run_config.training.trainable.policy),
-            path: Some("training.trainable".to_string()),
-        });
-    };
+    // Either half may be absent: `full` and `partial` create no adapter, and
+    // `lora` resolves no base tensor.
+    let lora = run_config.lora.as_ref().map(|lora| lora.config.clone());
     let mut limits = Limits {
         min_batch: training.n_seq_max.max(1),
         min_ctx: MIN_CONTEXT.max(round_up_pow2(input.data.percentile(0.5))),
@@ -441,13 +442,17 @@ pub fn resolve(input: &ResolveInput<'_>) -> Result<Resolution, ResolveError> {
 
     // These borrows are shared by candidate search, defaults, and levers. Build
     // them once after the
-    // run config exists, because `algorithm`, `lora` and `workload` are read
-    // off it.
+    // run config exists, because `algorithm`, `trainable` and `workload` are
+    // read off it.
+    let trainable = Trainable {
+        adapter: lora.as_ref(),
+        base: base_trainable.as_ref(),
+    };
     let sizing = Sizing {
         input,
         algorithm,
         budgets: &budgets,
-        lora: &lora,
+        trainable,
         workload: &workload,
         is_locked: &is_locked,
     };
@@ -600,10 +605,20 @@ fn rebuild_and_validate(
         }
     })?;
 
+    // Re-resolved against the rebuilt configuration, not carried in from the
+    // first build.
+    let base_trainable = resolve_trainable_set(&config.training.trainable, input.inventory)
+        .map_err(|error| ResolveError::Invalid {
+            message: error.to_string(),
+            path: Some("training.trainable".to_string()),
+        })?;
     let final_estimate = estimate(
         input.model,
         &config.training,
-        config.lora.as_ref().map(|lora| &lora.config),
+        Trainable {
+            adapter: config.lora.as_ref().map(|lora| &lora.config),
+            base: base_trainable.as_ref(),
+        },
         workload,
         calibration_for(input, algorithm, &config.training),
     );
@@ -714,6 +729,9 @@ pub fn assess(
     config: &RunConfig,
     model: &ModelInfo,
     teacher: Option<&ModelInfo>,
+    // The resolved base trainable set, from `crate::resolve_trainable_set`; `None`
+    // for a LoRA document.
+    base: Option<&retrograd_core::TrainableSet>,
     data: &DatasetStats,
     baseline: MemoryBaseline,
     server_budgets: (BudgetRequest, BudgetRequest),
@@ -729,7 +747,10 @@ pub fn assess(
     let estimate = estimate(
         model,
         &config.training,
-        config.lora.as_ref().map(|lora| &lora.config),
+        Trainable {
+            adapter: config.lora.as_ref().map(|lora| &lora.config),
+            base,
+        },
         &workload,
         calibration,
     );
@@ -753,7 +774,8 @@ struct Sizing<'a, 'i> {
     input: &'a ResolveInput<'i>,
     algorithm: &'a str,
     budgets: &'a Budgets,
-    lora: &'a LoraConfig,
+    /// What this run trains: the adapter and/or the resolved base set.
+    trainable: Trainable<'a>,
     workload: &'a Workload,
     is_locked: &'a dyn Fn(&str) -> bool,
 }
@@ -784,7 +806,7 @@ fn search_candidates(
         input,
         algorithm,
         budgets,
-        lora,
+        trainable,
         workload,
         is_locked,
     } = sizing;
@@ -819,7 +841,7 @@ fn search_candidates(
                 candidate,
                 &intent,
                 input.model,
-                lora,
+                trainable,
                 workload,
                 budgets,
                 calibration_for(input, algorithm, &candidate_training),

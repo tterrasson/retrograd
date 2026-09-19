@@ -370,6 +370,16 @@ pub trait ModelProbe: Send + Sync {
     /// Reads the model's geometry without building a context.
     fn geometry(&self, model: &Path, device: Device) -> CoreResult<ModelInfo>;
 
+    /// Reads the model's per-tensor table, without allocating a weight.
+    /// `None` when the probe cannot open a GGUF.
+    fn tensor_inventory(
+        &self,
+        _model: &Path,
+        _device: Device,
+    ) -> CoreResult<Option<retrograd_core::TensorInventory>> {
+        Ok(None)
+    }
+
     /// Structured model/device capabilities. Synthetic probes may keep the
     /// conservative default; production never parses the human report.
     fn model_capabilities(&self, _model: &Path, _device: Device) -> CoreResult<ModelCapabilities> {
@@ -474,6 +484,14 @@ impl ModelProbe for EngineProbe {
 
     fn geometry(&self, model: &Path, device: Device) -> CoreResult<ModelInfo> {
         retrograd_engine::model_info(model, device)
+    }
+
+    fn tensor_inventory(
+        &self,
+        model: &Path,
+        device: Device,
+    ) -> CoreResult<Option<retrograd_core::TensorInventory>> {
+        retrograd_engine::tensor_inventory(model, device).map(Some)
     }
 
     fn model_capabilities(&self, model: &Path, device: Device) -> CoreResult<ModelCapabilities> {

@@ -1530,8 +1530,10 @@ mod tests {
         checkpoint.manifest.trainable_policy = "partial".into();
         checkpoint.manifest.trainable = Some(TrainableBundle {
             file: TRAINABLE_FILE.into(),
-            bytes: 9,
-            fingerprint: fingerprint(b"TRAINABLE"),
+            // Filled in by the writer: the size and identity are only known
+            // once the payload exists.
+            bytes: 0,
+            fingerprint: String::new(),
             signature: "set-1".into(),
             tensors: vec![TrainableTensor {
                 name: "blk.0.attn_norm.weight".into(),
@@ -1550,23 +1552,27 @@ mod tests {
         assert!(state.join(TRAINABLE_FILE).is_file());
         assert!(!state.join(ADAPTER_FILE).exists());
         assert!(!root.join("step-000000000042.gguf").exists());
-        assert_eq!(Checkpoint::read(&state).unwrap(), checkpoint);
         assert_eq!(adapter_for(&state, &checkpoint.manifest), None);
         assert_eq!(
             trainable_for(&state, &checkpoint.manifest),
             Some(state.join(TRAINABLE_FILE))
         );
 
-        // The engine does not know the payload identity before writing it.
-        // Publication must finalize it without a second manifest write.
-        let expected_record = checkpoint.clone();
-        let bundle = checkpoint.manifest.trainable.as_mut().unwrap();
-        bundle.bytes = 0;
-        bundle.fingerprint.clear();
-        checkpoint
-            .write(&state, write_sample_payloads(b"GGUF"))
-            .unwrap();
-        assert_eq!(Checkpoint::read(&state).unwrap(), expected_record);
+        // Publication finalizes the bundle's size and identity from the file
+        // the payload writer produced.
+        let published = Checkpoint::read(&state).unwrap();
+        let bundle = published.manifest.trainable.as_ref().unwrap();
+        assert_eq!(bundle.bytes, 9);
+        assert_eq!(
+            bundle.fingerprint,
+            fingerprint_file(&state.join(TRAINABLE_FILE)).unwrap()
+        );
+        // ... and nothing else moved.
+        let mut expected = checkpoint.clone();
+        let declared = expected.manifest.trainable.as_mut().unwrap();
+        declared.bytes = bundle.bytes;
+        declared.fingerprint.clone_from(&bundle.fingerprint);
+        assert_eq!(published, expected);
 
         // And the resolved set is compared, not just the policy name.
         let mut expected = compatibility();

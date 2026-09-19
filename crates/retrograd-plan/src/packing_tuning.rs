@@ -223,7 +223,7 @@ mod tests {
     use crate::candidate::{enumerate, evaluate, normalize};
     use crate::testing::{execution_profile, sft_workload, tiny_model};
     use crate::{BudgetRequest, Budgets, Calibration, MarginPolicy, MemoryBaseline};
-    use retrograd_core::{LoraConfig, TrainConfig};
+    use retrograd_core::TrainConfig;
 
     fn budgets(device: u64, host: u64, unified: bool) -> Budgets {
         Budgets::resolve(
@@ -266,7 +266,7 @@ mod tests {
                     c,
                     &intent,
                     &model,
-                    &LoraConfig::auto(2, 4.0),
+                    crate::cost::Trainable::adapter(&retrograd_core::LoraConfig::auto(2, 4.0)),
                     &sft_workload(),
                     &budgets,
                     Calibration::default(),

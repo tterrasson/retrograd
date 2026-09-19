@@ -285,6 +285,24 @@ bool trains_base_weights(const trainer_state & state) {
     return state.train_config.trainable != RETRO_TRAINABLE_LORA;
 }
 
+bool trains_loss_head(const trainer_state & state) {
+    // The two names the fused loss unpacks from the logits node; a tied head
+    // never reaches the resolved set, so the name match is enough.
+    for (const std::string & name : state.trainable_base) {
+        if (name == "output.weight" || name == "output.bias") {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool fused_loss_enabled(const trainer_state & state) {
+    // Not a preference: the fused backward asserts on a projection that needs
+    // a gradient, so training the head must take the dense path, and the dense
+    // backward already produces the head's gradient.
+    return state.train_config.chunked_cross_entropy && !trains_loss_head(state);
+}
+
 bool opt_param_filter_trainable(const ggml_tensor * tensor, void * userdata) {
     const trainer_state * state = static_cast<const trainer_state *>(userdata);
     if (!tensor || !state || state->trainable_base.empty()) {

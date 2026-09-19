@@ -441,6 +441,12 @@ bool is_param_tensor(const ggml_tensor * tensor);
 // before any tensor is named, because it decides between a read-only mapping
 // and owned writable buffers.
 bool trains_base_weights(const trainer_state & state);
+// Decides the loss graph: the fused CE differentiates only the hidden input,
+// so a head takes the dense path. Mirrors TrainableSet::trains_loss_head; both must agree.
+bool trains_loss_head(const trainer_state & state);
+// A pure function of config plus declared set rather than a cached flag, so a
+// pre-init report agrees with the graph build.
+bool fused_loss_enabled(const trainer_state & state);
 // The trainable bundle: the resolved base tensors as absolute values, in a
 // GGUF that is deliberately not an adapter. Both refuse a run that trains no
 // base tensor, and the load refuses a file whose tensor list is not exactly

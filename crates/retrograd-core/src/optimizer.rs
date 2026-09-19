@@ -1,10 +1,14 @@
 //! Which optimizer a run uses, and what persistent state that costs.
 //!
 //! The half of the optimizer contract that can be decided before a graph
-//! exists: the choice itself, its per-parameter eligibility policy, and the
-//! state-bytes formula the planner needs. The descriptor that allocates slots,
-//! builds the update step and streams them through a checkpoint lives in the
-//! runtime; this module is what both ends agree on.
+//! exists: the choice itself, its per-parameter policy, its **slot
+//! definitions**, and the state-bytes formula the planner needs. The
+//! executable half (the slot initializer and `build_step`) lives in the
+//! runtime, because it needs a kernel.
+//!
+//! [`OptimizerPlan`] declares the slot table from the resolved trainable set
+//! before the graph exists, so it can be compared against the table the
+//! runtime actually allocates after `llama_opt_init`.
 //!
 //! Nothing here allocates. `state_bytes` is a storage formula, not a fit
 //! guarantee: backend alignment, padding, the AdamW fallback of an ineligible
@@ -14,7 +18,7 @@
 use std::fmt;
 
 use crate::error::{Error, Result};
-use crate::trainable::{TensorRole, TrainableEntry, TrainableSet};
+use crate::trainable::{TensorDtype, TensorRole, TrainableEntry, TrainableSet};
 
 /// The optimizers a document may name.
 ///
@@ -100,20 +104,133 @@ impl OptimizerKind {
         }
     }
 
-    /// Names of the persistent per-parameter slots this optimizer keeps, in the
-    /// order the state API enumerates them.
+    /// The persistent per-parameter slots this optimizer keeps, in the order the
+    /// state API enumerates them.
     ///
     /// SGD's empty list is the case worth naming: *no slot* and *no optimizer*
     /// are different states. An SGD run still has a step counter, a schedule
     /// and an RNG state, and a resume that concluded "no slots, so nothing was
     /// initialized" would silently restart the schedule from zero.
-    pub fn slot_names(self) -> &'static [&'static str] {
+    ///
+    /// Gefen's rows are declared with their block shape and byte widths even
+    /// though nothing can allocate them yet.
+    pub fn slot_definitions(self) -> &'static [SlotDefinition] {
         match self {
-            Self::AdamW => &["m", "v"],
+            Self::AdamW => &[
+                SlotDefinition {
+                    name: "m",
+                    dtype: SlotDtype::F32,
+                    shape: SlotShape::Parameter,
+                    init: SlotInit::Zero,
+                },
+                SlotDefinition {
+                    name: "v",
+                    dtype: SlotDtype::F32,
+                    shape: SlotShape::Parameter,
+                    init: SlotInit::Zero,
+                },
+            ],
             Self::Sgd => &[],
-            Self::Muon => &["momentum"],
-            Self::Gefen => &["indices", "scales", "second_moments"],
+            Self::Muon => &[SlotDefinition {
+                name: "momentum",
+                dtype: SlotDtype::F32,
+                shape: SlotShape::Parameter,
+                init: SlotInit::Zero,
+            }],
+            Self::Gefen => &[
+                SlotDefinition {
+                    name: "indices",
+                    dtype: SlotDtype::I8,
+                    shape: SlotShape::Parameter,
+                    // The codebook has no exact zero, so an empty state is a
+                    // zero scale and a canonical index.
+                    init: SlotInit::Code(GEFEN_ZERO_BLOCK_INDEX),
+                },
+                SlotDefinition {
+                    name: "scales",
+                    dtype: SlotDtype::F32,
+                    shape: SlotShape::Blocks(GEFEN_DEFAULT_BLOCK_SIZE),
+                    init: SlotInit::Zero,
+                },
+                SlotDefinition {
+                    name: "second_moments",
+                    dtype: SlotDtype::F32,
+                    shape: SlotShape::Blocks(GEFEN_DEFAULT_BLOCK_SIZE),
+                    init: SlotInit::Zero,
+                },
+            ],
         }
+    }
+
+    /// Slot names alone, for a caller that compares a table without allocating one.
+    pub fn slot_names(self) -> Vec<&'static str> {
+        self.slot_definitions()
+            .iter()
+            .map(|slot| slot.name)
+            .collect()
+    }
+
+    /// State kept once per *owner* rather than per parameter, e.g. a codebook.
+    ///
+    /// Empty for everything this build can run; the scope exists in the
+    /// checkpoint at length zero.
+    pub fn shared_slot_definitions(self) -> &'static [SlotDefinition] {
+        match self {
+            Self::AdamW | Self::Sgd | Self::Muon => &[],
+            Self::Gefen => &[SlotDefinition {
+                name: "codebook",
+                dtype: SlotDtype::F32,
+                shape: SlotShape::Fixed(GEFEN_CODEBOOK_LEVELS),
+                init: SlotInit::UniformCodebook,
+            }],
+        }
+    }
+
+    /// Whether this optimizer's update step can write a parameter of this dtype.
+    ///
+    /// Beside [`Self::is_eligible`] and a different question: eligibility asks
+    /// whether this optimizer is the right one for the parameter, this asks
+    /// whether its kernel can touch it at all. The SGD step is F32-only while
+    /// AdamW writes F32 and F16, and F16 is the default adapter storage.
+    ///
+    /// A `false` is a refusal in a single-optimizer run and a fallback in a
+    /// mixed one; see [`Self::assign`].
+    pub fn supports_dtype(self, dtype: &TensorDtype) -> bool {
+        match self {
+            Self::AdamW => matches!(dtype, TensorDtype::F32 | TensorDtype::F16),
+            // F32 first; an F16 writeback is separate work.
+            Self::Sgd | Self::Muon | Self::Gefen => matches!(dtype, TensorDtype::F32),
+        }
+    }
+
+    /// The optimizer a run under this choice falls back to for a parameter it
+    /// does not own.
+    ///
+    /// AdamW: widest dtype table, no eligibility rule. AdamW and SGD have no
+    /// fallback of their own: they are chosen for the whole run, and silently
+    /// running part of it on another optimizer would publish a trajectory the
+    /// document did not ask for.
+    pub fn fallback(self) -> Option<Self> {
+        match self {
+            Self::AdamW | Self::Sgd => None,
+            Self::Muon | Self::Gefen => Some(Self::AdamW),
+        }
+    }
+
+    /// The optimizer that actually owns this parameter, or `None` when nothing
+    /// in this run's policy can write it.
+    ///
+    /// Checks eligibility first, then dtype: a tensor can be eligible by role
+    /// but still one this kernel cannot touch, and answering with this
+    /// optimizer there would assign an update that aborts inside the step.
+    ///
+    /// `None` is a refusal the caller raises by name; never substituted.
+    pub fn assign(self, entry: &TrainableEntry) -> Option<Self> {
+        if self.is_eligible(entry) && self.supports_dtype(&entry.dtype) {
+            return Some(self);
+        }
+        let fallback = self.fallback()?;
+        fallback.supports_dtype(&entry.dtype).then_some(fallback)
     }
 
     /// Persistent state bytes for one parameter of `n_elements`, under this
@@ -162,11 +279,9 @@ impl OptimizerKind {
             n_bytes: n_elements.saturating_mul(4),
             storage_id: 0,
         };
-        if self.is_eligible(&factor) {
-            self.eligible_state_bytes(n_elements)
-        } else {
-            Self::AdamW.eligible_state_bytes(n_elements)
-        }
+        self.assign(&factor)
+            .unwrap_or(Self::AdamW)
+            .eligible_state_bytes(n_elements)
     }
 
     /// Whether this entry is eligible for the optimizer, or falls back to AdamW.
@@ -202,13 +317,307 @@ impl OptimizerKind {
         set.entries
             .iter()
             .map(|entry| {
-                if self.is_eligible(entry) {
-                    self.eligible_state_bytes(entry.n_elements)
-                } else {
-                    Self::AdamW.eligible_state_bytes(entry.n_elements)
-                }
+                // An entry nothing can write is priced as AdamW, not free.
+                self.assign(entry)
+                    .unwrap_or(Self::AdamW)
+                    .eligible_state_bytes(entry.n_elements)
             })
             .fold(0, u64::saturating_add)
+    }
+
+    /// The persistent state table this run would allocate, declared from the
+    /// resolved set alone, to be compared against the table the runtime
+    /// allocates after `llama_opt_init`.
+    pub fn plan(self, set: &TrainableSet) -> OptimizerPlan {
+        let mut parameters = Vec::with_capacity(set.entries.len());
+        for entry in &set.entries {
+            let owner = self.assign(entry);
+            let slots = owner
+                .map(|owner| {
+                    owner
+                        .slot_definitions()
+                        .iter()
+                        .map(|slot| slot.resolve(entry))
+                        .collect()
+                })
+                .unwrap_or_default();
+            parameters.push(PlannedParameter {
+                name: entry.name.clone(),
+                optimizer: owner,
+                slots,
+            });
+        }
+        // One shared row per owner that owns something, in first-seen order.
+        let mut owners: Vec<OptimizerKind> = Vec::new();
+        for parameter in &parameters {
+            if let Some(owner) = parameter.optimizer
+                && !owners.contains(&owner)
+            {
+                owners.push(owner);
+            }
+        }
+        let shared = owners
+            .iter()
+            .flat_map(|owner| {
+                owner.shared_slot_definitions().iter().map(|slot| SharedSlot {
+                    owner: *owner,
+                    slot: slot.name,
+                    dtype: slot.dtype,
+                    n_elements: slot.shared_elements(),
+                    n_bytes: slot.shared_elements().saturating_mul(slot.dtype.bytes()),
+                })
+            })
+            .collect();
+        OptimizerPlan {
+            chosen: self,
+            parameters,
+            shared,
+        }
+    }
+}
+
+/// The dtype of one persistent slot.
+///
+/// Its own enumeration rather than [`TensorDtype`]: a slot's dtype is chosen
+/// by the optimizer, not read off a file, and the two sets do not coincide
+/// (Gefen stores byte indices).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlotDtype {
+    F32,
+    /// ggml `I8` storage, read as unsigned `0..=255` bit patterns.
+    I8,
+}
+
+impl SlotDtype {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::F32 => "f32",
+            Self::I8 => "i8",
+        }
+    }
+
+    pub fn bytes(self) -> u64 {
+        match self {
+            Self::F32 => 4,
+            Self::I8 => 1,
+        }
+    }
+}
+
+impl fmt::Display for SlotDtype {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// How large one slot is, relative to the parameter it belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlotShape {
+    /// The parameter's own shape, element for element.
+    Parameter,
+    /// One element per quantization block of the given size: `ceil(N / block)`;
+    /// a partial trailing block still counts.
+    Blocks(u64),
+    /// A fixed element count, independent of any parameter. Shared state.
+    Fixed(u64),
+}
+
+/// What a slot holds before the first update. An enumeration rather than a
+/// scalar fill because a codebook is generated, not filled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlotInit {
+    /// Every element zero, in the slot's own dtype.
+    Zero,
+    /// Every element the same code, an unsigned bit pattern.
+    Code(u8),
+    /// `c[k] = -1 + 2k/255` over [`GEFEN_CODEBOOK_LEVELS`] entries. Generated,
+    /// not filled.
+    UniformCodebook,
+}
+
+/// One persistent slot an optimizer keeps, as the optimizer declares it.
+/// The `build_step` and `fill_params` that use it live in the runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlotDefinition {
+    pub name: &'static str,
+    pub dtype: SlotDtype,
+    pub shape: SlotShape,
+    pub init: SlotInit,
+}
+
+impl SlotDefinition {
+    /// This definition against one parameter: the element count and the byte
+    /// count it would allocate.
+    pub fn resolve(&self, entry: &TrainableEntry) -> PlannedSlot {
+        let n_elements = match self.shape {
+            SlotShape::Parameter => entry.n_elements,
+            SlotShape::Blocks(size) => entry.n_elements.div_ceil(size.max(1)),
+            SlotShape::Fixed(count) => count,
+        };
+        PlannedSlot {
+            slot: self.name,
+            dtype: self.dtype,
+            n_elements,
+            n_bytes: n_elements.saturating_mul(self.dtype.bytes()),
+        }
+    }
+
+    /// The element count of a shared slot; only `Fixed` is a shared shape.
+    fn shared_elements(&self) -> u64 {
+        match self.shape {
+            SlotShape::Fixed(count) => count,
+            SlotShape::Parameter | SlotShape::Blocks(_) => 0,
+        }
+    }
+}
+
+/// One resolved slot: what the runtime is expected to have allocated.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlannedSlot {
+    pub slot: &'static str,
+    pub dtype: SlotDtype,
+    pub n_elements: u64,
+    pub n_bytes: u64,
+}
+
+/// One marked parameter, the optimizer that owns it, and the slots that
+/// optimizer keeps for it. An empty slot list still records ownership (SGD owns
+/// everything and keeps no state).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlannedParameter {
+    pub name: String,
+    /// `None` when no optimizer in this run's policy can write it.
+    pub optimizer: Option<OptimizerKind>,
+    pub slots: Vec<PlannedSlot>,
+}
+
+/// One resolved shared slot, allocated once per owning optimizer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedSlot {
+    pub owner: OptimizerKind,
+    pub slot: &'static str,
+    pub dtype: SlotDtype,
+    pub n_elements: u64,
+    pub n_bytes: u64,
+}
+
+/// The persistent state one run would allocate, declared before the graph
+/// exists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OptimizerPlan {
+    /// What the document asked for; parameters may be assigned to its fallback,
+    /// so the choice is recorded beside the table rather than inferred from it.
+    pub chosen: OptimizerKind,
+    pub parameters: Vec<PlannedParameter>,
+    pub shared: Vec<SharedSlot>,
+}
+
+impl OptimizerPlan {
+    /// Total persistent bytes, parameters and shared state together.
+    pub fn state_bytes(&self) -> u64 {
+        let parameters = self
+            .parameters
+            .iter()
+            .flat_map(|parameter| parameter.slots.iter())
+            .map(|slot| slot.n_bytes);
+        let shared = self.shared.iter().map(|slot| slot.n_bytes);
+        parameters.chain(shared).fold(0, u64::saturating_add)
+    }
+
+    /// Parameters no optimizer in this run can write, by name.
+    pub fn unwritable(&self) -> Vec<&str> {
+        self.parameters
+            .iter()
+            .filter(|parameter| parameter.optimizer.is_none())
+            .map(|parameter| parameter.name.as_str())
+            .collect()
+    }
+
+    /// The `(parameter, slot)` rows this plan declares, the shape the runtime's
+    /// live table is compared against.
+    pub fn slot_rows(&self) -> Vec<(&str, &PlannedSlot)> {
+        self.parameters
+            .iter()
+            .flat_map(|parameter| {
+                parameter
+                    .slots
+                    .iter()
+                    .map(move |slot| (parameter.name.as_str(), slot))
+            })
+            .collect()
+    }
+
+    /// The `(owner, slot)` rows of the shared scope, in the same shape.
+    pub fn shared_rows(&self) -> Vec<(&str, &SharedSlot)> {
+        self.shared
+            .iter()
+            .map(|slot| (slot.owner.as_str(), slot))
+            .collect()
+    }
+
+    /// Refuses a live shared table that is not the declared one.
+    pub fn check_live_shared(&self, live: &[(String, String, u64)]) -> Result<()> {
+        let declared = self.shared_rows();
+        if declared.len() != live.len() {
+            return Err(Error::runtime(format!(
+                "optimizer {} declares {} shared slot(s), but the runtime allocated {}",
+                self.chosen,
+                declared.len(),
+                live.len()
+            )));
+        }
+        for ((owner, slot), (live_owner, live_slot, live_bytes)) in declared.iter().zip(live) {
+            if owner != live_owner || slot.slot != live_slot || slot.n_bytes != *live_bytes {
+                return Err(Error::runtime(format!(
+                    "shared optimizer slot {}/{} ({} bytes) was declared where the runtime \
+                     allocated {live_owner}/{live_slot} ({live_bytes} bytes)",
+                    owner, slot.slot, slot.n_bytes
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuses a live parameter table that is not the declared one, naming the
+    /// first row that disagrees.
+    ///
+    /// `live` is `(owner, slot, n_bytes)`. Compared by identity, never by
+    /// index: the two tables follow different node orders, and restore matches
+    /// on the same keys.
+    pub fn check_live(&self, live: &[(String, String, u64)]) -> Result<()> {
+        let declared = self.slot_rows();
+        for (owner, slot) in &declared {
+            let found = live
+                .iter()
+                .find(|(live_owner, live_slot, _)| live_owner == owner && live_slot == slot.slot);
+            let Some((_, _, live_bytes)) = found else {
+                return Err(Error::runtime(format!(
+                    "optimizer {} declares a '{}' slot for '{owner}' that the runtime did not \
+                     allocate",
+                    self.chosen, slot.slot
+                )));
+            };
+            if slot.n_bytes != *live_bytes {
+                return Err(Error::runtime(format!(
+                    "optimizer slot {owner}/{} was declared as {} byte(s) and allocated as \
+                     {live_bytes}",
+                    slot.slot, slot.n_bytes
+                )));
+            }
+        }
+        for (owner, slot, _) in live {
+            if !declared
+                .iter()
+                .any(|(declared_owner, declared)| declared_owner == owner && declared.slot == slot)
+            {
+                return Err(Error::runtime(format!(
+                    "the runtime allocated a '{slot}' slot for '{owner}' that optimizer {} \
+                     does not declare",
+                    self.chosen
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -223,6 +632,17 @@ impl fmt::Display for OptimizerKind {
 /// it: a rank-16 LoRA factor on a 1024-wide projection has 16384 elements, so
 /// "most LoRA factors are below the threshold" is false.
 pub const GEFEN_DEFAULT_MIN_NUMEL: u64 = 4096;
+
+/// Default elements per fixed quantization block, the divisor of
+/// `ceil(N / B)` in [`SlotShape::Blocks`].
+pub const GEFEN_DEFAULT_BLOCK_SIZE: u64 = 1024;
+
+/// Entries of the uniform codebook, `c[k] = -1 + 2k/255`.
+pub const GEFEN_CODEBOOK_LEVELS: u64 = 256;
+
+/// The index a zero block stores. The codebook has no exact zero (a zero block
+/// decodes through its zero scale), so this value only has to be canonical.
+pub const GEFEN_ZERO_BLOCK_INDEX: u8 = 127;
 
 #[cfg(test)]
 mod tests {
@@ -305,6 +725,169 @@ mod tests {
     fn sgd_keeps_no_slot_and_adamw_keeps_two() {
         assert!(OptimizerKind::Sgd.slot_names().is_empty());
         assert_eq!(OptimizerKind::AdamW.slot_names(), ["m", "v"]);
+    }
+
+    /// AdamW's two slots per parameter, declared from the resolved set in the
+    /// order the state API enumerates them.
+    #[test]
+    fn the_declared_table_is_two_f32_slots_per_parameter_under_adamw() {
+        let two = set(vec![
+            entry("blk.0.attn_q.weight", TensorRole::Base, [64, 64, 1, 1]),
+            entry("blk.0.attn_norm.weight", TensorRole::Base, [64, 1, 1, 1]),
+        ]);
+        let plan = OptimizerKind::AdamW.plan(&two);
+        let rows: Vec<(&str, &str, u64)> = plan
+            .slot_rows()
+            .iter()
+            .map(|(owner, slot)| (*owner, slot.slot, slot.n_bytes))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("blk.0.attn_q.weight", "m", 64 * 64 * 4),
+                ("blk.0.attn_q.weight", "v", 64 * 64 * 4),
+                ("blk.0.attn_norm.weight", "m", 64 * 4),
+                ("blk.0.attn_norm.weight", "v", 64 * 4),
+            ]
+        );
+        assert!(plan.shared.is_empty());
+        assert_eq!(plan.state_bytes(), OptimizerKind::AdamW.state_bytes(&two));
+        assert!(plan.unwritable().is_empty());
+    }
+
+    /// Every parameter owned, no slot kept.
+    #[test]
+    fn an_sgd_plan_owns_every_parameter_and_declares_no_slot() {
+        let two = set(vec![
+            entry("blk.0.attn_q.weight", TensorRole::Base, [64, 64, 1, 1]),
+            entry("blk.0.attn_norm.weight", TensorRole::Base, [64, 1, 1, 1]),
+        ]);
+        let plan = OptimizerKind::Sgd.plan(&two);
+        assert_eq!(plan.parameters.len(), 2);
+        assert!(plan.slot_rows().is_empty());
+        assert_eq!(plan.state_bytes(), 0);
+        assert!(
+            plan.parameters
+                .iter()
+                .all(|parameter| parameter.optimizer == Some(OptimizerKind::Sgd))
+        );
+    }
+
+    /// Declared and live tables are compared by identity, never by index.
+    #[test]
+    fn a_live_table_that_is_not_the_declared_one_is_refused_by_the_row_that_differs() {
+        let one = set(vec![entry(
+            "blk.0.attn_q.weight",
+            TensorRole::Base,
+            [8, 8, 1, 1],
+        )]);
+        let plan = OptimizerKind::AdamW.plan(&one);
+        let live = |rows: &[(&str, &str, u64)]| -> Vec<(String, String, u64)> {
+            rows.iter()
+                .map(|(owner, slot, bytes)| (owner.to_string(), slot.to_string(), *bytes))
+                .collect()
+        };
+        plan.check_live(&live(&[
+            ("blk.0.attn_q.weight", "m", 256),
+            ("blk.0.attn_q.weight", "v", 256),
+        ]))
+        .unwrap();
+        // A declared slot the runtime did not allocate.
+        let error = plan
+            .check_live(&live(&[("blk.0.attn_q.weight", "m", 256)]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("did not allocate"), "{error}");
+        // A slot the runtime allocated that this optimizer does not declare.
+        let error = plan
+            .check_live(&live(&[
+                ("blk.0.attn_q.weight", "m", 256),
+                ("blk.0.attn_q.weight", "v", 256),
+                ("blk.0.attn_q.weight", "momentum", 256),
+            ]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("does not declare"), "{error}");
+        // The two orders need not coincide.
+        plan.check_live(&live(&[
+            ("blk.0.attn_q.weight", "v", 256),
+            ("blk.0.attn_q.weight", "m", 256),
+        ]))
+        .unwrap();
+        // The right rows, the wrong width.
+        let error = plan
+            .check_live(&live(&[
+                ("blk.0.attn_q.weight", "m", 256),
+                ("blk.0.attn_q.weight", "v", 128),
+            ]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("128"), "{error}");
+    }
+
+    /// Under SGD an F16 factor is a refusal; under Muon it falls back to the
+    /// optimizer that writes F16.
+    #[test]
+    fn the_dtype_predicate_refuses_under_a_chosen_optimizer_and_falls_back_under_a_mixed_one() {
+        let mut factor = entry(
+            "blk.0.attn_q.weight.lora_a",
+            TensorRole::LoraA,
+            [1024, 16, 1, 1],
+        );
+        factor.dtype = TensorDtype::F16;
+
+        assert_eq!(
+            OptimizerKind::AdamW.assign(&factor),
+            Some(OptimizerKind::AdamW)
+        );
+        // SGD has no fallback.
+        assert_eq!(OptimizerKind::Sgd.assign(&factor), None);
+        assert_eq!(OptimizerKind::Sgd.fallback(), None);
+        // Muon falls back; AdamW writes F16.
+        assert_eq!(
+            OptimizerKind::Muon.assign(&factor),
+            Some(OptimizerKind::AdamW)
+        );
+
+        // A dtype nothing writes is recorded by name, not substituted.
+        let mut quantized = entry("blk.0.attn_q.weight", TensorRole::Base, [64, 64, 1, 1]);
+        quantized.dtype = TensorDtype::Other("Q4_K".to_string());
+        assert_eq!(OptimizerKind::AdamW.assign(&quantized), None);
+        let plan = OptimizerKind::AdamW.plan(&set(vec![quantized]));
+        assert_eq!(plan.unwritable(), ["blk.0.attn_q.weight"]);
+    }
+
+    /// Gefen's rows are declared per block, its codebook once per owner.
+    #[test]
+    fn gefens_rows_are_declared_per_block_and_its_codebook_once_per_owner() {
+        // 4096 elements at the default block size: four blocks.
+        let one = set(vec![entry(
+            "blk.0.attn_q.weight",
+            TensorRole::Base,
+            [64, 64, 1, 1],
+        )]);
+        let plan = OptimizerKind::Gefen.plan(&one);
+        let rows: Vec<(&str, u64)> = plan
+            .slot_rows()
+            .iter()
+            .map(|(_, slot)| (slot.slot, slot.n_bytes))
+            .collect();
+        let blocks = 4096u64.div_ceil(GEFEN_DEFAULT_BLOCK_SIZE);
+        assert_eq!(
+            rows,
+            [
+                ("indices", 4096),
+                ("scales", blocks * 4),
+                ("second_moments", blocks * 4),
+            ]
+        );
+        assert_eq!(plan.shared.len(), 1);
+        assert_eq!(plan.shared[0].slot, "codebook");
+        assert_eq!(plan.shared[0].n_bytes, GEFEN_CODEBOOK_LEVELS * 4);
+        // A partial trailing block is a block: 4097 elements is five, not four.
+        let odd = set(vec![entry("blk.0.ssm_a", TensorRole::Base, [4097, 1, 1, 1])]);
+        let plan = OptimizerKind::Gefen.plan(&odd);
+        assert_eq!(plan.slot_rows()[1].1.n_elements, 5);
     }
 
     #[test]

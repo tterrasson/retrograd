@@ -363,7 +363,7 @@ bool ensure_opt_context(trainer_state & state) {
         /*get_opt_pars    =*/ scheduled_optimizer_params,
         /*get_opt_pars_ud =*/ &state,
         /*optimizer_type  =*/ optimizer_type,
-        /*fused_sparse_ce =*/ state.train_config.chunked_cross_entropy,
+        /*fused_sparse_ce =*/ fused_loss_enabled(state),
         /*n_ce_tiles      =*/ (int32_t) (state.train_config.chunked_ce_tiles > 0
                 ? state.train_config.chunked_ce_tiles : 1),
         /*n_ce_seq_chunk  =*/ (int32_t) state.train_config.chunked_ce_seq_chunk,

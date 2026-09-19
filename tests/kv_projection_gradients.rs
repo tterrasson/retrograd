@@ -127,7 +127,7 @@ fn second_moment_magnitudes(
 
     let saved = Checkpoint::read(&state).expect("read checkpoint");
     assert!(
-        saved.optimizer.has_moments,
+        saved.optimizer.graph_ready,
         "the run took no optimizer step"
     );
     assert!(
@@ -135,13 +135,30 @@ fn second_moment_magnitudes(
         "need more than one optimizer step for the A momenta to be meaningful, got iter={}",
         saved.optimizer.iter
     );
+    // The second moment, read back through the slot table and streamed out of
+    // the state file.
+    let mut reader = checkpoint::OptimizerStateReader::open(&state, &saved.optimizer)
+        .expect("open optimizer payload");
+    let mut staging = vec![0_u8; 1 << 16];
     let mut out: Vec<(String, f64)> = saved
         .optimizer
-        .moments
+        .assignment
         .iter()
-        .map(|entry| {
-            let total = entry.v.iter().map(|value| value.abs() as f64).sum();
-            (entry.name.clone(), total)
+        .map(|row| {
+            let (_, v) = saved
+                .optimizer
+                .adamw_moments(&row.parameter)
+                .expect("an adamw run keeps m and v for every parameter");
+            let mut total = 0.0_f64;
+            reader
+                .stream(v, &mut staging, |_, bytes| {
+                    for chunk in bytes.as_chunks::<4>().0 {
+                        total += f32::from_le_bytes(*chunk).abs() as f64;
+                    }
+                    Ok(())
+                })
+                .expect("stream the second moment");
+            (row.parameter.clone(), total)
         })
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));

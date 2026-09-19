@@ -10,7 +10,8 @@ use std::path::Path;
 
 use retrograd_core::{
     CheckpointDtype, Device, Error, LayerRange, LoraConfig, LoraDtype, OptimizerKind, Result,
-    SharedPrefixFanout, TrainConfig, TrainablePolicy, TrainableRunConfig, TrainableSelector,
+    SharedPrefixFanout, TensorDtype, TrainConfig, TrainablePolicy, TrainableRunConfig,
+    TrainableSelector,
 };
 
 use crate::common::{
@@ -790,15 +791,24 @@ fn check_across_sections(
     // alone. F16 is the *default* adapter storage, so this pair is the ordinary
     // way to ask for it - and the runtime's own refusal would arrive after the
     // model is loaded and the training graph is built.
-    if trainable.optimizer == OptimizerKind::Sgd
-        && lora_config.is_some_and(|config| config.dtype == LoraDtype::F16)
+    // Asked through `supports_dtype` rather than by naming SGD and F16: the
+    // table belongs to the optimizer.
+    let adapter_dtype = lora_config.map(|config| match config.dtype {
+        LoraDtype::F32 => TensorDtype::F32,
+        LoraDtype::F16 => TensorDtype::F16,
+    });
+    if adapter_dtype
+        .as_ref()
+        .is_some_and(|dtype| !trainable.optimizer.supports_dtype(dtype))
         && !lora.is_some_and(|section| section.init_adapter.is_some())
         && !checkpoint.is_some_and(|value| value.resume_from.is_some())
     {
-        return Err(Error::config(
-            "training.optimizer = 'sgd' cannot write an F16 adapter: its update step is \
-             F32-only. Set lora.dtype = 'f32', or keep the default optimizer",
-        ));
+        return Err(Error::config(format!(
+            "training.optimizer = '{}' cannot write a {} adapter: its update step does not \
+             carry that precision. Set lora.dtype = 'f32', or keep the default optimizer",
+            trainable.optimizer,
+            adapter_dtype.as_ref().expect("checked just above"),
+        )));
     }
 
     Ok(())

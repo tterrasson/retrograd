@@ -600,7 +600,10 @@ fn sgd_is_refused_against_the_default_f16_adapter() {
     document.lora.as_mut().expect("section").dtype = Some(LoraDtype::F16);
     let error = build(document, root).expect_err("the sgd kernel is F32-only");
     assert!(error.is_user_error(), "{error}");
-    assert!(error.to_string().contains("F32-only"), "{error}");
+    assert!(
+        error.to_string().contains("cannot write a F16 adapter"),
+        "{error}"
+    );
 }
 
 #[test]

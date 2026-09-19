@@ -20,7 +20,7 @@ use serde::Serialize;
 
 use retrograd_core::{
     CheckpointDtype, KvDtype, LoraConfig, LoraDtype, MemoryReport, ModelInfo, TargetSet,
-    TrainConfig,
+    TrainConfig, TrainableSet,
 };
 
 /// The product of a byte formula's factors, saturating at `u64::MAX`.
@@ -431,38 +431,94 @@ impl From<&MemoryReport> for MemoryEstimate {
     }
 }
 
-/// Why a base-weight policy cannot be planned yet, as the message a refusal
-/// carries.
+/// Why a base-weight policy cannot be planned without the model's tensor
+/// table, as the message a refusal carries.
 ///
-/// The cost model sizes an adapter from the model's geometry and its target
-/// set. A policy that trains base tensors has neither: its gradients and
-/// optimizer state follow a resolved trainable set, which needs the GGUF's
-/// per-tensor inventory rather than the aggregate `ModelInfo` this crate
-/// reads. Returning a budget without those terms would be short by the largest
-/// thing the run pays, so the planner refuses instead.
+/// The cost model sizes an adapter from the model's geometry, but a base
+/// trainable set is priced per tensor and needs the GGUF inventory. Without it
+/// the budget would be short by the largest term the run pays.
 pub fn base_training_unpriced(policy: retrograd_core::TrainablePolicy) -> String {
     format!(
-        "training.trainable = '{policy}' cannot be planned: the memory estimate sizes a \
-         LoRA adapter from the model's geometry, and the gradients and optimizer state of \
-         a base trainable set are resolved per tensor rather than derived from it. Run it \
-         without the planner, or train an adapter"
+        "training.trainable = '{policy}' cannot be planned without the model's tensor \
+         inventory: the gradients and optimizer state of a base trainable set are resolved \
+         per tensor rather than derived from the model's aggregate geometry. Point the \
+         planner at a readable [model].path, or train an adapter"
     )
 }
 
+/// The base half of this configuration's trainable set, resolved against the
+/// model's own tensor table.
+///
+/// `None` for a `lora` document. A base-weight policy without an inventory is
+/// refused by [`base_training_unpriced`]. One entry point for the resolver and
+/// the server so the same set is not resolved twice under two rules.
+pub fn resolve_trainable_set(
+    training: &retrograd_core::TrainableRunConfig,
+    inventory: Option<&retrograd_core::TensorInventory>,
+) -> retrograd_core::Result<Option<TrainableSet>> {
+    if !training.policy.trains_base_weights() {
+        return Ok(None);
+    }
+    let Some(inventory) = inventory else {
+        return Err(retrograd_core::Error::config(base_training_unpriced(
+            training.policy,
+        )));
+    };
+    retrograd_core::resolve_base(inventory, training.policy, &training.selector).map(Some)
+}
+
+/// What a run trains, as the estimate reads it.
+///
+/// Two independent halves because a run may have either or both: the adapter
+/// it creates, sized analytically, and the base tensors it resolved, sized per
+/// tensor.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Trainable<'a> {
+    pub adapter: Option<&'a LoraConfig>,
+    /// The resolved base set, base entries only: the adapter's factors do not
+    /// exist in the GGUF and are sized by the adapter half.
+    pub base: Option<&'a TrainableSet>,
+}
+
+impl<'a> Trainable<'a> {
+    /// A LoRA run: an adapter and no base tensor.
+    pub fn adapter(lora: &'a LoraConfig) -> Self {
+        Self {
+            adapter: Some(lora),
+            base: None,
+        }
+    }
+
+    /// A `full` or `partial` run: base tensors and no adapter.
+    pub fn base(set: &'a TrainableSet) -> Self {
+        Self {
+            adapter: None,
+            base: Some(set),
+        }
+    }
+}
+
+impl<'a> From<Option<&'a LoraConfig>> for Trainable<'a> {
+    fn from(adapter: Option<&'a LoraConfig>) -> Self {
+        Self {
+            adapter,
+            base: None,
+        }
+    }
+}
+
 /// Estimates the footprint of one configuration.
-/// `lora` is absent for a policy that trains base tensors and no adapter. The
-/// adapter terms are then zero, which is a fact rather than an omission - but
-/// the base terms that replace them need a resolved trainable set, which this
-/// model-level estimate does not have. [`crate::base_training_unpriced`] is the
-/// refusal that keeps such a configuration from being planned against a budget
-/// that does not include its gradients.
+///
+/// `trainable` carries whichever halves the policy has; a base policy missing
+/// its set is refused upstream by [`crate::base_training_unpriced`].
 pub fn estimate(
     model: &ModelInfo,
     training: &TrainConfig,
-    lora: Option<&LoraConfig>,
+    trainable: Trainable<'_>,
     workload: &Workload,
     calibration: Calibration,
 ) -> MemoryEstimate {
+    let lora = trainable.adapter;
     let n_ctx = training.n_ctx as u64;
     let n_ubatch = training.n_ubatch.max(1) as u64;
     let n_embd = model.n_embd as u64;
@@ -511,7 +567,12 @@ pub fn estimate(
     let attention_bytes = product([2, model.n_head.max(1) as u64, n_ubatch, n_ctx, 4]);
 
     // --- Vocabulary logits -------------------------------------------------
-    let logits_bytes = logits_estimate(model, training, n_ubatch);
+    // The loss graph, not the option: a run that trains the projection head
+    // takes the dense path, because the fused loss differentiates only its
+    // hidden-state input.
+    let fused_loss = training.chunked_cross_entropy
+        && !trainable.base.is_some_and(TrainableSet::trains_loss_head);
+    let logits_bytes = logits_estimate(model, training, n_ubatch, fused_loss);
 
     let optimizer_compute_bytes = scale(
         total([activation_bytes, attention_bytes, logits_bytes]),
@@ -556,19 +617,36 @@ pub fn estimate(
     };
 
     // --- Trainable set and optimizer state ---------------------------------
-    // LoRA-only today: the factors are allocated next to the model, so they are
-    // not a subset of its weights. A base-training estimate sets that flag.
-    let trainable = trainable_parameters(model, lora);
-    let trainable_parameter_bytes = product([
-        trainable,
+    // Two halves, summed. The adapter's factors sit *next to* the model and
+    // add parameter bytes to the budget; the resolved base tensors are already
+    // *inside* its weights, so only their gradients and optimizer state are
+    // new. That is what `trainable_parameters_are_model_subset` records.
+    let adapter_elements = trainable_parameters(model, lora);
+    let adapter_parameter_bytes = product([
+        adapter_elements,
         lora.map_or(0, |lora| lora_element_bytes(lora.dtype)),
     ]);
-    let trainable_gradient_bytes = product([trainable, 4]);
-    // Through the optimizer's own formula rather than AdamW's `8N`: an SGD run
-    // planned against `8N` is over-budgeted by the whole optimizer, and the
-    // next optimizer's ratio would have to be written here a second time.
-    // Adapter factors, because that is what this estimate sizes.
-    let optimizer_state_bytes = training.trainable.optimizer.adapter_state_bytes(trainable);
+    let base = trainable.base.filter(|set| !set.is_empty());
+    let base_elements = base.map_or(0, TrainableSet::n_parameters);
+    let trainable_parameter_bytes = total([
+        adapter_parameter_bytes,
+        base.map_or(0, TrainableSet::parameter_bytes),
+    ]);
+    let trainable_gradient_bytes = product([total([adapter_elements, base_elements]), 4]);
+    // The optimizer's own formula rather than AdamW's `8N`: an SGD run planned
+    // against `8N` is over-budgeted by the whole optimizer. The adapter half
+    // goes through the element-count entry point; the base half through the
+    // resolved set, which is what Muon's shape rule needs.
+    let optimizer = training.trainable.optimizer;
+    let optimizer_state_bytes = total([
+        optimizer.adapter_state_bytes(adapter_elements),
+        base.map_or(0, |set| optimizer.state_bytes(set)),
+    ]);
+    // Neither answer is right for a hybrid set, and the conservative one is
+    // "added on top": the runtime's own report makes the same choice, so a
+    // hybrid budget over-counts its base half in both places rather than
+    // disagreeing with itself.
+    let trainable_parameters_are_model_subset = base.is_some() && adapter_parameter_bytes == 0;
 
     MemoryEstimate {
         model_weight_bytes,
@@ -584,7 +662,7 @@ pub fn estimate(
         trainable_parameter_bytes,
         trainable_gradient_bytes,
         optimizer_state_bytes,
-        trainable_parameters_are_model_subset: false,
+        trainable_parameters_are_model_subset,
         // `tokens` and `labels`, one `i32` each per position.
         host_dataset_bytes: product([workload.examples, n_ctx, 8]),
         host_rollout_bytes,
@@ -673,10 +751,15 @@ fn recurrent_state_bytes(model: &ModelInfo, sequences: u64) -> u64 {
 /// `n_batch` only sets how many of them accumulate before an optimizer step), and
 /// the loss graph's own logits plus their gradient, which is what
 /// `chunked_cross_entropy` bounds.
-fn logits_estimate(model: &ModelInfo, training: &TrainConfig, n_ubatch: u64) -> u64 {
+fn logits_estimate(
+    model: &ModelInfo,
+    training: &TrainConfig,
+    n_ubatch: u64,
+    fused_loss: bool,
+) -> u64 {
     let n_vocab = model.n_vocab as u64;
     let reserved_outputs = product([n_ubatch, n_vocab, 4]);
-    let graph = if training.chunked_cross_entropy {
+    let graph = if fused_loss {
         let tiles = training.chunked_ce_tiles.max(1) as u64;
         let tokens = if training.chunked_ce_seq_chunk > 0 {
             (training.chunked_ce_seq_chunk as u64).min(n_ubatch)
@@ -896,6 +979,148 @@ mod tests {
         }
     }
 
+    /// Two F32 norms, plus the vocabulary projection when `with_head`.
+    fn base_set(with_head: bool) -> TrainableSet {
+        use retrograd_core::{OUTPUT_HEAD, TensorDtype, TensorRole, TrainableEntry};
+        let entry = |name: &str, ne: [i64; 4]| {
+            let n_elements = ne.iter().product::<i64>() as u64;
+            TrainableEntry {
+                name: name.to_string(),
+                role: TensorRole::Base,
+                ne,
+                dtype: TensorDtype::F32,
+                n_elements,
+                n_bytes: n_elements * 4,
+                storage_id: 0,
+            }
+        };
+        let mut entries = vec![
+            entry("blk.0.attn_norm.weight", [512, 1, 1, 1]),
+            entry("blk.1.attn_norm.weight", [512, 1, 1, 1]),
+        ];
+        if with_head {
+            entries.push(entry(OUTPUT_HEAD, [512, 32_000, 1, 1]));
+        }
+        TrainableSet {
+            policy: retrograd_core::TrainablePolicy::Partial,
+            entries,
+            exclusions: Vec::new(),
+        }
+    }
+
+    /// A base set is priced per tensor and its parameters are a slice of the
+    /// model's weights, not added on top of them.
+    #[test]
+    fn a_base_set_is_priced_per_tensor_and_never_added_on_top_of_the_model_weights() {
+        let set = base_set(false);
+        let priced = estimate(
+            &tiny_model(),
+            &training(1024),
+            Trainable::base(&set),
+            &sft_workload(),
+            Calibration::default(),
+        );
+        assert_eq!(priced.trainable_parameter_bytes, 2 * 512 * 4);
+        assert_eq!(priced.trainable_gradient_bytes, 2 * 512 * 4);
+        assert_eq!(priced.optimizer_state_bytes, 2 * 512 * 8);
+        assert!(priced.trainable_parameters_are_model_subset);
+
+        // The device rollup honours that.
+        let adapter = estimate(
+            &tiny_model(),
+            &training(1024),
+            Trainable::adapter(&LoraConfig::auto(8, 16.0)),
+            &sft_workload(),
+            Calibration::default(),
+        );
+        assert!(!adapter.trainable_parameters_are_model_subset);
+        assert_eq!(
+            priced.device_bytes() + priced.trainable_parameter_bytes,
+            estimate(
+                &tiny_model(),
+                &training(1024),
+                Trainable::default(),
+                &sft_workload(),
+                Calibration::default(),
+            )
+            .device_bytes()
+                + priced.trainable_gradient_bytes
+                + priced.optimizer_state_bytes
+                + priced.trainable_parameter_bytes
+        );
+    }
+
+    /// The optimizer state follows the chosen optimizer's own formula.
+    #[test]
+    fn a_base_sets_optimizer_state_follows_the_chosen_optimizer() {
+        let set = base_set(false);
+        let mut config = training(1024);
+        config.trainable.optimizer = retrograd_core::OptimizerKind::Sgd;
+        let sgd = estimate(
+            &tiny_model(),
+            &config,
+            Trainable::base(&set),
+            &sft_workload(),
+            Calibration::default(),
+        );
+        assert_eq!(sgd.optimizer_state_bytes, 0);
+        assert_eq!(sgd.trainable_gradient_bytes, 2 * 512 * 4);
+    }
+
+    /// A run that trains the projection head takes the dense path even with
+    /// `chunked_cross_entropy` on.
+    #[test]
+    fn training_the_head_prices_dense_logits_even_with_chunked_cross_entropy_on() {
+        let mut config = training(1024);
+        config.chunked_cross_entropy = true;
+        config.chunked_ce_tiles = 8;
+        let norms = base_set(false);
+        let with_head = base_set(true);
+        let tiled = estimate(
+            &tiny_model(),
+            &config,
+            Trainable::base(&norms),
+            &sft_workload(),
+            Calibration::default(),
+        );
+        let dense = estimate(
+            &tiny_model(),
+            &config,
+            Trainable::base(&with_head),
+            &sft_workload(),
+            Calibration::default(),
+        );
+        assert!(
+            dense.logits_bytes > tiled.logits_bytes,
+            "dense {} is not above tiled {}",
+            dense.logits_bytes,
+            tiled.logits_bytes
+        );
+        // Same figure the option-off run pays: same graph.
+        let off = estimate(
+            &tiny_model(),
+            &training(1024),
+            Trainable::base(&with_head),
+            &sft_workload(),
+            Calibration::default(),
+        );
+        assert_eq!(dense.logits_bytes, off.logits_bytes);
+    }
+
+    /// A base policy without an inventory is refused rather than priced.
+    #[test]
+    fn a_base_policy_without_an_inventory_is_refused_rather_than_priced() {
+        let mut trainable = retrograd_core::TrainableRunConfig {
+            policy: retrograd_core::TrainablePolicy::Partial,
+            ..Default::default()
+        };
+        let error = resolve_trainable_set(&trainable, None).unwrap_err();
+        assert!(error.to_string().contains("tensor inventory"), "{error}");
+        // A LoRA document needs none and gets none.
+        trainable.policy = retrograd_core::TrainablePolicy::Lora;
+        assert!(resolve_trainable_set(&trainable, None).unwrap().is_none());
+    }
+
     #[test]
     fn the_saturating_helpers_keep_a_total_above_its_terms() {
         assert_eq!(product([2, 3, 7]), 42);
@@ -932,14 +1157,14 @@ mod tests {
         let absurd = estimate(
             &model,
             &config,
-            Some(&LoraConfig::auto(8, 16.0)),
+            Trainable::adapter(&LoraConfig::auto(8, 16.0)),
             &sft_workload(),
             Calibration::default(),
         );
         let large = estimate(
             &tiny_model(),
             &training(131_072),
-            Some(&LoraConfig::auto(8, 16.0)),
+            Trainable::adapter(&LoraConfig::auto(8, 16.0)),
             &sft_workload(),
             Calibration::default(),
         );
@@ -959,14 +1184,14 @@ mod tests {
         let small = estimate(
             &model,
             &training(1024),
-            Some(&lora),
+            Trainable::adapter(&lora),
             &sft_workload(),
             Calibration::default(),
         );
         let large = estimate(
             &model,
             &training(2048),
-            Some(&lora),
+            Trainable::adapter(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -978,7 +1203,7 @@ mod tests {
                 kv_dtype: KvDtype::F16,
                 ..training(2048)
             },
-            Some(&lora),
+            Trainable::adapter(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -993,7 +1218,7 @@ mod tests {
         let adamw = estimate(
             &model,
             &config,
-            Some(&lora),
+            Trainable::adapter(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -1001,7 +1226,7 @@ mod tests {
         let sgd = estimate(
             &model,
             &config,
-            Some(&lora),
+            Trainable::adapter(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -1020,7 +1245,7 @@ mod tests {
         let plain = estimate(
             &model,
             &training(1024),
-            Some(&lora),
+            Trainable::adapter(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -1031,7 +1256,7 @@ mod tests {
                 chunked_ce_tiles: 8,
                 ..training(1024)
             },
-            Some(&lora),
+            Trainable::adapter(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -1049,7 +1274,7 @@ mod tests {
                 chunked_ce_tiles: 32,
                 ..training(1024)
             },
-            Some(&lora),
+            Trainable::adapter(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -1064,7 +1289,7 @@ mod tests {
         let alone = estimate(
             &model,
             &training,
-            Some(&lora),
+            Trainable::adapter(&lora),
             &rollout_workload(),
             Calibration::default(),
         );
@@ -1072,7 +1297,7 @@ mod tests {
         let with_teacher = estimate(
             &model,
             &training,
-            Some(&lora),
+            Trainable::adapter(&lora),
             &distill_workload(TEACHER),
             Calibration::default(),
         );
@@ -1104,7 +1329,7 @@ mod tests {
         let student = estimate(
             &model,
             &narrow,
-            Some(&LoraConfig::auto(8, 16.0)),
+            Trainable::adapter(&LoraConfig::auto(8, 16.0)),
             &rollout_workload(),
             Calibration::default(),
         );
@@ -1123,7 +1348,7 @@ mod tests {
         let plain = estimate(
             &model,
             &training(1024),
-            Some(&lora),
+            Trainable::adapter(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -1134,7 +1359,7 @@ mod tests {
                 checkpoint_every_n_layers: 4,
                 ..training(1024)
             },
-            Some(&lora),
+            Trainable::adapter(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -1149,7 +1374,7 @@ mod tests {
                 checkpoint_dtype: CheckpointDtype::F16,
                 ..training(1024)
             },
-            Some(&lora),
+            Trainable::adapter(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -1163,7 +1388,7 @@ mod tests {
         let sft = estimate(
             &model,
             &training(1024),
-            Some(&lora),
+            Trainable::adapter(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -1173,7 +1398,7 @@ mod tests {
         let rollout = estimate(
             &model,
             &rollout_training(1024),
-            Some(&lora),
+            Trainable::adapter(&lora),
             &rollout_workload(),
             Calibration::default(),
         );
@@ -1192,14 +1417,14 @@ mod tests {
                 fast_generation_context: false,
                 ..rollout_training(1024)
             },
-            Some(&lora),
+            Trainable::adapter(&lora),
             &workload,
             Calibration::default(),
         );
         let fast = estimate(
             &model,
             &rollout_training(1024),
-            Some(&lora),
+            Trainable::adapter(&lora),
             &workload,
             Calibration::default(),
         );

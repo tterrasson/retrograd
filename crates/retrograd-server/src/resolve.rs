@@ -287,6 +287,8 @@ pub async fn plan_recipe(
             // below is where a client-written one arrives, and where the
             // teacher's geometry is read.
             teacher: None,
+            // No `Objective` resolves to a base-weight policy.
+            inventory: None,
             data: &data,
             eval: eval_data.as_ref(),
             data_format: format,
@@ -455,22 +457,25 @@ pub async fn plan_config(
                 "invalid configuration",
             )
         })?;
-    // The same refusal the planner gives, at the boundary where a client
-    // document arrives: the cost model sizes an adapter, and answering a base
-    // run with a budget that omits its gradients would be worse than saying no.
-    if config.training.trainable.policy.trains_base_weights() {
-        return Err(ApiError::invalid(retrograd_plan::base_training_unpriced(
-            config.training.trainable.policy,
-        ))
-        .with_field(
-            "/config/training/trainable",
-            ErrorCode::InvalidValue,
-            "not supported by the planner",
-        ));
-    }
     state.validate_run_paths(&config, false)?;
     let model_path = config.model.clone();
     let model = geometry(state, &model_path, config.training.device).await?;
+    // The per-tensor table, read only for a policy priced from one; a base
+    // document that cannot get one is refused by `resolve_trainable_set`.
+    let inventory = if config.training.trainable.policy.trains_base_weights() {
+        tensor_inventory(state, &model_path, config.training.device).await?
+    } else {
+        None
+    };
+    let base_trainable =
+        retrograd_plan::resolve_trainable_set(&config.training.trainable, inventory.as_ref())
+            .map_err(|error| {
+                ApiError::from(error).with_field(
+                    "/config/training/trainable",
+                    ErrorCode::InvalidValue,
+                    "not resolvable against this model",
+                )
+            })?;
     let execution_profile = execution_profile(state, &model_path, config.training.device).await?;
     let key = retrograd_plan::calibration_key(&execution_profile, &model, &config);
     let preflight = preflight_candidate(
@@ -503,6 +508,7 @@ pub async fn plan_config(
         &config,
         &model,
         teacher.as_ref(),
+        base_trainable.as_ref(),
         &data,
         state.baseline,
         state.server_budgets(),
@@ -637,6 +643,31 @@ fn redact(mut document: ConfigDocument, reward_id: Option<&str>) -> ConfigDocume
 /// literal reading of the device rule would - means no plan can be made while a run
 /// trains. What the rule is really about is the calibration pass, which does load the model
 /// onto the device, and that one takes the device permit.
+/// The model's per-tensor table, on the probe queue like every other model
+/// read. `None` when the probe cannot open a GGUF.
+pub(crate) async fn tensor_inventory(
+    state: &AppState,
+    model: &std::path::Path,
+    device: Device,
+) -> ApiResult<Option<retrograd_core::TensorInventory>> {
+    let permit = state
+        .probes
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::new(ProblemKind::DeviceBusy, "the probe queue is closed"))?;
+    let probe = state.probe.clone();
+    let model = model.to_path_buf();
+    let inventory = tokio::task::spawn_blocking(move || {
+        let outcome = probe.tensor_inventory(&model, device);
+        drop(permit);
+        outcome
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("model probe failed: {error}")))??;
+    Ok(inventory)
+}
+
 pub(crate) async fn geometry(
     state: &AppState,
     model: &std::path::Path,

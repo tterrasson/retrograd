@@ -31,9 +31,16 @@ pub const TENSOR_INVENTORY_VERSION: u32 = 1;
 /// them is meaningless rather than expensive.
 pub const ALWAYS_FROZEN: [&str; 2] = ["token_embd.weight", "rope_freqs.weight"];
 
+/// Suffix of every rotary frequency table, model-wide or per-block.
+pub const ROPE_FREQS_SUFFIX: &str = "rope_freqs.weight";
+
 /// The canonical name of the vocabulary projection, when the model carries one
 /// of its own.
 pub const OUTPUT_HEAD: &str = "output.weight";
+
+/// The vocabulary projection's bias, when the model carries one. Selected with
+/// the head: the fused loss path differentiates neither.
+pub const OUTPUT_HEAD_BIAS: &str = "output.bias";
 
 /// The model-wide final norm. It follows `norms` rather than the block range,
 /// and so does every other norm outside a block - `token_embd_norm.weight` is
@@ -140,6 +147,14 @@ impl TensorDesc {
 
     pub fn is_bias(&self) -> bool {
         self.name.ends_with(".bias")
+    }
+
+    /// Whether this is a rotary frequency table rather than a parameter.
+    ///
+    /// Whole-name match for the model-wide table, suffix for a per-block one.
+    /// The rotary backward aborts if its frequency source needs a gradient.
+    pub fn is_rotary_constant(&self) -> bool {
+        self.name == ROPE_FREQS_SUFFIX || self.name.ends_with(&format!(".{ROPE_FREQS_SUFFIX}"))
     }
 
     /// Whether the stem names a normalization. Keys on the suffix rather than on
@@ -519,6 +534,21 @@ impl TrainableSet {
             .filter(|entry| entry.role == TensorRole::Base)
     }
 
+    /// Whether this set contains the vocabulary projection or its bias.
+    ///
+    /// Decides the loss graph: the fused cross-entropy differentiates only its
+    /// hidden-state input, so a run that trains the head must take the dense
+    /// path, whose backward already produces the head's gradient.
+    ///
+    /// Read by the runtime (which turns the fused path off) and by the planner
+    /// (which budgets dense logits); both must reach the same answer.
+    pub fn trains_loss_head(&self) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.role == TensorRole::Base
+                && (entry.name == OUTPUT_HEAD || entry.name == OUTPUT_HEAD_BIAS)
+        })
+    }
+
     pub fn n_parameters(&self) -> u64 {
         self.entries
             .iter()
@@ -752,7 +782,10 @@ fn resolve_selected(
         if selector.norms && tensor.layer().is_none() && tensor.is_norm() && !tensor.is_bias() {
             wanted = true;
         }
-        if selector.output_head && tensor.name == OUTPUT_HEAD {
+        // Projection and bias together: the fused loss differentiates neither.
+        if selector.output_head
+            && (tensor.name == OUTPUT_HEAD || tensor.name == OUTPUT_HEAD_BIAS)
+        {
             wanted = true;
         }
         if !wanted {
@@ -814,7 +847,7 @@ fn frozen_reason(inventory: &TensorInventory, tensor: &TensorDesc) -> Option<Exc
     if aliases(ALWAYS_FROZEN[0]) {
         return Some(ExclusionReason::InputEmbedding);
     }
-    if aliases(ALWAYS_FROZEN[1]) {
+    if aliases(ALWAYS_FROZEN[1]) || tensor.is_rotary_constant() {
         return Some(ExclusionReason::RotaryConstant);
     }
     None
@@ -1001,6 +1034,12 @@ mod tests {
             [8, 32, 1, 1],
             TensorDtype::F32,
             offset + 200,
+        ));
+        tensors.push(tensor(
+            OUTPUT_HEAD_BIAS,
+            [32, 1, 1, 1],
+            TensorDtype::F32,
+            offset + 250,
         ));
         TensorInventory::new("llama", false, tensors)
     }
@@ -1197,6 +1236,67 @@ mod tests {
         let error = resolve_base(&inventory, TrainablePolicy::Partial, &selector)
             .expect_err("an explicit tied head is an error");
         assert!(error.to_string().contains("alias"), "{error}");
+    }
+
+    /// Selecting the head selects its bias, and marks the set as training the
+    /// loss head (dense loss path).
+    #[test]
+    fn the_output_head_selects_its_bias_too_and_marks_the_set_as_training_the_loss_head() {
+        let selector = TrainableSelector {
+            output_head: true,
+            ..Default::default()
+        };
+        let set = resolve_base(&inventory(), TrainablePolicy::Partial, &selector).unwrap();
+        assert_eq!(names(&set), [OUTPUT_HEAD_BIAS, OUTPUT_HEAD]);
+        assert!(set.trains_loss_head());
+
+        // A norms-only set leaves the fused path available.
+        let norms = resolve_base(
+            &inventory(),
+            TrainablePolicy::Partial,
+            &TrainableSelector {
+                norms: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!norms.trains_loss_head());
+    }
+
+    /// A per-block rotary table is frozen like the model-wide one.
+    #[test]
+    fn a_rotary_table_inside_a_block_is_frozen_like_the_model_wide_one() {
+        let mut inventory = inventory();
+        inventory.tensors.push(tensor(
+            "blk.0.rope_freqs.weight",
+            [4, 1, 1, 1],
+            TensorDtype::F32,
+            9_000,
+        ));
+        let inventory = TensorInventory::new("llama", false, inventory.tensors);
+        let full = resolve_base(
+            &inventory,
+            TrainablePolicy::Full,
+            &TrainableSelector::default(),
+        )
+        .unwrap();
+        assert!(!names(&full).contains(&"blk.0.rope_freqs.weight"));
+        assert_eq!(
+            full.exclusions
+                .iter()
+                .filter(|e| e.reason == ExclusionReason::RotaryConstant)
+                .count(),
+            2
+        );
+
+        // Naming it explicitly is an error.
+        let selector = TrainableSelector {
+            modules: vec!["blk.0.rope_freqs.weight".to_string()],
+            ..Default::default()
+        };
+        let error = resolve_base(&inventory, TrainablePolicy::Partial, &selector)
+            .expect_err("a rotary constant is not a parameter");
+        assert!(error.to_string().contains("rotary"), "{error}");
     }
 
     #[test]

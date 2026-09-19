@@ -204,6 +204,36 @@ fn a_resolved_norm_set_is_marked_and_moves_the_model_without_touching_the_gguf()
     );
 }
 
+/// The preflight reports each selected family in the selector's vocabulary,
+/// and the loss path it preflighted. The fixture ties its projection, so the
+/// fused path is the only one it reaches.
+#[test]
+fn the_preflight_audits_each_selected_family_and_names_the_loss_path() {
+    let model = fixture!();
+    let _guard = common::serialize_models();
+    let selected = names(&resolved_norms(&model));
+
+    let mut trainer = Trainer::new(
+        &model,
+        base_config(TrainablePolicy::Partial, OptimizerKind::AdamW),
+    )
+    .expect("load a trainer with writable weights");
+    trainer
+        .set_trainable_base(&selected)
+        .expect("the resolver's names are the loader's names");
+
+    let backend = trainer.backend_report().expect("backend report");
+    assert!(backend.contains("loss_path: fused"), "{backend}");
+
+    let preflight = trainer.train_preflight().expect("preflight the base graph");
+    assert!(preflight.contains("loss_path: fused"), "{preflight}");
+    assert!(preflight.contains("trainable_families:"), "{preflight}");
+    assert!(
+        preflight.contains(&format!("norms: {} tensor(s), backward ready", selected.len())),
+        "{preflight}"
+    );
+}
+
 #[test]
 fn a_base_policy_refuses_to_train_before_its_set_is_declared() {
     let model = fixture!();

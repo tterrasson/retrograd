@@ -156,6 +156,9 @@ pub async fn measure(
         // measurement never held would drive the correction factor below one on
         // every distillation run.
         None,
+        // Calibration keys on the policy through the configuration, not on a
+        // second resolution of the base set.
+        None,
         &DatasetStats::default(),
         state.baseline,
         state.server_budgets(),

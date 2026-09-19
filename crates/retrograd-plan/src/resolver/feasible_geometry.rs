@@ -20,7 +20,7 @@ pub(super) fn choose_geometry(
         input,
         algorithm,
         budgets,
-        lora,
+        trainable,
         workload,
         is_locked,
     } = sizing;
@@ -41,7 +41,7 @@ pub(super) fn choose_geometry(
         let usage = estimate(
             input.model,
             &probe,
-            Some(lora),
+            trainable,
             workload,
             calibration_for(input, algorithm, &probe),
         );

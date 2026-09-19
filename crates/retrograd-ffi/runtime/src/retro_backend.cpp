@@ -1453,7 +1453,15 @@ std::string backend_report(const trainer_state & state) {
         << (state.cap_fused_sparse_ce ? "supported" : "unavailable") << "\n";
     out << "  chunked_cross_entropy: "
         << (state.train_config.chunked_cross_entropy ? "enabled" : "disabled") << "\n";
-    if (state.train_config.chunked_cross_entropy && state.gpu_active
+    // The loss graph this run builds, on its own line because a reader
+    // comparing budget to run must see which of the two graphs was priced.
+    out << "  loss_path: " << (fused_loss_enabled(state) ? "fused" : "dense") << "\n";
+    if (state.train_config.chunked_cross_entropy && trains_loss_head(state)) {
+        out << "  loss_path_status: dense_fallback (this run trains the projection head, "
+               "and the fused cross-entropy differentiates only its hidden-state input; "
+               "the dense path produces the head's gradient, at the cost of materializing "
+               "the whole vocabulary)\n";
+    } else if (state.train_config.chunked_cross_entropy && state.gpu_active
             && !state.cap_fused_sparse_ce) {
         out << "  chunked_cross_entropy_status: cpu_fallback (the active device has no "
                "FUSED_SPARSE_CE kernel; the hidden states and the whole projection head "

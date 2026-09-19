@@ -29,7 +29,11 @@ pub use execution::{
 };
 pub use hex::hex_lower;
 pub use json_pointer::{PointerPath, escape_json_pointer};
-pub use optimizer::{GEFEN_DEFAULT_MIN_NUMEL, OptimizerKind};
+pub use optimizer::{
+    GEFEN_CODEBOOK_LEVELS, GEFEN_DEFAULT_BLOCK_SIZE, GEFEN_DEFAULT_MIN_NUMEL,
+    GEFEN_ZERO_BLOCK_INDEX, OptimizerKind, OptimizerPlan, PlannedParameter, PlannedSlot,
+    SharedSlot, SlotDefinition, SlotDtype, SlotInit, SlotShape,
+};
 /// The catalogue schema, declared in `rir-core` and re-exported for the
 /// applicative side that reads it.
 pub use rir_core::catalog::{
@@ -37,9 +41,10 @@ pub use rir_core::catalog::{
     KernelShapeRule, KernelVariantPolicy,
 };
 pub use trainable::{
-    ALWAYS_FROZEN, ExclusionReason, LayerRange, OUTPUT_HEAD, OUTPUT_NORM, TENSOR_INVENTORY_VERSION,
-    TensorDesc, TensorDtype, TensorInventory, TensorRole, TrainableEntry, TrainableExclusion,
-    TrainablePolicy, TrainableRunConfig, TrainableSelector, TrainableSet, resolve_base,
+    ALWAYS_FROZEN, ExclusionReason, LayerRange, OUTPUT_HEAD, OUTPUT_HEAD_BIAS, OUTPUT_NORM,
+    ROPE_FREQS_SUFFIX, TENSOR_INVENTORY_VERSION, TensorDesc, TensorDtype, TensorInventory,
+    TensorRole, TrainableEntry, TrainableExclusion, TrainablePolicy, TrainableRunConfig,
+    TrainableSelector, TrainableSet, resolve_base,
 };
 pub use types::{
     ArtifactPolicy, CheckpointDtype, CheckpointMetadata, DEFAULT_CE_SEQ_CHUNK,

@@ -187,6 +187,9 @@ pub fn input_with_eval<'a>(
         // No fixture resolves a `distill` document; the one test that does
         // supplies its own teacher geometry.
         teacher: None,
+        // No fixture resolves a base-weight policy: the inventory comes from a
+        // GGUF, which this crate never opens.
+        inventory: None,
         recipe,
         params,
         model,

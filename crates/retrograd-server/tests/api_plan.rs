@@ -137,7 +137,7 @@ impl ModelProbe for FakeProbe {
         let estimate = cost::estimate(
             &self.model,
             &config.training,
-            config.lora.as_ref().map(|lora| &lora.config),
+            config.lora.as_ref().map(|lora| &lora.config).into(),
             &Workload {
                 kind: WorkloadKind::Sft,
                 examples: 0,
