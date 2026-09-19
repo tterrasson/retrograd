@@ -232,6 +232,17 @@ pub async fn plan_recipe(
     // lengths already exists to be used instead of the estimate.
     let device = requested_device(params);
     let model = geometry(state, &model_path, device).await?;
+    // Recipes default to LoRA, but params can select a base-weight policy.
+    let needs_inventory = params
+        .pointer("/training/trainable")
+        .and_then(Value::as_str)
+        .and_then(|value| retrograd_core::TrainablePolicy::parse(value).ok())
+        .is_some_and(retrograd_core::TrainablePolicy::trains_base_weights);
+    let inventory = if needs_inventory {
+        tensor_inventory(state, &model_path, device).await?
+    } else {
+        None
+    };
     let execution_profile = execution_profile(state, &model_path, device).await?;
     let tokenizer_key = if data_source.stored.is_some()
         || eval_source
@@ -287,8 +298,7 @@ pub async fn plan_recipe(
             // below is where a client-written one arrives, and where the
             // teacher's geometry is read.
             teacher: None,
-            // No `Objective` resolves to a base-weight policy.
-            inventory: None,
+            inventory: inventory.as_ref(),
             data: &data,
             eval: eval_data.as_ref(),
             data_format: format,

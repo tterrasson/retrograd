@@ -219,6 +219,9 @@ impl Trainer {
         state_dir: &Path,
         optimizer: &checkpoint::Optimizer,
     ) -> Result<()> {
+        let kind = OptimizerKind::from_ffi(self.optimizer_state()?.optimizer)?;
+        let plan = kind.plan(&self.marked_trainable_set()?);
+        optimizer.check_assignment(&assignment_of(&plan))?;
         let live = self.state_slots()?;
         if live.len() != optimizer.slots.len() {
             return Err(Error::runtime(format!(

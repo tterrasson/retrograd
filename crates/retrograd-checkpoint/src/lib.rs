@@ -214,6 +214,20 @@ impl Optimizer {
             .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
     }
 
+    /// Compare parameter ownership and layout before restoring any slots.
+    pub fn check_assignment(&self, expected: &[ParameterAssignment]) -> Result<()> {
+        let mut saved: Vec<_> = self.assignment.iter().collect();
+        let mut found: Vec<_> = expected.iter().collect();
+        saved.sort_by(|a, b| a.parameter.cmp(&b.parameter));
+        found.sort_by(|a, b| a.parameter.cmp(&b.parameter));
+        if saved != found {
+            return Err(Error::checkpoint(
+                "checkpoint optimizer parameter assignment or layout differs from this run",
+            ));
+        }
+        Ok(())
+    }
+
     /// The `(m, v)` pair of one parameter, for a reader that still thinks in
     /// AdamW momenta.
     ///
@@ -1766,6 +1780,31 @@ mod tests {
         checkpoint.optimizer.layout_version = 7;
         checkpoint.optimizer.hyperparameters = vec!["beta1=0.5".into()];
         checkpoint.check_compatible(&compatibility()).unwrap();
+    }
+
+    #[test]
+    fn parameter_assignment_pins_owners_and_layouts_without_requiring_order() {
+        let optimizer = sample().optimizer;
+        optimizer.check_assignment(&optimizer.assignment).unwrap();
+        for field in ["optimizer", "layout", "parameter"] {
+            let mut changed = optimizer.assignment.clone();
+            match field {
+                "optimizer" => changed[0].optimizer = "sgd".into(),
+                "layout" => changed[0].layout_version += 1,
+                _ => changed[0].parameter = "another.weight".into(),
+            }
+            assert!(optimizer.check_assignment(&changed).is_err());
+        }
+        assert!(optimizer.check_assignment(&[]).is_err());
+        let mut two = optimizer.clone();
+        let mut second = two.assignment[0].clone();
+        second.parameter = "another.weight".into();
+        two.assignment.push(second);
+        let mut reversed = two.assignment.clone();
+        reversed.reverse();
+        two.check_assignment(&reversed).unwrap();
+        reversed[0] = reversed[1].clone();
+        assert!(two.check_assignment(&reversed).is_err());
     }
 
     #[test]

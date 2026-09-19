@@ -132,6 +132,25 @@ impl ModelProbe for FakeProbe {
         Ok(self.model.clone())
     }
 
+    fn tensor_inventory(
+        &self,
+        _model: &Path,
+        _device: Device,
+    ) -> CoreResult<Option<retrograd_core::TensorInventory>> {
+        Ok(Some(retrograd_core::TensorInventory::new(
+            "llama",
+            false,
+            vec![retrograd_core::TensorDesc {
+                name: "blk.0.attn_norm.weight".into(),
+                ne: [1024, 1, 1, 1],
+                dtype: retrograd_core::TensorDtype::F32,
+                n_elements: 1024,
+                n_bytes: 4096,
+                storage_id: 0,
+            }],
+        )))
+    }
+
     fn measure(&self, _model: &Path, config: &RunConfig) -> CoreResult<MemoryReport> {
         self.measured.fetch_add(1, Ordering::SeqCst);
         let estimate = cost::estimate(
@@ -357,6 +376,34 @@ fn recipe(fixture: &Fixture) -> Value {
         },
         "name": "qwen3-sft-v3"
     })
+}
+
+#[tokio::test]
+async fn a_hybrid_recipe_prices_the_base_tensors_from_the_probe_inventory() {
+    let fixture = Fixture::new("hybrid-inventory");
+    let plain = recipe(&fixture);
+    let (status, baseline) = post(router(), "/v1/plan", plain.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{baseline}");
+    let mut hybrid = plain;
+    hybrid["params"] = json!({
+        "training": {"trainable": "hybrid"},
+        "trainable": {"norms": true}
+    });
+    let (status, body) = post(router(), "/v1/plan", hybrid).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["effective_config"]["training"]["trainable"], "hybrid");
+    assert_eq!(
+        resource_post_bytes(
+            &body["plan"]["memory"],
+            "persistent_device",
+            "trainable_gradient_bytes"
+        ),
+        resource_post_bytes(
+            &baseline["plan"]["memory"],
+            "persistent_device",
+            "trainable_gradient_bytes"
+        ) + 4096
+    );
 }
 
 #[tokio::test]
