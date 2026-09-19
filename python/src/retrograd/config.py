@@ -9,6 +9,10 @@ Scheduler: TypeAlias = Literal["constant", "linear", "cosine"]
 DatasetFormat: TypeAlias = Literal["auto", "text", "chat_jsonl"]
 LoraDtype: TypeAlias = Literal["f32", "f16"]
 KvDtype: TypeAlias = Literal["f32", "f16"]
+#: The optimizers whose update step this build can create. ``muon`` and
+#: ``gefen`` parse in the TOML schema and are refused by the runtime, so they
+#: are deliberately absent here rather than accepted and substituted.
+Optimizer: TypeAlias = Literal["adamw", "sgd"]
 
 TARGET_ALIASES = {
     "q": "blk.*.attn_q.weight",
@@ -49,6 +53,10 @@ class TrainingConfig:
     max_grad_norm: float = 1.0
     scheduler: Scheduler = "constant"
     warmup_steps: int = 0
+    #: Which update step the optimizer graph builds. ``sgd`` keeps no
+    #: per-parameter state, and its kernel is F32-only: pair it with
+    #: ``LoraConfig(dtype="f32")`` rather than the F16 default.
+    optimizer: Optimizer = "adamw"
     #: Stream vocabulary logits in tiles instead of materializing
     #: ``[n_vocab, n_tokens]``.
     chunked_cross_entropy: bool = True
@@ -135,6 +143,8 @@ class TrainingConfig:
             raise ValueError("device must be auto, cpu, or gpu")
         if self.kv_dtype not in ("f32", "f16"):
             raise ValueError("kv_dtype must be f32 or f16")
+        if self.optimizer not in ("adamw", "sgd"):
+            raise ValueError("optimizer must be adamw or sgd")
 
     def native_kwargs(self) -> dict[str, object]:
         return {
@@ -153,6 +163,7 @@ class TrainingConfig:
             "max_grad_norm": self.max_grad_norm,
             "scheduler": self.scheduler,
             "warmup_steps": self.warmup_steps,
+            "optimizer": self.optimizer,
             "chunked_cross_entropy": self.chunked_cross_entropy,
             "chunked_ce_tiles": self.chunked_ce_tiles,
             "chunked_ce_seq_chunk": self.chunked_ce_seq_chunk,

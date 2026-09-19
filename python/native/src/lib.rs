@@ -18,9 +18,9 @@ use retrograd::dataset::{self, DataFormat, PreparedDataset};
 use retrograd::training::{self, Progress};
 use retrograd::{
     CheckpointDtype, DEFAULT_CE_SEQ_CHUNK, DEFAULT_CHECKPOINT_STRIDE, Device, Error, FeatureDtype,
-    GrpoBatchParams, KvDtype, LoraConfig, LrScheduler, RewardMode, RewardProtocol, SamplingParams,
-    SharedPrefixFanout, TargetSet, TrainConfig, TrainMetrics, TrainSequence, Trainer,
-    WeightedBatch, backend_list,
+    GrpoBatchParams, KvDtype, LoraConfig, LrScheduler, OptimizerKind, RewardMode, RewardProtocol,
+    SamplingParams, SharedPrefixFanout, TargetSet, TrainConfig, TrainMetrics, TrainSequence,
+    TrainableRunConfig, Trainer, WeightedBatch, backend_list,
 };
 use retrograd_agent::tools::{McpServerConfig, McpToolProvider, ToolProvider};
 use retrograd_agent::{
@@ -153,6 +153,20 @@ fn parse_scheduler(value: &str) -> PyResult<LrScheduler> {
     }
 }
 
+/// The optimizer the run's update step builds. Unimplemented names are refused
+/// by their own name rather than substituted: a run that asked for one
+/// optimizer and got another would publish a trajectory nobody configured, and
+/// a checkpoint recording an optimizer it never used.
+fn parse_optimizer(value: &str) -> PyResult<OptimizerKind> {
+    let kind = OptimizerKind::parse(value).map_err(python_error)?;
+    if !kind.is_implemented() {
+        return Err(PyValueError::new_err(format!(
+            "optimizer '{kind}' is not available in this build; use adamw or sgd"
+        )));
+    }
+    Ok(kind)
+}
+
 fn parse_format(value: &str) -> PyResult<DataFormat> {
     match value {
         "text" => Ok(DataFormat::Text),
@@ -238,6 +252,7 @@ impl PyTrainer {
         max_grad_norm=1.0,
         scheduler="constant",
         warmup_steps=0,
+        optimizer="adamw",
         chunked_cross_entropy=true,
         chunked_ce_tiles=8,
         chunked_ce_seq_chunk=DEFAULT_CE_SEQ_CHUNK,
@@ -269,6 +284,7 @@ impl PyTrainer {
         max_grad_norm: f32,
         scheduler: &str,
         warmup_steps: u64,
+        optimizer: &str,
         chunked_cross_entropy: bool,
         chunked_ce_tiles: u32,
         chunked_ce_seq_chunk: u32,
@@ -322,6 +338,10 @@ impl PyTrainer {
             max_grad_norm,
             lr_scheduler: parse_scheduler(scheduler)?,
             warmup_steps,
+            trainable: TrainableRunConfig {
+                optimizer: parse_optimizer(optimizer)?,
+                ..TrainableRunConfig::default()
+            },
             chunked_cross_entropy,
             chunked_ce_tiles,
             chunked_ce_seq_chunk,

@@ -322,8 +322,23 @@ ggml_opt_optimizer_params scheduled_optimizer_params(void * userdata) {
 }
 
 bool ensure_opt_context(trainer_state & state) {
+    if (state.train_config.trainable == RETRO_TRAINABLE_HYBRID && !state.adapter) {
+        set_error("a hybrid policy requires a LoRA adapter and a base trainable set");
+        return false;
+    }
+    if ((state.train_config.trainable == RETRO_TRAINABLE_FULL
+            || state.train_config.trainable == RETRO_TRAINABLE_PARTIAL) && state.adapter) {
+        set_error("a full or partial policy trains only base weights; use hybrid to train an adapter too");
+        return false;
+    }
+    if (trains_base_weights(state) && !state.trainable_base_set) {
+        set_error("this run trains base weights but no trainable set was declared; "
+                  "call retro_trainer_set_trainable_base first");
+        return false;
+    }
     if (state.opt_created) {
-        return true;
+        return assert_marked_set_is_resolved(state)
+                && optimizer_supports_marked_dtypes(state);
     }
 
     state.optimizer_params = ggml_opt_get_default_optimizer_params(nullptr);
@@ -333,13 +348,21 @@ bool ensure_opt_context(trainer_state & state) {
     state.optimizer_params.sgd.alpha = state.train_config.learning_rate;
     state.optimizer_params.sgd.wd = state.train_config.weight_decay;
 
+    // The optimizer the document asked for, not the one this function used to
+    // hard-code. Validated at trainer creation, so anything else here would be
+    // a value validate_train_config let through.
+    const ggml_opt_optimizer_type optimizer_type =
+            state.train_config.optimizer == RETRO_OPTIMIZER_SGD
+                    ? GGML_OPT_OPTIMIZER_TYPE_SGD
+                    : GGML_OPT_OPTIMIZER_TYPE_ADAMW;
+
     llama_opt_params params {
         /*n_ctx_train     =*/ state.train_config.n_ctx,
-        /*param_filter    =*/ opt_param_filter_none,
-        /*param_filter_ud =*/ nullptr,
+        /*param_filter    =*/ opt_param_filter_trainable,
+        /*param_filter_ud =*/ &state,
         /*get_opt_pars    =*/ scheduled_optimizer_params,
         /*get_opt_pars_ud =*/ &state,
-        /*optimizer_type  =*/ GGML_OPT_OPTIMIZER_TYPE_ADAMW,
+        /*optimizer_type  =*/ optimizer_type,
         /*fused_sparse_ce =*/ state.train_config.chunked_cross_entropy,
         /*n_ce_tiles      =*/ (int32_t) (state.train_config.chunked_ce_tiles > 0
                 ? state.train_config.chunked_ce_tiles : 1),
@@ -350,19 +373,40 @@ bool ensure_opt_context(trainer_state & state) {
         /*checkpoint_type =*/ checkpoint_ggml_type(state.train_config.checkpoint_dtype),
     };
     llama_opt_init(state.ctx.get(), state.model.get(), params);
-    if (!assert_lora_only_params(state)) {
+    // Recorded before the checks below, not after: llama_opt_init asserts that
+    // the context has no optimizer yet, so a caller retrying after a refusal
+    // would abort the process instead of getting the same error twice.
+    state.opt_created = true;
+    // Rule 6 of the trainable-set contract: a flag without a gradient is not a
+    // successful selection, so the marked set is compared with the resolved one
+    // here rather than assumed to follow from the filter.
+    if (!assert_marked_set_is_resolved(state)) {
         return false;
     }
-    state.opt_created = true;
+    // Between the graph build and the first step: the update kernels abort on a
+    // dtype they do not carry, so the refusal has to come from here.
+    if (!optimizer_supports_marked_dtypes(state)) {
+        return false;
+    }
     return true;
 }
 
-bool ensure_lora_optimizer_initialized(trainer_state & state) {
+bool ensure_optimizer_initialized(trainer_state & state) {
     if (state.opt_initialized) {
         return true;
     }
-    if (!state.adapter) {
+    // An adapter is required exactly when the run has one to train. A
+    // base-weight policy resolves its own parameters and needs no LoRA at all.
+    if (!state.adapter && !trains_base_weights(state)) {
         set_error("create or load a LoRA adapter before training");
+        return false;
+    }
+    // ... and a base-weight policy needs its resolved set, which only the
+    // caller can produce. An empty one here would train nothing while
+    // reporting a policy that says otherwise.
+    if (trains_base_weights(state) && !state.trainable_base_set) {
+        set_error("this run trains base weights but no trainable set was declared; "
+                  "call retro_trainer_set_trainable_base first");
         return false;
     }
     if (state.loaded_lora && !promote_loaded_lora_to_trainable(state)) {
@@ -397,7 +441,7 @@ int train_sft_impl(
         if (!state) {
             return -1;
         }
-        if (!state->has_lora) {
+        if (!state->has_lora && !trains_base_weights(*state)) {
             set_error("create or load a LoRA adapter before training");
             return -1;
         }
@@ -459,7 +503,7 @@ int train_sft_impl(
             return -1;
         }
         state->last_learning_rate = state->train_config.learning_rate;
-        if (!ensure_lora_optimizer_initialized(*state)) {
+        if (!ensure_optimizer_initialized(*state)) {
             return -1;
         }
 
@@ -583,7 +627,7 @@ int train_weighted_impl(
         if (!state) {
             return -1;
         }
-        if (!state->has_lora) {
+        if (!state->has_lora && !trains_base_weights(*state)) {
             set_error("create or load a LoRA adapter before training");
             return -1;
         }
@@ -678,7 +722,7 @@ int train_weighted_impl(
         if (!state->opt_initialized) {
             state->last_learning_rate = state->train_config.learning_rate;
         }
-        if (!ensure_lora_optimizer_initialized(*state)) {
+        if (!ensure_optimizer_initialized(*state)) {
             return -1;
         }
 
@@ -800,7 +844,7 @@ int train_packed_sequences_impl(
         if (!state) {
             return -1;
         }
-        if (!state->has_lora) {
+        if (!state->has_lora && !trains_base_weights(*state)) {
             set_error("create or load a LoRA adapter before training");
             return -1;
         }
@@ -895,7 +939,7 @@ int train_packed_sequences_impl(
         if (!state->opt_initialized) {
             state->last_learning_rate = state->train_config.learning_rate;
         }
-        if (!ensure_lora_optimizer_initialized(*state)) {
+        if (!ensure_optimizer_initialized(*state)) {
             return -1;
         }
 

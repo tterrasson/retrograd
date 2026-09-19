@@ -109,8 +109,9 @@ pub struct Scheduler {
     pub warmup_steps: u64,
 }
 
-/// AdamW state. `has_moments` is false for a checkpoint taken before the
-/// optimizer graph existed; such a checkpoint resumes with a cold optimizer.
+/// Optimizer state. `has_moments` is false both for a checkpoint taken before
+/// the optimizer graph existed and for an optimizer that keeps no per-parameter
+/// state; `graph_ready` is what tells those two apart.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Optimizer {
     pub version: u32,
@@ -122,9 +123,28 @@ pub struct Optimizer {
     /// Bias-correction counter; ggml starts it at 1.
     pub iter: i64,
     pub has_moments: bool,
+    /// Whether the optimizer graph existed when this checkpoint was written,
+    /// and so whether `iter` and the RNG state mean anything.
+    ///
+    /// Defaulted rather than required: every checkpoint written before this
+    /// field existed came from AdamW, where `has_moments` answered the same
+    /// question, and [`Optimizer::graph_was_ready`] is the reader that says so.
+    #[serde(default)]
+    pub graph_ready: bool,
     /// One entry per trainable parameter, keyed by its stable tensor name.
     /// Iteration order is never used to match them back.
     pub moments: Vec<Moments>,
+}
+
+impl Optimizer {
+    /// Whether the optimizer graph existed, reading an older record correctly.
+    ///
+    /// Before `graph_ready` existed the only selectable optimizer was AdamW, so
+    /// "carries moments" and "had a graph" were the same fact and the absent
+    /// field is recoverable rather than unknown.
+    pub fn graph_was_ready(&self) -> bool {
+        self.graph_ready || self.has_moments
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -517,6 +537,17 @@ impl Checkpoint {
                 ),
             );
         }
+        // The optimizer itself, before its hyperparameters: AdamW moments mean
+        // nothing to an SGD step, and an SGD checkpoint resumed under AdamW
+        // would pair a warm iteration counter with cold moments. Skipped for a
+        // checkpoint whose graph never existed - it pins no trajectory.
+        if self.optimizer.graph_was_ready() && self.optimizer.kind != expected.optimizer_kind {
+            return mismatch(
+                "optimizer",
+                self.optimizer.kind.clone(),
+                expected.optimizer_kind.clone(),
+            );
+        }
         if self.optimizer.weight_decay != expected.weight_decay
             || self.optimizer.max_grad_norm != expected.max_grad_norm
         {
@@ -560,6 +591,9 @@ pub struct Compatibility {
     /// cannot recompute it without duplicating the runtime's arithmetic may
     /// leave it out rather than risk a wrong expectation.
     pub total_steps: Option<u64>,
+    /// `adamw` or `sgd`, as the run configures it. Compared with what the
+    /// checkpoint recorded rather than with what the runtime happens to build.
+    pub optimizer_kind: String,
     pub weight_decay: f32,
     pub max_grad_norm: f32,
 }
@@ -685,6 +719,7 @@ mod tests {
                 max_grad_norm: 1.0,
                 iter: 43,
                 has_moments: true,
+                graph_ready: true,
                 moments: vec![Moments {
                     name: "blk.0.attn_q.weight.lora_a".into(),
                     shape: [4, 8, 1, 1],
@@ -723,6 +758,7 @@ mod tests {
             learning_rate: 2.0e-4,
             warmup_steps: 5,
             total_steps: Some(100),
+            optimizer_kind: "adamw".into(),
             weight_decay: 0.01,
             max_grad_norm: 1.0,
         }
@@ -913,6 +949,46 @@ mod tests {
         assert!(error.to_string().contains("required"));
     }
 
+    /// "Keeps no state" and "was never initialized" are different states, and a
+    /// resume must not read the first as the second.
+    #[test]
+    fn a_zero_slot_optimizer_still_counts_as_initialized() {
+        let mut checkpoint = sample();
+        checkpoint.optimizer.kind = "sgd".into();
+        checkpoint.optimizer.has_moments = false;
+        checkpoint.optimizer.graph_ready = true;
+        checkpoint.optimizer.moments.clear();
+        assert!(checkpoint.optimizer.graph_was_ready());
+
+        let mut expected = compatibility();
+        expected.optimizer_kind = "sgd".into();
+        checkpoint.check_compatible(&expected).unwrap();
+        // ... and the optimizer it names is still compared, precisely because
+        // the empty slot list no longer says which one wrote it.
+        let error = checkpoint
+            .check_compatible(&compatibility())
+            .expect_err("adamw cannot resume an sgd trajectory");
+        assert!(error.to_string().contains("optimizer was sgd"), "{error}");
+    }
+
+    /// A record written before `graph_ready` existed came from AdamW, where
+    /// carrying moments and having a graph were the same fact.
+    #[test]
+    fn an_older_record_recovers_its_missing_graph_flag() {
+        let mut checkpoint = sample();
+        checkpoint.optimizer.graph_ready = false;
+        assert!(checkpoint.optimizer.has_moments);
+        assert!(checkpoint.optimizer.graph_was_ready());
+
+        checkpoint.optimizer.has_moments = false;
+        checkpoint.optimizer.moments.clear();
+        assert!(!checkpoint.optimizer.graph_was_ready());
+        // Nothing pins a trajectory, so the optimizer name is not compared.
+        let mut renamed = checkpoint.clone();
+        renamed.optimizer.kind = "sgd".into();
+        renamed.check_compatible(&compatibility()).unwrap();
+    }
+
     #[test]
     fn a_matching_configuration_is_compatible() {
         sample().check_compatible(&compatibility()).unwrap();
@@ -923,7 +999,7 @@ mod tests {
         // Each case is something a silent resume would corrupt: a different
         // model, dataset, schedule, or optimizer regularization.
         type Case = (&'static str, fn(&mut Compatibility));
-        let cases: [Case; 9] = [
+        let cases: [Case; 10] = [
             ("model", |c| c.model_signature = "arch=qwen3".into()),
             ("model size", |c| c.model_bytes = 999),
             ("model content", |c| c.model_fingerprint = "other".into()),
@@ -935,6 +1011,7 @@ mod tests {
             ("learning-rate schedule", |c| c.learning_rate = 1.0e-3),
             ("learning-rate schedule", |c| c.total_steps = Some(200)),
             ("optimizer hyperparameters", |c| c.weight_decay = 0.5),
+            ("optimizer", |c| c.optimizer_kind = "sgd".into()),
         ];
         for (field, mutate) in cases {
             let mut expected = compatibility();

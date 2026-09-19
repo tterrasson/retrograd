@@ -771,7 +771,18 @@ bool load_model_and_context(trainer_state & state) {
     // Same intent as before: mmap the weights when they stay on the host, and
     // skip it for a GPU load where every tensor is copied into device memory
     // anyway and the mapping only costs page cache.
-    model_params.load_mode = use_gpu ? LLAMA_LOAD_MODE_NONE : LLAMA_LOAD_MODE_MMAP;
+    //
+    // A base-weight policy takes the same path for a different reason: the
+    // mapping is PROT_READ (llama-mmap.cpp), so the first optimizer step would
+    // fault rather than drift. LLAMA_LOAD_MODE_NONE reads the file into owned
+    // writable buffers, which is also what keeps the source GGUF's bytes
+    // untouched. It costs the host the weights it used to share with the page
+    // cache, which is what memory_totals() has to report.
+    const bool writable_weights = trains_base_weights(state);
+    model_params.load_mode = (use_gpu || writable_weights)
+            ? LLAMA_LOAD_MODE_NONE
+            : LLAMA_LOAD_MODE_MMAP;
+    state.weight_storage = model_params.load_mode == LLAMA_LOAD_MODE_MMAP ? "mapped" : "owned";
     model_params.use_extra_bufts = false;
     model_params.n_gpu_layers = state.n_gpu_layers;
 
@@ -1156,15 +1167,50 @@ const char * optimizer_f16_status(const trainer_state & state) {
 retro_memory_report memory_totals(const trainer_state & state) {
     retro_memory_report report {};
 
-    // The resolved trainable set is LoRA-only today, so the two agree; the
-    // names are the ones every consumer reads, so that adding base tensors to
-    // the set changes this computation and nothing downstream.
-    const size_t trainable_elements = static_cast<size_t>(count_lora_parameters(state));
+    // The resolved trainable set: the adapter's factors, allocated next to the
+    // model, plus the base tensors, which are already inside its weights. Both
+    // carry a gradient and optimizer state; only the first adds parameter bytes.
+    size_t trainable_elements = static_cast<size_t>(count_lora_parameters(state));
+    const size_t adapter_elements = trainable_elements;
+    const size_t state_bytes_per_element = state.train_config.optimizer == RETRO_OPTIMIZER_SGD
+            ? sizeof(float) : 3 * sizeof(float);
+    uint64_t base_host_training_bytes = 0;
+    uint64_t base_device_training_bytes = 0;
     report.trainable_parameter_bytes = count_lora_parameter_bytes(state);
+    const uint64_t adapter_parameter_bytes = report.trainable_parameter_bytes;
+    const ggml_tensor * base_sample = nullptr;
+    for (const std::string & name : state.trainable_base) {
+        const auto found = std::find_if(
+                state.model->tensors_by_name.begin(),
+                state.model->tensors_by_name.end(),
+                [&](const std::pair<std::string, ggml_tensor *> & item) {
+                    return item.first == name;
+                });
+        if (found == state.model->tensors_by_name.end() || !found->second) {
+            continue;
+        }
+        trainable_elements += static_cast<size_t>(ggml_nelements(found->second));
+        report.trainable_parameter_bytes += ggml_nbytes(found->second);
+        const bool on_host = found->second->buffer && ggml_backend_buft_is_host(
+                ggml_backend_buffer_get_type(found->second->buffer));
+        (on_host ? base_host_training_bytes : base_device_training_bytes) +=
+                static_cast<uint64_t>(ggml_nelements(found->second)) * state_bytes_per_element;
+        if (!base_sample) {
+            base_sample = found->second;
+        }
+    }
     report.trainable_gradient_bytes  = trainable_elements * sizeof(float);
-    report.optimizer_state_bytes     = trainable_elements * 2 * sizeof(float);
-    // Adapter factors are allocated next to the model, never out of it.
-    report.trainable_parameters_are_model_subset = false;
+    // Two F32 tensors per parameter for AdamW, none for SGD. Reporting AdamW's
+    // figure for an SGD run would be a budget nobody pays.
+    report.optimizer_state_bytes = state.train_config.optimizer == RETRO_OPTIMIZER_SGD
+            ? 0
+            : trainable_elements * 2 * sizeof(float);
+    // Whether `trainable_parameter_bytes` may be added on top of the model's
+    // weights or is a slice of them. Neither answer is right for a hybrid set,
+    // so the rollup below adds the adapter half explicitly instead of reading
+    // this flag for both.
+    report.trainable_parameters_are_model_subset =
+            !state.trainable_base.empty() && adapter_parameter_bytes == 0;
 
     // The model weights are shared between the optimizer and the generation
     // context, so they are summed once (from the optimizer context) and never
@@ -1196,12 +1242,14 @@ retro_memory_report memory_totals(const trainer_state & state) {
                     ggml_backend_buft_is_host(ggml_backend_buffer_get_type(a->buffer));
         }
     }
-    report.base_trainable_on_host = report.adapter_on_host;
+    report.base_trainable_on_host = base_sample && base_sample->buffer
+            ? ggml_backend_buft_is_host(ggml_backend_buffer_get_type(base_sample->buffer))
+            : report.adapter_on_host;
     // Only what is *not* already inside model_weight_bytes. See the field's
-    // comment in retro_lora_train.h.
-    const uint64_t trainable_total_bytes =
-            (report.trainable_parameters_are_model_subset ? 0 : report.trainable_parameter_bytes)
-            + report.trainable_gradient_bytes + report.optimizer_state_bytes;
+    // comment in retro_lora_train.h: base tensors are a slice of the weights
+    // and must never be added to them, adapter factors sit on top.
+    const uint64_t adapter_total_bytes = adapter_parameter_bytes
+            + adapter_elements * state_bytes_per_element;
 
     // Roll the memory-breakdown-visible allocations up into a device vs host
     // split so the report says which budget each part draws on. The optimizer
@@ -1215,7 +1263,11 @@ retro_memory_report memory_totals(const trainer_state & state) {
         const uint64_t total = item.second.kv + item.second.compute;
         (item.second.is_host ? report.host_bytes : report.device_bytes) += total;
     }
-    (report.adapter_on_host ? report.host_bytes : report.device_bytes) += trainable_total_bytes;
+    // Each base tensor contributes where it lives; an absent adapter's default
+    // placement must not send CPU base gradients into the device budget.
+    report.host_bytes += base_host_training_bytes;
+    report.device_bytes += base_device_training_bytes;
+    (report.adapter_on_host ? report.host_bytes : report.device_bytes) += adapter_total_bytes;
 
     // Measured device memory is separate from the buffer totals: it also includes
     // backend scratch and the graph allocator's transient reserve. Report it only
@@ -1377,6 +1429,11 @@ std::string backend_report(const trainer_state & state) {
     out << "  requested_device: " << device_kind_name(state.requested_device) << "\n";
     out << "  gpu_active: " << (state.gpu_active ? "true" : "false") << "\n";
     out << "  backend: " << state.backend_name << "\n";
+    out << "  weight_storage: " << state.weight_storage << "\n";
+    out << "  trainable_policy: " << trainable_policy_name(state.train_config.trainable) << "\n";
+    out << "  trainable_base_tensors: " << state.trainable_base.size() << "\n";
+    out << "  optimizer: "
+        << (state.train_config.optimizer == RETRO_OPTIMIZER_SGD ? "sgd" : "adamw") << "\n";
     if (state.gpu_active) {
         ggml_backend_dev_t dev = first_gpu_device();
         const char * desc = dev ? ggml_backend_dev_description(dev) : nullptr;

@@ -39,7 +39,7 @@ pub use rir_core::catalog::{
 pub use trainable::{
     ALWAYS_FROZEN, ExclusionReason, LayerRange, OUTPUT_HEAD, OUTPUT_NORM, TENSOR_INVENTORY_VERSION,
     TensorDesc, TensorDtype, TensorInventory, TensorRole, TrainableEntry, TrainableExclusion,
-    TrainablePolicy, TrainableSelector, TrainableSet, resolve_base,
+    TrainablePolicy, TrainableRunConfig, TrainableSelector, TrainableSet, resolve_base,
 };
 pub use types::{
     ArtifactPolicy, CheckpointDtype, CheckpointMetadata, DEFAULT_CE_SEQ_CHUNK,

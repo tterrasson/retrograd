@@ -187,6 +187,71 @@ extern "C" int retro_trainer_create_lora(
     });
 }
 
+extern "C" int retro_trainer_set_trainable_base(
+        retro_trainer * trainer,
+        const char * const * names,
+        size_t n_names) {
+    return retro::boundary([&]() -> int {
+        retro::trainer_state * state = retro::checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        if (n_names != 0 && !names) {
+            retro::set_error("names is required when n_names is non-zero");
+            return -1;
+        }
+        if (state->opt_created) {
+            retro::set_error("cannot change the trainable set after optimizer initialization");
+            return -1;
+        }
+        if (!retro::trains_base_weights(*state) && n_names != 0) {
+            retro::set_error(
+                    "this run's policy trains no base tensor, so it takes no trainable set");
+            return -1;
+        }
+
+        if (retro::trains_base_weights(*state) && n_names == 0) {
+            retro::set_error("a base-weight policy requires a non-empty trainable set");
+            return -1;
+        }
+
+        // Validated and copied in one pass, into a local, so a rejected call
+        // leaves the previous set intact rather than half-replaced.
+        std::vector<std::string> resolved;
+        resolved.reserve(n_names);
+        for (size_t i = 0; i < n_names; ++i) {
+            const char * name = names[i];
+            if (retro::is_blank(name)) {
+                retro::set_error("trainable tensor names must not be empty");
+                return -1;
+            }
+            // The name has to exist in *this* model: the resolver read the
+            // GGUF's metadata, and a tensor the loader renamed or never
+            // allocated would otherwise be silently absent from the update.
+            if (state->model->tensors_by_name.end()
+                    == std::find_if(
+                            state->model->tensors_by_name.begin(),
+                            state->model->tensors_by_name.end(),
+                            [&](const std::pair<std::string, ggml_tensor *> & item) {
+                                return item.first == name;
+                            })) {
+                retro::set_error(
+                        std::string("the model declares no tensor named '") + name + "'");
+                return -1;
+            }
+            if (std::find(resolved.begin(), resolved.end(), name) != resolved.end()) {
+                retro::set_error(std::string("duplicate trainable tensor: ") + name);
+                return -1;
+            }
+            resolved.emplace_back(name);
+        }
+        state->trainable_base = std::move(resolved);
+        state->trainable_base_set = true;
+        state->invalidate_report_caches();
+        return 0;
+    });
+}
+
 extern "C" int retro_trainer_load_lora(
         retro_trainer * trainer,
         const char * adapter_path) {

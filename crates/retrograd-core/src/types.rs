@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::error::{Error, Result};
+use crate::trainable::TrainableRunConfig;
 
 /// Selects the execution backend for the training loop.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -353,6 +354,16 @@ pub struct TrainConfig {
     /// decode, once, before any sleep - so `0.99` is not approximately `1.0`.
     /// It is worth its overhead at `0.75` and below.
     pub max_gpu_duty_cycle: Option<f32>,
+    /// What this run trains and what updates it: the policy, the base selection
+    /// it implies, and the optimizer.
+    ///
+    /// Here rather than beside this structure, because both halves describe the
+    /// training problem and both have to reach the runtime: the policy decides
+    /// whether the weights are mapped read-only or loaded into owned writable
+    /// buffers, and the optimizer decides which update step the graph builds.
+    /// The selector stays Rust-side - it is resolved against the model's
+    /// inventory before the runtime is told anything.
+    pub trainable: TrainableRunConfig,
 }
 
 impl Default for TrainConfig {
@@ -388,6 +399,7 @@ impl Default for TrainConfig {
             // names a seed shuffles the same way a configured one does.
             shuffle_seed: 42,
             max_gpu_duty_cycle: None,
+            trainable: TrainableRunConfig::default(),
         }
     }
 }

@@ -14,8 +14,8 @@ pub use retrograd_core::{
     MemoryReport, ModelInfo, OptimizerKind, ProbeOp, Result, ResumeInfo, RewardMode,
     RewardProtocol, RirCounters, RirMode, SamplingParams, SharedPrefixFanout,
     TENSOR_INVENTORY_VERSION, TargetSet, TensorDesc, TensorDtype, TensorInventory, TensorRole,
-    TrainConfig, TrainMetrics, TrainableEntry, TrainablePolicy, TrainableSelector, TrainableSet,
-    WeightedBatch, checkpoint_stride_for, resolve_base,
+    TrainConfig, TrainMetrics, TrainableEntry, TrainablePolicy, TrainableRunConfig,
+    TrainableSelector, TrainableSet, WeightedBatch, checkpoint_stride_for, resolve_base,
 };
 pub use retrograd_engine::{
     DutyCycleStats, FusedCeProbeInputs, FusedCeProbeShape, OptimizerMemory, ProbeInputs,

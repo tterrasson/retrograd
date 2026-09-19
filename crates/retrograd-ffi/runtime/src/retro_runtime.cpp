@@ -116,7 +116,19 @@ retro_train_config default_train_config() {
     // still shuffle training rows.
     config.shuffle_dataset = true;
     config.shuffle_seed = 42;
+    config.optimizer = RETRO_OPTIMIZER_ADAMW;
+    config.trainable = RETRO_TRAINABLE_LORA;
     return config;
+}
+
+const char * trainable_policy_name(int32_t policy) {
+    switch (policy) {
+        case RETRO_TRAINABLE_LORA:    return "lora";
+        case RETRO_TRAINABLE_FULL:    return "full";
+        case RETRO_TRAINABLE_PARTIAL: return "partial";
+        case RETRO_TRAINABLE_HYBRID:  return "hybrid";
+        default:                      return "unknown";
+    }
 }
 
 const char * device_kind_name(int32_t device) {
@@ -197,6 +209,14 @@ bool validate_train_config(const retro_train_config & config) {
             config.checkpoint_dtype != RETRO_CHECKPOINT_DTYPE_F16 &&
             config.checkpoint_dtype != RETRO_CHECKPOINT_DTYPE_BF16) {
         set_error("checkpoint_dtype must be f32, f16, or bf16");
+        return false;
+    }
+    if (config.optimizer != RETRO_OPTIMIZER_ADAMW && config.optimizer != RETRO_OPTIMIZER_SGD) {
+        set_error("optimizer must be adamw or sgd");
+        return false;
+    }
+    if (config.trainable < RETRO_TRAINABLE_LORA || config.trainable > RETRO_TRAINABLE_HYBRID) {
+        set_error("trainable must be lora, full, partial, or hybrid");
         return false;
     }
     return true;

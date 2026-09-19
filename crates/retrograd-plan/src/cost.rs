@@ -537,7 +537,12 @@ pub fn estimate(
     let trainable = trainable_parameters(model, lora);
     let trainable_parameter_bytes = product([trainable, lora_element_bytes(lora.dtype)]);
     let trainable_gradient_bytes = product([trainable, 4]);
-    let optimizer_state_bytes = product([trainable, 2, 4]);
+    let optimizer_state_bytes =
+        if training.trainable.optimizer == retrograd_core::OptimizerKind::Sgd {
+            0
+        } else {
+            product([trainable, 2, 4])
+        };
 
     MemoryEstimate {
         model_weight_bytes,
@@ -946,6 +951,34 @@ mod tests {
             Calibration::default(),
         );
         assert_eq!(half.optimizer_kv_bytes, large.optimizer_kv_bytes / 2);
+    }
+
+    #[test]
+    fn sgd_removes_only_the_persistent_optimizer_state_from_the_budget() {
+        let model = tiny_model();
+        let lora = LoraConfig::auto(8, 16.0);
+        let mut config = training(1024);
+        let adamw = estimate(
+            &model,
+            &config,
+            &lora,
+            &sft_workload(),
+            Calibration::default(),
+        );
+        config.trainable.optimizer = retrograd_core::OptimizerKind::Sgd;
+        let sgd = estimate(
+            &model,
+            &config,
+            &lora,
+            &sft_workload(),
+            Calibration::default(),
+        );
+        assert!(adamw.optimizer_state_bytes > 0);
+        assert_eq!(sgd.optimizer_state_bytes, 0);
+        assert_eq!(
+            adamw.device_bytes() - sgd.device_bytes(),
+            adamw.optimizer_state_bytes
+        );
     }
 
     #[test]

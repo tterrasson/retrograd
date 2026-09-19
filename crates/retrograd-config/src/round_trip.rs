@@ -29,7 +29,8 @@
 use std::path::Path;
 
 use retrograd_core::{
-    CheckpointDtype, FeatureDtype, KvDtype, LoraDtype, LrScheduler, RewardMode, SharedPrefixFanout,
+    CheckpointDtype, FeatureDtype, KvDtype, LoraDtype, LrScheduler, OptimizerKind, RewardMode,
+    SharedPrefixFanout, TrainablePolicy, TrainableSelector,
 };
 use retrograd_dataset::DataFormat;
 
@@ -388,7 +389,10 @@ fn the_trainable_section_is_parsed_before_the_mode_is_refused() {
     assert!(error.is_user_error(), "{error}");
     let message = error.to_string();
     assert!(message.contains("'partial' is not available"), "{message}");
-    assert!(message.contains("Only 'lora' trains today"), "{message}");
+    assert!(
+        message.contains("Only 'lora' trains from a document today"),
+        "{message}"
+    );
 
     // A malformed selector is reported as such, not swallowed by the refusal.
     let mut broken = exhaustive_document();
@@ -415,10 +419,10 @@ fn a_lora_run_refuses_a_base_selector_instead_of_ignoring_it() {
 #[test]
 fn an_unavailable_optimizer_is_refused_rather_than_substituted() {
     let root = Path::new("/tmp/retrograd-round-trip");
-    for name in ["sgd", "muon", "gefen"] {
+    for name in ["muon", "gefen"] {
         let mut document = lora_normalized(exhaustive_document());
         document.training.optimizer = Some(name.to_string());
-        let error = build(document, root).expect_err("only adamw is selectable today");
+        let error = build(document, root).expect_err("neither has an update step here");
         let message = error.to_string();
         assert!(message.contains(name), "{message}");
         assert!(message.contains("checkpoint"), "{message}");
@@ -427,6 +431,48 @@ fn an_unavailable_optimizer_is_refused_rather_than_substituted() {
     document.training.optimizer = Some("lion".to_string());
     let error = build(document, root).expect_err("an unknown name is refused");
     assert!(error.to_string().contains("must be adamw"), "{error}");
+}
+
+/// The two the runtime can build reach the training configuration, which is
+/// what carries them to `llama_opt_init`. A name that parsed and then arrived
+/// as AdamW would be indistinguishable from a run nobody configured.
+#[test]
+fn a_selectable_optimizer_reaches_the_training_configuration() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    for (name, expected) in [("adamw", OptimizerKind::AdamW), ("sgd", OptimizerKind::Sgd)] {
+        let mut document = lora_normalized(exhaustive_document());
+        document.training.optimizer = Some(name.to_string());
+        // SGD's update step is F32-only and F16 is the default adapter
+        // storage, so an SGD document has to name the dtype it can write.
+        document.lora.dtype = Some(LoraDtype::F32);
+        let config = build(document, root).expect("the optimizer is selectable");
+        assert_eq!(config.training.trainable.optimizer, expected);
+    }
+}
+
+/// The pair a user reaches by writing one line: the default adapter dtype is
+/// F16, and SGD's update kernel carries no F16 path. Refused at load time
+/// rather than by `GGML_ABORT` in the middle of the first step.
+#[test]
+fn sgd_is_refused_against_the_default_f16_adapter() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    let mut document = lora_normalized(exhaustive_document());
+    document.checkpoint.as_mut().unwrap().resume_from = None;
+    document.training.optimizer = Some("sgd".to_string());
+    document.lora.dtype = Some(LoraDtype::F16);
+    let error = build(document, root).expect_err("the sgd kernel is F32-only");
+    assert!(error.is_user_error(), "{error}");
+    assert!(error.to_string().contains("F32-only"), "{error}");
+}
+
+#[test]
+fn sgd_resume_uses_the_checkpoint_adapter_dtype() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    let mut document = lora_normalized(exhaustive_document());
+    document.training.optimizer = Some("sgd".to_string());
+    document.lora.dtype = Some(LoraDtype::F16);
+    assert!(document.checkpoint.as_ref().unwrap().resume_from.is_some());
+    build(document, root).expect("the runtime checks the restored adapter's dtype");
 }
 
 /// Flattened, sorted key paths of a serialized document. Arrays are one key,
@@ -484,9 +530,12 @@ fn every_toml_field_reaches_the_run_config() {
         .expect("the exhaustive document builds");
     // The two keys this normalization clears have their value coverage in
     // `the_trainable_section_is_parsed_before_the_mode_is_refused` below.
-    assert_eq!(config.trainable.policy, TrainablePolicy::Lora);
-    assert_eq!(config.trainable.optimizer, OptimizerKind::AdamW);
-    assert_eq!(config.trainable.selector, TrainableSelector::default());
+    assert_eq!(config.training.trainable.policy, TrainablePolicy::Lora);
+    assert_eq!(config.training.trainable.optimizer, OptimizerKind::AdamW);
+    assert_eq!(
+        config.training.trainable.selector,
+        TrainableSelector::default()
+    );
 
     assert_eq!(config.model, root.join("model.gguf"));
     assert_eq!(config.lora.output, root.join("out/adapter.gguf"));

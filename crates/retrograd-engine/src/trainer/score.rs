@@ -195,10 +195,17 @@ impl Trainer {
     /// Runs several forward-only calls with LoRA disabled, restoring it even
     /// if the operation fails. GRPO uses this to amortize the graph rebuild
     /// over a whole fixed-reference scoring batch.
+    /// Refuses base-weight training: disabling LoRA cannot recover a frozen
+    /// reference once the base weights are trainable.
     pub fn with_lora_disabled<T>(
         &mut self,
         operation: impl FnOnce(&mut Self) -> Result<T>,
     ) -> Result<T> {
+        if self.trains_base_weights {
+            return Err(Error::invalid(
+                "a fixed reference requires a separate frozen model when training base weights",
+            ));
+        }
         self.set_lora_enabled(false)?;
         let result = operation(self);
         let restore = self.set_lora_enabled(true);

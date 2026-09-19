@@ -18,8 +18,9 @@ use retrograd_checkpoint as checkpoint;
 use retrograd_core::{
     CheckpointMetadata, Device, EvalMetrics, FusedCeProbe, FusedCeWeightType, Generation,
     KernelImpl, KernelReject, KernelRunInfo, LoraConfig, MemoryReport, ModelInfo, OpPlacement,
-    PreflightReport, PreflightWarning, ProbeOp, ResumeInfo, RirCounters, RirMode, SamplingParams,
-    TensorDesc, TensorDtype, TensorInventory, TrainConfig, TrainMetrics, WeightedBatch,
+    OptimizerKind, PreflightReport, PreflightWarning, ProbeOp, ResumeInfo, RirCounters, RirMode,
+    SamplingParams, TensorDesc, TensorDtype, TensorInventory, TrainConfig, TrainMetrics,
+    WeightedBatch,
 };
 use retrograd_core::{Error, Result};
 use retrograd_dataset::PreparedDataset;
@@ -77,13 +78,13 @@ fn validate_suffix(tokens: &[i32], n_prompt: usize) -> Result<()> {
     Ok(())
 }
 
-fn train_config_to_ffi(config: &TrainConfig) -> ffi::RetroTrainConfig {
+fn train_config_to_ffi(config: &TrainConfig) -> Result<ffi::RetroTrainConfig> {
     let generation_concurrency = if config.generation_concurrency == 0 {
         config.n_seq_max
     } else {
         config.generation_concurrency
     };
-    ffi::RetroTrainConfig {
+    Ok(ffi::RetroTrainConfig {
         n_ctx: config.n_ctx,
         n_batch: config.n_batch,
         n_ubatch: config.n_ubatch,
@@ -115,8 +116,10 @@ fn train_config_to_ffi(config: &TrainConfig) -> ffi::RetroTrainConfig {
         require_gpu_resident: config.require_gpu_resident,
         generation_batch: config.generation_batch,
         shuffle_dataset: config.shuffle_dataset,
+        optimizer: config.trainable.optimizer.as_ffi()?,
         shuffle_seed: config.shuffle_seed,
-    }
+        trainable: config.trainable.policy.as_ffi(),
+    })
 }
 
 fn train_metrics_from_ffi(metrics: ffi::RetroTrainMetrics) -> TrainMetrics {
@@ -560,6 +563,7 @@ pub struct Trainer {
     // the duration of the synchronous call. The progress callback is the sole
     // exception; `run_with_callback` pins its state until that call returns.
     raw: NonNull<ffi::RetroTrainer>,
+    trains_base_weights: bool,
 }
 
 mod probe;
@@ -837,8 +841,18 @@ mod tests {
             // Not part of the published layout, so it cannot appear in `ffi`
             // below; the setter carries it instead.
             max_gpu_duty_cycle: Some(0.5),
+            // Only the two scalars cross: the selector is resolved against the
+            // model's inventory and handed over by name, not by layout.
+            trainable: retrograd_core::TrainableRunConfig {
+                policy: retrograd_core::TrainablePolicy::Partial,
+                selector: retrograd_core::TrainableSelector {
+                    norms: true,
+                    ..Default::default()
+                },
+                optimizer: OptimizerKind::Sgd,
+            },
         };
-        let ffi = train_config_to_ffi(&config);
+        let ffi = train_config_to_ffi(&config).unwrap();
         assert_eq!(ffi.n_ctx, 256);
         assert_eq!(ffi.n_batch, 64);
         assert_eq!(ffi.n_ubatch, 8);
@@ -869,6 +883,8 @@ mod tests {
         assert_eq!(ffi.generation_batch, 256);
         assert!(!ffi.shuffle_dataset);
         assert_eq!(ffi.shuffle_seed, 1234);
+        assert_eq!(ffi.optimizer, 1);
+        assert_eq!(ffi.trainable, 2);
         assert!(
             TrainConfig::default().shuffle_dataset,
             "the shuffle is on unless a configuration turns it off"
@@ -877,7 +893,8 @@ mod tests {
         let inherited = train_config_to_ffi(&TrainConfig {
             n_seq_max: 4,
             ..TrainConfig::default()
-        });
+        })
+        .unwrap();
         assert_eq!(inherited.generation_concurrency, 4);
 
         // The whole-token path is the one case where the in-place write has no
@@ -885,7 +902,8 @@ mod tests {
         let unchunked = train_config_to_ffi(&TrainConfig {
             chunked_ce_seq_chunk: 0,
             ..TrainConfig::default()
-        });
+        })
+        .unwrap();
         assert!(!unchunked.chunked_ce_offload_logsoftmax);
     }
 

@@ -27,6 +27,25 @@ typedef enum retro_kv_dtype {
     RETRO_KV_DTYPE_F16 = 1,
 } retro_kv_dtype;
 
+// Which parameters a run trains. Mirrors retrograd_core::TrainablePolicy, and
+// is read before a single tensor is named: LORA leaves the CPU weights mapped
+// read-only, every other value loads them into owned writable buffers because a
+// base update would otherwise fault on a PROT_READ page.
+typedef enum retro_trainable {
+    RETRO_TRAINABLE_LORA    = 0,
+    RETRO_TRAINABLE_FULL    = 1,
+    RETRO_TRAINABLE_PARTIAL = 2,
+    RETRO_TRAINABLE_HYBRID  = 3,
+} retro_trainable;
+
+// The optimizers this runtime can build an update step for. The values are
+// ggml_opt_optimizer_type's, which is what retro_train_config.optimizer is
+// passed through to.
+typedef enum retro_optimizer {
+    RETRO_OPTIMIZER_ADAMW = 0,
+    RETRO_OPTIMIZER_SGD   = 1,
+} retro_optimizer;
+
 typedef enum retro_checkpoint_dtype {
     // F32 inserts no casts at all, so the recompute stays bit-exact.
     RETRO_CHECKPOINT_DTYPE_F32  = 0,
@@ -777,9 +796,19 @@ typedef struct retro_train_config {
     // a split dataset keep their order so eval loss remains comparable. Ignored
     // outside the SFT path.
     bool shuffle_dataset;
+    // One of retro_optimizer: which update step the optimizer graph builds.
+    // Placed here rather than at the end because the three bytes after
+    // shuffle_dataset were padding anyway, so no later field moved.
+    int32_t optimizer;
     // Seed the permutation. Each epoch's order is a pure function of
     // (shuffle_seed, epoch), so checkpoint resume reproduces an uninterrupted run.
     uint64_t shuffle_seed;
+    // One of retro_trainable: which family of parameters this run trains. The
+    // runtime reads it at model load, to decide between a read-only mapping and
+    // owned writable buffers, and again when it installs the optimizer's
+    // parameter filter. The resolved tensor names themselves arrive separately,
+    // through retro_trainer_set_trainable_base().
+    int32_t trainable;
 } retro_train_config;
 
 typedef struct retro_train_metrics {
@@ -1066,6 +1095,21 @@ int retro_trainer_create_lora(
 int retro_trainer_load_lora(
     retro_trainer * trainer,
     const char * adapter_path);
+
+// Declares the resolved base trainable set, by canonical tensor name.
+//
+// The selection itself is resolved outside the runtime, from the GGUF's tensor
+// inventory; this call is where the answer arrives, and it is validated against
+// the loaded model: an unknown name is an error, not an empty selection.
+// The names are copied, so the caller's buffers need only outlive the call.
+//
+// Must be called before the optimizer context exists, and only for a run whose
+// retro_train_config.trainable is not RETRO_TRAINABLE_LORA. Passing zero names
+// to a LoRA run is a no-op; passing any is an error.
+int retro_trainer_set_trainable_base(
+    retro_trainer * trainer,
+    const char * const * names,
+    size_t n_names);
 
 // Tokenizes `text` with the model vocabulary (BOS/special tokens added and
 // parsed). On success writes up to n_tokens_max ids and sets *out_n_tokens to
@@ -1539,11 +1583,19 @@ int retro_trainer_save_lora(
 typedef struct retro_optimizer_state {
     // AdamW bias-correction counter (ggml starts it at 1).
     int64_t iter;
-    // False before the optimizer graph exists, i.e. when no step has run and
-    // retro_trainer_prepare_optimizer() has not been called. A checkpoint taken
-    // in that state carries no momenta and resumes with a cold optimizer.
+    // Whether this optimizer keeps per-parameter momenta *and* has allocated
+    // them. False for a cold optimizer and false for SGD, which keeps none.
     bool has_momenta;
-    // 0 = AdamW, 1 = SGD.
+    // Whether the optimizer graph exists, i.e. whether
+    // retro_trainer_prepare_optimizer() or a training step has run.
+    //
+    // Distinct from has_momenta because "initialized with zero slots" and
+    // "not initialized" are different states: an SGD run has no momenta and
+    // still has an iteration counter, a schedule and an RNG state, and a
+    // resume that read the empty slot list as a cold optimizer would restart
+    // the schedule from zero.
+    bool graph_ready;
+    // One of retro_optimizer.
     int32_t optimizer;
     float learning_rate;
     float weight_decay;
@@ -1574,13 +1626,16 @@ int retro_trainer_restore_optimizer_state(
 // their weighted epochs already accumulate the scheduler step across calls.
 int retro_trainer_set_resume_point(retro_trainer * trainer, uint32_t completed_epochs);
 
-// Builds the optimizer graph if it does not exist yet, so the momenta are
-// allocated and can be written before the first training step. Requires a
-// created or loaded LoRA adapter.
+// Builds the optimizer graph if it does not exist yet, so any per-parameter
+// state is allocated and can be written before the first training step.
+// Requires a created or loaded LoRA adapter unless the run trains base weights.
+//
+// Succeeds for an optimizer that keeps no state at all: it reports that the
+// graph exists, not that momenta were allocated.
 int retro_trainer_prepare_optimizer(retro_trainer * trainer);
 
 // Number of trainable parameters that carry AdamW momenta. Zero until the
-// optimizer graph is built.
+// optimizer graph is built, and zero for an optimizer that keeps none.
 int retro_trainer_momenta_count(retro_trainer * trainer, size_t * out_count);
 
 // Describes one momenta entry. `name_buffer` follows the two-call contract of

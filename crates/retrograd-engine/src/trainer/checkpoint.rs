@@ -135,19 +135,26 @@ impl Trainer {
         state_dir: impl AsRef<Path>,
         metadata: &CheckpointMetadata,
     ) -> Result<()> {
+        if self.trains_base_weights {
+            return Err(Error::invalid(
+                "training checkpoints cannot save or restore base weights; only LoRA runs are supported",
+            ));
+        }
         let state_dir = checkpoint::state_dir_for(state_dir.as_ref());
         let adapter = checkpoint::ADAPTER_FILE.to_string();
 
         let optimizer_state = self.optimizer_state()?;
         // Before the first step the optimizer graph does not exist, so there
-        // are no momenta to save and none to demand back on resume.
+        // are no momenta to save and none to demand back on resume. An
+        // optimizer that keeps none is a different case: its graph exists, and
+        // its RNG state and iteration counter are still worth saving.
         let moments = if optimizer_state.has_momenta {
             self.read_moments()?
         } else {
             Vec::new()
         };
         let runtime_mt19937 = optimizer_state
-            .has_momenta
+            .graph_ready
             .then(|| self.rng_state())
             .transpose()?;
         let model_bytes = std::fs::metadata(&metadata.model_path)
@@ -195,16 +202,13 @@ impl Trainer {
             },
             optimizer: checkpoint::Optimizer {
                 version: checkpoint::FORMAT_VERSION,
-                kind: if optimizer_state.optimizer == 1 {
-                    "sgd".into()
-                } else {
-                    "adamw".into()
-                },
+                kind: OptimizerKind::from_ffi(optimizer_state.optimizer)?.to_string(),
                 learning_rate: optimizer_state.learning_rate,
                 weight_decay: optimizer_state.weight_decay,
                 max_grad_norm: optimizer_state.max_grad_norm,
                 iter: optimizer_state.iter,
                 has_moments: optimizer_state.has_momenta,
+                graph_ready: optimizer_state.graph_ready,
                 moments,
             },
             rng: checkpoint::Rng {
@@ -226,9 +230,15 @@ impl Trainer {
         state_dir: impl AsRef<Path>,
         expected: &checkpoint::Compatibility,
     ) -> Result<ResumeInfo> {
+        if self.trains_base_weights {
+            return Err(Error::invalid(
+                "training checkpoints cannot save or restore base weights; only LoRA runs are supported",
+            ));
+        }
         let state_dir = checkpoint::state_dir_for(state_dir.as_ref());
         let record = checkpoint::Checkpoint::read(&state_dir)?;
         record.check_compatible(expected)?;
+        let optimizer = OptimizerKind::parse(&record.optimizer.kind)?.as_ffi()?;
 
         let adapter = checkpoint::adapter_for(&state_dir, &record.manifest);
         if !adapter.is_file() {
@@ -239,11 +249,15 @@ impl Trainer {
         }
         self.load_lora(&adapter)?;
 
-        if record.optimizer.has_moments {
-            // The momenta only exist once the optimizer graph is built, which
-            // is why the restore is deferred to here rather than done at read.
+        if record.optimizer.graph_was_ready() {
+            // Per-parameter state only exists once the optimizer graph is
+            // built, which is why the restore is deferred to here rather than
+            // done at read. An optimizer with no slots still needs the graph:
+            // that is what its iteration counter and RNG state belong to.
             self.prepare_optimizer()?;
-            self.write_moments(&record.optimizer.moments)?;
+            if record.optimizer.has_moments {
+                self.write_moments(&record.optimizer.moments)?;
+            }
             if let Some(rng) = &record.rng.runtime_mt19937 {
                 self.set_rng_state(rng)?;
             }
@@ -251,7 +265,8 @@ impl Trainer {
         let state = ffi::RetroOptimizerState {
             iter: record.optimizer.iter,
             has_momenta: record.optimizer.has_moments,
-            optimizer: if record.optimizer.kind == "sgd" { 1 } else { 0 },
+            graph_ready: record.optimizer.graph_was_ready(),
+            optimizer,
             learning_rate: record.optimizer.learning_rate,
             weight_decay: record.optimizer.weight_decay,
             max_grad_norm: record.optimizer.max_grad_norm,

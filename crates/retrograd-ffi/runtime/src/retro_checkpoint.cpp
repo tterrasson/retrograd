@@ -101,9 +101,13 @@ extern "C" int retro_trainer_optimizer_state(
         *out_state = retro_optimizer_state {};
         out_state->iter = opt ? ggml_opt_iter(opt) : 1;
         out_state->has_momenta = opt && ggml_opt_momenta_count(opt) > 0;
+        out_state->graph_ready = opt != nullptr;
+        // Before the graph exists there is no context to ask, so the answer is
+        // the configured optimizer rather than a default that would record
+        // AdamW for an SGD run whose first step has not happened yet.
         out_state->optimizer = opt
                 ? static_cast<int32_t>(ggml_opt_context_optimizer_type(opt))
-                : 0;
+                : state->train_config.optimizer;
         out_state->learning_rate = state->train_config.learning_rate;
         out_state->weight_decay = state->train_config.weight_decay;
         out_state->max_grad_norm = state->train_config.max_grad_norm;
@@ -130,14 +134,30 @@ extern "C" int retro_trainer_restore_optimizer_state(
             retro::set_error("optimizer iter must be at least 1");
             return -1;
         }
-        // The momenta counter only makes sense once the graph exists; restoring
-        // it into a cold optimizer would corrupt the first bias correction.
-        if (saved->has_momenta) {
+        // An optimizer the run cannot build is refused rather than resumed onto
+        // a different trajectory: the momenta of an AdamW checkpoint mean
+        // nothing to an SGD step, and an SGD checkpoint resumed under AdamW
+        // would start with cold moments and a warm iteration counter.
+        if (saved->graph_ready && saved->optimizer != state->train_config.optimizer) {
+            retro::set_error(
+                    "the checkpoint was written by a different optimizer than this run "
+                    "configures; resume with the optimizer the run used");
+            return -1;
+        }
+        // The iteration counter belongs to the graph. Restoring it into a cold
+        // optimizer would corrupt the first bias correction - but "no momenta"
+        // is not "no graph": an optimizer with zero slots still counts steps.
+        if (saved->graph_ready) {
             ggml_opt_context_t opt = retro::opt_context(*state);
-            if (!opt || ggml_opt_momenta_count(opt) == 0) {
+            if (!opt) {
                 retro::set_error(
-                        "cannot restore an optimizer iteration without momenta; "
-                        "call retro_trainer_prepare_optimizer first");
+                        "cannot restore an optimizer iteration before the optimizer graph "
+                        "exists; call retro_trainer_prepare_optimizer first");
+                return -1;
+            }
+            if (saved->has_momenta && ggml_opt_momenta_count(opt) == 0) {
+                retro::set_error(
+                        "the checkpoint carries momenta but this optimizer keeps none");
                 return -1;
             }
             ggml_opt_set_iter(opt, saved->iter);
@@ -173,20 +193,23 @@ extern "C" int retro_trainer_prepare_optimizer(retro_trainer * trainer) {
         if (!state) {
             return -1;
         }
-        if (!state->has_lora) {
+        if (!state->has_lora && !retro::trains_base_weights(*state)) {
             retro::set_error("create or load a LoRA adapter before preparing the optimizer");
             return -1;
         }
         // The preflight run by this call builds the full optimizer graph once,
-        // which is what allocates and zeroes the momenta.
-        if (!retro::ensure_lora_optimizer_initialized(*state)) {
+        // which is what allocates and zeroes any per-parameter state.
+        if (!retro::ensure_optimizer_initialized(*state)) {
             return -1;
         }
         ggml_opt_context_t opt = retro::opt_context(*state);
-        if (!opt || ggml_opt_momenta_count(opt) == 0) {
-            retro::set_error("the optimizer graph did not allocate AdamW momenta");
+        if (!opt) {
+            retro::set_error("the optimizer graph was not built");
             return -1;
         }
+        // No assertion on the momenta count: an optimizer that keeps no state
+        // is prepared once its graph exists, and demanding momenta here is
+        // exactly the confusion between "zero slots" and "uninitialized".
         return 0;
     });
 }

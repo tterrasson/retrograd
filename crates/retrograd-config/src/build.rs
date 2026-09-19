@@ -9,8 +9,8 @@ use std::fs;
 use std::path::Path;
 
 use retrograd_core::{
-    CheckpointDtype, Device, Error, LayerRange, LoraConfig, OptimizerKind, Result,
-    SharedPrefixFanout, TrainConfig, TrainablePolicy, TrainableSelector,
+    CheckpointDtype, Device, Error, LayerRange, LoraConfig, LoraDtype, OptimizerKind, Result,
+    SharedPrefixFanout, TrainConfig, TrainablePolicy, TrainableRunConfig, TrainableSelector,
 };
 
 use crate::common::{
@@ -27,7 +27,7 @@ use crate::ppo::build_ppo;
 use crate::sft::build_sft;
 use crate::{
     Algorithm, CheckpointConfig, CheckpointMode, DEFAULT_TARGETS, EvaluationConfig, LoraRunConfig,
-    MetricsConfig, ObserveConfig, RunConfig, TrainableRunConfig, agent, parse_targets,
+    MetricsConfig, ObserveConfig, RunConfig, agent, parse_targets,
 };
 
 /// Reads, parses and builds the TOML file at `path` into a [`RunConfig`].
@@ -92,7 +92,7 @@ pub fn build_with(
         file.run.verbose,
     )?;
     let lora = build_lora(&file.lora)?;
-    let trainable = build_trainable(&file.training, file.trainable.as_ref())?;
+    training.trainable = build_trainable(&file.training, file.trainable.as_ref())?;
 
     let algorithm_name = file.run.algorithm.to_ascii_lowercase();
     only_the_selected_section(&file, &algorithm_name)?;
@@ -171,6 +171,8 @@ pub fn build_with(
         evaluation.as_ref(),
         checkpoint.as_ref(),
         &lora_toml,
+        &lora,
+        &training.trainable,
     )?;
 
     Ok(RunConfig {
@@ -181,7 +183,6 @@ pub fn build_with(
             output: resolve(root, lora_toml.output),
             init_adapter: lora_toml.init_adapter.map(|path| resolve(root, path)),
         },
-        trainable,
         training,
         metrics: MetricsConfig {
             tensorboard_dir: metrics.tensorboard_dir.map(|path| resolve(root, path)),
@@ -363,7 +364,7 @@ fn build_trainable(
     if !optimizer.is_implemented() {
         return Err(Error::config(format!(
             "training.optimizer = '{optimizer}' is not available in this build: \
-             the runtime creates its optimizer context with AdamW. \
+             only adamw and sgd have an update step here. \
              Accepting the name and running AdamW would write a checkpoint that \
              records an optimizer the run never used"
         )));
@@ -390,10 +391,10 @@ fn build_trainable(
     // enables it.
     let selector = build_trainable_selector(policy, selector)?;
     Err(Error::config(format!(
-        "training.trainable = '{policy}' is not available in this build yet: \
-         base-weight training needs writable model buffers, a generalized \
-         optimizer filter and a matching checkpoint format. \
-         Only 'lora' trains today"
+        "training.trainable = '{policy}' is not available from a configuration file \
+         yet: the runtime trains base weights, but a run built from a document has \
+         no way to save one - a checkpoint carries an adapter, and there is no \
+         model-export surface. Only 'lora' trains from a document today"
     )))
     .map(|()| TrainableRunConfig {
         policy,
@@ -635,6 +636,8 @@ fn check_across_sections(
     evaluation: Option<&EvaluationConfig>,
     checkpoint: Option<&CheckpointConfig>,
     lora: &LoraToml,
+    lora_config: &LoraConfig,
+    trainable: &TrainableRunConfig,
 ) -> Result<()> {
     // put on it - a verify command, a test suite, a task's own grading. The
     // judge cannot stand in: every RULER strategy scores the members of a group
@@ -671,6 +674,20 @@ fn check_across_sections(
     {
         return Err(Error::config(
             "checkpoint.resume_from and lora.init_adapter are mutually exclusive",
+        ));
+    }
+    // The update step is a kernel with a dtype table, and SGD's carries F32
+    // alone. F16 is the *default* adapter storage, so this pair is the ordinary
+    // way to ask for it - and the runtime's own refusal would arrive after the
+    // model is loaded and the training graph is built.
+    if trainable.optimizer == OptimizerKind::Sgd
+        && lora_config.dtype == LoraDtype::F16
+        && lora.init_adapter.is_none()
+        && !checkpoint.is_some_and(|value| value.resume_from.is_some())
+    {
+        return Err(Error::config(
+            "training.optimizer = 'sgd' cannot write an F16 adapter: its update step is \
+             F32-only. Set lora.dtype = 'f32', or keep the default optimizer",
         ));
     }
 

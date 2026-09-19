@@ -95,6 +95,7 @@ fn compatibility(trainer: &mut Trainer, model: &Path) -> checkpoint::Compatibili
         learning_rate: config().learning_rate,
         warmup_steps: 0,
         total_steps: None,
+        optimizer_kind: config().trainable.optimizer.to_string(),
         weight_decay: config().weight_decay,
         max_grad_norm: config().max_grad_norm,
     }

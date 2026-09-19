@@ -56,6 +56,10 @@ struct CheckpointContext {
     resume_boundary: String,
     scheduler_kind: String,
     learning_rate: f32,
+    /// The optimizer the run configures, as a checkpoint spells it. Compared
+    /// with what the checkpoint recorded: AdamW moments mean nothing to an SGD
+    /// step, and neither resumes onto the other's trajectory.
+    optimizer_kind: String,
     weight_decay: f32,
     max_grad_norm: f32,
     warmup_steps: u64,
@@ -112,6 +116,7 @@ impl RunController {
                 .into(),
                 scheduler_kind: scheduler_name(config.training.lr_scheduler).into(),
                 learning_rate: config.training.learning_rate,
+                optimizer_kind: config.training.trainable.optimizer.to_string(),
                 weight_decay: config.training.weight_decay,
                 max_grad_norm: config.training.max_grad_norm,
                 warmup_steps: config.training.warmup_steps,
@@ -166,6 +171,7 @@ impl RunController {
             learning_rate: self.context.learning_rate,
             warmup_steps: self.context.warmup_steps,
             total_steps: Some(total_steps),
+            optimizer_kind: self.context.optimizer_kind.clone(),
             weight_decay: self.context.weight_decay,
             max_grad_norm: self.context.max_grad_norm,
         };

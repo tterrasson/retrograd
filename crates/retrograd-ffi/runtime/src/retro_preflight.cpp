@@ -293,11 +293,11 @@ int train_preflight_impl(
         if (!state) {
             return -1;
         }
-        if (!state->has_lora) {
+        if (!state->has_lora && !trains_base_weights(*state)) {
             set_error("create or load a LoRA adapter before running the training preflight");
             return -1;
         }
-        if (!state->adapter) {
+        if (!state->adapter && !trains_base_weights(*state)) {
             set_error("LoRA adapter is not initialized");
             return -1;
         }

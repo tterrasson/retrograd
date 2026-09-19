@@ -5,14 +5,24 @@ impl Trainer {
     /// adapter is created yet; call [`Trainer::create_lora`] or
     /// [`Trainer::load_lora`] before the first optimizer step.
     pub fn new(model_path: impl AsRef<Path>, config: TrainConfig) -> Result<Self> {
+        if !config.trainable.optimizer.is_implemented() {
+            return Err(Error::invalid(format!(
+                "optimizer {} is not available in this build; use adamw or sgd",
+                config.trainable.optimizer
+            )));
+        }
         let started = Instant::now();
         let model_path = path_to_cstring(model_path.as_ref())?;
-        let ffi_config = train_config_to_ffi(&config);
+        let ffi_config = train_config_to_ffi(&config)?;
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
         let raw = unsafe { ffi::retro_trainer_new(model_path.as_ptr(), &ffi_config) };
-        let result = NonNull::new(raw)
-            .ok_or_else(runtime_error)
-            .map(|raw| Self { raw });
+        let result = NonNull::new(raw).ok_or_else(runtime_error).map(|raw| Self {
+            raw,
+            trains_base_weights: !matches!(
+                config.trainable.policy,
+                retrograd_core::TrainablePolicy::Lora
+            ),
+        });
         test_timing("model_load", started);
         let trainer = result?;
         // Only when one was asked for. `None` is the unthrottled path and must
@@ -71,6 +81,35 @@ impl Trainer {
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
         self.check(unsafe {
             ffi::retro_trainer_load_lora(self.raw.as_ptr(), adapter_path.as_ptr())
+        })
+    }
+
+    /// Declares the resolved base trainable set, by canonical tensor name.
+    ///
+    /// Resolution happens outside the runtime, against the GGUF's tensor
+    /// inventory, so a frontend can answer "what would this train, and what
+    /// would it cost" before a model is open. This is where the answer is
+    /// handed over, and the runtime validates it against the model it actually
+    /// loaded: a name no tensor carries is an error rather than a silently
+    /// smaller update.
+    ///
+    /// Must be called before the first training step or
+    /// [`Trainer::prepare_optimizer`], and only on a trainer whose
+    /// [`TrainConfig`] names a base-weight policy.
+    pub fn set_trainable_base(&mut self, names: &[String]) -> Result<()> {
+        let owned = names
+            .iter()
+            .map(|name| CString::new(name.as_str()))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(nul_error)?;
+        let pointers: Vec<*const c_char> = owned.iter().map(|name| name.as_ptr()).collect();
+        // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
+        self.check(unsafe {
+            ffi::retro_trainer_set_trainable_base(
+                self.raw.as_ptr(),
+                pointers.as_ptr(),
+                pointers.len(),
+            )
         })
     }
 

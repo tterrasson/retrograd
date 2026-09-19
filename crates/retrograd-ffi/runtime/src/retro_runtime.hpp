@@ -84,6 +84,15 @@ struct trainer_state {
     lora_adapter_ptr adapter;
     bool has_lora = false;
     bool loaded_lora = false;
+    // The resolved base trainable set, as names, owned here for the trainer's
+    // whole lifetime: `opt_param_filter_trainable` reads it from the optimizer's
+    // callback, which llama.cpp invokes with only the userdata pointer, so a
+    // borrowed buffer would be a dangling one by the time the graph is built.
+    // Empty for a LoRA run, and empty until retro_trainer_set_trainable_base()
+    // has been called - which, for a base-weight policy, is an error rather
+    // than an empty selection.
+    std::vector<std::string> trainable_base;
+    bool trainable_base_set = false;
     // loaded adapter validated and its tensors flagged as optimizer params
     bool lora_promoted = false;
     // llama_opt_init ran (it must run exactly once per context)
@@ -121,6 +130,12 @@ struct trainer_state {
     int32_t n_gpu_layers = 0;
     uint32_t effective_threads = 0;
     std::string backend_name = "CPU";
+    // How the weights were actually loaded: "mapped" (read-only, shared with
+    // the page cache) or "owned" (copied into writable buffers). A base-weight
+    // policy forces the second, and this is where a report can say so - the
+    // difference is invisible in every other field and decides whether an
+    // optimizer step can write a base tensor at all.
+    std::string weight_storage = "mapped";
     int32_t effective_kv_dtype = RETRO_KV_DTYPE_F32;
     std::string training_kv_status = "not_requested";
     // Active-device training capabilities, resolved from ggml supports_op probes
@@ -258,6 +273,7 @@ void ensure_backend_initialized();
 void configure_runtime_logging(bool verbose);
 retro_train_config default_train_config();
 const char * device_kind_name(int32_t device);
+const char * trainable_policy_name(int32_t policy);
 bool validate_train_config(const retro_train_config & config);
 trainer_state * checked(retro_trainer * trainer);
 std::string join_patterns(const std::vector<std::string> & patterns);
@@ -416,6 +432,10 @@ bool is_retro_dequant_type(enum ggml_type type);
 bool is_retro_out_prod_type(enum ggml_type type);
 
 bool is_param_tensor(const ggml_tensor * tensor);
+// Whether this run's policy marks base tensors trainable. Read at model load,
+// before any tensor is named, because it decides between a read-only mapping
+// and owned writable buffers.
+bool trains_base_weights(const trainer_state & state);
 const char * lora_dtype_name(int32_t dtype);
 int64_t count_lora_parameters(const trainer_state & state);
 size_t count_lora_parameter_bytes(const trainer_state & state);
@@ -446,8 +466,22 @@ bool create_trainable_lora_adapter(trainer_state & state, uint32_t seed);
 // optimizer params. Idempotent; must run before llama_opt_init.
 bool promote_loaded_lora_to_trainable(trainer_state & state);
 bool resolve_lora_targets(trainer_state & state, std::vector<const ggml_tensor *> & targets);
-bool assert_lora_only_params(const trainer_state & state);
-bool opt_param_filter_none(const ggml_tensor * tensor, void * userdata);
+// Rule 6 of the trainable-set contract: after llama_opt_init, the tensors
+// actually carrying GGML_TENSOR_FLAG_PARAM must be exactly the resolved set -
+// the adapter's A/B pairs plus `trainable_base`, and nothing else. A filter
+// that returned true for a tensor `opt_init` never visits, or a name that does
+// not exist in this model, is caught here rather than by a silently smaller
+// update.
+bool assert_marked_set_is_resolved(const trainer_state & state);
+// Whether the selected optimizer's update step can write every marked
+// parameter's dtype. The kernels abort on anything they do not carry, so this
+// has to run between the graph build and the first step.
+bool optimizer_supports_marked_dtypes(const trainer_state & state);
+// The optimizer's parameter filter: the resolved base set, by name. LoRA
+// factors are not routed through it - they are flagged directly when the
+// adapter is created or promoted - so a LoRA run's filter admits nothing.
+// `userdata` is the `trainer_state *`.
+bool opt_param_filter_trainable(const ggml_tensor * tensor, void * userdata);
 
 // Whether a training-graph node falling back to the CPU should fail the
 // preflight for this run: the config field, or RETRO_REQUIRE_GPU_RESIDENT set to
@@ -460,7 +494,7 @@ bool opt_param_filter_none(const ggml_tensor * tensor, void * userdata);
 // the environment says.
 bool require_gpu_resident(const trainer_state & state);
 
-bool ensure_lora_optimizer_initialized(trainer_state & state);
+bool ensure_optimizer_initialized(trainer_state & state);
 // Creates the llama.cpp optimizer context once (llama_opt_init) and verifies
 // that only LoRA tensors are trainable. Does not run the preflight.
 bool ensure_opt_context(trainer_state & state);

@@ -60,18 +60,60 @@ impl OptimizerKind {
 
     /// Whether this build can actually run it.
     ///
-    /// AdamW alone, today: the runtime builds its optimizer context with a
-    /// hard-coded `GGML_OPT_OPTIMIZER_TYPE_ADAMW`, so nothing else is
-    /// *selectable* however well ggml supports it. SGD is the clearest case -
-    /// the kernels exist on every backend and it still cannot be chosen; the
-    /// runtime must learn to take its optimizer from a descriptor first.
-    ///
     /// A name the schema parses but the runtime cannot honour must be refused
-    /// at load time: accepting `optimizer = "sgd"` and silently running AdamW
-    /// would publish a trajectory nobody asked for, and a checkpoint that
-    /// records the wrong optimizer.
+    /// at load time: accepting a name and silently running AdamW would publish
+    /// a trajectory nobody asked for, and a checkpoint that records the wrong
+    /// optimizer.
+    ///
+    /// Muon and Gefen have no kernels here at all; AdamW and SGD are the two
+    /// the update step can build, and the choice reaches it through
+    /// [`Self::as_ffi`].
     pub fn is_implemented(self) -> bool {
-        matches!(self, Self::AdamW)
+        matches!(self, Self::AdamW | Self::Sgd)
+    }
+
+    /// The integer the C `retro_train_config.optimizer` carries, and with it
+    /// `ggml_opt_optimizer_type`: `0` AdamW, `1` SGD. Refusing to widen past
+    /// what [`Self::is_implemented`] admits is deliberate - a value the runtime
+    /// would read as AdamW is exactly the silent substitution that predicate
+    /// exists to prevent.
+    pub fn as_ffi(self) -> Result<i32> {
+        match self {
+            Self::AdamW => Ok(0),
+            Self::Sgd => Ok(1),
+            Self::Muon | Self::Gefen => Err(Error::invalid(format!(
+                "optimizer {self} is not available in this build; use adamw or sgd"
+            ))),
+        }
+    }
+
+    /// Reads back what a runtime or a checkpoint recorded. An unknown value is
+    /// an error rather than a default: "the optimizer this run used" is not a
+    /// field that may be guessed.
+    pub fn from_ffi(value: i32) -> Result<Self> {
+        match value {
+            0 => Ok(Self::AdamW),
+            1 => Ok(Self::Sgd),
+            other => Err(Error::runtime(format!(
+                "the runtime reported optimizer {other}, which this build does not know"
+            ))),
+        }
+    }
+
+    /// Names of the persistent per-parameter slots this optimizer keeps, in the
+    /// order the state API enumerates them.
+    ///
+    /// SGD's empty list is the case worth naming: *no slot* and *no optimizer*
+    /// are different states. An SGD run still has a step counter, a schedule
+    /// and an RNG state, and a resume that concluded "no slots, so nothing was
+    /// initialized" would silently restart the schedule from zero.
+    pub fn slot_names(self) -> &'static [&'static str] {
+        match self {
+            Self::AdamW => &["m", "v"],
+            Self::Sgd => &[],
+            Self::Muon => &["momentum"],
+            Self::Gefen => &["indices", "scales", "second_moments"],
+        }
     }
 
     /// Persistent state bytes for one parameter of `n_elements`, under this
@@ -172,15 +214,33 @@ mod tests {
     }
 
     #[test]
-    fn only_adamw_is_selectable_until_the_descriptor_lands() {
+    fn the_two_with_an_update_step_are_selectable_and_the_others_are_not() {
         assert!(OptimizerKind::AdamW.is_implemented());
-        // SGD's kernels exist on every backend; the runtime still hard-codes
-        // AdamW when it creates the optimizer context, so the choice is not
-        // reachable. Accepting it would be a checkpoint that lies.
-        assert!(!OptimizerKind::Sgd.is_implemented());
+        assert!(OptimizerKind::Sgd.is_implemented());
+        // No kernel, no descriptor: accepting either would be a checkpoint
+        // that records an optimizer the run never ran.
         assert!(!OptimizerKind::Muon.is_implemented());
         assert!(!OptimizerKind::Gefen.is_implemented());
         assert_eq!(OptimizerKind::default(), OptimizerKind::AdamW);
+    }
+
+    #[test]
+    fn the_wire_value_round_trips_for_what_the_runtime_can_build() {
+        for kind in [OptimizerKind::AdamW, OptimizerKind::Sgd] {
+            assert_eq!(
+                OptimizerKind::from_ffi(kind.as_ffi().unwrap()).unwrap(),
+                kind
+            );
+        }
+        assert!(OptimizerKind::Muon.as_ffi().is_err());
+        assert!(OptimizerKind::Gefen.as_ffi().is_err());
+        assert!(OptimizerKind::from_ffi(7).is_err());
+    }
+
+    #[test]
+    fn sgd_keeps_no_slot_and_adamw_keeps_two() {
+        assert!(OptimizerKind::Sgd.slot_names().is_empty());
+        assert_eq!(OptimizerKind::AdamW.slot_names(), ["m", "v"]);
     }
 
     #[test]

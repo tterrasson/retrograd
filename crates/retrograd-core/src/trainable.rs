@@ -243,6 +243,19 @@ impl TrainablePolicy {
         !matches!(self, Self::Lora)
     }
 
+    /// The integer the C `retro_train_config.trainable` carries. The runtime
+    /// branches on it before a single tensor is named: it decides whether the
+    /// weights are mapped read-only or loaded into owned writable buffers, and
+    /// that decision is taken at model load, long before a resolved set exists.
+    pub fn as_ffi(self) -> i32 {
+        match self {
+            Self::Lora => 0,
+            Self::Full => 1,
+            Self::Partial => 2,
+            Self::Hybrid => 3,
+        }
+    }
+
     pub fn parse(value: &str) -> Result<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "lora" => Ok(Self::Lora),
@@ -379,6 +392,19 @@ impl TrainableSelector {
     pub fn is_empty(&self) -> bool {
         self.modules.is_empty() && !self.norms && !self.biases && !self.output_head
     }
+}
+
+/// The resolved answer to "what does this run train, and with which optimizer".
+///
+/// A *policy and a selection*, not a resolved tensor list: turning it into
+/// actual tensors needs the model's inventory, which a document does not have.
+/// The engine resolves [`resolve_base`] against this once the model is open.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TrainableRunConfig {
+    pub policy: TrainablePolicy,
+    /// Empty for `lora`, where a base selector is refused rather than ignored.
+    pub selector: TrainableSelector,
+    pub optimizer: crate::optimizer::OptimizerKind,
 }
 
 /// Module aliases, expanded to the stems a GGUF actually spells.

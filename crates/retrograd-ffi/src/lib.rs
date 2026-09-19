@@ -58,7 +58,9 @@ pub struct RetroTrainConfig {
     pub require_gpu_resident: bool,
     pub generation_batch: u32,
     pub shuffle_dataset: bool,
+    pub optimizer: i32,
     pub shuffle_seed: u64,
+    pub trainable: i32,
 }
 
 /// Implementation choice for [`retro_probe_op_run_ex`].
@@ -509,6 +511,9 @@ pub struct RetroPackedSequenceBatch {
 pub struct RetroOptimizerState {
     pub iter: i64,
     pub has_momenta: bool,
+    /// Whether the optimizer graph exists. Separate from `has_momenta`, which
+    /// is false both for a cold optimizer and for one that keeps no state.
+    pub graph_ready: bool,
     pub optimizer: i32,
     pub learning_rate: c_float,
     pub weight_decay: c_float,
@@ -561,6 +566,12 @@ unsafe extern "C" {
     pub fn retro_trainer_load_lora(
         trainer: *mut RetroTrainer,
         adapter_path: *const c_char,
+    ) -> c_int;
+
+    pub fn retro_trainer_set_trainable_base(
+        trainer: *mut RetroTrainer,
+        names: *const *const c_char,
+        n_names: usize,
     ) -> c_int;
 
     pub fn retro_trainer_tokenize_text(
@@ -1438,7 +1449,7 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroLoraConfig, target_patterns), 16);
         assert_eq!(offset_of!(RetroLoraConfig, dtype), 32);
 
-        assert_eq!(size_of::<RetroTrainConfig>(), 120);
+        assert_eq!(size_of::<RetroTrainConfig>(), 128);
         assert_eq!(align_of::<RetroTrainConfig>(), 8);
         assert_eq!(offset_of!(RetroTrainConfig, generation_concurrency), 16);
         assert_eq!(offset_of!(RetroTrainConfig, kv_dtype), 24);
@@ -1464,7 +1475,13 @@ mod contract_tests {
         // two more: the bool alone in one because the u64 seed behind it forces
         // 8-byte alignment. That is what took the struct from 104 to 120.
         assert_eq!(offset_of!(RetroTrainConfig, shuffle_dataset), 104);
+        // `optimizer` costs nothing: the three bytes after that bool were
+        // padding the u64 seed forced anyway, so it lands at 108 and
+        // `shuffle_seed` does not move. `trainable` did open a new tail slot,
+        // which is what took the struct from 120 to 128.
+        assert_eq!(offset_of!(RetroTrainConfig, optimizer), 108);
         assert_eq!(offset_of!(RetroTrainConfig, shuffle_seed), 112);
+        assert_eq!(offset_of!(RetroTrainConfig, trainable), 120);
 
         assert_eq!(size_of::<RetroScoringStats>(), 48);
         assert_eq!(align_of::<RetroScoringStats>(), 8);
@@ -2042,7 +2059,9 @@ mod contract_tests {
             require_gpu_resident: false,
             generation_batch: 0,
             shuffle_dataset: true,
+            optimizer: 0,
             shuffle_seed: 42,
+            trainable: 0,
         };
         unsafe {
             assert!(retro_trainer_new(path.as_ptr(), &invalid).is_null());

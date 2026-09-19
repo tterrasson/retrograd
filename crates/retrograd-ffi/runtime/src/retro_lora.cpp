@@ -281,9 +281,23 @@ bool resolve_lora_targets(trainer_state & state, std::vector<const ggml_tensor *
     return true;
 }
 
-bool opt_param_filter_none(const ggml_tensor * tensor, void * userdata) {
-    (void) tensor;
-    (void) userdata;
+bool trains_base_weights(const trainer_state & state) {
+    return state.train_config.trainable != RETRO_TRAINABLE_LORA;
+}
+
+bool opt_param_filter_trainable(const ggml_tensor * tensor, void * userdata) {
+    const trainer_state * state = static_cast<const trainer_state *>(userdata);
+    if (!tensor || !state || state->trainable_base.empty()) {
+        return false;
+    }
+    // Linear over a set that is at most a few hundred names, walked once per
+    // tensor at graph construction: a map would buy nothing measurable and
+    // would need its own lifetime beside the vector the callback already owns.
+    for (const std::string & name : state->trainable_base) {
+        if (name == tensor->name) {
+            return true;
+        }
+    }
     return false;
 }
 
@@ -336,26 +350,103 @@ std::string describe_lora(const trainer_state & state) {
     return out.str();
 }
 
-bool assert_lora_only_params(const trainer_state & state) {
-    if (!state.adapter) {
+bool optimizer_supports_marked_dtypes(const trainer_state & state) {
+    // The update step is a kernel, and a kernel has a dtype table. AdamW's
+    // carries F32 and F16 on every backend the project ships; SGD's carries
+    // F32 alone, and meets anything else with GGML_ABORT rather than an error.
+    // An F16 adapter is the normal case - it is the default storage - so this
+    // is not a corner: "optimizer = sgd" on a default LoRA run would abort the
+    // process in the middle of the first step.
+    if (state.train_config.optimizer != RETRO_OPTIMIZER_SGD) {
+        return true;
+    }
+    std::vector<std::string> unsupported;
+    auto check = [&](const ggml_tensor * tensor) {
+        if (is_param_tensor(tensor) && tensor->type != GGML_TYPE_F32) {
+            unsupported.push_back(
+                    std::string(tensor->name) + " (" + ggml_type_name(tensor->type) + ")");
+        }
+    };
+    if (state.adapter) {
+        for (const auto & item : state.adapter->ab_map) {
+            check(item.second.a);
+            check(item.second.b);
+        }
+    }
+    for (const auto & item : state.model->tensors_by_name) {
+        check(item.second);
+    }
+    if (unsupported.empty()) {
+        return true;
+    }
+    std::sort(unsupported.begin(), unsupported.end());
+    if (unsupported.size() > 6) {
+        const size_t rest = unsupported.size() - 6;
+        unsupported.resize(6);
+        unsupported.push_back("and " + std::to_string(rest) + " more");
+    }
+    set_error("the sgd update step is F32-only, and this run marks "
+              + std::to_string(unsupported.size()) + " parameter(s) it cannot write: ["
+              + join_patterns(unsupported)
+              + "]. Store the adapter as F32 (lora.dtype = \"f32\") or use adamw");
+    return false;
+}
+
+bool assert_marked_set_is_resolved(const trainer_state & state) {
+    // The adapter half first, unchanged: a LoRA run with no flagged factor has
+    // nothing to train whatever the base policy says.
+    const bool expects_adapter = state.adapter != nullptr;
+    if (!expects_adapter && !trains_base_weights(state)) {
         set_error("LoRA adapter is not initialized");
         return false;
     }
-
-    const size_t lora_param_count = count_lora_param_tensors(state);
-    const size_t base_param_count = count_base_param_tensors(state);
-
-    if (lora_param_count == 0) {
+    if (expects_adapter && count_lora_param_tensors(state) == 0) {
         set_error("no LoRA tensors are marked trainable");
         return false;
     }
-    if (base_param_count != 0) {
-        std::ostringstream message;
-        message << "base model tensor trainable count must be zero; got " << base_param_count;
-        set_error(message.str());
-        return false;
+
+    // The base half. `marked` is what llama_opt_init actually flagged;
+    // `state.trainable_base` is what the resolver said it would. Equality both
+    // ways is the point: a missing name means a tensor was selected and never
+    // reached - llama_set_param refuses a non-F32 tensor and opt_init visits
+    // only the members it enumerates - and an extra one means the filter
+    // admitted something nobody asked for.
+    std::set<std::string> marked;
+    for (const auto & item : state.model->tensors_by_name) {
+        if (is_param_tensor(item.second)) {
+            marked.insert(item.first);
+        }
     }
-    return true;
+    const std::set<std::string> resolved(
+            state.trainable_base.begin(), state.trainable_base.end());
+    if (marked == resolved) {
+        return true;
+    }
+
+    std::vector<std::string> missing;
+    std::vector<std::string> unexpected;
+    for (const std::string & name : resolved) {
+        if (marked.find(name) == marked.end()) {
+            missing.push_back(name);
+        }
+    }
+    for (const std::string & name : marked) {
+        if (resolved.find(name) == resolved.end()) {
+            unexpected.push_back(name);
+        }
+    }
+    std::ostringstream message;
+    message << "the trainable set the optimizer marked is not the one that was resolved";
+    if (!missing.empty()) {
+        message << "; selected but not marked (" << missing.size() << "): ["
+                << join_patterns(missing) << "]";
+    }
+    if (!unexpected.empty()) {
+        message << "; marked but not selected (" << unexpected.size() << "): ["
+                << join_patterns(unexpected) << "]";
+    }
+    set_error(message.str());
+    return false;
 }
 
 bool save_lora_adapter_gguf(const trainer_state & state, const char * adapter_path) {
