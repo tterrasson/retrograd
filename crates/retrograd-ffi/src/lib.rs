@@ -224,6 +224,39 @@ pub struct RetroModelInfo {
     pub dominant_weight_type: [c_char; MODEL_INFO_NAME_MAX],
 }
 
+/// Schema version of the tensor inventory, mirroring
+/// `RETRO_TENSOR_INVENTORY_VERSION`.
+pub const TENSOR_INVENTORY_VERSION: u32 = 1;
+
+/// Mirrors `RETRO_TENSOR_NAME_MAX`.
+pub const TENSOR_NAME_MAX: usize = 128;
+
+/// One tensor as the loader sees it. The per-tensor counterpart of
+/// [`RetroModelInfo`], which carries only aggregate geometry.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RetroTensorDesc {
+    pub name: [c_char; TENSOR_NAME_MAX],
+    pub ne: [i64; 4],
+    pub n_elements: u64,
+    pub n_bytes: u64,
+    pub storage_id: u64,
+    pub type_name: [c_char; MODEL_INFO_NAME_MAX],
+}
+
+impl Default for RetroTensorDesc {
+    fn default() -> Self {
+        Self {
+            name: [0; TENSOR_NAME_MAX],
+            ne: [0; 4],
+            n_elements: 0,
+            n_bytes: 0,
+            storage_id: 0,
+            type_name: [0; MODEL_INFO_NAME_MAX],
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct RetroModelCapabilities {
@@ -303,10 +336,12 @@ pub struct RetroMemoryReport {
     pub generation_kv_bytes: u64,
     pub generation_compute_bytes: u64,
     pub has_generation_context: bool,
-    pub lora_parameter_bytes: u64,
-    pub lora_gradient_bytes: u64,
-    pub adamw_momenta_bytes: u64,
-    pub lora_on_host: bool,
+    pub trainable_parameter_bytes: u64,
+    pub trainable_gradient_bytes: u64,
+    pub optimizer_state_bytes: u64,
+    pub trainable_parameters_are_model_subset: bool,
+    pub adapter_on_host: bool,
+    pub base_trainable_on_host: bool,
     pub device_bytes: u64,
     pub host_bytes: u64,
     pub device_total_bytes: u64,
@@ -941,6 +976,14 @@ unsafe extern "C" {
         out_info: *mut RetroModelInfo,
     ) -> c_int;
 
+    pub fn retro_read_tensor_inventory(
+        model_path: *const c_char,
+        out_version: *mut u32,
+        out_tensors: *mut RetroTensorDesc,
+        n_max: usize,
+        out_count: *mut usize,
+    ) -> c_int;
+
     pub fn retro_trainer_memory_report(
         trainer: *mut RetroTrainer,
         out_report: *mut RetroMemoryReport,
@@ -1466,7 +1509,14 @@ mod contract_tests {
 
         assert_eq!(size_of::<RetroMemoryReport>(), 216);
         assert_eq!(align_of::<RetroMemoryReport>(), 8);
-        assert_eq!(offset_of!(RetroMemoryReport, lora_parameter_bytes), 48);
+        assert_eq!(offset_of!(RetroMemoryReport, trainable_parameter_bytes), 48);
+        // The three placement booleans fit the padding the single `lora_on_host`
+        // once occupied: `device_bytes` is the assertion that pins the layout.
+        assert_eq!(
+            offset_of!(RetroMemoryReport, trainable_parameters_are_model_subset),
+            72
+        );
+        assert_eq!(offset_of!(RetroMemoryReport, base_trainable_on_host), 74);
         assert_eq!(offset_of!(RetroMemoryReport, device_bytes), 80);
         assert_eq!(offset_of!(RetroMemoryReport, device_memory_samples), 136);
         assert_eq!(offset_of!(RetroMemoryReport, checkpoint_count), 144);
@@ -1487,6 +1537,80 @@ mod contract_tests {
         assert_eq!(size_of::<RetroPackedSequenceBatch>(), 72);
         assert_eq!(offset_of!(RetroPackedSequenceBatch, n_sequences), 64);
         assert_eq!(offset_of!(RetroPackedSequenceBatch, n_topk), 68);
+
+        // The inventory contract. The name array is the first field so its
+        // length is what the offsets below pin: a header that widened
+        // RETRO_TENSOR_NAME_MAX without this crate following would move every
+        // numeric field and be read as garbage shapes, not as a size mismatch.
+        assert_eq!(size_of::<RetroTensorDesc>(), 248);
+        assert_eq!(align_of::<RetroTensorDesc>(), 8);
+        assert_eq!(offset_of!(RetroTensorDesc, ne), 128);
+        assert_eq!(offset_of!(RetroTensorDesc, n_elements), 160);
+        assert_eq!(offset_of!(RetroTensorDesc, storage_id), 176);
+        assert_eq!(offset_of!(RetroTensorDesc, type_name), 184);
+    }
+
+    /// `retro_read_tensor_inventory` on its error paths only, for the same
+    /// reason as the model-info test below: no model is loaded, so its contract
+    /// belongs in the ABI lane. That contract is the required out-pointers, and
+    /// a buffer shorter than the count refused rather than truncated.
+    #[test]
+    fn tensor_inventory_requires_its_out_pointers() {
+        let mut version = 0_u32;
+        let mut count = usize::MAX;
+        let missing = CString::new("does-not-exist.gguf").expect("path");
+        unsafe {
+            assert_eq!(
+                retro_read_tensor_inventory(
+                    ptr::null(),
+                    &mut version,
+                    ptr::null_mut(),
+                    0,
+                    &mut count
+                ),
+                -1
+            );
+            assert_eq!(last_error(), "model_path is required");
+
+            assert_eq!(
+                retro_read_tensor_inventory(
+                    missing.as_ptr(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    0,
+                    &mut count
+                ),
+                -1
+            );
+            assert_eq!(last_error(), "out_version and out_count are required");
+
+            assert_eq!(
+                retro_read_tensor_inventory(
+                    missing.as_ptr(),
+                    &mut version,
+                    ptr::null_mut(),
+                    0,
+                    ptr::null_mut()
+                ),
+                -1
+            );
+            assert_eq!(last_error(), "out_version and out_count are required");
+
+            // A path that does not resolve fails on the load, after the version
+            // has been published: a caller learns the schema it would have got.
+            assert_eq!(
+                retro_read_tensor_inventory(
+                    missing.as_ptr(),
+                    &mut version,
+                    ptr::null_mut(),
+                    0,
+                    &mut count
+                ),
+                -1
+            );
+        }
+        assert_eq!(version, TENSOR_INVENTORY_VERSION);
+        assert_eq!(count, 0);
     }
 
     /// `retro_read_model_info` on its error paths only: no model is loaded, so

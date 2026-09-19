@@ -637,11 +637,23 @@ pub struct MemoryReport {
     /// False when generation shares the optimizer context, in which case both
     /// `generation_*` fields are zero rather than unknown.
     pub has_generation_context: bool,
-    pub lora_parameter_bytes: u64,
-    pub lora_gradient_bytes: u64,
-    pub adamw_momenta_bytes: u64,
-    /// Which budget the LoRA parameters, gradients and AdamW moments draw on.
-    pub lora_on_host: bool,
+    /// The resolved trainable set, whatever it is made of: LoRA factors today,
+    /// selected base tensors once full/partial training lands.
+    pub trainable_parameter_bytes: u64,
+    pub trainable_gradient_bytes: u64,
+    /// Persistent optimizer state of that set - AdamW's two moments today.
+    /// Zero for an optimizer that keeps none, which is a fact and not a gap.
+    pub optimizer_state_bytes: u64,
+    /// Whether `trainable_parameter_bytes` is *already* counted inside
+    /// `model_weight_bytes`. Adapter factors are allocated on top of the loaded
+    /// model and are not; base tensors selected out of it are. Adding a subset
+    /// to the model weights is the arithmetic error this flag exists to stop.
+    pub trainable_parameters_are_model_subset: bool,
+    /// Which budget each trainable family draws on. Tracked per family because
+    /// a hybrid run can hold its adapter on the device and its selected base
+    /// tensors on the host, and one boolean cannot describe both.
+    pub adapter_on_host: bool,
+    pub base_trainable_on_host: bool,
     pub device_bytes: u64,
     pub host_bytes: u64,
     pub device_total_bytes: u64,
@@ -687,11 +699,18 @@ impl MemoryReport {
         self.device_memory_samples > 0
     }
 
-    /// Sum of the LoRA parameters, their gradients and the AdamW moments: the
-    /// whole trainable-state cost, which always lives on one side of the
-    /// device/host split.
-    pub fn lora_total_bytes(&self) -> u64 {
-        self.lora_parameter_bytes + self.lora_gradient_bytes + self.adamw_momenta_bytes
+    /// Trainable-state cost *added* to the budget: the gradients and the
+    /// optimizer state always, the parameters only when they are not already
+    /// inside `model_weight_bytes`. See
+    /// [`Self::trainable_parameters_are_model_subset`] - a selected base tensor
+    /// is a subset of the loaded weights, not an allocation on top of them.
+    pub fn trainable_total_bytes(&self) -> u64 {
+        let parameters = if self.trainable_parameters_are_model_subset {
+            0
+        } else {
+            self.trainable_parameter_bytes
+        };
+        parameters + self.trainable_gradient_bytes + self.optimizer_state_bytes
     }
 
     /// Whether the retained checkpoints were measured at all. False means the run

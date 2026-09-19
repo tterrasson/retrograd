@@ -9,7 +9,8 @@ use std::fs;
 use std::path::Path;
 
 use retrograd_core::{
-    CheckpointDtype, Device, Error, LoraConfig, Result, SharedPrefixFanout, TrainConfig,
+    CheckpointDtype, Device, Error, LayerRange, LoraConfig, OptimizerKind, Result,
+    SharedPrefixFanout, TrainConfig, TrainablePolicy, TrainableSelector,
 };
 
 use crate::common::{
@@ -19,14 +20,14 @@ use crate::common::{
 use crate::distill::build_distill;
 use crate::document::{
     CheckpointToml, ConfigDocument, EvaluationToml, LoraToml, ModelOverride, ObserveToml,
-    SharedPrefixFanoutToml, TrainingToml,
+    SharedPrefixFanoutToml, TrainableToml, TrainingToml,
 };
 use crate::grpo::build_grpo;
 use crate::ppo::build_ppo;
 use crate::sft::build_sft;
 use crate::{
     Algorithm, CheckpointConfig, CheckpointMode, DEFAULT_TARGETS, EvaluationConfig, LoraRunConfig,
-    MetricsConfig, ObserveConfig, RunConfig, agent, parse_targets,
+    MetricsConfig, ObserveConfig, RunConfig, TrainableRunConfig, agent, parse_targets,
 };
 
 /// Reads, parses and builds the TOML file at `path` into a [`RunConfig`].
@@ -91,6 +92,7 @@ pub fn build_with(
         file.run.verbose,
     )?;
     let lora = build_lora(&file.lora)?;
+    let trainable = build_trainable(&file.training, file.trainable.as_ref())?;
 
     let algorithm_name = file.run.algorithm.to_ascii_lowercase();
     only_the_selected_section(&file, &algorithm_name)?;
@@ -108,6 +110,8 @@ pub fn build_with(
         training: training_toml,
         ..
     } = file;
+    // `trainable` was consumed above; the destructuring drops the DTO.
+
     let algorithm = match algorithm_name.as_str() {
         "sft" => {
             let value = required(sft, "[sft] is required when run.algorithm = 'sft'")?;
@@ -177,6 +181,7 @@ pub fn build_with(
             output: resolve(root, lora_toml.output),
             init_adapter: lora_toml.init_adapter.map(|path| resolve(root, path)),
         },
+        trainable,
         training,
         metrics: MetricsConfig {
             tensorboard_dir: metrics.tensorboard_dir.map(|path| resolve(root, path)),
@@ -330,6 +335,123 @@ fn build_training(
     require_non_negative_f32(training.weight_decay, "training.weight_decay")?;
     require_positive_f32(training.max_grad_norm, "training.max_grad_norm")?;
     Ok(training)
+}
+
+/// `[training].trainable`, `[training].optimizer` and `[trainable]`, resolved
+/// together because only the pair decides whether a section is meaningful.
+///
+/// The rule this enforces first, and the reason the function exists: a selector
+/// a policy ignores is a selector the user believes is in effect. `lora` with a
+/// `[trainable]` section is refused rather than silently trained as LoRA.
+///
+/// Modes and optimizers this build cannot honour are refused here too.
+/// Parsing a name and then running something else
+/// would produce a trajectory nobody asked for and a checkpoint that records
+/// the wrong optimizer.
+fn build_trainable(
+    training: &TrainingToml,
+    selector: Option<&TrainableToml>,
+) -> Result<TrainableRunConfig> {
+    let policy = match &training.trainable {
+        Some(value) => TrainablePolicy::parse(value)?,
+        None => TrainablePolicy::default(),
+    };
+    let optimizer = match &training.optimizer {
+        Some(value) => OptimizerKind::parse(value)?,
+        None => OptimizerKind::default(),
+    };
+    if !optimizer.is_implemented() {
+        return Err(Error::config(format!(
+            "training.optimizer = '{optimizer}' is not available in this build: \
+             the runtime creates its optimizer context with AdamW. \
+             Accepting the name and running AdamW would write a checkpoint that \
+             records an optimizer the run never used"
+        )));
+    }
+
+    if policy == TrainablePolicy::Lora {
+        if selector.is_some() {
+            return Err(Error::config(
+                "[trainable] selects base tensors, but training.trainable = 'lora' \
+                 trains none: remove the section, or set training.trainable to \
+                 'partial' or 'hybrid'",
+            ));
+        }
+        return Ok(TrainableRunConfig {
+            policy,
+            selector: TrainableSelector::default(),
+            optimizer,
+        });
+    }
+
+    // Validated before the mode is refused, so that the day the mode lands a
+    // document written against it is already known to be well-formed - and so
+    // that this validation is exercised now rather than on the commit that
+    // enables it.
+    let selector = build_trainable_selector(policy, selector)?;
+    Err(Error::config(format!(
+        "training.trainable = '{policy}' is not available in this build yet: \
+         base-weight training needs writable model buffers, a generalized \
+         optimizer filter and a matching checkpoint format. \
+         Only 'lora' trains today"
+    )))
+    .map(|()| TrainableRunConfig {
+        policy,
+        selector,
+        optimizer,
+    })
+}
+
+/// The `[trainable]` section's own consistency, given the policy that reads it.
+fn build_trainable_selector(
+    policy: TrainablePolicy,
+    section: Option<&TrainableToml>,
+) -> Result<TrainableSelector> {
+    if policy == TrainablePolicy::Full {
+        // `full` derives every eligible family from the model itself, so a
+        // narrowing selector beside it is a contradiction, not a refinement.
+        if section.is_some() {
+            return Err(Error::config(
+                "training.trainable = 'full' trains every supported eligible tensor \
+                 and takes no [trainable] selectors: use 'partial' to narrow it",
+            ));
+        }
+        return Ok(TrainableSelector::default());
+    }
+
+    let section = section.ok_or_else(|| {
+        Error::config(format!(
+            "training.trainable = '{policy}' requires a [trainable] section \
+             naming what to train"
+        ))
+    })?;
+    let selector = TrainableSelector {
+        layers: match &section.layers {
+            Some(value) => LayerRange::parse(value)?,
+            None => LayerRange::All,
+        },
+        modules: section.modules.clone(),
+        norms: section.norms.unwrap_or(false),
+        biases: section.biases.unwrap_or(false),
+        output_head: section.output_head.unwrap_or(false),
+    };
+    if selector.is_empty() {
+        return Err(Error::config(format!(
+            "[trainable] selects nothing for training.trainable = '{policy}': \
+             set at least one of modules, norms, biases or output_head"
+        )));
+    }
+    if policy == TrainablePolicy::Hybrid && (!selector.modules.is_empty() || selector.output_head) {
+        // Hybrid's first delivery is the adapter plus base norms/biases. A
+        // module or a head beside an adapter means two parameterizations of one
+        // weight, whose composite export has no parity coverage yet.
+        return Err(Error::config(
+            "training.trainable = 'hybrid' initially permits only base norms and \
+             biases beside the adapter: [trainable].modules and .output_head are \
+             not supported with it",
+        ));
+    }
+    Ok(selector)
 }
 
 /// The shared `[lora]` block. `init_adapter` excludes the creation keys: an

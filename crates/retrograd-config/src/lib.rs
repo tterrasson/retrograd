@@ -28,7 +28,10 @@ mod tests;
 
 use std::path::PathBuf;
 
-use retrograd_core::{Error, LoraConfig, Result, TargetSet, TrainConfig};
+use retrograd_core::{
+    Error, LoraConfig, OptimizerKind, Result, TargetSet, TrainConfig, TrainablePolicy,
+    TrainableSelector,
+};
 
 pub use agent::{AgentRunConfig, AgentToml, ScenarioGenerationConfig};
 pub use build::{build, build_with, load, load_with, parse_toml};
@@ -38,7 +41,8 @@ pub use distill::{
 };
 pub use document::{
     CheckpointToml, ConfigDocument, EvaluationToml, LoraToml, MetricsToml, ModelOverride,
-    ModelToml, ObserveToml, RunToml, SamplingToml, SharedPrefixFanoutToml, TrainingToml,
+    ModelToml, ObserveToml, RunToml, SamplingToml, SharedPrefixFanoutToml, TrainableToml,
+    TrainingToml,
 };
 pub use grpo::{
     AdvantageBaseline, DEFAULT_MAX_STALLED_UPDATES, DynamicSampling, GrpoConfig, GrpoJudge,
@@ -54,6 +58,13 @@ pub struct RunConfig {
     pub algorithm: Algorithm,
     pub model: PathBuf,
     pub lora: LoraRunConfig,
+    /// What this run trains and what updates it. Resolved from
+    /// `[training].trainable`, `[training].optimizer` and `[trainable]`.
+    ///
+    /// Beside `training` rather than inside it: `TrainConfig` is mirrored into
+    /// the C `retro_train_config`, and the runtime does not act on either of
+    /// these yet.
+    pub trainable: TrainableRunConfig,
     pub training: TrainConfig,
     pub metrics: MetricsConfig,
     pub evaluation: Option<EvaluationConfig>,
@@ -79,6 +90,20 @@ pub enum Algorithm {
     /// `Algorithm` the size of the largest variant, including the SFT run that
     /// holds three fields.
     AgentGrpo(Box<AgentRunConfig>),
+}
+
+/// The resolved answer to "what does this run train, and with which optimizer".
+///
+/// A *policy and a selection*, not a resolved tensor list: resolving to actual
+/// tensors needs the model's inventory, which a document does not have. The
+/// engine resolves [`retrograd_core::resolve_base`] against this once the model
+/// is open.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TrainableRunConfig {
+    pub policy: TrainablePolicy,
+    /// Empty for `lora`, where a base selector is refused rather than ignored.
+    pub selector: TrainableSelector,
+    pub optimizer: OptimizerKind,
 }
 
 #[derive(Clone, Debug)]

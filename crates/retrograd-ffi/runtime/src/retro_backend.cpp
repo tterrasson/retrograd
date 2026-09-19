@@ -1156,10 +1156,15 @@ const char * optimizer_f16_status(const trainer_state & state) {
 retro_memory_report memory_totals(const trainer_state & state) {
     retro_memory_report report {};
 
-    const size_t lora_elements = static_cast<size_t>(count_lora_parameters(state));
-    report.lora_parameter_bytes = count_lora_parameter_bytes(state);
-    report.lora_gradient_bytes  = lora_elements * sizeof(float);
-    report.adamw_momenta_bytes  = lora_elements * 2 * sizeof(float);
+    // The resolved trainable set is LoRA-only today, so the two agree; the
+    // names are the ones every consumer reads, so that adding base tensors to
+    // the set changes this computation and nothing downstream.
+    const size_t trainable_elements = static_cast<size_t>(count_lora_parameters(state));
+    report.trainable_parameter_bytes = count_lora_parameter_bytes(state);
+    report.trainable_gradient_bytes  = trainable_elements * sizeof(float);
+    report.optimizer_state_bytes     = trainable_elements * 2 * sizeof(float);
+    // Adapter factors are allocated next to the model, never out of it.
+    report.trainable_parameters_are_model_subset = false;
 
     // The model weights are shared between the optimizer and the generation
     // context, so they are summed once (from the optimizer context) and never
@@ -1180,21 +1185,28 @@ retro_memory_report memory_totals(const trainer_state & state) {
         report.generation_compute_bytes += item.second.compute;
     }
 
-    // Where the trainable LoRA parameters (and therefore their F32 gradient and
-    // AdamW momenta, allocated alongside by ggml_opt) physically live.
+    // Where the trainable parameters (and therefore their F32 gradient and the
+    // optimizer state ggml_opt allocates alongside) physically live. Base
+    // placement follows the selected base tensors once there are any; until
+    // then it tracks the adapter so the rollup below has one answer.
     if (state.adapter && !state.adapter->ab_map.empty()) {
         const ggml_tensor * a = state.adapter->ab_map.begin()->second.a;
         if (a && a->buffer) {
-            report.lora_on_host =
+            report.adapter_on_host =
                     ggml_backend_buft_is_host(ggml_backend_buffer_get_type(a->buffer));
         }
     }
-    const uint64_t lora_total_bytes = report.lora_parameter_bytes
-            + report.lora_gradient_bytes + report.adamw_momenta_bytes;
+    report.base_trainable_on_host = report.adapter_on_host;
+    // Only what is *not* already inside model_weight_bytes. See the field's
+    // comment in retro_lora_train.h.
+    const uint64_t trainable_total_bytes =
+            (report.trainable_parameters_are_model_subset ? 0 : report.trainable_parameter_bytes)
+            + report.trainable_gradient_bytes + report.optimizer_state_bytes;
 
     // Roll the memory-breakdown-visible allocations up into a device vs host
     // split so the report says which budget each part draws on. The optimizer
-    // state (params + grad + momenta) is bucketed by the LoRA parameter device.
+    // state (params + grad + state) is bucketed by the trainable parameters'
+    // device.
     for (const auto & item : optimizer_mem) {
         const uint64_t total = item.second.model + item.second.kv + item.second.compute;
         (item.second.is_host ? report.host_bytes : report.device_bytes) += total;
@@ -1203,7 +1215,7 @@ retro_memory_report memory_totals(const trainer_state & state) {
         const uint64_t total = item.second.kv + item.second.compute;
         (item.second.is_host ? report.host_bytes : report.device_bytes) += total;
     }
-    (report.lora_on_host ? report.host_bytes : report.device_bytes) += lora_total_bytes;
+    (report.adapter_on_host ? report.host_bytes : report.device_bytes) += trainable_total_bytes;
 
     // Measured device memory is separate from the buffer totals: it also includes
     // backend scratch and the graph allocator's transient reserve. Report it only
@@ -1449,9 +1461,11 @@ std::string backend_report(const trainer_state & state) {
     // `retro_trainer_memory_report` hands to callers as data. The report renders
     // it; it does not recompute it.
     const retro_memory_report totals = memory_totals(state);
-    out << "  lora_parameter_bytes: " << totals.lora_parameter_bytes << "\n";
-    out << "  lora_gradient_bytes: " << totals.lora_gradient_bytes << "\n";
-    out << "  adamw_momenta_bytes: " << totals.adamw_momenta_bytes << "\n";
+    out << "  trainable_parameter_bytes: " << totals.trainable_parameter_bytes << "\n";
+    out << "  trainable_gradient_bytes: " << totals.trainable_gradient_bytes << "\n";
+    out << "  optimizer_state_bytes: " << totals.optimizer_state_bytes << "\n";
+    out << "  trainable_parameters_are_model_subset: "
+        << (totals.trainable_parameters_are_model_subset ? 1 : 0) << "\n";
     out << "  lora_f32_master_copy: false\n";
 
     // Byte-accurate breakdown per backend buffer type, kept for the per-buffer
@@ -1467,7 +1481,9 @@ std::string backend_report(const trainer_state & state) {
         out << "  generation_kv_cache_bytes: " << totals.generation_kv_bytes << "\n";
         out << "  generation_compute_bytes: " << totals.generation_compute_bytes << "\n";
     }
-    out << "  lora_buffer_is_host: " << (totals.lora_on_host ? 1 : 0) << "\n";
+    out << "  adapter_buffer_is_host: " << (totals.adapter_on_host ? 1 : 0) << "\n";
+    out << "  base_trainable_buffer_is_host: "
+        << (totals.base_trainable_on_host ? 1 : 0) << "\n";
     out << "  memory_device_bytes: " << totals.device_bytes << "\n";
     out << "  memory_host_bytes: " << totals.host_bytes << "\n";
 

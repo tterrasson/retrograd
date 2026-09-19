@@ -633,9 +633,17 @@ pub(super) fn print_component_memory_table(memory: &MemoryReport, report: &str) 
     } else {
         (None, None)
     };
-    let lora_params = memory.lora_parameter_bytes;
-    let lora_grad = memory.lora_gradient_bytes;
-    let momenta = memory.adamw_momenta_bytes;
+    let trainable_params = memory.trainable_parameter_bytes;
+    let trainable_grad = memory.trainable_gradient_bytes;
+    let optimizer_state = memory.optimizer_state_bytes;
+    // A selected base tensor is already on the "Model weights" row above;
+    // showing it again here would make the column sum disagree with the
+    // device/host split the runtime reports underneath it.
+    let params_row_label = if memory.trainable_parameters_are_model_subset {
+        "Trainable - parameters (subset of model weights)"
+    } else {
+        "Trainable - parameters"
+    };
 
     let model_dtype = report_field(report, "model_weight_dtype")
         .unwrap_or("?")
@@ -697,21 +705,21 @@ pub(super) fn print_component_memory_table(memory: &MemoryReport, report: &str) 
         ));
     }
     rows.push((
-        "LoRA - parameters".to_string(),
+        params_row_label.to_string(),
         lora_dtype,
-        lora_params,
+        trainable_params,
         Color::Green,
     ));
     rows.push((
-        "LoRA - gradients".to_string(),
+        "Trainable - gradients".to_string(),
         "F32".to_string(),
-        lora_grad,
+        trainable_grad,
         Color::Green,
     ));
     rows.push((
-        "AdamW - moments m/v".to_string(),
+        "Optimizer - persistent state".to_string(),
         "F32".to_string(),
-        momenta,
+        optimizer_state,
         Color::Green,
     ));
     for (name, dtype, bytes, color) in &rows {

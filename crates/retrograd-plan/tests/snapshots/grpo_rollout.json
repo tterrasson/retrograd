@@ -67,7 +67,7 @@
     "iterations": 40,
     "memory": {
       "resources": {
-        "cost_model_version": 2,
+        "cost_model_version": 3,
         "persistent_device": {
           "bytes": 882049024,
           "posts": [
@@ -90,19 +90,19 @@
               "bound": "upper"
             },
             {
-              "name": "lora_parameter_bytes",
+              "name": "trainable_parameter_bytes",
               "bytes": 1376256,
               "origin": "analytical",
               "bound": "upper"
             },
             {
-              "name": "lora_gradient_bytes",
+              "name": "trainable_gradient_bytes",
               "bytes": 2752512,
               "origin": "analytical",
               "bound": "upper"
             },
             {
-              "name": "adamw_momenta_bytes",
+              "name": "optimizer_state_bytes",
               "bytes": 5505024,
               "origin": "analytical",
               "bound": "upper"

@@ -95,6 +95,11 @@ const KEYS: &[&str] = &[
     "observe.max_text_chars",
     "run.algorithm",
     "run.verbose",
+    "trainable.biases",
+    "trainable.layers",
+    "trainable.modules",
+    "trainable.norms",
+    "trainable.output_head",
     "training.checkpoint_dtype",
     "training.checkpoint_every_n_layers",
     "training.chunked_ce_seq_chunk",
@@ -113,9 +118,11 @@ const KEYS: &[&str] = &[
     "training.max_gpu_duty_cycle",
     "training.max_grad_norm",
     "training.micro_batch",
+    "training.optimizer",
     "training.require_gpu_resident",
     "training.shared_prefix_fanout",
     "training.threads",
+    "training.trainable",
     "training.warmup_steps",
     "training.weight_decay",
 ];
@@ -253,7 +260,20 @@ fn exhaustive_document() -> ConfigDocument {
             init_adapter: None,
             dtype: Some(LoraDtype::F16),
         },
+        // A `partial` policy with a fully-written selector, because that is the
+        // combination that exercises every key. `build` refuses the mode, which
+        // is why the "reaches RunConfig" test below builds the LoRA
+        // normalization of this document and the refusal has a test of its own.
+        trainable: Some(TrainableToml {
+            layers: Some("1..3".to_string()),
+            modules: vec!["attn".to_string(), "ffn_up".to_string()],
+            norms: Some(true),
+            biases: Some(true),
+            output_head: Some(false),
+        }),
         training: TrainingToml {
+            trainable: Some("partial".to_string()),
+            optimizer: Some("adamw".to_string()),
             ctx: Some(256),
             micro_batch: Some(64),
             shared_prefix_fanout: Some(SharedPrefixFanoutToml::Exact(2)),
@@ -343,6 +363,72 @@ fn exhaustive_document() -> ConfigDocument {
     }
 }
 
+/// The exhaustive document with its base-training selection removed, i.e. the
+/// LoRA run every other field of it describes.
+///
+/// `build` refuses `trainable = "partial"` until the runtime can honour it, so
+/// a document that exercises the whole `[trainable]` schema cannot also be the
+/// one that proves the other fields reach `RunConfig`. One helper rather than a
+/// second literal: a second literal would drift.
+fn lora_normalized(mut document: ConfigDocument) -> ConfigDocument {
+    document.trainable = None;
+    document.training.trainable = Some("lora".to_string());
+    document
+}
+
+/// The `[trainable]` schema is read and validated *before* the mode is refused,
+/// so a document written against it fails on the refusal and not on a typo it
+/// also contains - and so this validation is exercised today rather than on
+/// the change that enables the mode.
+#[test]
+fn the_trainable_section_is_parsed_before_the_mode_is_refused() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    let error =
+        build(exhaustive_document(), root).expect_err("partial base training is not available yet");
+    assert!(error.is_user_error(), "{error}");
+    let message = error.to_string();
+    assert!(message.contains("'partial' is not available"), "{message}");
+    assert!(message.contains("Only 'lora' trains today"), "{message}");
+
+    // A malformed selector is reported as such, not swallowed by the refusal.
+    let mut broken = exhaustive_document();
+    broken.trainable.as_mut().expect("section").layers = Some("3..1".to_string());
+    let error = build(broken, root).expect_err("an inverted range is refused");
+    assert!(error.to_string().contains("inclusive"), "{error}");
+}
+
+/// A selector a policy ignores is a selector the user believes is in effect.
+#[test]
+fn a_lora_run_refuses_a_base_selector_instead_of_ignoring_it() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    let mut document = lora_normalized(exhaustive_document());
+    document.trainable = Some(TrainableToml {
+        norms: Some(true),
+        ..Default::default()
+    });
+    let error = build(document, root).expect_err("lora trains no base tensor");
+    assert!(error.to_string().contains("trains none"), "{error}");
+}
+
+/// An optimizer name the runtime cannot honour is refused rather than accepted
+/// and silently replaced by AdamW.
+#[test]
+fn an_unavailable_optimizer_is_refused_rather_than_substituted() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    for name in ["sgd", "muon", "gefen"] {
+        let mut document = lora_normalized(exhaustive_document());
+        document.training.optimizer = Some(name.to_string());
+        let error = build(document, root).expect_err("only adamw is selectable today");
+        let message = error.to_string();
+        assert!(message.contains(name), "{message}");
+        assert!(message.contains("checkpoint"), "{message}");
+    }
+    let mut document = lora_normalized(exhaustive_document());
+    document.training.optimizer = Some("lion".to_string());
+    let error = build(document, root).expect_err("an unknown name is refused");
+    assert!(error.to_string().contains("must be adamw"), "{error}");
+}
+
 /// Flattened, sorted key paths of a serialized document. Arrays are one key,
 /// their contents are values, not schema.
 fn keys(document: &ConfigDocument) -> Vec<String> {
@@ -394,7 +480,13 @@ fn every_toml_field_survives_a_document_round_trip() {
 #[test]
 fn every_toml_field_reaches_the_run_config() {
     let root = Path::new("/tmp/retrograd-round-trip");
-    let config = build(exhaustive_document(), root).expect("the exhaustive document builds");
+    let config = build(lora_normalized(exhaustive_document()), root)
+        .expect("the exhaustive document builds");
+    // The two keys this normalization clears have their value coverage in
+    // `the_trainable_section_is_parsed_before_the_mode_is_refused` below.
+    assert_eq!(config.trainable.policy, TrainablePolicy::Lora);
+    assert_eq!(config.trainable.optimizer, OptimizerKind::AdamW);
+    assert_eq!(config.trainable.selector, TrainableSelector::default());
 
     assert_eq!(config.model, root.join("model.gguf"));
     assert_eq!(config.lora.output, root.join("out/adapter.gguf"));
@@ -520,7 +612,7 @@ fn every_toml_field_reaches_the_run_config() {
 fn the_other_algorithm_sections_reach_the_run_config() {
     let root = Path::new("/tmp/retrograd-round-trip");
 
-    let mut document = exhaustive_document();
+    let mut document = lora_normalized(exhaustive_document());
     document.run.algorithm = "ppo".to_string();
     document.grpo = None;
     document.ppo = Some(exhaustive_ppo());
@@ -554,7 +646,7 @@ fn the_other_algorithm_sections_reach_the_run_config() {
     assert_eq!(ppo.sampling.max_new_tokens, 48);
     assert_eq!(ppo.sampling.seed, 1234);
 
-    let mut document = exhaustive_document();
+    let mut document = lora_normalized(exhaustive_document());
     document.run.algorithm = "distill".to_string();
     // `[observe]` is refused where nothing is rolled out.
     document.observe = None;
@@ -587,7 +679,7 @@ fn the_other_algorithm_sections_reach_the_run_config() {
     assert_eq!(distill.mode, DistillMode::OnPolicy);
 
     // The offline mode of the same section.
-    let mut document = exhaustive_document();
+    let mut document = lora_normalized(exhaustive_document());
     document.run.algorithm = "distill".to_string();
     document.observe = None;
     document.grpo = None;
@@ -609,7 +701,7 @@ fn the_other_algorithm_sections_reach_the_run_config() {
 
     // The three offline keys next to `mode = "on_policy"` are a document whose
     // author expects a sidecar to be read, and it would not be.
-    let mut document = exhaustive_document();
+    let mut document = lora_normalized(exhaustive_document());
     document.run.algorithm = "distill".to_string();
     document.observe = None;
     document.grpo = None;
@@ -623,7 +715,7 @@ fn the_other_algorithm_sections_reach_the_run_config() {
 
     // And an offline document without its sidecar is refused by name rather
     // than falling back to a mode nobody asked for.
-    let mut document = exhaustive_document();
+    let mut document = lora_normalized(exhaustive_document());
     document.run.algorithm = "distill".to_string();
     document.observe = None;
     document.grpo = None;
@@ -636,7 +728,7 @@ fn the_other_algorithm_sections_reach_the_run_config() {
         .to_string();
     assert!(error.contains("distill.sidecar"), "{error}");
 
-    let mut document = exhaustive_document();
+    let mut document = lora_normalized(exhaustive_document());
     document.run.algorithm = "sft".to_string();
     document.observe = None;
     document.grpo = None;

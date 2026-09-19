@@ -384,6 +384,14 @@ bool load_model_and_context(trainer_state & state);
 // resolver estimate that disagrees with the report it was validated against.
 retro_memory_report memory_totals(const trainer_state & state);
 int read_model_info_impl(const char * model_path, int32_t device, retro_model_info * out_info);
+// The per-tensor counterpart of read_model_info_impl. Defined in
+// retro_inventory.cpp; see retro_lora_train.h for the two-call contract.
+int read_tensor_inventory_impl(
+        const char * model_path,
+        uint32_t * out_version,
+        retro_tensor_desc * out_tensors,
+        size_t n_max,
+        size_t * out_count);
 std::string backend_report(const trainer_state & state);
 std::string capability_report(const trainer_state & state);
 bool shared_prefix_packed_training(const trainer_state & state);

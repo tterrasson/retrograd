@@ -312,6 +312,11 @@ pub(super) fn draft_document(
                 dtype: None,
             },
             training,
+            // The resolver only ever drafts LoRA runs: its cost model sizes an
+            // adapter's parameters, gradients and optimizer state, and a base
+            // selection would change all three, which the planner cannot yet
+            // price from a resolved trainable set.
+            trainable: None,
             metrics: MetricsToml::default(),
             evaluation,
             checkpoint,

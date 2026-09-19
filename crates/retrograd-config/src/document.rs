@@ -37,6 +37,11 @@ pub struct ConfigDocument {
     pub lora: LoraToml,
     #[serde(default)]
     pub training: TrainingToml,
+    /// `[trainable]`: which base tensors a `partial` or `hybrid` run selects.
+    /// Absent for `lora`, and refused when present alongside it - a selector a
+    /// policy ignores is a selector the user believes is in effect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trainable: Option<TrainableToml>,
     #[serde(default, skip_serializing_if = "MetricsToml::is_empty")]
     pub metrics: MetricsToml,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -97,6 +102,15 @@ pub struct LoraToml {
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct TrainingToml {
+    /// Which family of parameters this run trains: `"lora"` (the default),
+    /// `"full"`, `"partial"` or `"hybrid"`. See `retrograd_core::TrainablePolicy`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trainable: Option<String>,
+    /// Which optimizer updates them: `"adamw"` (the default), `"sgd"`,
+    /// `"muon"` or `"gefen"`. A name this build cannot honour is refused
+    /// rather than accepted and ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimizer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ctx: Option<u32>,
     /// Physical forward/backward width, in tokens - llama.cpp's `n_ubatch` and
@@ -156,6 +170,29 @@ pub struct TrainingToml {
     /// compute windows. Finite, in `(0, 1]`; `1.0` is the unthrottled default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_gpu_duty_cycle: Option<f32>,
+}
+
+/// `[trainable]`: the base selection of a `partial` or `hybrid` run.
+///
+/// Every selector is off by default and an omitted `layers` means all blocks,
+/// so an empty section selects nothing - which `build` refuses rather than
+/// resolving to the empty set.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrainableToml {
+    /// `"all"`, `"last:<count>"` or an inclusive `"<first>..<last>"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layers: Option<String>,
+    /// Module aliases (`"attn"`, `"ffn"`), individual stems (`"attn_q"`) or
+    /// explicit tensor patterns. Norms are not modules: they follow `norms`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modules: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub norms: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub biases: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_head: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

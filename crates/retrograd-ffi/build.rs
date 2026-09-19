@@ -100,6 +100,7 @@ fn main() {
         "retro_runtime.cpp",
         "retro_duty_cycle.cpp",
         "retro_backend.cpp",
+        "retro_inventory.cpp",
         "retro_lora.cpp",
         "retro_training.cpp",
         "retro_preflight.cpp",

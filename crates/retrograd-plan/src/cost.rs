@@ -87,10 +87,13 @@ const ACTIVATION_TENSORS_PER_LAYER: u64 = 12;
 /// the retained checkpoints, plus one segment being recomputed.
 const RECOMPUTED_SEGMENTS: u64 = 1;
 
-/// Increment whenever a cost formula or phase-lifetime assumption changes.
-/// Calibration V2 keys include this value, so stale measurements cannot silently
-/// correct a different model.
-pub const COST_MODEL_VERSION: u32 = 2;
+/// Increment whenever a cost formula, a lifetime assumption *or a post
+/// name* changes. Calibration keys include this value, so stale measurements
+/// cannot silently correct a different model - and `dominant_posts` is
+/// published on the wire, so a reader that keys on a post name must be able to
+/// tell an answer from an older model version rather than silently miss a
+/// renamed line.
+pub const COST_MODEL_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -239,9 +242,19 @@ pub struct MemoryEstimate {
     pub logits_bytes: u64,
     pub generation_kv_bytes: u64,
     pub generation_compute_bytes: u64,
-    pub lora_parameter_bytes: u64,
-    pub lora_gradient_bytes: u64,
-    pub adamw_momenta_bytes: u64,
+    /// The resolved trainable set - LoRA factors today. Named for the role
+    /// rather than for one policy, so a partial or hybrid estimate lands in the
+    /// same posts instead of inventing parallel ones.
+    pub trainable_parameter_bytes: u64,
+    pub trainable_gradient_bytes: u64,
+    /// Persistent optimizer state of that set: `8N` for AdamW, `0` for SGD,
+    /// `4N` for a Muon-eligible matrix.
+    pub optimizer_state_bytes: u64,
+    /// Whether `trainable_parameter_bytes` is already inside
+    /// `model_weight_bytes`, i.e. selected out of the loaded weights rather
+    /// than allocated on top of them. The device rollup adds the parameters
+    /// only when this is false.
+    pub trainable_parameters_are_model_subset: bool,
     /// Prepared dataset rows: `tokens` and `labels`, `i32` each.
     pub host_dataset_bytes: u64,
     /// Rollout trajectories held for one update.
@@ -259,10 +272,21 @@ impl MemoryEstimate {
             self.optimizer_compute_bytes,
             self.generation_kv_bytes,
             self.generation_compute_bytes,
-            self.lora_parameter_bytes,
-            self.lora_gradient_bytes,
-            self.adamw_momenta_bytes,
+            self.trainable_parameter_bytes_on_top(),
+            self.trainable_gradient_bytes,
+            self.optimizer_state_bytes,
         ])
+    }
+
+    /// The trainable parameters *added* to the device budget: zero when they
+    /// are a subset of the model weights already counted above. Never add
+    /// `trainable_parameter_bytes` to `model_weight_bytes` directly.
+    fn trainable_parameter_bytes_on_top(&self) -> u64 {
+        if self.trainable_parameters_are_model_subset {
+            0
+        } else {
+            self.trainable_parameter_bytes
+        }
     }
 
     /// Everything drawn from the host budget.
@@ -283,9 +307,12 @@ impl MemoryEstimate {
             ("logits_bytes", self.logits_bytes),
             ("generation_kv_bytes", self.generation_kv_bytes),
             ("generation_compute_bytes", self.generation_compute_bytes),
-            ("lora_parameter_bytes", self.lora_parameter_bytes),
-            ("lora_gradient_bytes", self.lora_gradient_bytes),
-            ("adamw_momenta_bytes", self.adamw_momenta_bytes),
+            (
+                "trainable_parameter_bytes",
+                self.trainable_parameter_bytes_on_top(),
+            ),
+            ("trainable_gradient_bytes", self.trainable_gradient_bytes),
+            ("optimizer_state_bytes", self.optimizer_state_bytes),
             ("host_dataset_bytes", self.host_dataset_bytes),
             ("host_rollout_bytes", self.host_rollout_bytes),
         ];
@@ -333,9 +360,12 @@ impl MemoryEstimate {
             exact("model_weight_bytes", self.model_weight_bytes),
             analytical("optimizer_kv_bytes", self.optimizer_kv_bytes),
             analytical("generation_kv_bytes", self.generation_kv_bytes),
-            analytical("lora_parameter_bytes", self.lora_parameter_bytes),
-            analytical("lora_gradient_bytes", self.lora_gradient_bytes),
-            analytical("adamw_momenta_bytes", self.adamw_momenta_bytes),
+            analytical(
+                "trainable_parameter_bytes",
+                self.trainable_parameter_bytes_on_top(),
+            ),
+            analytical("trainable_gradient_bytes", self.trainable_gradient_bytes),
+            analytical("optimizer_state_bytes", self.optimizer_state_bytes),
         ]);
         let persistent_host = phase(vec![
             analytical("host_dataset_bytes", self.host_dataset_bytes),
@@ -373,9 +403,9 @@ impl MemoryEstimate {
             // exact persistent weights and trainable allocations.
             lower_bound_device_bytes: self
                 .model_weight_bytes
-                .saturating_add(self.lora_parameter_bytes)
-                .saturating_add(self.lora_gradient_bytes)
-                .saturating_add(self.adamw_momenta_bytes),
+                .saturating_add(self.trainable_parameter_bytes_on_top())
+                .saturating_add(self.trainable_gradient_bytes)
+                .saturating_add(self.optimizer_state_bytes),
             upper_bound_device_bytes: device_peak_bytes,
         }
     }
@@ -392,9 +422,10 @@ impl From<&MemoryReport> for MemoryEstimate {
             optimizer_compute_bytes: report.optimizer_compute_bytes,
             generation_kv_bytes: report.generation_kv_bytes,
             generation_compute_bytes: report.generation_compute_bytes,
-            lora_parameter_bytes: report.lora_parameter_bytes,
-            lora_gradient_bytes: report.lora_gradient_bytes,
-            adamw_momenta_bytes: report.adamw_momenta_bytes,
+            trainable_parameter_bytes: report.trainable_parameter_bytes,
+            trainable_gradient_bytes: report.trainable_gradient_bytes,
+            optimizer_state_bytes: report.optimizer_state_bytes,
+            trainable_parameters_are_model_subset: report.trainable_parameters_are_model_subset,
             ..Default::default()
         }
     }
@@ -500,11 +531,13 @@ pub fn estimate(
         }
     };
 
-    // --- LoRA and AdamW ----------------------------------------------------
+    // --- Trainable set and optimizer state ---------------------------------
+    // LoRA-only today: the factors are allocated next to the model, so they are
+    // not a subset of its weights. A base-training estimate sets that flag.
     let trainable = trainable_parameters(model, lora);
-    let lora_parameter_bytes = product([trainable, lora_element_bytes(lora.dtype)]);
-    let lora_gradient_bytes = product([trainable, 4]);
-    let adamw_momenta_bytes = product([trainable, 2, 4]);
+    let trainable_parameter_bytes = product([trainable, lora_element_bytes(lora.dtype)]);
+    let trainable_gradient_bytes = product([trainable, 4]);
+    let optimizer_state_bytes = product([trainable, 2, 4]);
 
     MemoryEstimate {
         model_weight_bytes,
@@ -517,9 +550,10 @@ pub fn estimate(
         logits_bytes,
         generation_kv_bytes,
         generation_compute_bytes,
-        lora_parameter_bytes,
-        lora_gradient_bytes,
-        adamw_momenta_bytes,
+        trainable_parameter_bytes,
+        trainable_gradient_bytes,
+        optimizer_state_bytes,
+        trainable_parameters_are_model_subset: false,
         // `tokens` and `labels`, one `i32` each per position.
         host_dataset_bytes: product([workload.examples, n_ctx, 8]),
         host_rollout_bytes,
@@ -1187,9 +1221,9 @@ mod tests {
             optimizer_compute_bytes: 400,
             generation_compute_bytes: 700,
             dequant_scratch_bytes: 50,
-            lora_parameter_bytes: 1,
-            lora_gradient_bytes: 2,
-            adamw_momenta_bytes: 4,
+            trainable_parameter_bytes: 1,
+            trainable_gradient_bytes: 2,
+            optimizer_state_bytes: 4,
             host_dataset_bytes: 9,
             ..Default::default()
         };

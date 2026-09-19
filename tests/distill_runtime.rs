@@ -128,19 +128,19 @@ fn a_teacher_coexists_with_the_student_and_scores_the_same_tokens() {
     let teacher_memory = teacher.memory_report().expect("teacher memory");
     let student_after = student.memory_report().expect("student memory");
     eprintln!(
-        "student alone: weights={} optimizer_kv={} lora={} adamw={} host={} device={}\n\
-         teacher:       weights={} optimizer_kv={} lora={} adamw={} host={} device={}\n\
+        "student alone: weights={} optimizer_kv={} trainable={} optim_state={} host={} device={}\n\
+         teacher:       weights={} optimizer_kv={} trainable={} optim_state={} host={} device={}\n\
          student after: host={} device={}",
         student_alone.model_weight_bytes,
         student_alone.optimizer_kv_bytes,
-        student_alone.lora_parameter_bytes,
-        student_alone.adamw_momenta_bytes,
+        student_alone.trainable_parameter_bytes,
+        student_alone.optimizer_state_bytes,
         student_alone.host_bytes,
         student_alone.device_bytes,
         teacher_memory.model_weight_bytes,
         teacher_memory.optimizer_kv_bytes,
-        teacher_memory.lora_parameter_bytes,
-        teacher_memory.adamw_momenta_bytes,
+        teacher_memory.trainable_parameter_bytes,
+        teacher_memory.optimizer_state_bytes,
         teacher_memory.host_bytes,
         teacher_memory.device_bytes,
         student_after.host_bytes,
@@ -149,9 +149,9 @@ fn a_teacher_coexists_with_the_student_and_scores_the_same_tokens() {
 
     // The invariant the plan loads a second model under: weights and KV, and
     // nothing an optimizer would need.
-    assert_eq!(teacher_memory.lora_parameter_bytes, 0);
-    assert_eq!(teacher_memory.lora_gradient_bytes, 0);
-    assert_eq!(teacher_memory.adamw_momenta_bytes, 0);
+    assert_eq!(teacher_memory.trainable_parameter_bytes, 0);
+    assert_eq!(teacher_memory.trainable_gradient_bytes, 0);
+    assert_eq!(teacher_memory.optimizer_state_bytes, 0);
     assert!(teacher_memory.model_weight_bytes > 0);
 
     let (_, sequences) = sampled_group(&mut student);

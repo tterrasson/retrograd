@@ -245,7 +245,10 @@ pub fn memory_breakdown_line(report: &MemoryReport) -> String {
     if report.has_generation_context {
         parts.push(format!("gen KV {}", bytes(report.generation_kv_bytes)));
     }
-    parts.push(format!("LoRA+optim {}", bytes(report.lora_total_bytes())));
+    parts.push(format!(
+        "trainable+optim {}",
+        bytes(report.trainable_total_bytes())
+    ));
     parts.push(format!(
         "\u{2192} device {} / host {}",
         bytes(report.device_bytes),

@@ -13,6 +13,8 @@ mod error;
 mod execution;
 mod hex;
 mod json_pointer;
+mod optimizer;
+mod trainable;
 mod types;
 #[macro_use]
 mod wire_enum;
@@ -27,11 +29,17 @@ pub use execution::{
 };
 pub use hex::hex_lower;
 pub use json_pointer::{PointerPath, escape_json_pointer};
+pub use optimizer::{GEFEN_DEFAULT_MIN_NUMEL, OptimizerKind};
 /// The catalogue schema, declared in `rir-core` and re-exported for the
 /// applicative side that reads it.
 pub use rir_core::catalog::{
     BackendPolicy, GgmlBackend, KernelCatalog, KernelDomainAssumption, KernelPolicy,
     KernelShapeRule, KernelVariantPolicy,
+};
+pub use trainable::{
+    ALWAYS_FROZEN, ExclusionReason, LayerRange, OUTPUT_HEAD, OUTPUT_NORM, TENSOR_INVENTORY_VERSION,
+    TensorDesc, TensorDtype, TensorInventory, TensorRole, TrainableEntry, TrainableExclusion,
+    TrainablePolicy, TrainableSelector, TrainableSet, resolve_base,
 };
 pub use types::{
     ArtifactPolicy, CheckpointDtype, CheckpointMetadata, DEFAULT_CE_SEQ_CHUNK,

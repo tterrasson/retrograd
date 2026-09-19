@@ -544,6 +544,61 @@ int retro_read_model_info(
     int32_t device,
     retro_model_info * out_info);
 
+// --- tensor inventory --------------------------------------------------------
+// The per-tensor counterpart of retro_model_info, which carries aggregate
+// geometry and a dominant dtype and therefore cannot resolve a tensor pattern
+// or an exact mixed-dtype cost. Selection, optimizer allocation, checkpointing
+// and the planner all resolve against this list.
+//
+// Versioned because it is a data contract and not a diagnostic: a reader that
+// keys on a field has to be able to tell a v1 inventory from a later one rather
+// than silently miss a tensor family.
+#define RETRO_TENSOR_INVENTORY_VERSION 1
+
+// Long enough for every GGUF tensor name llama.cpp loads (`blk.<N>.<stem>.
+// <suffix>`, plus adapter suffixes); a name that would not fit is reported as
+// an error rather than silently truncated, since a truncated name is a name
+// that selects the wrong tensor.
+#define RETRO_TENSOR_NAME_MAX 128
+
+typedef struct retro_tensor_desc {
+    char name[RETRO_TENSOR_NAME_MAX];
+    // ggml dimension order, ne[0] fastest-varying; trailing dimensions are 1.
+    int64_t ne[4];
+    uint64_t n_elements;
+    uint64_t n_bytes;
+    // Opaque identity of the allocation backing this tensor: two names for one
+    // allocation carry the same value, which is what lets a resolver refuse to
+    // issue two optimizer updates against one buffer. Comparable only within
+    // one inventory - it is not stable across processes and must never reach a
+    // manifest or a signature.
+    uint64_t storage_id;
+    // ggml type name ("F32", "Q4_K", ...), the same spelling the backend report
+    // uses. A name rather than the enum value so the contract does not move
+    // when ggml renumbers its table.
+    char type_name[RETRO_MODEL_INFO_NAME_MAX];
+} retro_tensor_desc;
+
+// Enumerates the tensors of the GGUF at `model_path` as the loader sees them,
+// with no context, no KV cache, no adapter and no device offload: the model is
+// mapped, so no weight is copied and nothing is allocated per tensor.
+//
+// It is the loader's view rather than the raw file's on purpose - that is where
+// llama.cpp's own aliases have been resolved, so `storage_id` answers "is this
+// the same buffer" and a tied head is visible as the absence of its tensor
+// rather than as a name the file happens not to spell.
+//
+// Two-call contract, like every sized reader here: pass `out_tensors = NULL`
+// and `n_max = 0` to learn the count, then call again with a buffer of at least
+// that many entries. A buffer shorter than the count fails with -2 and writes
+// nothing. `out_version` and `out_count` are required in both calls.
+int retro_read_tensor_inventory(
+    const char * model_path,
+    uint32_t * out_version,
+    retro_tensor_desc * out_tensors,
+    size_t n_max,
+    size_t * out_count);
+
 // Structured counterpart of the byte fields in retro_trainer_backend_report.
 // The text report stays the human-facing diagnostic; this is what code reads,
 // so no caller has to parse a report to know where memory went. Both are
@@ -561,12 +616,29 @@ typedef struct retro_memory_report {
     // False when the run shares the optimizer context for generation, in which
     // case both generation_* fields are zero rather than unknown.
     bool has_generation_context;
-    uint64_t lora_parameter_bytes;
-    uint64_t lora_gradient_bytes;
-    uint64_t adamw_momenta_bytes;
-    // Which budget the LoRA parameters, their gradients and the AdamW moments
-    // draw on.
-    bool lora_on_host;
+    // The resolved trainable set, whatever it is made of: LoRA factors today,
+    // selected base tensors once full/partial training lands. Named for the
+    // role rather than for one policy so a caller reading a hybrid run does not
+    // have to know which field to trust.
+    uint64_t trainable_parameter_bytes;
+    uint64_t trainable_gradient_bytes;
+    // Persistent optimizer state of that set: AdamW's two moments today, and
+    // whatever the selected optimizer's descriptor allocates later. Zero for an
+    // optimizer that keeps none (SGD), which is a fact and not a missing value.
+    uint64_t optimizer_state_bytes;
+    // Whether `trainable_parameter_bytes` is *already* inside
+    // `model_weight_bytes`. Adapter factors are allocated on top of the loaded
+    // model and are not; base tensors selected out of it are. The device/host
+    // rollup below adds the parameter bytes only when this is false. The
+    // gradient and the optimizer state are always additional.
+    bool trainable_parameters_are_model_subset;
+    // Which budget the trainable state draws on, per family rather than as one
+    // boolean: a hybrid run can hold its adapter on the device and its selected
+    // base tensors on the host, and one flag cannot describe both.
+    // `base_trainable_on_host` is meaningless while no base tensor is trainable;
+    // `trainable_parameters_are_model_subset` is what says whether it applies.
+    bool adapter_on_host;
+    bool base_trainable_on_host;
     // These allocations, rolled up into the two budgets they draw on.
     uint64_t device_bytes;
     uint64_t host_bytes;

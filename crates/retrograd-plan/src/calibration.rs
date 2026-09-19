@@ -468,7 +468,10 @@ mod tests {
         let mut config = retrograd_config::build(document, Path::new(".")).unwrap();
 
         let key = calibration_key(&profile, &model, &config);
-        assert!(key.starts_with("v2/metal:"));
+        assert!(
+            key.starts_with(&format!("v{COST_MODEL_VERSION}/metal:")),
+            "{key}"
+        );
         assert_eq!(calibration_key(&profile, &model, &config), key);
 
         config.training.n_ubatch /= 2;

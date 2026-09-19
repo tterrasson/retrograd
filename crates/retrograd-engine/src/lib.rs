@@ -10,6 +10,7 @@
 use std::collections::BTreeSet;
 use std::ffi::{CString, NulError, c_char, c_void};
 use std::path::Path;
+use std::ptr;
 use std::ptr::NonNull;
 use std::time::Instant;
 
@@ -18,7 +19,7 @@ use retrograd_core::{
     CheckpointMetadata, Device, EvalMetrics, FusedCeProbe, FusedCeWeightType, Generation,
     KernelImpl, KernelReject, KernelRunInfo, LoraConfig, MemoryReport, ModelInfo, OpPlacement,
     PreflightReport, PreflightWarning, ProbeOp, ResumeInfo, RirCounters, RirMode, SamplingParams,
-    TrainConfig, TrainMetrics, WeightedBatch,
+    TensorDesc, TensorDtype, TensorInventory, TrainConfig, TrainMetrics, WeightedBatch,
 };
 use retrograd_core::{Error, Result};
 use retrograd_dataset::PreparedDataset;

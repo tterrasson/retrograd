@@ -348,6 +348,90 @@ pub fn model_info(model_path: impl AsRef<Path>, device: Device) -> Result<ModelI
     })
 }
 
+/// Enumerates the tensors of a GGUF as the loader sees them, with no context,
+/// no KV cache and no device allocation.
+///
+/// The per-tensor counterpart of [`model_info`], and the input every trainable
+/// set resolves against: aggregate geometry cannot answer "which tensors does
+/// `modules = ["attn"]` select, at which dtypes, for how many bytes".
+///
+/// `tied_embeddings` is not in the tensor list - a tied head is *absent* from
+/// it - so it is read from [`model_info`] and carried on the inventory, which
+/// is what makes "this head shares the embedding's storage" resolvable at all.
+pub fn tensor_inventory(model_path: impl AsRef<Path>, device: Device) -> Result<TensorInventory> {
+    let path = model_path.as_ref();
+    let info = model_info(path, device)?;
+    let c_path = path_to_cstring(path)?;
+
+    let mut version = 0_u32;
+    let mut count = 0_usize;
+    // SAFETY: the module contract validates input shapes and keeps every input/output allocation live.
+    let code = unsafe {
+        ffi::retro_read_tensor_inventory(
+            c_path.as_ptr(),
+            &mut version,
+            ptr::null_mut(),
+            0,
+            &mut count,
+        )
+    };
+    if code != 0 {
+        return Err(runtime_error());
+    }
+    if version != ffi::TENSOR_INVENTORY_VERSION {
+        return Err(Error::runtime(format!(
+            "the runtime produced a version-{version} tensor inventory, \
+             but this build reads version {}",
+            ffi::TENSOR_INVENTORY_VERSION
+        )));
+    }
+
+    let mut descriptors = vec![ffi::RetroTensorDesc::default(); count];
+    if count > 0 {
+        // SAFETY: the module contract validates input shapes and keeps every input/output allocation live.
+        let code = unsafe {
+            ffi::retro_read_tensor_inventory(
+                c_path.as_ptr(),
+                &mut version,
+                descriptors.as_mut_ptr(),
+                descriptors.len(),
+                &mut count,
+            )
+        };
+        if code != 0 {
+            return Err(runtime_error());
+        }
+        // A second read that found more tensors than the first would mean the
+        // file changed underneath us; truncating silently would resolve a set
+        // against a model that no longer exists.
+        if count != descriptors.len() {
+            return Err(Error::runtime(format!(
+                "the tensor inventory changed between the two reads of {}: \
+                 {} tensors, then {count}",
+                path.display(),
+                descriptors.len()
+            )));
+        }
+    }
+
+    let tensors = descriptors
+        .iter()
+        .map(|desc| TensorDesc {
+            name: fixed_name(&desc.name),
+            ne: desc.ne,
+            dtype: TensorDtype::from_ggml_name(&fixed_name(&desc.type_name)),
+            n_elements: desc.n_elements,
+            n_bytes: desc.n_bytes,
+            storage_id: desc.storage_id,
+        })
+        .collect();
+    Ok(TensorInventory::new(
+        info.architecture,
+        info.tied_embeddings,
+        tensors,
+    ))
+}
+
 /// Decodes one of the NUL-terminated fixed-size name fields of
 /// [`ffi::RetroModelInfo`]. The runtime writes short ASCII labels, so a lossy
 /// decode is the right failure mode: a mangled label must not fail a read whose
