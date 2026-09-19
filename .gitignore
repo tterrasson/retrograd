@@ -36,3 +36,8 @@ __pycache__/
 
 # Operating system files
 .DS_Store
+
+# Agents
+.claude
+.pi
+.codex
