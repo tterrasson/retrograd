@@ -1174,6 +1174,141 @@ pub fn fingerprint_file(path: &std::path::Path) -> retrograd_core::Result<String
     Ok(retrograd_core::hex_lower(&digest.finalize()))
 }
 
+/// Disk size of one published checkpoint, member by member.
+///
+/// A total would hide which member grows: the adapter and the bundle follow
+/// the trainable set, the payload follows the optimizer, and the sibling export
+/// is a copy of the adapter that lands outside the directory.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CheckpointFootprint {
+    /// `adapter.gguf`, when the run trains an adapter.
+    pub adapter_bytes: u64,
+    /// `trainable.gguf`, when the run trains base tensors.
+    pub trainable_bytes: u64,
+    /// `optimizer-state.bin`: the concatenated slot payloads.
+    pub optimizer_state_bytes: u64,
+}
+
+/// Headroom for the files a footprint does not size: the msgpack documents and
+/// the artifacts directory. A bound, not a measurement: those files are a few
+/// kilobytes next to gigabytes of weights.
+pub const CHECKPOINT_METADATA_BYTES: u64 = 4 * 1024 * 1024;
+
+impl CheckpointFootprint {
+    /// Total bytes one checkpoint costs.
+    ///
+    /// The adapter is counted twice: the directory holds `adapter.gguf` and a
+    /// sibling copy is published beside it.
+    pub fn bytes(&self) -> u64 {
+        let export_bytes = self.adapter_bytes;
+        [
+            self.adapter_bytes,
+            self.trainable_bytes,
+            self.optimizer_state_bytes,
+            export_bytes,
+            CHECKPOINT_METADATA_BYTES,
+        ]
+        .into_iter()
+        .fold(0, u64::saturating_add)
+    }
+}
+
+/// What a run needs free on the filesystem holding its checkpoint directory.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DiskBudget {
+    pub footprint: CheckpointFootprint,
+    /// Complete checkpoints the directory holds at once. Nothing deletes one,
+    /// so for a whole run this is every checkpoint its schedule writes; for a
+    /// single save it is 0, since what already landed is already out of the
+    /// free figure.
+    pub retained: u64,
+}
+
+impl DiskBudget {
+    /// The retained checkpoints plus the one being written. The extra one is
+    /// not slack: publication stages the whole directory beside its final name
+    /// and renames it, so both copies exist at once.
+    pub fn required_bytes(&self) -> u64 {
+        self.footprint
+            .bytes()
+            .saturating_mul(self.retained.saturating_add(1))
+    }
+
+    /// How many complete checkpoints `free` bytes hold. Zero means even one
+    /// save cannot land.
+    pub fn affordable(&self, free: u64) -> u64 {
+        // Never zero: every checkpoint carries its metadata.
+        free / self.footprint.bytes().max(1)
+    }
+
+    /// Refuses when the filesystem holding `directory` cannot take this
+    /// budget. `what` names the moment: before a run or before a save.
+    pub fn check(&self, directory: &Path, what: &str) -> Result<()> {
+        let free = free_space(directory)?;
+        let required = self.required_bytes();
+        if free >= required {
+            return Ok(());
+        }
+        Err(Error::checkpoint(format!(
+            "{what}: {} has {free} bytes free and needs {required} - {} checkpoint(s) at \
+             {} bytes each (adapter {}, trainable {}, optimizer state {}, sibling export {}, \
+             metadata {CHECKPOINT_METADATA_BYTES}), of which {} fit. A wider checkpoint \
+             cadence lowers how often they are written, not how much the retained ones occupy",
+            directory.display(),
+            self.retained.saturating_add(1),
+            self.footprint.bytes(),
+            self.footprint.adapter_bytes,
+            self.footprint.trainable_bytes,
+            self.footprint.optimizer_state_bytes,
+            self.footprint.adapter_bytes,
+            self.affordable(free),
+        )))
+    }
+}
+
+/// Bytes free on the filesystem holding `path`, for an unprivileged writer.
+///
+/// Resolved against the nearest existing ancestor, so a not-yet-existing
+/// subdirectory is measured against its filesystem.
+pub fn free_space(path: &Path) -> Result<u64> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let mut probe = path;
+    while !probe.exists() {
+        probe = probe.parent().ok_or_else(|| {
+            Error::checkpoint(format!(
+                "no existing directory above {} to measure free space on",
+                path.display()
+            ))
+        })?;
+    }
+    let target = CString::new(probe.as_os_str().as_bytes()).map_err(|_| {
+        Error::checkpoint(format!(
+            "{} cannot be passed to the filesystem: it contains a NUL byte",
+            probe.display()
+        ))
+    })?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `target` is a NUL-terminated path that lives across the call, and
+    // `stat` is a correctly aligned, writable `statvfs` the call either fills
+    // or leaves untouched - and it is only read on success.
+    if unsafe { libc::statvfs(target.as_ptr(), stat.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: `statvfs` returned zero, so it wrote the whole structure.
+    let stat = unsafe { stat.assume_init() };
+    // `f_bavail`, not `f_bfree`: the latter includes a reserve a training job
+    // cannot write into.
+    Ok(widen(stat.f_bavail).saturating_mul(widen(stat.f_frsize)))
+}
+
+/// Widens a C integer that is 32 bits on Darwin and 64 on Linux.
+/// `Into<u64>` handles both without a per-platform cast.
+fn widen(value: impl Into<u64>) -> u64 {
+    value.into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1618,6 +1753,94 @@ mod tests {
         assert!(error.to_string().contains("ends at 328"), "{error}");
     }
 
+    /// The shared scope at a length above zero. Every built-in optimizer
+    /// declares none, so this synthetic row is the only way to exercise it:
+    #[test]
+    fn a_shared_slot_round_trips_beside_the_parameter_ones() {
+        let root = tempdir();
+        let state = root.join("step-000000000042.state");
+        let mut checkpoint = sample();
+        // 256 F32 codebook entries, owned by the optimizer, not by any
+        // parameter.
+        let codebook = StateSlot {
+            scope: SlotScope::Shared,
+            owner: "gefen".into(),
+            slot: "codebook".into(),
+            dtype: "F32".into(),
+            shape: [256, 1, 1, 1],
+            offset: 256,
+            n_bytes: 1024,
+        };
+        checkpoint.optimizer.slots.push(codebook.clone());
+        checkpoint.optimizer.state_bytes = 256 + 1024;
+        checkpoint
+            .write(&state, |paths| {
+                if let Some(path) = &paths.adapter {
+                    fs::write(path, b"GGUF")?;
+                }
+                let path = paths
+                    .optimizer_state
+                    .as_ref()
+                    .expect("the record declares a payload");
+                let mut payload = vec![7_u8; 256];
+                payload.extend(std::iter::repeat_n(3_u8, 1024));
+                fs::write(path, payload)?;
+                Ok(())
+            })
+            .unwrap();
+
+        let read = Checkpoint::read(&state).unwrap();
+        assert_eq!(read.optimizer.slots, checkpoint.optimizer.slots);
+        // Shared and parameter rows tile one payload, so a shared row is
+        // streamed like a parameter one.
+        let mut reader = OptimizerStateReader::open(&state, &read.optimizer).unwrap();
+        let mut staging = vec![0_u8; 512];
+        let mut seen = Vec::new();
+        reader
+            .stream(&codebook, &mut staging, |offset, chunk| {
+                seen.push((offset, chunk.len()));
+                assert!(chunk.iter().all(|byte| *byte == 3));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(seen, [(0, 512), (512, 512)]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The scope is part of a slot's identity, so the table rules hold across
+    /// scopes, not within each.
+    #[test]
+    fn the_scope_is_part_of_a_slots_identity_in_the_table() {
+        let mut duplicated = sample().optimizer;
+        // Same owner and slot name in both scopes: two rows, accepted.
+        duplicated.slots.push(StateSlot {
+            scope: SlotScope::Shared,
+            owner: "blk.0.attn_q.weight.lora_a".into(),
+            slot: "m".into(),
+            dtype: "F32".into(),
+            shape: [4, 8, 1, 1],
+            offset: 256,
+            n_bytes: 128,
+        });
+        duplicated.state_bytes = 384;
+        validate_slot_table(&duplicated).unwrap();
+        // The same row twice within the shared scope is not.
+        let mut twice = duplicated.clone();
+        twice.slots.push(StateSlot {
+            offset: 384,
+            ..duplicated.slots[2].clone()
+        });
+        twice.state_bytes = 512;
+        let error = validate_slot_table(&twice).unwrap_err().to_string();
+        assert!(error.contains("two 'm' slots for shared"), "{error}");
+        // A shared row that does not continue the payload is a gap, as with a
+        // parameter row.
+        let mut gapped = duplicated.clone();
+        gapped.slots[2].offset = 300;
+        let error = validate_slot_table(&gapped).unwrap_err().to_string();
+        assert!(error.contains("continues at 256"), "{error}");
+    }
+
     /// A run that trains base weights leaves a bundle and no adapter, and the
     /// sibling GGUF export - which every helper reads as an adapter - is not
     /// published for it.
@@ -1852,6 +2075,80 @@ mod tests {
         let replaced = fingerprint_file_cached(&model).unwrap();
         assert_ne!(replaced, direct);
         assert_eq!(replaced, fingerprint_file(&model).unwrap());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_footprint_pays_for_the_adapter_twice_and_the_bundle_once() {
+        // The adapter is copied out beside the directory; a bundle has no
+        // sibling.
+        let adapter = CheckpointFootprint {
+            adapter_bytes: 1_000,
+            trainable_bytes: 0,
+            optimizer_state_bytes: 4_000,
+        };
+        assert_eq!(adapter.bytes(), 2_000 + 4_000 + CHECKPOINT_METADATA_BYTES);
+        let base = CheckpointFootprint {
+            adapter_bytes: 0,
+            trainable_bytes: 1_000,
+            optimizer_state_bytes: 4_000,
+        };
+        assert_eq!(base.bytes(), 1_000 + 4_000 + CHECKPOINT_METADATA_BYTES);
+    }
+
+    #[test]
+    fn a_budget_charges_the_retained_checkpoints_and_the_one_being_written() {
+        let budget = DiskBudget {
+            footprint: CheckpointFootprint {
+                adapter_bytes: 0,
+                trainable_bytes: 6 * 1024 * 1024,
+                optimizer_state_bytes: 0,
+            },
+            retained: 3,
+        };
+        let per_checkpoint = 6 * 1024 * 1024 + CHECKPOINT_METADATA_BYTES;
+        assert_eq!(budget.required_bytes(), per_checkpoint * 4);
+        assert_eq!(budget.affordable(per_checkpoint * 4), 4);
+        // One byte short of a fourth checkpoint fits three.
+        assert_eq!(budget.affordable(per_checkpoint * 4 - 1), 3);
+    }
+
+    #[test]
+    fn a_budget_larger_than_the_filesystem_is_refused_and_names_what_fits() {
+        let dir = tempdir();
+        let free = free_space(&dir).unwrap();
+        assert!(free > 0, "a writable scratch directory has free space");
+        let budget = DiskBudget {
+            footprint: CheckpointFootprint {
+                adapter_bytes: free,
+                trainable_bytes: 0,
+                optimizer_state_bytes: 0,
+            },
+            retained: 0,
+        };
+        let error = budget.check(&dir, "cannot write this checkpoint").unwrap_err();
+        let message = error.to_string();
+        assert!(matches!(error, Error::Checkpoint(_)), "{message}");
+        assert!(message.contains("cannot write this checkpoint"), "{message}");
+        assert!(message.contains("of which 0 fit"), "{message}");
+        // Widening the cadence is not a fix; the message says so.
+        assert!(message.contains("cadence"), "{message}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_empty_footprint_is_affordable_and_a_free_figure_comes_from_an_ancestor() {
+        let dir = tempdir();
+        // A not-yet-existing subdirectory is measured against its filesystem.
+        // The figure is not compared: it is a live machine's, and it moves
+        // between two calls.
+        let unborn = dir.join("checkpoints").join("deeper");
+        assert!(free_space(&unborn).unwrap() > 0);
+        // Even the empty footprint carries the metadata.
+        let empty = DiskBudget::default();
+        assert_eq!(empty.required_bytes(), CHECKPOINT_METADATA_BYTES);
+        assert_eq!(empty.affordable(0), 0);
+        empty.check(&unborn, "nothing to write").unwrap();
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -321,6 +321,36 @@ impl Trainer {
         self.check(unsafe { ffi::retro_trainer_set_rng_state(self.raw.as_ptr(), state.as_ptr()) })
     }
 
+    /// Disk size of one published checkpoint of this run.
+    ///
+    /// Read from the live state, and available before the optimizer graph is
+    /// built, so a run can be refused for disk before it trains. The
+    /// optimizer half is the state the run will keep, not the zero a
+    /// checkpoint taken before the first step holds.
+    pub fn checkpoint_footprint(&mut self) -> Result<checkpoint::CheckpointFootprint> {
+        let report = self.memory_report()?;
+        // Only the adapter half is copied out as a sibling GGUF, so the report
+        // has to be split: the marked set is the exact split and exists once
+        // the graph does; before that the declared set is all a preflight has,
+        // and it is base-only by construction.
+        let marked = self.marked_trainable_set()?;
+        let trainable_bytes = if marked.is_empty() {
+            self.declared_trainable_set()
+                .map_or(0, |set| set.parameter_bytes())
+        } else {
+            marked
+                .parameter_bytes()
+                .saturating_sub(marked.parameter_bytes_on_top())
+        };
+        Ok(checkpoint::CheckpointFootprint {
+            adapter_bytes: report
+                .trainable_parameter_bytes
+                .saturating_sub(trainable_bytes),
+            trainable_bytes,
+            optimizer_state_bytes: report.optimizer_state_bytes,
+        })
+    }
+
     /// Writes a complete training checkpoint: whatever the run produced - an
     /// adapter, a trainable bundle, or both - and every piece of resume state,
     /// landing atomically inside `.state`. A plain sibling GGUF is then
@@ -334,6 +364,13 @@ impl Trainer {
         metadata: &CheckpointMetadata,
     ) -> Result<()> {
         let state_dir = checkpoint::state_dir_for(state_dir.as_ref());
+        // Before anything is staged, so a too-small filesystem fails here
+        // rather than mid-bundle, leaving a temporary directory.
+        checkpoint::DiskBudget {
+            footprint: self.checkpoint_footprint()?,
+            retained: 0,
+        }
+        .check(&state_dir, "cannot write this checkpoint")?;
         let trains_base = self.trains_base_weights();
         // `full` and `partial` train base tensors and create no adapter;
         // `hybrid` trains both. Read off the policy rather than off whether an

@@ -153,6 +153,15 @@ impl RunController {
         total_steps: u64,
     ) -> Result<Option<training::Boundary>> {
         self.context.dataset = dataset;
+        // Against the whole schedule, not one save: a run that can write its
+        // first checkpoint and not its tenth has spent hours to find that out.
+        if let Some(config) = &self.checkpoint {
+            checkpoint::DiskBudget {
+                footprint: trainer.checkpoint_footprint()?,
+                retained: retained_checkpoints(config, total_steps),
+            }
+            .check(&config.directory, "this run cannot keep its checkpoints")?;
+        }
         let Some(resume_from) = self
             .checkpoint
             .as_ref()
@@ -455,6 +464,47 @@ impl RunController {
     }
 }
 
+/// Complete checkpoints the directory will hold once the run has finished.
+///
+/// Nothing deletes one. The best-evaluation checkpoint counts once however
+/// often the metric improves: it is one directory rewritten in place.
+///
+/// Checkpoints already on disk are subtracted: their bytes are already out of
+/// the free figure, and counting them twice would refuse a resume for the
+/// space it stands on.
+fn retained_checkpoints(config: &CheckpointConfig, total_steps: u64) -> u64 {
+    let scheduled = config
+        .mode
+        .includes_steps()
+        .then_some(config.every_steps)
+        .flatten()
+        .filter(|every| *every > 0)
+        .map_or(0, |every| total_steps / every);
+    let best = u64::from(config.mode.includes_best_eval());
+    scheduled
+        .saturating_add(best)
+        .saturating_sub(checkpoints_on_disk(&config.directory))
+}
+
+/// Complete checkpoints already in `directory`, counted by the state
+/// directories that carry a manifest. An unreadable or absent directory is
+/// zero.
+fn checkpoints_on_disk(directory: &std::path::Path) -> u64 {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry.path().extension().is_some_and(|extension| {
+                extension == std::ffi::OsStr::new(checkpoint::STATE_SUFFIX)
+            }) && entry.path().join(checkpoint::MANIFEST_FILE).is_file()
+        })
+        .count()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,6 +536,65 @@ mod tests {
             resume_from: None,
         });
         (RunController::new(&config).expect("controller"), root)
+    }
+
+    #[test]
+    fn the_disk_budget_counts_every_checkpoint_the_schedule_writes() {
+        let root = temp_path("retained");
+        let directory = root.join("checkpoints");
+        let config = CheckpointConfig {
+            directory: directory.clone(),
+            mode: CheckpointMode::Steps,
+            every_steps: Some(10),
+            resume_from: None,
+        };
+        // Nothing deletes a checkpoint, so 100 steps at 10 leave ten
+        // directories.
+        assert_eq!(retained_checkpoints(&config, 100), 10);
+        // The best-evaluation checkpoint is one directory, however often the
+        // metric improves.
+        let both = CheckpointConfig {
+            mode: CheckpointMode::StepsAndBestEval,
+            ..config.clone()
+        };
+        assert_eq!(retained_checkpoints(&both, 100), 11);
+        let best_only = CheckpointConfig {
+            mode: CheckpointMode::BestEval,
+            ..config.clone()
+        };
+        assert_eq!(retained_checkpoints(&best_only, 100), 1);
+        // No step cadence: the schedule predicts nothing.
+        let on_demand = CheckpointConfig {
+            every_steps: None,
+            ..config.clone()
+        };
+        assert_eq!(retained_checkpoints(&on_demand, 100), 0);
+        assert!(!directory.exists(), "the schedule is read, never written to");
+    }
+
+    #[test]
+    fn checkpoints_already_written_are_not_budgeted_twice() {
+        let root = temp_path("retained-resume");
+        let directory = root.join("checkpoints");
+        fs::create_dir_all(&directory).expect("create the checkpoint directory");
+        for step in [10_u64, 20, 30] {
+            let state = directory.join(format!("step-{step:012}.{}", checkpoint::STATE_SUFFIX));
+            fs::create_dir_all(&state).expect("create a state directory");
+            fs::write(state.join(checkpoint::MANIFEST_FILE), b"manifest").expect("write");
+        }
+        // A directory without the marker is an interrupted write, not a
+        // checkpoint.
+        let partial = directory.join(format!("step-000000000040.{}", checkpoint::STATE_SUFFIX));
+        fs::create_dir_all(&partial).expect("create a partial state directory");
+        let config = CheckpointConfig {
+            directory,
+            mode: CheckpointMode::Steps,
+            every_steps: Some(10),
+            resume_from: None,
+        };
+        // Ten scheduled, three already out of the free figure.
+        assert_eq!(retained_checkpoints(&config, 100), 7);
+        fs::remove_dir_all(root).expect("clean up");
     }
 
     #[test]

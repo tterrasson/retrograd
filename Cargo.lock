@@ -1558,6 +1558,7 @@ dependencies = [
 name = "retrograd-checkpoint"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "retrograd-core",
  "rmp-serde",
  "serde",

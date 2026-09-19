@@ -276,7 +276,7 @@ fn save_output(
             // beside it, under the name the bundle's own path implies, because
             // one file cannot be loaded by both loaders.
             if config.lora.is_some() {
-                let adapter = config.output.path.with_extension("adapter.gguf");
+                let adapter = trainable_adapter_sibling(&config.output.path);
                 trainer.save_lora(&adapter)?;
                 observer.info(&format!("adapter written to {}", adapter.display()));
             }
@@ -289,6 +289,13 @@ fn save_output(
         }
     }
     Ok(())
+}
+
+/// Where a composite export writes its adapter, given the bundle's path.
+///
+/// Public so readers and tests derive the same name the writer uses.
+pub fn trainable_adapter_sibling(bundle: &std::path::Path) -> std::path::PathBuf {
+    bundle.with_extension("adapter.gguf")
 }
 
 /// One line naming what a base-weight policy resolved to, including the

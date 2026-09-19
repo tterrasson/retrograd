@@ -737,6 +737,77 @@ fn a_hybrid_checkpoint_carries_the_adapter_and_the_base_bundle() {
     assert_eq!(deviation(&saved, &scores(&mut resumed)), 0.0);
 }
 
+/// The composite export, reloaded. This proves the *published* pair carries
+/// both halves: the bundle plus the adapter written beside it, loaded into a
+/// trainer that never saw the run.
+///
+/// Each half is loaded alone on purpose: either reproduces neither the run nor
+/// the base model, which is why an adapter-only export of a hybrid run is
+/// refused rather than written.
+#[test]
+fn a_hybrid_composite_export_reloads_into_the_run_it_came_from() {
+    let model = fixture!();
+    let _guard = common::serialize_models();
+    let root = scratch("hybrid-export");
+    let set = resolved_norm_set(&model, TrainablePolicy::Hybrid);
+
+    let mut trainer = Trainer::new(
+        &model,
+        base_config(TrainablePolicy::Hybrid, OptimizerKind::AdamW),
+    )
+    .expect("load trainer");
+    trainer
+        .declare_trainable_set(&set)
+        .expect("select the norms");
+    trainer.create_lora(&f32_lora()).expect("create adapter");
+    let cold = scores(&mut trainer);
+    train_once(&mut trainer);
+    let trained = scores(&mut trainer);
+    assert!(
+        deviation(&cold, &trained) > 0.0,
+        "the run has to move the model for the reload to mean anything"
+    );
+
+    // The `output.kind = "trainable"` shape for a policy with an adapter:
+    // the bundle at the configured path, the adapter beside it.
+    let bundle = root.join("result.gguf");
+    let adapter = retrograd::run::trainable_adapter_sibling(&bundle);
+    trainer.save_trainable(&bundle).expect("write the bundle");
+    trainer.save_lora(&adapter).expect("write the adapter");
+    drop(trainer);
+    assert!(bundle.is_file() && adapter.is_file());
+
+    let mut reloaded = Trainer::new(
+        &model,
+        base_config(TrainablePolicy::Hybrid, OptimizerKind::AdamW),
+    )
+    .expect("load a fresh trainer");
+    reloaded
+        .declare_trainable_set(&set)
+        .expect("the same selection");
+    // Base half alone: a bundle without its sibling is a different model.
+    reloaded.load_trainable(&bundle).expect("load the bundle");
+    let base_only = scores(&mut reloaded);
+    assert!(deviation(&base_only, &trained) > 0.0);
+    assert!(deviation(&base_only, &cold) > 0.0);
+
+    reloaded.load_lora(&adapter).expect("load the adapter");
+    assert_eq!(deviation(&trained, &scores(&mut reloaded)), 0.0);
+
+    // The other half alone is equally incomplete: the adapter, into a trainer
+    // whose norms are the base model's.
+    let mut adapter_only = Trainer::new(
+        &model,
+        base_config(TrainablePolicy::Hybrid, OptimizerKind::AdamW),
+    )
+    .expect("load a fresh trainer");
+    adapter_only
+        .declare_trainable_set(&set)
+        .expect("the same selection");
+    adapter_only.load_lora(&adapter).expect("load the adapter");
+    assert!(deviation(&scores(&mut adapter_only), &trained) > 0.0);
+}
+
 /// A bundle whose tensor list is not the run's resolved set is refused before
 /// any weight moves: a partial restore resumes from a model that is neither the
 /// checkpoint's nor the base's.

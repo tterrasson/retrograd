@@ -857,22 +857,41 @@ impl OptimizerPlan {
     }
 
     /// Refuses a live shared table that is not the declared one.
+    ///
+    /// `live` is `(owner, slot, n_bytes)`, matched by identity in both
+    /// directions like [`Self::check_live`]: the shared scope is allocated per
+    /// owner in the optimizer graph's order, and restore matches on the same
+    /// keys.
     pub fn check_live_shared(&self, live: &[(String, String, u64)]) -> Result<()> {
         let declared = self.shared_rows();
-        if declared.len() != live.len() {
-            return Err(Error::runtime(format!(
-                "optimizer {} declares {} shared slot(s), but the runtime allocated {}",
-                self.chosen,
-                declared.len(),
-                live.len()
-            )));
-        }
-        for ((owner, slot), (live_owner, live_slot, live_bytes)) in declared.iter().zip(live) {
-            if owner != live_owner || slot.slot != live_slot || slot.n_bytes != *live_bytes {
+        for (owner, slot) in &declared {
+            let found = live
+                .iter()
+                .find(|(live_owner, live_slot, _)| live_owner == owner && live_slot == slot.slot);
+            let Some((_, _, live_bytes)) = found else {
                 return Err(Error::runtime(format!(
-                    "shared optimizer slot {}/{} ({} bytes) was declared where the runtime \
-                     allocated {live_owner}/{live_slot} ({live_bytes} bytes)",
-                    owner, slot.slot, slot.n_bytes
+                    "optimizer {} declares a shared '{}' slot for '{owner}' that the runtime \
+                     did not allocate",
+                    self.chosen, slot.slot
+                )));
+            };
+            if slot.n_bytes != *live_bytes {
+                return Err(Error::runtime(format!(
+                    "shared optimizer slot {owner}/{} was declared as {} byte(s) and \
+                     allocated as {live_bytes}",
+                    slot.slot, slot.n_bytes
+                )));
+            }
+        }
+        for (owner, slot, _) in live {
+            if !declared
+                .iter()
+                .any(|(declared_owner, declared)| declared_owner == owner && declared.slot == slot)
+            {
+                return Err(Error::runtime(format!(
+                    "the runtime allocated a shared '{slot}' slot for '{owner}' that \
+                     optimizer {} does not declare",
+                    self.chosen
                 )));
             }
         }
@@ -1269,6 +1288,88 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("128"), "{error}");
+    }
+
+    /// The shared scope at a length above zero. Only Gefen declares a shared
+    /// row, so its plan is the fixture.
+    #[test]
+    fn a_shared_table_is_compared_by_identity_like_the_parameter_one() {
+        let two = set(vec![
+            entry("blk.0.attn_q.weight", TensorRole::Base, [64, 64, 1, 1]),
+            entry("blk.1.attn_q.weight", TensorRole::Base, [64, 64, 1, 1]),
+        ]);
+        let plan = OptimizerKind::Gefen.plan(&two);
+        // One codebook per owner, not per parameter.
+        assert_eq!(plan.shared_rows().len(), 1);
+        let live = |rows: &[(&str, &str, u64)]| -> Vec<(String, String, u64)> {
+            rows.iter()
+                .map(|(owner, slot, bytes)| (owner.to_string(), slot.to_string(), *bytes))
+                .collect()
+        };
+        let codebook_bytes = GEFEN_CODEBOOK_LEVELS * 4;
+        plan.check_live_shared(&live(&[("gefen", "codebook", codebook_bytes)]))
+            .unwrap();
+        let error = plan
+            .check_live_shared(&[])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("did not allocate"), "{error}");
+        let error = plan
+            .check_live_shared(&live(&[
+                ("gefen", "codebook", codebook_bytes),
+                ("gefen", "histogram", 64),
+            ]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("does not declare"), "{error}");
+        let error = plan
+            .check_live_shared(&live(&[("gefen", "codebook", 4)]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("allocated as 4"), "{error}");
+        // The owner is part of the key: another optimizer's row is a miss and
+        // a surprise, never a match.
+        let error = plan
+            .check_live_shared(&live(&[("adamw", "codebook", codebook_bytes)]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("did not allocate"), "{error}");
+    }
+
+    /// A mixed run's shared scope: the table can have two owners, so the
+    /// comparison matches by name, not by position.
+    #[test]
+    fn a_shared_row_belongs_to_its_owner_and_not_to_the_chosen_optimizer() {
+        // Below `min_numel`, so AdamW takes this one; AdamW declares no shared
+        // row, leaving one owner with one.
+        let mixed = set(vec![
+            entry("blk.0.attn_q.weight", TensorRole::Base, [64, 64, 1, 1]),
+            entry("blk.0.attn_norm.weight", TensorRole::Base, [64, 1, 1, 1]),
+        ]);
+        let plan = OptimizerKind::Gefen.plan(&mixed);
+        let owners: Vec<&str> = plan
+            .parameters
+            .iter()
+            .filter_map(|parameter| parameter.optimizer.map(OptimizerKind::as_str))
+            .collect();
+        assert_eq!(owners, ["gefen", "adamw"]);
+        let shared: Vec<(&str, &str)> = plan
+            .shared_rows()
+            .iter()
+            .map(|(owner, slot)| (*owner, slot.slot))
+            .collect();
+        assert_eq!(shared, [("gefen", "codebook")]);
+        // The shared bytes are in the total once, not once per parameter.
+        let per_parameter: u64 = plan
+            .parameters
+            .iter()
+            .flat_map(|parameter| parameter.slots.iter())
+            .map(|slot| slot.n_bytes)
+            .sum();
+        assert_eq!(
+            plan.state_bytes(),
+            per_parameter + GEFEN_CODEBOOK_LEVELS * 4
+        );
     }
 
     /// Under SGD an F16 factor is a refusal; under Muon it falls back to the
