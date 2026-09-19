@@ -338,7 +338,11 @@ pub(super) fn collect_warnings(
              policy by rounding; set training.fast_sampling_context = false for exact parity",
         );
     }
-    if matches!(config.lora.config.targets, TargetSet::Auto) {
+    if config
+        .lora
+        .as_ref()
+        .is_some_and(|lora| matches!(lora.config.targets, TargetSet::Auto))
+    {
         warn(
             warnings,
             "lora_targets_resolved_by_runtime",

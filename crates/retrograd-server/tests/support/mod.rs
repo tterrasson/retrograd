@@ -69,7 +69,7 @@ impl ModelProbe for FakeProbe {
         let estimate = cost::estimate(
             &self.0,
             &config.training,
-            &config.lora.config,
+            config.lora.as_ref().map(|lora| &lora.config),
             &Workload {
                 kind: WorkloadKind::Sft,
                 examples: 0,
@@ -553,7 +553,9 @@ pub fn write_checkpoint(
             format_version: ckpt::FORMAT_VERSION,
             checkpoint_id: id.to_string(),
             global_step,
-            adapter: ckpt::ADAPTER_FILE.to_string(),
+            adapter: Some(ckpt::ADAPTER_FILE.to_string()),
+            trainable: None,
+            trainable_policy: "lora".into(),
             files: ckpt::REQUIRED_FILES.iter().map(|f| f.to_string()).collect(),
             app_version: "test".into(),
             llama_cpp_commit: "test".into(),
@@ -596,8 +598,12 @@ pub fn write_checkpoint(
         artifacts: Default::default(),
     };
     checkpoint
-        .write(&state_dir, |path| {
-            std::fs::write(path, b"not a real adapter").map_err(Into::into)
+        .write(&state_dir, |paths| {
+            std::fs::write(
+                paths.adapter.as_ref().expect("a lora checkpoint has one"),
+                b"not a real adapter",
+            )
+            .map_err(Into::into)
         })
         .expect("write the checkpoint");
     state_dir

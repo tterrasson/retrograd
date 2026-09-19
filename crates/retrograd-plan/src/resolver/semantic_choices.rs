@@ -299,18 +299,24 @@ pub(super) fn draft_document(
                 path: Some(recipe.model.clone()),
                 device: None,
             },
-            lora: LoraToml {
-                output: recipe
+            output: Some(OutputToml {
+                path: recipe
                     .output
                     .clone()
                     .unwrap_or_else(|| PathBuf::from("adapter.gguf")),
+                // The resolver only drafts LoRA runs, so the default kind is
+                // the one it produces; naming it here would pin a choice the
+                // recipe never made.
+                kind: None,
+            }),
+            lora: Some(LoraToml {
                 rank: Some(rank),
                 alpha: Some(alpha),
                 seed: Some(recipe.seed.unwrap_or(42)),
                 targets,
                 init_adapter: None,
                 dtype: None,
-            },
+            }),
             training,
             // The resolver only ever drafts LoRA runs: its cost model sizes an
             // adapter's parameters, gradients and optimizer state, and a base

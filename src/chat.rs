@@ -99,12 +99,12 @@ pub(crate) fn chat_model(args: Vec<String>) -> Result<()> {
     );
 
     // Every mode except base-only chats through the adapter, defaulting to the
-    // adapter this config trains (lora.output) when none is given explicitly.
+    // adapter this config trains (`[output].path`) when none is given explicitly.
     if args.mode != ChatMode::BaseOnly {
         let adapter = args
             .adapter
             .clone()
-            .unwrap_or_else(|| run_config.lora.output.clone());
+            .unwrap_or_else(|| run_config.output.path.clone());
         load_bench_adapter(&mut trainer, &adapter, &ui)?;
     }
 

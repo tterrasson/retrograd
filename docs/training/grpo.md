@@ -18,8 +18,10 @@ algorithm = "grpo"
 path = "base.gguf"
 device = "auto"
 
+[output]
+path = "grpo-adapter.gguf"
+
 [lora]
-output = "grpo-adapter.gguf"
 rank = 8
 alpha = 16.0
 seed = 42

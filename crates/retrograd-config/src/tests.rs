@@ -167,10 +167,10 @@ fn targets_expand_aliases() {
 /// `['auto']` hands the choice back to the runtime.
 #[test]
 fn omitted_targets_default_to_every_projection() {
-    let base = "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n";
+    let base = "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n";
     let default_file = write_config(&format!("{base}[sft]\ndata='data.txt'\n"));
     assert_eq!(
-        load(&default_file).unwrap().lora.config.targets,
+        load(&default_file).unwrap().lora.unwrap().config.targets,
         TargetSet::Patterns(vec![
             "blk.*.attn_q.weight".into(),
             "blk.*.attn_k.weight".into(),
@@ -185,7 +185,7 @@ fn omitted_targets_default_to_every_projection() {
 
     let auto_file = write_config(&format!("{base}targets=['auto']\n[sft]\ndata='data.txt'\n"));
     assert_eq!(
-        load(&auto_file).unwrap().lora.config.targets,
+        load(&auto_file).unwrap().lora.unwrap().config.targets,
         TargetSet::Auto
     );
     remove_config(&auto_file);
@@ -215,7 +215,7 @@ fn sampling_validates_every_numeric_boundary() {
 #[test]
 fn resolves_paths_from_the_config_directory() {
     let file = write_config(
-        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n[sft]\ndata='data.txt'\n",
+        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\n",
     );
     let loaded = load(&file).unwrap();
     assert_eq!(loaded.model, file.parent().unwrap().join("model.gguf"));
@@ -234,7 +234,7 @@ fn resolves_paths_from_the_config_directory() {
 #[test]
 fn the_model_override_stands_in_for_a_missing_model_section() {
     let file =
-        write_config("[run]\nalgorithm='sft'\n[lora]\noutput='out.gguf'\n[sft]\ndata='data.txt'\n");
+        write_config("[run]\nalgorithm='sft'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\n");
     let error = load(&file).unwrap_err().to_string();
     assert!(error.contains("[model].path is missing"), "{error}");
 
@@ -258,7 +258,7 @@ fn the_model_override_stands_in_for_a_missing_model_section() {
 fn the_model_override_outranks_a_written_model_section() {
     let file = write_config(
         "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\ndevice='gpu'\n\
-         [lora]\noutput='out.gguf'\n[sft]\ndata='data.txt'\n",
+         [output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\n",
     );
     let loaded = load_with(
         &file,
@@ -276,7 +276,7 @@ fn the_model_override_outranks_a_written_model_section() {
 #[test]
 fn sft_shuffles_by_default_seeded_from_the_lora_seed() {
     let default_file = write_config(
-        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\nseed=7\n[sft]\ndata='data.txt'\n",
+        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\nseed=7\n[sft]\ndata='data.txt'\n",
     );
     let loaded = load(&default_file).unwrap();
     assert!(matches!(loaded.algorithm, Algorithm::Sft(SftConfig { shuffle, .. }) if shuffle));
@@ -288,7 +288,7 @@ fn sft_shuffles_by_default_seeded_from_the_lora_seed() {
     remove_config(&default_file);
 
     let off_file = write_config(
-        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n[sft]\ndata='data.txt'\nshuffle=false\n",
+        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\nshuffle=false\n",
     );
     let loaded = load(&off_file).unwrap();
     assert!(matches!(loaded.algorithm, Algorithm::Sft(SftConfig { shuffle, .. }) if !shuffle));
@@ -300,22 +300,25 @@ fn sft_shuffles_by_default_seeded_from_the_lora_seed() {
 #[test]
 fn lora_dtype_defaults_to_f16_and_accepts_only_f16_or_f32() {
     let default_file = write_config(
-        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n[sft]\ndata='data.txt'\n",
+        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\n",
     );
     assert_eq!(
-        load(&default_file).unwrap().lora.config.dtype,
+        load(&default_file).unwrap().lora.unwrap().config.dtype,
         LoraDtype::F16
     );
     remove_config(&default_file);
 
     let f32_file = write_config(
-        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\ndtype='f32'\n[sft]\ndata='data.txt'\n",
+        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\ndtype='f32'\n[sft]\ndata='data.txt'\n",
     );
-    assert_eq!(load(&f32_file).unwrap().lora.config.dtype, LoraDtype::F32);
+    assert_eq!(
+        load(&f32_file).unwrap().lora.unwrap().config.dtype,
+        LoraDtype::F32
+    );
     remove_config(&f32_file);
 
     let invalid_file = write_config(
-        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\ndtype='bf16'\n[sft]\ndata='data.txt'\n",
+        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\ndtype='bf16'\n[sft]\ndata='data.txt'\n",
     );
     assert!(
         load(&invalid_file)
@@ -331,7 +334,7 @@ fn evaluation_and_checkpoint_policy_are_shared_and_resolve_paths() {
     let file = write_config(concat!(
         "[run]\nalgorithm='sft'\n",
         "[model]\npath='model.gguf'\n",
-        "[lora]\noutput='out.gguf'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
         "[evaluation]\ndata='eval.txt'\nevery_iterations=2\npatience=3\nmin_delta=0.01\nmax_examples=16\n",
         "[checkpoint]\ndirectory='checkpoints'\nmode='steps_and_best_eval'\nevery_steps=10\n",
         "[sft]\ndata='train.txt'\n",
@@ -358,7 +361,7 @@ fn resume_from_resolves_and_excludes_a_cold_adapter_load() {
     let base = "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[sft]\ndata='train.txt'\n";
     let checkpoint = "[checkpoint]\ndirectory='ckpt'\nmode='steps'\nevery_steps=2\nresume_from='ckpt/step-000000000010.state'\n";
 
-    let file = write_config(&format!("{base}[lora]\noutput='out.gguf'\n{checkpoint}"));
+    let file = write_config(&format!("{base}[output]\npath='out.gguf'\n[lora]\n{checkpoint}"));
     let loaded = load(&file).unwrap();
     assert_eq!(
         loaded.checkpoint.unwrap().resume_from,
@@ -369,7 +372,7 @@ fn resume_from_resolves_and_excludes_a_cold_adapter_load() {
     // A resume restores its own adapter, so pairing it with a cold adapter
     // load would leave which weights actually train ambiguous.
     let file = write_config(&format!(
-        "{base}[lora]\noutput='out.gguf'\ninit_adapter='adapter.gguf'\n{checkpoint}"
+        "{base}[output]\npath='out.gguf'\n[lora]\ninit_adapter='adapter.gguf'\n{checkpoint}"
     ));
     let error = load(&file).unwrap_err().to_string();
     assert!(error.contains("mutually exclusive"), "{error}");
@@ -378,7 +381,7 @@ fn resume_from_resolves_and_excludes_a_cold_adapter_load() {
 
 #[test]
 fn evaluation_and_checkpoint_defaults_and_dependencies_are_validated() {
-    let base = "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n[sft]\ndata='train.txt'\n";
+    let base = "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='train.txt'\n";
 
     let file = write_config(&format!("{base}[evaluation]\ndata='eval.txt'\n"));
     let evaluation = load(&file).unwrap().evaluation.unwrap();
@@ -412,7 +415,7 @@ fn algorithm_sections_no_longer_accept_evaluation_data() {
     let file = write_config(concat!(
         "[run]\nalgorithm='sft'\n",
         "[model]\npath='model.gguf'\n",
-        "[lora]\noutput='out.gguf'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
         "[sft]\ndata='train.txt'\neval_data='eval.txt'\n",
     ));
     assert!(
@@ -432,7 +435,7 @@ fn an_omitted_or_unit_duty_cycle_normalizes_to_the_unthrottled_path() {
     for training in ["", "[training]\nmax_gpu_duty_cycle=1.0\n"] {
         let file = write_config(&format!(
             "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n\
-             [lora]\noutput='out.gguf'\n{training}[sft]\ndata='data.txt'\n"
+             [output]\npath='out.gguf'\n[lora]\n{training}[sft]\ndata='data.txt'\n"
         ));
         let loaded = load(&file).unwrap();
         assert_eq!(loaded.training.max_gpu_duty_cycle, None, "{training:?}");
@@ -442,7 +445,7 @@ fn an_omitted_or_unit_duty_cycle_normalizes_to_the_unthrottled_path() {
     let file = write_config(concat!(
         "[run]\nalgorithm='sft'\n",
         "[model]\npath='model.gguf'\n",
-        "[lora]\noutput='out.gguf'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
         "[training]\nmax_gpu_duty_cycle=0.5\n",
         "[sft]\ndata='data.txt'\n",
     ));
@@ -458,7 +461,7 @@ fn a_cpu_device_accepts_a_duty_cycle_it_cannot_honour() {
     let file = write_config(concat!(
         "[run]\nalgorithm='sft'\n",
         "[model]\npath='model.gguf'\ndevice='cpu'\n",
-        "[lora]\noutput='out.gguf'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
         "[training]\nmax_gpu_duty_cycle=0.25\n",
         "[sft]\ndata='data.txt'\n",
     ));
@@ -473,7 +476,7 @@ fn training_gradient_clip_is_configurable() {
     let file = write_config(concat!(
         "[run]\nalgorithm='sft'\n",
         "[model]\npath='model.gguf'\n",
-        "[lora]\noutput='out.gguf'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
         "[training]\nmax_grad_norm=0.5\nthreads=6\n",
         "[sft]\ndata='data.txt'\n",
     ));
@@ -491,7 +494,7 @@ fn training_gradient_clip_is_configurable() {
 fn chunked_ce_is_on_by_default_and_round_trips() {
     let source = |training: &str| {
         format!(
-            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n[training]\n{training}[sft]\ndata='data.txt'\n"
+            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[training]\n{training}[sft]\ndata='data.txt'\n"
         )
     };
 
@@ -520,7 +523,7 @@ fn chunked_ce_is_on_by_default_and_round_trips() {
 #[test]
 fn the_offload_logsoftmax_key_is_rejected() {
     let file = write_config(
-        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n\
+        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n\
          [training]\nchunked_ce_offload_logsoftmax=true\n[sft]\ndata='data.txt'\n",
     );
     let error = load(&file).unwrap_err().to_string();
@@ -535,7 +538,7 @@ fn the_offload_logsoftmax_key_is_rejected() {
 fn a_16bit_checkpoint_dtype_needs_checkpointing() {
     let source = |training: &str| {
         format!(
-            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n[training]\n{training}[sft]\ndata='data.txt'\n"
+            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[training]\n{training}[sft]\ndata='data.txt'\n"
         )
     };
 
@@ -567,7 +570,7 @@ fn a_16bit_checkpoint_dtype_needs_checkpointing() {
 fn gradient_checkpointing_is_opt_in_and_validates_its_interval() {
     let source = |training: &str| {
         format!(
-            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n[training]\n{training}[sft]\ndata='data.txt'\n"
+            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[training]\n{training}[sft]\ndata='data.txt'\n"
         )
     };
 
@@ -604,7 +607,7 @@ fn gradient_checkpointing_is_opt_in_and_validates_its_interval() {
 fn fast_sampling_context_defaults_to_fast_and_can_be_disabled() {
     let source = |training: &str| {
         format!(
-            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n{training}[sft]\ndata='data.txt'\n"
+            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n{training}[sft]\ndata='data.txt'\n"
         )
     };
     for (training, expected) in [
@@ -626,7 +629,7 @@ fn fast_sampling_context_defaults_to_fast_and_can_be_disabled() {
 fn training_kv_dtype_is_f16_by_default_and_accepts_f32() {
     let source = |training: &str| {
         format!(
-            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n[training]\n{training}[sft]\ndata='data.txt'\n"
+            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[training]\n{training}[sft]\ndata='data.txt'\n"
         )
     };
 
@@ -650,7 +653,7 @@ fn training_kv_dtype_is_f16_by_default_and_accepts_f32() {
 fn training_checkpoint_dtype_defaults_to_f32_and_rejects_unknown_precisions() {
     let source = |training: &str| {
         format!(
-            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n[training]\n{training}[sft]\ndata='data.txt'\n"
+            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[training]\n{training}[sft]\ndata='data.txt'\n"
         )
     };
 
@@ -693,7 +696,7 @@ fn scientific_notation_is_accepted_for_float_settings() {
     let file = write_config(concat!(
         "[run]\nalgorithm='sft'\n",
         "[model]\npath='model.gguf'\n",
-        "[lora]\noutput='out.gguf'\nalpha=1.6e1\n",
+        "[output]\npath='out.gguf'\n[lora]\nalpha=1.6e1\n",
         "[training]\nlr=5e-6\nweight_decay=1E-2\nmax_grad_norm=1.5e0\n",
         "[sft]\ndata='data.txt'\n",
     ));
@@ -701,18 +704,18 @@ fn scientific_notation_is_accepted_for_float_settings() {
     assert_eq!(loaded.training.learning_rate, 5e-6);
     assert_eq!(loaded.training.weight_decay, 1e-2);
     assert_eq!(loaded.training.max_grad_norm, 1.5);
-    assert_eq!(loaded.lora.config.alpha, 16.0);
+    assert_eq!(loaded.lora.unwrap().config.alpha, 16.0);
     remove_config(&file);
 }
 
 #[test]
 fn init_adapter_resolves_and_rejects_creation_keys() {
     let file = write_config(
-        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\ninit_adapter='adapter.gguf'\n[sft]\ndata='data.txt'\n",
+        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\ninit_adapter='adapter.gguf'\n[sft]\ndata='data.txt'\n",
     );
     let loaded = load(&file).unwrap();
     assert_eq!(
-        loaded.lora.init_adapter,
+        loaded.lora.unwrap().init_adapter,
         Some(file.parent().unwrap().join("adapter.gguf"))
     );
     remove_config(&file);
@@ -725,7 +728,7 @@ fn init_adapter_resolves_and_rejects_creation_keys() {
         "targets=['q']",
     ] {
         let source = format!(
-            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\ninit_adapter='adapter.gguf'\n{conflicting}\n[sft]\ndata='data.txt'\n"
+            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\ninit_adapter='adapter.gguf'\n{conflicting}\n[sft]\ndata='data.txt'\n"
         );
         let file = write_config(&source);
         let error = load(&file).unwrap_err();
@@ -740,7 +743,7 @@ fn init_adapter_resolves_and_rejects_creation_keys() {
 #[test]
 fn rejects_unknown_keys_before_model_loading() {
     let file = write_config(
-        "[run]\nalgorithm='sft'\nunknown=true\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n[sft]\ndata='data.txt'\n",
+        "[run]\nalgorithm='sft'\nunknown=true\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\n",
     );
     assert!(
         load(&file)
@@ -785,7 +788,7 @@ fn training_and_lora_values_are_rejected_before_model_loading() {
     ];
     for (training, expected) in cases {
         let source = format!(
-            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n[training]\n{training}\n[sft]\ndata='data.txt'\n"
+            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[training]\n{training}\n[sft]\ndata='data.txt'\n"
         );
         let file = write_config(&source);
         let error = load(&file).unwrap_err();
@@ -795,7 +798,7 @@ fn training_and_lora_values_are_rejected_before_model_loading() {
 
     for alpha in ["0.0", "-1.0", "nan"] {
         let source = format!(
-            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\nalpha={alpha}\n[sft]\ndata='data.txt'\n"
+            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\nalpha={alpha}\n[sft]\ndata='data.txt'\n"
         );
         let file = write_config(&source);
         assert!(load(&file).unwrap_err().to_string().contains("lora.alpha"));
@@ -1004,7 +1007,7 @@ fn selected_algorithm_requires_exactly_its_own_section() {
         ),
     ] {
         let source = format!(
-            "[run]\nalgorithm='{algorithm}'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n{section}"
+            "[run]\nalgorithm='{algorithm}'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n{section}"
         );
         let file = write_config(&source);
         let error = load(&file).unwrap_err();
@@ -1021,7 +1024,7 @@ fn an_agentic_document_shares_every_section_it_can_and_refuses_the_rest() {
     let base = concat!(
         "[run]\nalgorithm='agent_grpo'\n",
         "[model]\npath='model.gguf'\ndevice='cpu'\n",
-        "[lora]\noutput='out.gguf'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
         "[training]\nctx=2048\nmicro_batch=64\nlr=1e-5\nlr_scheduler='constant'\n",
         "[metrics]\ntensorboard_dir='tb'\n",
         "[agent]\nscenarios='s.jsonl'\nupdates=3\nscenarios_per_update=2\n",
@@ -1094,7 +1097,7 @@ fn an_agentic_run_evaluates_and_checkpoints_like_any_other() {
     let source = concat!(
         "[run]\nalgorithm='agent_grpo'\n",
         "[model]\npath='model.gguf'\n",
-        "[lora]\noutput='out.gguf'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
         "[training]\nctx=2048\nmicro_batch=64\n",
         "[agent]\nscenarios='s.jsonl'\ngroup_size=4\n",
         "[agent.judge]\ntype='command'\ncommand=['judge']\n",
@@ -1119,7 +1122,7 @@ fn an_explicit_trajectory_budget_is_checked_against_the_model_context() {
     let source = concat!(
         "[run]\nalgorithm='agent_grpo'\n",
         "[model]\npath='model.gguf'\n",
-        "[lora]\noutput='out.gguf'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
         "[training]\nctx=2048\nmicro_batch=64\n",
         "[agent]\nscenarios='s.jsonl'\nmax_trajectory_tokens=4096\n",
         "[agent.judge]\ntype='command'\ncommand=['judge']\n",
@@ -1160,7 +1163,7 @@ fn an_agentic_run_without_scenarios_or_any_reward_is_refused() {
         ),
     ] {
         let source = format!(
-            "[run]\nalgorithm='agent_grpo'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n{section}"
+            "[run]\nalgorithm='agent_grpo'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n{section}"
         );
         let file = write_config(&source);
         let error = load(&file).unwrap_err().to_string();
@@ -1176,7 +1179,7 @@ fn an_environment_graded_agentic_run_needs_no_judge() {
     let source = concat!(
         "[run]\nalgorithm='agent_grpo'\n",
         "[model]\npath='model.gguf'\n",
-        "[lora]\noutput='out.gguf'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
         "[training]\nctx=2048\nmicro_batch=64\n",
         "[agent]\nscenarios='s.jsonl'\ngroup_size=4\n",
         "[agent.environment]\ntype='http'\nbase_url='http://127.0.0.1:8099'\n",
@@ -1195,7 +1198,7 @@ fn grpo_optional_features_parse_and_validate() {
     let base = concat!(
         "[run]\nalgorithm='grpo'\n",
         "[model]\npath='model.gguf'\n",
-        "[lora]\noutput='out.gguf'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
     );
     let grpo = concat!(
         "[grpo]\nprompts='p.jsonl'\nreward_command=['r']\n",
@@ -1231,7 +1234,7 @@ fn observe_resolves_its_directory_and_defaults() {
     let source = concat!(
         "[run]\nalgorithm='grpo'\n",
         "[model]\npath='model.gguf'\n",
-        "[lora]\noutput='out.gguf'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
         "[grpo]\nprompts='p.jsonl'\nreward_command=['r']\n",
         "updates=1\nprompts_per_update=1\ngroup_size=2\ngrpo_epochs=1\n",
         "clip_range_low=0.2\nclip_range_high=0.28\nkl_coefficient=0.0\n",
@@ -1257,7 +1260,7 @@ fn observe_is_refused_where_there_is_no_rollout() {
     let source = concat!(
         "[run]\nalgorithm='sft'\n",
         "[model]\npath='model.gguf'\n",
-        "[lora]\noutput='out.gguf'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
         "[sft]\ndata='data.txt'\n",
         "[observe]\ndirectory='observe'\n",
     );
@@ -1274,7 +1277,7 @@ fn the_removed_completion_log_is_named_in_the_error() {
     let source = concat!(
         "[run]\nalgorithm='grpo'\n",
         "[model]\npath='model.gguf'\n",
-        "[lora]\noutput='out.gguf'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
         "[grpo]\nprompts='p.jsonl'\nreward_command=['r']\n",
         "updates=1\nprompts_per_update=1\ngroup_size=2\ngrpo_epochs=1\n",
         "clip_range_low=0.2\nclip_range_high=0.28\nkl_coefficient=0.0\n",
@@ -1293,7 +1296,7 @@ fn grpo_judge_parses_next_to_the_reward_command() {
     let base = concat!(
         "[run]\nalgorithm='grpo'\n",
         "[model]\npath='model.gguf'\n",
-        "[lora]\noutput='out.gguf'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
     );
     let grpo = concat!(
         "[grpo]\nprompts='p.jsonl'\nreward_command=['r']\n",
@@ -1368,7 +1371,7 @@ fn grpo_shared_prefix_fanout_parses_and_respects_group_size() {
     let source = |fanout: &str| {
         format!(
             "[run]\nalgorithm='grpo'\n[model]\npath='model.gguf'\n\
-         [lora]\noutput='out.gguf'\n[training]\nctx=256\nmicro_batch=32\n\
+         [output]\npath='out.gguf'\n[lora]\n[training]\nctx=256\nmicro_batch=32\n\
          shared_prefix_fanout={fanout}\n{grpo}"
         )
     };
@@ -1408,7 +1411,7 @@ fn grpo_generation_concurrency_is_independent_and_validated() {
     let source = |concurrency: u32, batch: u32| {
         format!(
             "[run]\nalgorithm='grpo'\n[model]\npath='model.gguf'\n\
-             [lora]\noutput='out.gguf'\n[training]\nctx={batch}\n\
+             [output]\npath='out.gguf'\n[lora]\n[training]\nctx={batch}\n\
              micro_batch=4\ngeneration_concurrency={concurrency}\n{grpo}"
         )
     };
@@ -1455,7 +1458,7 @@ fn a_rollout_algorithm_pins_the_optimizer_step_to_the_trained_window() {
     let source = |algorithm: &str, section: &str, accumulation: &str| {
         format!(
             "[run]\nalgorithm='{algorithm}'\n[model]\npath='model.gguf'\n\
-             [lora]\noutput='out.gguf'\n[training]\nctx=256\n\
+             [output]\npath='out.gguf'\n[lora]\n[training]\nctx=256\n\
              micro_batch=4\n{accumulation}{section}"
         )
     };
@@ -1480,7 +1483,7 @@ fn a_rollout_algorithm_pins_the_optimizer_step_to_the_trained_window() {
 
     // SFT keeps its accumulation window as a free parameter.
     let file = write_config(
-        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n\
+        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n\
          [training]\nctx=256\nmicro_batch=4\ngradient_accumulation=16\n\
          [sft]\ndata='data.txt'\n",
     );

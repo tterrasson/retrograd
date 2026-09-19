@@ -25,7 +25,7 @@ mod signature;
 
 use std::time::Instant;
 
-use retrograd_config::{Algorithm, RunConfig};
+use retrograd_config::{Algorithm, OutputKind, RunConfig};
 use retrograd_core::{Error, MemoryReport, Result, TrainMetrics};
 use retrograd_engine::Trainer;
 use retrograd_memory::{self as memory, MemoryTracker};
@@ -120,21 +120,47 @@ pub fn execute_controlled(
         observer.info(&line);
     }
 
-    // A resume owns its adapter: the checkpoint restores it together with the
-    // optimizer state, once the dataset it was taken on has been validated.
+    // Which base tensors this run trains, resolved against the model's own
+    // tensor table before the runtime is told anything. Declared first: the
+    // parameter filter reads it at graph build, and the trainable signature a
+    // resume compares comes from it rather than from the marked set, which does
+    // not exist yet.
+    if config.training.trainable.policy.trains_base_weights() {
+        let inventory = retrograd_engine::tensor_inventory(&config.model, config.training.device)?;
+        let set = retrograd_core::resolve_base(
+            &inventory,
+            config.training.trainable.policy,
+            &config.training.trainable.selector,
+        )?;
+        observer.info(&trainable_selection_line(&set));
+        trainer.declare_trainable_set(&set)?;
+    }
+
+    // A resume owns what it restores: the checkpoint brings back the adapter,
+    // the trained base tensors, or both, together with the optimizer state,
+    // once the dataset it was taken on has been validated.
     let resume_from = config
         .checkpoint
         .as_ref()
         .and_then(|checkpoint| checkpoint.resume_from.as_ref());
-    match (resume_from, &config.lora.init_adapter) {
-        (Some(path), _) => observer.info(&format!("resuming checkpoint: {}", path.display())),
-        (None, Some(path)) => {
+    let init_adapter = config
+        .lora
+        .as_ref()
+        .and_then(|lora| lora.init_adapter.as_ref());
+    match (resume_from, init_adapter, &config.lora) {
+        (Some(path), _, _) => observer.info(&format!("resuming checkpoint: {}", path.display())),
+        (None, Some(path), _) => {
             observer.info(&format!("resuming adapter: {}", path.display()));
             trainer.load_lora(path)?;
         }
-        (None, None) => trainer.create_lora(&config.lora.config)?,
+        (None, None, Some(lora)) => trainer.create_lora(&lora.config)?,
+        // A policy that trains base tensors and no adapter. Nothing to create:
+        // the parameters are already in the model.
+        (None, None, None) => {}
     }
-    if let Some(line) = tracker.phase("lora adapter") {
+    if config.lora.is_some()
+        && let Some(line) = tracker.phase("lora adapter")
+    {
         observer.info(&line);
     }
     // Report after the adapter exists: lora_dtype and optimizer_f16 describe
@@ -144,7 +170,9 @@ pub fn execute_controlled(
         observer.diagnostic("backend", &trainer.backend_report()?);
     }
     if verbose && resume_from.is_none() {
-        observer.diagnostic("before training", &trainer.describe_lora()?);
+        if config.lora.is_some() {
+            observer.diagnostic("before training", &trainer.describe_lora()?);
+        }
         observer.diagnostic("preflight", &trainer.train_preflight()?);
     }
 
@@ -217,17 +245,78 @@ pub fn execute_controlled(
     if controller.early_stopped() {
         observer.info("early stopping: patience exhausted");
     }
-    if verbose {
+    if verbose && config.lora.is_some() {
         observer.diagnostic("after training", &trainer.describe_lora()?);
     }
     if let Some(summary) = tracker.summary() {
         observer.diagnostic("memory", &summary);
     }
-    trainer.save_lora(&config.lora.output)?;
+    save_output(&mut trainer, config, observer)?;
     Ok(RunOutcome {
         metrics,
         early_stopped: controller.early_stopped(),
     })
+}
+
+/// Writes what the run produced, in the shape `[output].kind` names.
+///
+/// The kind is not a rendering choice: an adapter GGUF and a trainable bundle
+/// are different files that different loaders read, and the configuration has
+/// already refused every pairing that would lose half of what a run trained.
+fn save_output(
+    trainer: &mut Trainer,
+    config: &RunConfig,
+    observer: &mut dyn RunObserver,
+) -> Result<()> {
+    match config.output.kind {
+        OutputKind::Adapter => trainer.save_lora(&config.output.path)?,
+        OutputKind::Trainable => {
+            trainer.save_trainable(&config.output.path)?;
+            // A hybrid run's bundle is the base half; its adapter is written
+            // beside it, under the name the bundle's own path implies, because
+            // one file cannot be loaded by both loaders.
+            if config.lora.is_some() {
+                let adapter = config.output.path.with_extension("adapter.gguf");
+                trainer.save_lora(&adapter)?;
+                observer.info(&format!("adapter written to {}", adapter.display()));
+            }
+        }
+        // Refused by the configuration: nothing reaches here.
+        OutputKind::Model => {
+            return Err(Error::invalid(
+                "standalone model export is not implemented in this build",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// One line naming what a base-weight policy resolved to, including the
+/// tensors it deliberately left out.
+///
+/// The exclusions are the half a user cannot infer: `full` means every
+/// *supported* eligible tensor, and a run that silently froze the output head
+/// looks exactly like one that trained it.
+fn trainable_selection_line(set: &retrograd_core::TrainableSet) -> String {
+    let mut line = format!(
+        "trainable: {} ({} tensors, {} parameters)",
+        set.policy,
+        set.entries.len(),
+        set.n_parameters()
+    );
+    if !set.exclusions.is_empty() {
+        let named: Vec<String> = set
+            .exclusions
+            .iter()
+            .take(4)
+            .map(|exclusion| format!("{} ({})", exclusion.name, exclusion.reason))
+            .collect();
+        line.push_str(&format!("; excluded: {}", named.join(", ")));
+        if set.exclusions.len() > named.len() {
+            line.push_str(&format!(" and {} more", set.exclusions.len() - named.len()));
+        }
+    }
+    line
 }
 
 /// One-line memory breakdown: the static allocations known before training
@@ -277,7 +366,7 @@ mod tests_support {
         let config = root.join("run.toml");
         fs::write(
             &config,
-            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[lora]\noutput='out.gguf'\n[sft]\ndata='data.txt'\n",
+            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\n",
         )
         .unwrap();
         config

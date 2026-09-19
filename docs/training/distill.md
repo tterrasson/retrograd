@@ -69,8 +69,10 @@ algorithm = "distill"
 path = "student.gguf"
 device = "auto"
 
+[output]
+path = "distill-adapter.gguf"
+
 [lora]
-output = "distill-adapter.gguf"
 rank = 8
 alpha = 16.0
 seed = 42
@@ -299,8 +301,10 @@ algorithm = "distill"
 [model]
 path = "student.gguf"
 
+[output]
+path = "kd-adapter.gguf"
+
 [lora]
-output = "kd-adapter.gguf"
 rank = 8
 alpha = 16.0
 

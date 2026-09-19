@@ -1007,15 +1007,25 @@ pub struct CheckpointMetadata {
 /// What a restored checkpoint tells the driver: where to resume, and with what.
 #[derive(Clone, Debug)]
 pub struct ResumeInfo {
-    /// The adapter GGUF that was loaded.
-    pub adapter: PathBuf,
+    /// The adapter GGUF that was loaded, when the checkpoint carried one.
+    pub adapter: Option<PathBuf>,
+    /// The trainable bundle whose base values were restored, when the
+    /// checkpoint carried one. Independent of `adapter`: a hybrid resume has
+    /// both, a LoRA resume only the first.
+    pub trainable: Option<PathBuf>,
     pub progress: Progress,
     pub dataset: Dataset,
     pub seeds: BTreeMap<String, u64>,
     pub artifacts: BTreeMap<String, Vec<u8>>,
-    /// False when the checkpoint predates the first optimizer step, so the
-    /// resume starts from a cold optimizer.
-    pub had_moments: bool,
+    /// Whether the optimizer graph existed when the checkpoint was written, and
+    /// so whether its step counter, schedule and RNG state were restored.
+    pub had_optimizer_graph: bool,
+    /// How many persistent optimizer slots were written back.
+    ///
+    /// Zero is two different things and `had_optimizer_graph` is what tells
+    /// them apart: an optimizer that keeps no state at all, or a checkpoint
+    /// taken before the first step. Neither may be read as the other.
+    pub restored_optimizer_slots: usize,
 }
 
 impl ResumeInfo {

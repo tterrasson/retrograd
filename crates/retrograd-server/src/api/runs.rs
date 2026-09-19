@@ -104,8 +104,13 @@ pub async fn create(
             .state_dir()
             .join(id.to_string())
             .join("adapter.gguf");
-        config.lora.output = output.clone();
-        response.effective_config.lora.output = output;
+        config.output.path = output.clone();
+        response.effective_config.output = Some(retrograd_config::OutputToml {
+            path: output,
+            // The resolver drafts LoRA runs, so the managed placeholder keeps
+            // the default kind rather than pinning one the client never chose.
+            kind: None,
+        });
     }
     // Rendered once, from the typed resolution, and then reused verbatim by the
     // response, the journal and every later `GET`. Serializing the typed value is
@@ -184,7 +189,8 @@ pub(crate) fn lookup(state: &AppState, id: &str) -> ApiResult<Arc<crate::runtime
 /// Where this run's outputs will land, read off the resolved configuration.
 fn artifacts_of(config: &retrograd_config::RunConfig) -> RunArtifacts {
     RunArtifacts {
-        adapter: Some(config.lora.output.clone()),
+        adapter: (config.output.kind == retrograd_config::OutputKind::Adapter)
+            .then(|| config.output.path.clone()),
         checkpoint_directory: config
             .checkpoint
             .as_ref()

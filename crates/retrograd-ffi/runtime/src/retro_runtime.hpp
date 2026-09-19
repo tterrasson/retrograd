@@ -279,6 +279,11 @@ trainer_state * checked(retro_trainer * trainer);
 std::string join_patterns(const std::vector<std::string> & patterns);
 int copy_string_out(const std::string & text, char * buffer, size_t n_buffer, size_t * out_n_bytes);
 
+// Copies a name into a fixed-size contract field, NUL included, and fails when
+// it does not fit. A truncated name is not a shorter name: it is a name that
+// identifies the wrong tensor, so the refusal is the behaviour.
+bool copy_fixed_field(const std::string & value, char * field, size_t capacity);
+
 // Zero-copy sibling of copy_string_out with the identical two-call contract: a
 // null/empty buffer only reports the required size, a short buffer fails with
 // -2, and successful writes are NUL-terminated. render(destination, capacity)
@@ -436,6 +441,12 @@ bool is_param_tensor(const ggml_tensor * tensor);
 // before any tensor is named, because it decides between a read-only mapping
 // and owned writable buffers.
 bool trains_base_weights(const trainer_state & state);
+// The trainable bundle: the resolved base tensors as absolute values, in a
+// GGUF that is deliberately not an adapter. Both refuse a run that trains no
+// base tensor, and the load refuses a file whose tensor list is not exactly
+// the run's resolved set.
+bool save_trainable_bundle(trainer_state & state, const char * path);
+bool load_trainable_bundle(trainer_state & state, const char * path);
 const char * lora_dtype_name(int32_t dtype);
 int64_t count_lora_parameters(const trainer_state & state);
 size_t count_lora_parameter_bytes(const trainer_state & state);

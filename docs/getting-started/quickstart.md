@@ -52,8 +52,10 @@ verbose = true
 path = "/path/to/base.gguf"
 device = "auto"
 
+[output]
+path = "../artifacts/quickstart-adapter.gguf"
+
 [lora]
-output = "../artifacts/quickstart-adapter.gguf"
 rank = 8
 alpha = 16.0
 seed = 42
@@ -82,7 +84,7 @@ every_steps = 50
 ```
 
 Relative paths in the TOML file resolve against the directory containing that
-file. `lora.output` and `[checkpoint].directory` must point to writable
+file. `[output].path` and `[checkpoint].directory` must point to writable
 locations.
 
 The configuration is strict. Unknown keys are rejected, and only the section
@@ -97,7 +99,7 @@ matching `[run].algorithm` may be present. For example, an SFT file must contain
 
 The CLI reports the selected model, output adapter, progress, loss, and
 throughput. At the end, the adapter is available at the configured
-`lora.output` path. Interrupting a run does not create a resumable checkpoint
+`[output].path`. Interrupting a run does not create a resumable checkpoint
 unless `[checkpoint]` is configured.
 
 ## 5. Test the adapter

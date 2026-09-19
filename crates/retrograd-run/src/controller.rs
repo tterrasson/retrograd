@@ -174,6 +174,12 @@ impl RunController {
             optimizer_kind: self.context.optimizer_kind.clone(),
             weight_decay: self.context.weight_decay,
             max_grad_norm: self.context.max_grad_norm,
+            // Read from the trainer rather than from the document: the
+            // signature is over the set the optimizer actually marked, which is
+            // the only side a checkpoint can be compared against. For a LoRA
+            // run both are the policy name and an empty string.
+            trainable_policy: trainer.trainable_policy().as_str().to_string(),
+            trainable_signature: trainer.trainable_signature()?,
         };
         let info = trainer.load_checkpoint(&resume_from, &expected)?;
         self.best_eval = info.progress.best_eval;

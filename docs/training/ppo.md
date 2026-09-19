@@ -15,8 +15,10 @@ algorithm = "ppo"
 path = "base.gguf"
 device = "auto"
 
+[output]
+path = "ppo-adapter.gguf"
+
 [lora]
-output = "ppo-adapter.gguf"
 rank = 8
 alpha = 16.0
 seed = 42

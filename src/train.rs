@@ -110,7 +110,7 @@ pub(crate) fn train(config: RunConfig) -> Result<()> {
     let ui = CliUi::new();
     ui.section("train");
     ui.info(format!("model: {}", config.model.display()));
-    ui.info(format!("output: {}", config.lora.output.display()));
+    ui.info(format!("output: {}", config.output.path.display()));
     let mut observer = TerminalObserver::new(ui);
     let outcome = run::execute(&config, &mut observer)?;
     print_done(&outcome, &config);
@@ -132,7 +132,7 @@ fn print_done(outcome: &RunOutcome, config: &RunConfig) {
                 metrics.global_step,
                 metrics.train_loss,
                 metrics.tokens_per_second,
-                config.lora.output.display()
+                config.output.path.display()
             );
         }
         Algorithm::Ppo(ppo) => {
@@ -156,7 +156,7 @@ fn print_done(outcome: &RunOutcome, config: &RunConfig) {
                 metrics.global_step,
                 metrics.train_loss,
                 metrics.tokens_per_second,
-                config.lora.output.display()
+                config.output.path.display()
             );
         }
         Algorithm::Distill(distill) => print_rollout_done(
@@ -189,7 +189,7 @@ fn print_rollout_done(
         metrics.global_step,
         metrics.train_loss,
         metrics.tokens_per_second,
-        config.lora.output.display()
+        config.output.path.display()
     );
 }
 

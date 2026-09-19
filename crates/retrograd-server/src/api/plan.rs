@@ -259,8 +259,9 @@ mod tests {
 algorithm = "sft"
 [model]
 path = "m.gguf"
+[output]
+path = "a.gguf"
 [lora]
-output = "a.gguf"
 [sft]
 data = "d.jsonl"
 "#,

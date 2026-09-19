@@ -34,7 +34,18 @@ pub struct ConfigDocument {
     pub run: RunToml,
     #[serde(default)]
     pub model: ModelToml,
-    pub lora: LoraToml,
+    /// `[lora]`: required by `lora` and `hybrid`, refused by `full` and
+    /// `partial`. Optional as a *document* section because a run that trains
+    /// base tensors has no adapter at all, and demanding rank, alpha and
+    /// targets from it would be demanding the shape of something it does not
+    /// create.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lora: Option<LoraToml>,
+    /// `[output]`: where the run's result goes, and which kind of result it is.
+    /// The kind is defaulted from the policy when absent; the path is not, so
+    /// a document that names no output is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<OutputToml>,
     #[serde(default)]
     pub training: TrainingToml,
     /// `[trainable]`: which base tensors a `partial` or `hybrid` run selects.
@@ -82,10 +93,25 @@ pub struct ModelToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
 }
+/// `[output]`: the run's result.
+///
+/// `path` is where it is written; `kind` is what it is. The two are separate
+/// because they answer different questions and only the second can be wrong:
+/// a `model` export of a hybrid run would silently drop the adapter, and an
+/// `adapter` export of a full run would be an empty file.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputToml {
+    pub path: PathBuf,
+    /// `adapter`, `trainable` or `model`. Defaults to `adapter` for a `lora`
+    /// run and `trainable` for every policy that trains base tensors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoraToml {
-    pub output: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rank: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

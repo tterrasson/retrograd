@@ -62,7 +62,7 @@ pub use candidate::{
 };
 pub use cost::{
     COST_MODEL_VERSION, Calibration, EstimateBound, EstimateOrigin, MemoryEstimate, PhaseResources,
-    ResourceEstimate, ResourcePost, Workload, WorkloadKind, estimate,
+    ResourceEstimate, ResourcePost, Workload, WorkloadKind, base_training_unpriced, estimate,
 };
 pub use dataset::DatasetStats;
 pub use defaults::{ACTIVE_DEFAULTS, ActiveDefault, AppliedDefault};

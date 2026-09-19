@@ -506,6 +506,45 @@ pub struct RetroPackedSequenceBatch {
     pub n_topk: u32,
 }
 
+/// Scope of an optimizer state slot, mirroring `RETRO_SLOT_SCOPE_*`.
+///
+/// Two namespaces rather than one list: a parameter slot is owned by the
+/// tensor it updates, a shared slot by whatever the optimizer declares, and a
+/// shared slot exists once per owner rather than once per parameter.
+pub const SLOT_SCOPE_PARAMETER: i32 = 0;
+pub const SLOT_SCOPE_SHARED: i32 = 1;
+
+/// One persistent optimizer tensor: what owns it, what it is called inside the
+/// optimizer's layout, and the exact payload a checkpoint round-trips.
+///
+/// Deliberately not a pair of momenta. AdamW happens to contribute `m` and `v`
+/// per parameter; SGD contributes nothing and keeps a step counter anyway, and
+/// an optimizer with block-shaped state contributes rows of other dtypes. Only
+/// the enumeration is contract.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RetroOptimizerSlot {
+    pub owner: [c_char; TENSOR_NAME_MAX],
+    pub slot: [c_char; MODEL_INFO_NAME_MAX],
+    pub type_name: [c_char; MODEL_INFO_NAME_MAX],
+    pub ne: [i64; 4],
+    pub n_elements: u64,
+    pub n_bytes: u64,
+}
+
+impl Default for RetroOptimizerSlot {
+    fn default() -> Self {
+        Self {
+            owner: [0; TENSOR_NAME_MAX],
+            slot: [0; MODEL_INFO_NAME_MAX],
+            type_name: [0; MODEL_INFO_NAME_MAX],
+            ne: [0; 4],
+            n_elements: 0,
+            n_bytes: 0,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RetroOptimizerState {
@@ -1046,6 +1085,16 @@ unsafe extern "C" {
         adapter_path: *const c_char,
     ) -> c_int;
 
+    pub fn retro_trainer_save_trainable(
+        trainer: *mut RetroTrainer,
+        trainable_path: *const c_char,
+    ) -> c_int;
+
+    pub fn retro_trainer_load_trainable(
+        trainer: *mut RetroTrainer,
+        trainable_path: *const c_char,
+    ) -> c_int;
+
     pub fn retro_trainer_optimizer_state(
         trainer: *mut RetroTrainer,
         out_state: *mut RetroOptimizerState,
@@ -1063,32 +1112,47 @@ unsafe extern "C" {
 
     pub fn retro_trainer_prepare_optimizer(trainer: *mut RetroTrainer) -> c_int;
 
-    pub fn retro_trainer_momenta_count(trainer: *mut RetroTrainer, out_count: *mut usize) -> c_int;
-
-    pub fn retro_trainer_momenta_info(
+    pub fn retro_trainer_marked_parameter_count(
         trainer: *mut RetroTrainer,
-        index: usize,
-        name_buffer: *mut c_char,
-        n_buffer: usize,
-        out_n_bytes: *mut usize,
-        out_ne: *mut i64,
-        out_n_elements: *mut usize,
+        out_count: *mut usize,
     ) -> c_int;
 
-    pub fn retro_trainer_momenta_read(
+    pub fn retro_trainer_marked_parameter_info(
         trainer: *mut RetroTrainer,
         index: usize,
-        out_m: *mut c_float,
-        out_v: *mut c_float,
-        n_values: usize,
+        out_tensor: *mut RetroTensorDesc,
     ) -> c_int;
 
-    pub fn retro_trainer_momenta_write(
+    pub fn retro_trainer_state_slot_count(
         trainer: *mut RetroTrainer,
-        name: *const c_char,
-        m: *const c_float,
-        v: *const c_float,
-        n_values: usize,
+        out_parameter_slots: *mut usize,
+        out_shared_slots: *mut usize,
+    ) -> c_int;
+
+    pub fn retro_trainer_state_slot_info(
+        trainer: *mut RetroTrainer,
+        scope: i32,
+        index: usize,
+        out_slot: *mut RetroOptimizerSlot,
+    ) -> c_int;
+
+    pub fn retro_trainer_state_slot_read(
+        trainer: *mut RetroTrainer,
+        scope: i32,
+        index: usize,
+        offset: u64,
+        out_bytes: *mut c_void,
+        n_bytes: usize,
+    ) -> c_int;
+
+    pub fn retro_trainer_state_slot_write(
+        trainer: *mut RetroTrainer,
+        scope: i32,
+        owner: *const c_char,
+        slot: *const c_char,
+        offset: u64,
+        bytes: *const c_void,
+        n_bytes: usize,
     ) -> c_int;
 
     pub fn retro_trainer_rng_state(
@@ -1565,6 +1629,18 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroTensorDesc, n_elements), 160);
         assert_eq!(offset_of!(RetroTensorDesc, storage_id), 176);
         assert_eq!(offset_of!(RetroTensorDesc, type_name), 184);
+
+        // The optimizer slot contract, pinned the same way and for the same
+        // reason: the two name arrays come first, so a header that resized
+        // either one without this crate following would move `ne` and be read
+        // as a shape rather than as a size mismatch.
+        assert_eq!(size_of::<RetroOptimizerSlot>(), 304);
+        assert_eq!(align_of::<RetroOptimizerSlot>(), 8);
+        assert_eq!(offset_of!(RetroOptimizerSlot, slot), 128);
+        assert_eq!(offset_of!(RetroOptimizerSlot, type_name), 192);
+        assert_eq!(offset_of!(RetroOptimizerSlot, ne), 256);
+        assert_eq!(offset_of!(RetroOptimizerSlot, n_elements), 288);
+        assert_eq!(offset_of!(RetroOptimizerSlot, n_bytes), 296);
     }
 
     /// `retro_read_tensor_inventory` on its error paths only, for the same
@@ -1740,7 +1816,6 @@ mod contract_tests {
         let mut token = 0_i32;
         let mut width = 0_u32;
         let mut step = 0_u64;
-        let mut shape = [0_i64; 4];
         let mut metrics = RetroTrainMetrics::default();
         let mut eval_metrics = RetroEvalMetrics::default();
         let mut timing = RetroOptimizerTiming::default();
@@ -1749,6 +1824,8 @@ mod contract_tests {
         let mut generation = RetroGenerationStats::default();
         let mut duty_cycle = RetroDutyCycleStats::default();
         let mut state = RetroOptimizerState::default();
+        let mut slot = RetroOptimizerSlot::default();
+        let mut tensor = RetroTensorDesc::default();
         let mut bytes = 0_usize;
         let text = CString::new("x").unwrap();
         let sampling = RetroSamplingParams {
@@ -1988,30 +2065,45 @@ mod contract_tests {
             ));
             assert_null_trainer(retro_trainer_set_resume_point(ptr::null_mut(), 0));
             assert_null_trainer(retro_trainer_prepare_optimizer(ptr::null_mut()));
-            assert_null_trainer(retro_trainer_momenta_count(ptr::null_mut(), &mut count));
-            assert_null_trainer(retro_trainer_momenta_info(
+            assert_null_trainer(retro_trainer_marked_parameter_count(
                 ptr::null_mut(),
-                0,
-                ptr::null_mut(),
-                0,
-                &mut bytes,
-                shape.as_mut_ptr(),
                 &mut count,
             ));
-            assert_null_trainer(retro_trainer_momenta_read(
+            assert_null_trainer(retro_trainer_marked_parameter_info(
                 ptr::null_mut(),
                 0,
+                &mut tensor,
+            ));
+            assert_null_trainer(retro_trainer_state_slot_count(
                 ptr::null_mut(),
+                &mut count,
+                &mut count,
+            ));
+            assert_null_trainer(retro_trainer_state_slot_info(
+                ptr::null_mut(),
+                SLOT_SCOPE_PARAMETER,
+                0,
+                &mut slot,
+            ));
+            assert_null_trainer(retro_trainer_state_slot_read(
+                ptr::null_mut(),
+                SLOT_SCOPE_PARAMETER,
+                0,
+                0,
                 ptr::null_mut(),
                 0,
             ));
-            assert_null_trainer(retro_trainer_momenta_write(
+            assert_null_trainer(retro_trainer_state_slot_write(
                 ptr::null_mut(),
+                SLOT_SCOPE_SHARED,
                 text.as_ptr(),
-                ptr::null(),
+                text.as_ptr(),
+                0,
                 ptr::null(),
                 0,
             ));
+            assert_null_trainer(retro_trainer_save_trainable(ptr::null_mut(), text.as_ptr()));
+            assert_null_trainer(retro_trainer_load_trainable(ptr::null_mut(), text.as_ptr()));
             assert_null_trainer(retro_trainer_rng_state(
                 ptr::null_mut(),
                 ptr::null_mut(),

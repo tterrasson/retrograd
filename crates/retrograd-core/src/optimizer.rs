@@ -133,6 +133,42 @@ impl OptimizerKind {
         }
     }
 
+    /// Persistent state bytes for `n_elements` of *adapter* factors, through
+    /// the same eligibility rule [`Self::state_bytes`] applies.
+    ///
+    /// The entry point for the planner, which sizes an adapter analytically -
+    /// from the model's geometry and the target set - and never materializes a
+    /// factor to hand to [`Self::state_bytes`]. Sharing the arithmetic is what
+    /// keeps its budget and the runtime's report from drifting apart, and
+    /// without it the planner would spell AdamW's `8N` a second time and
+    /// over-budget every SGD run by the whole optimizer.
+    ///
+    /// Adapter-only because a *base* parameter's eligibility depends on its
+    /// shape, not only on its family: Muon takes hidden matrices, and an
+    /// element count cannot say whether one is. A caller that has the resolved
+    /// set uses [`Self::state_bytes`], which does.
+    pub fn adapter_state_bytes(self, n_elements: u64) -> u64 {
+        // The eligibility predicates read only `role`, `name` and the shape,
+        // and for a LoRA factor the first two already decide. A synthetic entry
+        // rather than a second copy of those rules: two spellings of "is this
+        // parameter eligible" is the drift this method exists to stop.
+        let factor = TrainableEntry {
+            name: "adapter.lora_a".to_string(),
+            role: TensorRole::LoraA,
+            // Synthetic geometry only; budget arithmetic retains the full u64.
+            ne: [i64::try_from(n_elements).unwrap_or(i64::MAX), 1, 1, 1],
+            dtype: crate::trainable::TensorDtype::F32,
+            n_elements,
+            n_bytes: n_elements.saturating_mul(4),
+            storage_id: 0,
+        };
+        if self.is_eligible(&factor) {
+            self.eligible_state_bytes(n_elements)
+        } else {
+            Self::AdamW.eligible_state_bytes(n_elements)
+        }
+    }
+
     /// Whether this entry is eligible for the optimizer, or falls back to AdamW.
     ///
     /// Muon's v1 policy is *role*, not rank: hidden base matrices with exactly
@@ -235,6 +271,34 @@ mod tests {
         assert!(OptimizerKind::Muon.as_ffi().is_err());
         assert!(OptimizerKind::Gefen.as_ffi().is_err());
         assert!(OptimizerKind::from_ffi(7).is_err());
+    }
+
+    /// The planner has no resolved entry to hand `state_bytes`, so it goes
+    /// through this - and the two must agree, or a budget and a report
+    /// describing the same run disagree by the whole optimizer.
+    #[test]
+    fn the_adapter_formula_agrees_with_the_resolved_set_it_cannot_build() {
+        let factors = set(vec![entry(
+            "blk.0.attn_q.weight.lora_a",
+            TensorRole::LoraA,
+            [1024, 16, 1, 1],
+        )]);
+        let n = 1024 * 16;
+        for kind in [
+            OptimizerKind::AdamW,
+            OptimizerKind::Sgd,
+            OptimizerKind::Muon,
+        ] {
+            assert_eq!(
+                kind.adapter_state_bytes(n),
+                kind.state_bytes(&factors),
+                "{kind}"
+            );
+        }
+        // And the figure itself: SGD keeps none, which is what the planner was
+        // spelling as AdamW's 8N.
+        assert_eq!(OptimizerKind::Sgd.adapter_state_bytes(n), 0);
+        assert_eq!(OptimizerKind::AdamW.adapter_state_bytes(n), n * 8);
     }
 
     #[test]

@@ -359,7 +359,10 @@ pub trait ModelProbe: Send + Sync {
         self.preflight(
             model,
             config.training.device,
-            config.lora.config.targets.clone(),
+            config
+                .lora
+                .as_ref()
+                .map_or(TargetSet::Auto, |lora| lora.config.targets.clone()),
             profile_fingerprint,
         )
     }
@@ -418,10 +421,17 @@ impl ModelProbe for EngineProbe {
         use retrograd_plan::packing_tuning::PackingMeasurement;
         use retrograd_training::packing_benchmark::{PackingBenchmark, benchmark};
 
+        let Some(lora) = config.lora.as_ref() else {
+            // The packing benchmark trains an adapter to time it. A run with
+            // none is not planned here at all, so this is unreachable rather
+            // than unsupported - and an empty measurement is the answer that
+            // does not invent one.
+            return Ok(None);
+        };
         let sample = match benchmark(
             model,
             &config.training,
-            &config.lora.config,
+            &lora.config,
             shape.prompt_tokens,
             shape.completion_tokens,
             shape.group_size,
@@ -484,13 +494,17 @@ impl ModelProbe for EngineProbe {
         profile_fingerprint: String,
     ) -> CoreResult<PreflightReport> {
         let mut trainer = Trainer::new(model, config.training.clone())?;
-        trainer.create_lora(&config.lora.config)?;
+        if let Some(lora) = &config.lora {
+            trainer.create_lora(&lora.config)?;
+        }
         trainer.structured_preflight(profile_fingerprint)
     }
 
     fn measure(&self, model: &Path, config: &RunConfig) -> CoreResult<MemoryReport> {
         let mut trainer = Trainer::new(model, config.training.clone())?;
-        trainer.create_lora(&config.lora.config)?;
+        if let Some(lora) = &config.lora {
+            trainer.create_lora(&lora.config)?;
+        }
         trainer.prepare_optimizer()?;
         // The compute buffers only exist once the backward graph has been
         // reserved, and the preflight is what reserves it. Reading the report
@@ -871,9 +885,13 @@ impl AppState {
             }
         }
         if !managed_adapter {
-            self.resolve_output_path(&config.lora.output, "/config/lora/output")?;
+            self.resolve_output_path(&config.output.path, "/config/output/path")?;
         }
-        if let Some(path) = &config.lora.init_adapter {
+        if let Some(path) = config
+            .lora
+            .as_ref()
+            .and_then(|lora| lora.init_adapter.as_ref())
+        {
             self.resolve_path(&path.to_string_lossy(), "/config/lora/init_adapter")?;
         }
         if let Some(evaluation) = &config.evaluation {

@@ -120,7 +120,10 @@ pub async fn plan_recipe(
     calibrate: bool,
 ) -> ApiResult<Resolved> {
     let mut recipe = recipe.clone();
-    let managed_adapter = recipe.output.is_none() && params.pointer("/lora/output").is_none();
+    // `[output].path` is where a run names its result; when neither the recipe
+    // nor the params name one, the server substitutes a managed path.
+    let managed_adapter =
+        recipe.output.is_none() && params.pointer("/output/path").is_none();
     for pointer in [
         "/model/path",
         "/sft/data",
@@ -452,6 +455,19 @@ pub async fn plan_config(
                 "invalid configuration",
             )
         })?;
+    // The same refusal the planner gives, at the boundary where a client
+    // document arrives: the cost model sizes an adapter, and answering a base
+    // run with a budget that omits its gradients would be worse than saying no.
+    if config.training.trainable.policy.trains_base_weights() {
+        return Err(ApiError::invalid(retrograd_plan::base_training_unpriced(
+            config.training.trainable.policy,
+        ))
+        .with_field(
+            "/config/training/trainable",
+            ErrorCode::InvalidValue,
+            "not supported by the planner",
+        ));
+    }
     state.validate_run_paths(&config, false)?;
     let model_path = config.model.clone();
     let model = geometry(state, &model_path, config.training.device).await?;
@@ -974,8 +990,9 @@ mod tests {
 algorithm = "grpo"
 [model]
 path = "m.gguf"
+[output]
+path = "a.gguf"
 [lora]
-output = "a.gguf"
 [grpo]
 prompts = "p.jsonl"
 reward_command = ["python", "secret.py"]

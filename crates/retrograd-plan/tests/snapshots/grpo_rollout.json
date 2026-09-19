@@ -8,7 +8,6 @@
       "path": "model.gguf"
     },
     "lora": {
-      "output": "adapter.gguf",
       "rank": 8,
       "alpha": 16.0,
       "seed": 7,
@@ -16,6 +15,9 @@
         "q",
         "v"
       ]
+    },
+    "output": {
+      "path": "adapter.gguf"
     },
     "training": {
       "ctx": 1024,

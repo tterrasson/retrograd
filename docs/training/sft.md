@@ -14,8 +14,10 @@ algorithm = "sft"
 path = "base.gguf"
 device = "auto"
 
+[output]
+path = "sft-adapter.gguf"
+
 [lora]
-output = "sft-adapter.gguf"
 rank = 8
 alpha = 16.0
 seed = 42

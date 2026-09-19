@@ -18,10 +18,8 @@ impl Trainer {
         let raw = unsafe { ffi::retro_trainer_new(model_path.as_ptr(), &ffi_config) };
         let result = NonNull::new(raw).ok_or_else(runtime_error).map(|raw| Self {
             raw,
-            trains_base_weights: !matches!(
-                config.trainable.policy,
-                retrograd_core::TrainablePolicy::Lora
-            ),
+            trainable_policy: config.trainable.policy,
+            declared_trainable: None,
         });
         test_timing("model_load", started);
         let trainer = result?;
@@ -96,6 +94,16 @@ impl Trainer {
     /// Must be called before the first training step or
     /// [`Trainer::prepare_optimizer`], and only on a trainer whose
     /// [`TrainConfig`] names a base-weight policy.
+    /// Declares the resolved trainable set: its base names reach the runtime's
+    /// parameter filter, and the set itself is kept for the checkpoint
+    /// signature, which a resume needs before the optimizer graph exists.
+    pub fn declare_trainable_set(&mut self, set: &retrograd_core::TrainableSet) -> Result<()> {
+        let names: Vec<String> = set.base_entries().map(|entry| entry.name.clone()).collect();
+        self.set_trainable_base(&names)?;
+        self.declared_trainable = Some(set.clone());
+        Ok(())
+    }
+
     pub fn set_trainable_base(&mut self, names: &[String]) -> Result<()> {
         let owned = names
             .iter()
@@ -110,7 +118,9 @@ impl Trainer {
                 pointers.as_ptr(),
                 pointers.len(),
             )
-        })
+        })?;
+        self.declared_trainable = None;
+        Ok(())
     }
 
     /// Bounds the fraction of wall time this trainer spends waiting on GPU work

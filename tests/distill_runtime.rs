@@ -531,7 +531,7 @@ fn a_distillation_update_against_an_identical_teacher_writes_an_untouched_adapte
     let document = format!(
         "[run]\nalgorithm='distill'\n\
          [model]\npath='{model}'\ndevice='cpu'\n\
-         [lora]\noutput='adapter.gguf'\nrank=2\nalpha=4.0\nseed=7\ntargets=['{target}']\n\
+         [output]\npath='adapter.gguf'\n[lora]\nrank=2\nalpha=4.0\nseed=7\ntargets=['{target}']\n\
          [training]\nctx=64\nmicro_batch=64\nepochs=1\nlr=0.001\nweight_decay=0.0\n\
          [distill]\nteacher_path='{model}'\nprompts='prompts.jsonl'\n\
          updates=1\nprompts_per_update=1\nsamples_per_prompt=2\n\

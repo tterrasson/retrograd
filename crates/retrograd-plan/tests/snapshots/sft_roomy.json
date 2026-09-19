@@ -8,13 +8,15 @@
       "path": "model.gguf"
     },
     "lora": {
-      "output": "adapter.gguf",
       "rank": 16,
       "alpha": 32.0,
       "seed": 7,
       "targets": [
         "auto"
       ]
+    },
+    "output": {
+      "path": "adapter.gguf"
     },
     "training": {
       "ctx": 1024,

@@ -241,6 +241,15 @@ std::string join_patterns(const std::vector<std::string> & patterns) {
     return out.str();
 }
 
+bool copy_fixed_field(const std::string & value, char * field, size_t capacity) {
+    if (value.size() + 1 > capacity) {
+        set_error("name does not fit the fixed-size field of the contract: " + value);
+        return false;
+    }
+    std::memcpy(field, value.c_str(), value.size() + 1);
+    return true;
+}
+
 int copy_string_out(
         const std::string & text, char * buffer, size_t n_buffer, size_t * out_n_bytes) {
     if (!out_n_bytes) {

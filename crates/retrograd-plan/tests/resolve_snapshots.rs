@@ -163,9 +163,30 @@ fn the_derivations_move_with_the_size_of_the_dataset() {
             label.to_string(),
             Row {
                 examples,
-                rank: resolution.config.lora.config.rank,
-                alpha: resolution.config.lora.config.alpha,
-                targets: format!("{:?}", resolution.config.lora.config.targets),
+                rank: resolution
+                    .config
+                    .lora
+                    .as_ref()
+                    .expect("the resolver drafts lora runs")
+                    .config
+                    .rank,
+                alpha: resolution
+                    .config
+                    .lora
+                    .as_ref()
+                    .expect("the resolver drafts lora runs")
+                    .config
+                    .alpha,
+                targets: format!(
+                    "{:?}",
+                    resolution
+                        .config
+                        .lora
+                        .as_ref()
+                        .expect("the resolver drafts lora runs")
+                        .config
+                        .targets
+                ),
                 epochs: resolution.config.training.epochs,
                 learning_rate: resolution.config.training.learning_rate,
                 weight_decay: resolution.config.training.weight_decay,

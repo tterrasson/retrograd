@@ -456,8 +456,9 @@ mod tests {
             algorithm = "sft"
             [model]
             path = "model.gguf"
+            [output]
+            path = "adapter.gguf"
             [lora]
-            output = "adapter.gguf"
             [training]
             ctx = 1024
             micro_batch = 128

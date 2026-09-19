@@ -26,9 +26,12 @@ come from either the document or the CLI.
 
 ### `[lora]`
 
+Required when the run trains an adapter (`training.trainable = "lora"`, the
+default, or `"hybrid"`). Refused for `"full"` and `"partial"`, which train base
+tensors and create no adapter.
+
 | Key | Default | Description |
 | --- | ---: | --- |
-| `output` | required | Output adapter GGUF path. |
 | `rank` | `8` | LoRA rank. Higher values add trainable parameters. |
 | `alpha` | `16.0` | LoRA scaling; the effective scale is `alpha / rank`. |
 | `seed` | `42` | Adapter initialization and SFT shuffle seed. |
@@ -36,10 +39,50 @@ come from either the document or the CLI.
 | `dtype` | `f16` | Adapter matrix storage: `f16` or `f32`. Optimizer moments remain F32. |
 | `init_adapter` | none | Load an existing adapter GGUF as a cold adapter start. Cannot be combined with rank, alpha, seed, dtype, targets, or `checkpoint.resume_from`. |
 
+### `[output]`
+
+Where the run writes its result, and which kind of result it is. A run that
+does not name `[output].path` is rejected.
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `path` | required | Destination file. |
+| `kind` | `adapter` for `lora`, `trainable` otherwise | `adapter` is a portable LoRA GGUF. `trainable` is a Retrograd bundle: the trained base tensors by absolute value, plus the adapter beside it for a hybrid run; it requires the matching base model and this loader. `model`, a standalone merged GGUF, is rejected in this build. |
+
+A kind the policy does not produce is rejected rather than defaulted: `adapter`
+for a run that trains no adapter would be an empty file, `adapter` for a hybrid
+run would drop its trained base tensors, and `trainable` for a LoRA run has no
+base tensor to carry.
+
+### `[trainable]`
+
+Which base tensors a `partial` or `hybrid` run trains. Required by those two,
+rejected beside `training.trainable = "lora"` (a selector the policy ignores is
+a selector you believe is in effect) and beside `"full"`, which derives every
+supported eligible tensor and takes no narrowing selector.
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `layers` | all blocks | `all`, `last:<count>`, or an inclusive `<first>..<last>`. Bounds-checked against the model. |
+| `modules` | none | Module aliases (`attn`, `ffn`), individual stems (`attn_q`), or explicit tensor patterns. Norms are not modules: they follow `norms`. |
+| `norms` | `false` | Every norm: the in-range block norms, and every norm carrying no block index. |
+| `biases` | `false` | The `.bias` tensors of the selected modules. |
+| `output_head` | `false` | The output projection, independently of the layer range. A head sharing the input-embedding storage stays frozen and asking for it is an error. |
+
+At least one of `modules`, `norms`, `biases` or `output_head` must select
+something. `hybrid` initially permits only `norms` and `biases` beside the
+adapter. Quantized tensors are never selected; a quantized model may still
+carry trainable F32 norms, and selection validates the *selected* tensors
+rather than the model's dominant dtype. The resolved exclusions - input
+embedding, rotary constants, a tied head, unsupported dtypes, duplicate
+storage - are reported at the start of the run.
+
 ### `[training]`
 
 | Key | Default | Description |
 | --- | ---: | --- |
+| `trainable` | `lora` | Which family of parameters this run trains: `lora`, `full`, `partial`, or `hybrid`. |
+| `optimizer` | `adamw` | `adamw` or `sgd`. `muon` and `gefen` parse and are rejected: this build has no update step for them, and accepting the name would record an optimizer the run never used. `sgd`'s update kernel is F32-only, so it is rejected beside the default F16 adapter. |
 | `ctx` | `128` | Trained context window in tokens. |
 | `micro_batch` | `32` | Physical forward/backward width and primary activation-memory control. |
 | `gradient_accumulation` | `1` for SFT; derived for rollout | Micro-batches per optimizer step. Its product with `micro_batch` must divide `ctx`. Rollout algorithms default to `ctx / micro_batch`. |

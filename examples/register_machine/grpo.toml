@@ -14,8 +14,10 @@ verbose = false
 path = "../../tests/fixtures/LFM2.5-230M-Q4_K_M.gguf"
 device = "auto"
 
+[output]
+path = "/tmp/retrograd-register-machine-adapter.gguf"
+
 [lora]
-output = "/tmp/retrograd-register-machine-adapter.gguf"
 rank = 16
 alpha = 32.0
 seed = 42

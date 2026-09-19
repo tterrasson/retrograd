@@ -98,7 +98,32 @@ fn compatibility(trainer: &mut Trainer, model: &Path) -> checkpoint::Compatibili
         optimizer_kind: config().trainable.optimizer.to_string(),
         weight_decay: config().weight_decay,
         max_grad_norm: config().max_grad_norm,
+        trainable_policy: trainer.trainable_policy().as_str().to_string(),
+        trainable_signature: trainer.trainable_signature().expect("trainable signature"),
     }
+}
+
+/// The payload bytes of one slot, read back through the streaming reader.
+///
+/// The checkpoint deliberately does not hand out a slot as a `Vec`: the whole
+/// point of the separate payload file is that a restore never needs a host copy
+/// of the optimizer state. A test that wants to compare values assembles its own.
+fn slot_payload(
+    state_dir: &Path,
+    optimizer: &checkpoint::Optimizer,
+    slot: &checkpoint::StateSlot,
+) -> Vec<u8> {
+    let mut reader =
+        checkpoint::OptimizerStateReader::open(state_dir, optimizer).expect("open the payload");
+    let mut staging = vec![0_u8; 64 * 1024];
+    let mut out = Vec::with_capacity(slot.n_bytes as usize);
+    reader
+        .stream(slot, &mut staging, |_, chunk| {
+            out.extend_from_slice(chunk);
+            Ok(())
+        })
+        .expect("stream the slot");
+    out
 }
 
 fn train_once(trainer: &mut Trainer) -> TrainMetrics {
@@ -124,7 +149,7 @@ fn deviation(left: &[f32], right: &[f32]) -> f32 {
 }
 
 #[test]
-fn a_checkpoint_taken_before_the_first_step_declares_no_moments() {
+fn a_checkpoint_taken_before_the_first_step_declares_no_optimizer_state() {
     let Some(model) = common::model_path_if_available() else {
         eprintln!("skipping: test model not available");
         return;
@@ -140,17 +165,18 @@ fn a_checkpoint_taken_before_the_first_step_declares_no_moments() {
         .expect("save cold checkpoint");
 
     let record = Checkpoint::read(&state).expect("read cold checkpoint");
-    // The momenta are allocated by the first optimizer graph build, which has
+    // The slots are allocated by the first optimizer graph build, which has
     // not happened: the checkpoint must say so instead of inventing zeros.
-    assert!(!record.optimizer.has_moments);
-    assert!(record.optimizer.moments.is_empty());
+    assert!(!record.optimizer.graph_ready);
+    assert!(record.optimizer.slots.is_empty());
+    assert_eq!(record.optimizer.state_bytes, 0);
     assert!(record.rng.runtime_mt19937.is_none());
     assert_eq!(record.optimizer.iter, 1);
     assert!(root.join("step-000000000000.gguf").is_file());
 }
 
 #[test]
-fn a_checkpoint_after_a_step_carries_named_moments_that_restore_verbatim() {
+fn a_checkpoint_after_a_step_carries_named_slots_that_restore_verbatim() {
     let Some(model) = common::model_path_if_available() else {
         eprintln!("skipping: test model not available");
         return;
@@ -168,27 +194,60 @@ fn a_checkpoint_after_a_step_carries_named_moments_that_restore_verbatim() {
     drop(trainer);
 
     let saved = Checkpoint::read(&state).expect("read warm checkpoint");
-    assert!(saved.optimizer.has_moments);
-    assert!(!saved.optimizer.moments.is_empty());
-    // Every LoRA a/b tensor is a trainable parameter with its own momenta.
-    for entry in &saved.optimizer.moments {
-        assert!(entry.name.contains("lora"), "{}", entry.name);
-        assert_eq!(entry.m.len(), entry.v.len());
+    assert!(saved.optimizer.graph_ready);
+    assert!(!saved.optimizer.slots.is_empty());
+    // AdamW keeps two slots per parameter, and every LoRA a/b tensor is one.
+    // The shared scope is empty and enumerated anyway: "this optimizer keeps
+    // no shared state" is a fact, not a missing section.
+    assert_eq!(
+        saved
+            .optimizer
+            .slots_in(checkpoint::SlotScope::Shared)
+            .count(),
+        0
+    );
+    for slot in saved.optimizer.slots_in(checkpoint::SlotScope::Parameter) {
+        assert!(slot.owner.contains("lora"), "{}", slot.owner);
+        assert!(["m", "v"].contains(&slot.slot.as_str()), "{}", slot.slot);
+        assert_eq!(slot.dtype, "f32", "{}", slot.owner);
         assert_eq!(
-            entry.m.len() as i64,
-            entry.shape.iter().product::<i64>(),
+            slot.n_bytes as i64,
+            slot.shape.iter().product::<i64>() * 4,
             "{} shape {:?}",
-            entry.name,
-            entry.shape
+            slot.owner,
+            slot.shape
         );
     }
-    // A non-trivial optimizer state is what makes the restore meaningful.
+    // Every marked parameter is named by the assignment table, including the
+    // optimizer that owns it - the row a mixed run would compare on resume.
+    assert!(!saved.optimizer.assignment.is_empty());
     assert!(
         saved
             .optimizer
-            .moments
+            .assignment
             .iter()
-            .any(|entry| entry.v.iter().any(|value| *value != 0.0))
+            .all(|row| row.optimizer == "adamw")
+    );
+    assert_eq!(
+        saved.optimizer.state_bytes,
+        saved
+            .optimizer
+            .slots
+            .iter()
+            .map(|slot| slot.n_bytes)
+            .sum::<u64>()
+    );
+    // A non-trivial optimizer state is what makes the restore meaningful.
+    let second_moment = saved
+        .optimizer
+        .slots
+        .iter()
+        .find(|slot| slot.slot == "v")
+        .expect("adamw keeps a second moment");
+    assert!(
+        slot_payload(&state, &saved.optimizer, second_moment)
+            .iter()
+            .any(|byte| *byte != 0)
     );
     assert!(saved.optimizer.iter > 1);
 
@@ -199,7 +258,8 @@ fn a_checkpoint_after_a_step_carries_named_moments_that_restore_verbatim() {
     let info = resumed
         .load_checkpoint(&state, &expected)
         .expect("load checkpoint");
-    assert!(info.had_moments);
+    assert!(info.had_optimizer_graph);
+    assert_eq!(info.restored_optimizer_slots, saved.optimizer.slots.len());
     assert_eq!(info.global_step(), metrics.global_step);
     assert_eq!(info.epoch(), 1);
 
@@ -211,16 +271,27 @@ fn a_checkpoint_after_a_step_carries_named_moments_that_restore_verbatim() {
         .expect("re-save the restored state");
     let after = Checkpoint::read(&reread).expect("read the re-saved checkpoint");
     assert_eq!(after.optimizer.iter, saved.optimizer.iter);
-    for entry in &saved.optimizer.moments {
+    assert_eq!(after.optimizer.state_bytes, saved.optimizer.state_bytes);
+    for slot in &saved.optimizer.slots {
         let restored = after
             .optimizer
-            .moments
+            .slots
             .iter()
-            .find(|candidate| candidate.name == entry.name)
-            .unwrap_or_else(|| panic!("parameter {} survived the restore", entry.name));
-        assert_eq!(restored.shape, entry.shape);
-        assert_eq!(restored.m, entry.m, "{} m", entry.name);
-        assert_eq!(restored.v, entry.v, "{} v", entry.name);
+            .find(|candidate| {
+                candidate.scope == slot.scope
+                    && candidate.owner == slot.owner
+                    && candidate.slot == slot.slot
+            })
+            .unwrap_or_else(|| panic!("slot {} of {} survived the restore", slot.slot, slot.owner));
+        assert_eq!(restored.shape, slot.shape);
+        assert_eq!(restored.dtype, slot.dtype);
+        assert_eq!(
+            slot_payload(&reread, &after.optimizer, restored),
+            slot_payload(&state, &saved.optimizer, slot),
+            "{} {}",
+            slot.owner,
+            slot.slot
+        );
     }
     assert_eq!(after.rng.runtime_mt19937, saved.rng.runtime_mt19937);
 }

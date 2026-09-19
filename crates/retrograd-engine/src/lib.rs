@@ -563,7 +563,35 @@ pub struct Trainer {
     // the duration of the synchronous call. The progress callback is the sole
     // exception; `run_with_callback` pins its state until that call returns.
     raw: NonNull<ffi::RetroTrainer>,
-    trains_base_weights: bool,
+    /// What this run trains, kept beside the handle because the runtime takes
+    /// it as a scalar at creation and never hands it back, and because three
+    /// different answers depend on it: whether a checkpoint carries a bundle,
+    /// whether a score may reuse an adapter-free context, and which policy a
+    /// resume is compared against.
+    trainable_policy: retrograd_core::TrainablePolicy,
+    /// The resolved set this run declared, when it declared one.
+    ///
+    /// Kept because a checkpoint's trainable signature has to be available
+    /// *before* the optimizer graph exists - a resume compares it while
+    /// deciding whether to restore at all - while the marked set only exists
+    /// after. Rule 6 is what makes the two interchangeable once both do.
+    declared_trainable: Option<retrograd_core::TrainableSet>,
+}
+
+impl Trainer {
+    /// What this run trains.
+    pub fn trainable_policy(&self) -> retrograd_core::TrainablePolicy {
+        self.trainable_policy
+    }
+
+    /// The resolved set this run declared, if any.
+    pub fn declared_trainable_set(&self) -> Option<&retrograd_core::TrainableSet> {
+        self.declared_trainable.as_ref()
+    }
+
+    fn trains_base_weights(&self) -> bool {
+        self.trainable_policy.trains_base_weights()
+    }
 }
 
 mod probe;

@@ -159,8 +159,10 @@ algorithm = "agent_grpo"
 path = "model.gguf"
 device = "auto"
 
+[output]
+path = "agent.gguf"
+
 [lora]
-output = "agent.gguf"
 rank = 8
 alpha = 16.0
 targets = ["blk.*.attn_q.weight", "blk.*.attn_v.weight"]

@@ -135,7 +135,7 @@ pub fn bytes_per_rank(
         dtype,
         ..LoraConfig::auto(1, 2.0)
     };
-    let parameters = crate::cost::trainable_parameters(model, &probe);
+    let parameters = crate::cost::trainable_parameters(model, Some(&probe));
     parameters
         * match dtype {
             retrograd_core::LoraDtype::F32 => 4,

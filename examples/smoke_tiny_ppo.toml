@@ -11,8 +11,10 @@ verbose = false
 path = "../tests/fixtures/LFM2.5-230M-Q4_K_M.gguf"
 device = "cpu"
 
+[output]
+path = "/tmp/retrograd-smoke-ppo-adapter.gguf"
+
 [lora]
-output = "/tmp/retrograd-smoke-ppo-adapter.gguf"
 rank = 1
 alpha = 2.0
 seed = 42

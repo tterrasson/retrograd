@@ -274,7 +274,7 @@ pub fn evaluate(
 ) -> CandidateEvaluation {
     let mut training = intent.training.clone();
     candidate.apply(&mut training);
-    let estimate = estimate(model, &training, lora, workload, calibration);
+    let estimate = estimate(model, &training, Some(lora), workload, calibration);
     let resources = estimate.resources();
     let packing = packing_cost(&candidate, intent);
     let Packing {

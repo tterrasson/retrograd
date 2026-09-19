@@ -137,7 +137,7 @@ impl ModelProbe for FakeProbe {
         let estimate = cost::estimate(
             &self.model,
             &config.training,
-            &config.lora.config,
+            config.lora.as_ref().map(|lora| &lora.config),
             &Workload {
                 kind: WorkloadKind::Sft,
                 examples: 0,
@@ -476,7 +476,8 @@ async fn a_full_config_is_estimated_but_not_re_derived() {
         "config": {
             "run": {"algorithm": "sft"},
             "model": {"path": fixture.path("model.gguf")},
-            "lora": {"output": fixture.path("adapter.gguf"), "rank": 8, "alpha": 16.0},
+            "output": {"path": fixture.path("adapter.gguf")},
+            "lora": {"rank": 8, "alpha": 16.0},
             "training": {"ctx": 512, "micro_batch": 64, "gradient_accumulation": 8, "epochs": 1},
             "sft": {"data": fixture.path("data.jsonl"), "data_format": "jsonl"}
         }
@@ -506,8 +507,9 @@ async fn a_toml_body_is_the_same_document_as_the_json_one() {
 algorithm = "sft"
 [model]
 path = "{model}"
+[output]
+path = "{adapter}"
 [lora]
-output = "{adapter}"
 rank = 8
 alpha = 16.0
 [training]
@@ -545,7 +547,8 @@ async fn a_configuration_over_budget_is_refused_with_its_decomposition() {
         "config": {
             "run": {"algorithm": "sft"},
             "model": {"path": fixture.path("model.gguf")},
-            "lora": {"output": fixture.path("adapter.gguf"), "rank": 8, "alpha": 16.0},
+            "output": {"path": fixture.path("adapter.gguf")},
+            "lora": {"rank": 8, "alpha": 16.0},
             "training": {"ctx": 32768, "micro_batch": 512, "gradient_accumulation": 64, "epochs": 1},
             "sft": {"data": fixture.path("data.jsonl"), "data_format": "jsonl"}
         }
@@ -718,7 +721,7 @@ async fn a_recipe_and_a_config_together_are_refused() {
     body["config"] = json!({
         "run": {"algorithm": "sft"},
         "model": {"path": fixture.path("model.gguf")},
-        "lora": {"output": fixture.path("adapter.gguf")},
+        "output": {"path": fixture.path("adapter.gguf")},
         "sft": {"data": fixture.path("data.jsonl")}
     });
     let (status, problem) = post(router(), "/v1/plan", body).await;

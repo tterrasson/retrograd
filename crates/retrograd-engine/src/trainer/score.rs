@@ -201,7 +201,7 @@ impl Trainer {
         &mut self,
         operation: impl FnOnce(&mut Self) -> Result<T>,
     ) -> Result<T> {
-        if self.trains_base_weights {
+        if self.trains_base_weights() {
             return Err(Error::invalid(
                 "a fixed reference requires a separate frozen model when training base weights",
             ));

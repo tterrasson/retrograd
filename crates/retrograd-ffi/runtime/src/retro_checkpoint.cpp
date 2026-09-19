@@ -1,12 +1,15 @@
 // Training-checkpoint state access.
-// This file is deliberately format-free: it moves optimizer scalars, AdamW
-// momenta, RNG state and a model signature across the FFI boundary and lets
-// Rust own the on-disk representation. The adapter GGUF written next to a
-// checkpoint stays a pure LoRA export.
+// This file is deliberately format-free: it moves optimizer scalars, the
+// marked parameter list, the persistent state slots, RNG state and a model
+// signature across the FFI boundary and lets Rust own the on-disk
+// representation. The adapter GGUF written next to a checkpoint stays a pure
+// LoRA export.
 
 #include "retro_runtime.hpp"
 
+#include <algorithm>
 #include <sstream>
+#include <vector>
 
 namespace retro {
 
@@ -14,7 +17,7 @@ namespace {
 
 // The optimizer context only exists after llama_opt_init. Callers that merely
 // read state must tolerate its absence (a checkpoint taken before the first
-// step legitimately has no momenta), so this returns null without an error.
+// step legitimately has no slots), so this returns null without an error.
 ggml_opt_context_t opt_context(trainer_state & state) {
     if (!state.opt_created || !state.ctx) {
         return nullptr;
@@ -22,47 +25,109 @@ ggml_opt_context_t opt_context(trainer_state & state) {
     return llama_opt_context(state.ctx.get());
 }
 
-// Momenta live in the optimizer's static buffer, allocated by the first graph
-// build. Before that the count is zero and there is nothing to save.
-ggml_opt_context_t momenta_context(trainer_state & state) {
+// One persistent optimizer tensor and the pair of names that identify it.
+// Built from whatever the live optimizer declares, so the table is empty for
+// an optimizer that keeps no state and would gain rows - not a new shape -
+// for one that keeps block-shaped or shared state.
+struct slot_ref {
+    std::string owner;
+    std::string slot;
+    ggml_tensor * tensor;
+};
+
+// The per-parameter slots of the live optimizer, in enumeration order:
+// a parameter's slots together, parameters in the order the optimizer holds
+// them. AdamW contributes "m" and "v" per parameter; SGD contributes nothing.
+//
+// Reading the table through ggml's momenta accessors is the only shape
+// available today, and it is deliberately the only place that assumes it: the
+// FFI above and the checkpoint above that see slots and never a pair.
+std::vector<slot_ref> parameter_slots(trainer_state & state) {
+    std::vector<slot_ref> slots;
     ggml_opt_context_t opt = opt_context(state);
-    if (!opt || ggml_opt_momenta_count(opt) == 0) {
-        return nullptr;
+    if (!opt) {
+        return slots;
     }
-    return opt;
+    const int64_t count = ggml_opt_momenta_count(opt);
+    slots.reserve(static_cast<size_t>(count) * 2);
+    for (int64_t i = 0; i < count; ++i) {
+        const char * name = ggml_opt_momenta_name(opt, i);
+        ggml_tensor * m = ggml_opt_momenta_m(opt, i);
+        ggml_tensor * v = ggml_opt_momenta_v(opt, i);
+        if (!name || !m || !v) {
+            continue;
+        }
+        slots.push_back(slot_ref { name, "m", m });
+        slots.push_back(slot_ref { name, "v", v });
+    }
+    return slots;
 }
 
-bool momenta_entry(
-        trainer_state & state,
-        size_t index,
-        ggml_tensor ** out_m,
-        ggml_tensor ** out_v,
-        const char ** out_name) {
-    ggml_opt_context_t opt = momenta_context(state);
-    if (!opt) {
-        set_error("the optimizer has no momenta yet; call retro_trainer_prepare_optimizer first");
+// State an optimizer keeps once rather than once per parameter - a codebook,
+// a shared second moment. Neither AdamW nor SGD has any, so the table is empty
+// and the enumeration exists to be enumerable: a checkpoint that round-trips
+// an empty shared scope is a checkpoint that will round-trip a full one.
+std::vector<slot_ref> shared_slots(trainer_state & state) {
+    (void) state;
+    return {};
+}
+
+bool slot_table(trainer_state & state, int32_t scope, std::vector<slot_ref> & out) {
+    switch (scope) {
+        case RETRO_SLOT_SCOPE_PARAMETER:
+            out = parameter_slots(state);
+            return true;
+        case RETRO_SLOT_SCOPE_SHARED:
+            out = shared_slots(state);
+            return true;
+        default:
+            set_error("optimizer slot scope must be parameter or shared");
+            return false;
+    }
+}
+
+// Every marked parameter, in the order the resolved trainable set publishes:
+// adapter factors first, in the adapter's registration order, then base
+// tensors by name. Empty before the optimizer graph exists - a flag is set by
+// llama_opt_init, so asking earlier would answer about a set nobody built.
+std::vector<const ggml_tensor *> marked_parameters(trainer_state & state) {
+    std::vector<const ggml_tensor *> marked;
+    if (!opt_context(state) || !state.model) {
+        return marked;
+    }
+    if (state.adapter) {
+        for (const auto & item : state.adapter->ab_map) {
+            if (is_param_tensor(item.second.a)) {
+                marked.push_back(item.second.a);
+            }
+            if (is_param_tensor(item.second.b)) {
+                marked.push_back(item.second.b);
+            }
+        }
+    }
+    const size_t adapter_end = marked.size();
+    for (const auto & item : state.model->tensors_by_name) {
+        if (is_param_tensor(item.second)) {
+            marked.push_back(item.second);
+        }
+    }
+    std::sort(
+            marked.begin() + static_cast<std::ptrdiff_t>(adapter_end),
+            marked.end(),
+            [](const ggml_tensor * left, const ggml_tensor * right) {
+                return std::strcmp(left->name, right->name) < 0;
+            });
+    return marked;
+}
+
+// A byte range is inside the payload, or it is an error. Never a short read:
+// a caller that staged fewer bytes than it asked for would write a truncated
+// slot into a checkpoint and call it complete.
+bool slot_range_ok(const ggml_tensor * tensor, uint64_t offset, size_t n_bytes) {
+    const uint64_t total = static_cast<uint64_t>(ggml_nbytes(tensor));
+    if (offset > total || static_cast<uint64_t>(n_bytes) > total - offset) {
+        set_error("optimizer slot byte range is outside the payload");
         return false;
-    }
-    if (index >= static_cast<size_t>(ggml_opt_momenta_count(opt))) {
-        set_error("momenta index is out of range");
-        return false;
-    }
-    const int64_t i = static_cast<int64_t>(index);
-    ggml_tensor * m = ggml_opt_momenta_m(opt, i);
-    ggml_tensor * v = ggml_opt_momenta_v(opt, i);
-    const char * name = ggml_opt_momenta_name(opt, i);
-    if (!m || !v || !name) {
-        set_error("momenta entry is incomplete");
-        return false;
-    }
-    if (out_m) {
-        *out_m = m;
-    }
-    if (out_v) {
-        *out_v = v;
-    }
-    if (out_name) {
-        *out_name = name;
     }
     return true;
 }
@@ -214,7 +279,9 @@ extern "C" int retro_trainer_prepare_optimizer(retro_trainer * trainer) {
     });
 }
 
-extern "C" int retro_trainer_momenta_count(retro_trainer * trainer, size_t * out_count) {
+extern "C" int retro_trainer_marked_parameter_count(
+        retro_trainer * trainer,
+        size_t * out_count) {
     return retro::boundary([&]() -> int {
         retro::trainer_state * state = retro::checked(trainer);
         if (!state) {
@@ -224,112 +291,190 @@ extern "C" int retro_trainer_momenta_count(retro_trainer * trainer, size_t * out
             retro::set_error("out_count is required");
             return -1;
         }
-        ggml_opt_context_t opt = retro::opt_context(*state);
-        *out_count = opt ? static_cast<size_t>(ggml_opt_momenta_count(opt)): 0;
+        *out_count = retro::marked_parameters(*state).size();
         return 0;
     });
 }
 
-extern "C" int retro_trainer_momenta_info(
+extern "C" int retro_trainer_marked_parameter_info(
         retro_trainer * trainer,
         size_t index,
-        char * name_buffer,
-        size_t n_buffer,
-        size_t * out_n_bytes,
-        int64_t * out_ne,
-        size_t * out_n_elements) {
+        retro_tensor_desc * out_tensor) {
     return retro::boundary([&]() -> int {
         retro::trainer_state * state = retro::checked(trainer);
         if (!state) {
             return -1;
         }
-        if (!out_n_bytes || !out_ne || !out_n_elements) {
-            retro::set_error("out_n_bytes, out_ne, and out_n_elements are required");
+        if (!out_tensor) {
+            retro::set_error("out_tensor is required");
             return -1;
         }
-        ggml_tensor * m = nullptr;
-        const char * name = nullptr;
-        if (!retro::momenta_entry(*state, index, &m, nullptr, &name)) {
+        const std::vector<const ggml_tensor *> marked = retro::marked_parameters(*state);
+        if (index >= marked.size()) {
+            retro::set_error("marked parameter index is out of range");
             return -1;
         }
-        for (int i = 0; i < GGML_MAX_DIMS; ++i) {
-            out_ne[i] = m->ne[i];
-        }
-        *out_n_elements = static_cast<size_t>(ggml_nelements(m));
-        return retro::copy_string_out(name, name_buffer, n_buffer, out_n_bytes);
-    });
-}
-
-extern "C" int retro_trainer_momenta_read(
-        retro_trainer * trainer,
-        size_t index,
-        float * out_m,
-        float * out_v,
-        size_t n_values) {
-    return retro::boundary([&]() -> int {
-        retro::trainer_state * state = retro::checked(trainer);
-        if (!state) {
+        const ggml_tensor * tensor = marked[index];
+        *out_tensor = retro_tensor_desc {};
+        const char * type_name = ggml_type_name(tensor->type);
+        if (!retro::copy_fixed_field(tensor->name, out_tensor->name, sizeof(out_tensor->name))
+                || !retro::copy_fixed_field(
+                        type_name ? type_name : "",
+                        out_tensor->type_name,
+                        sizeof(out_tensor->type_name))) {
             return -1;
         }
-        if (!out_m || !out_v) {
-            retro::set_error("out_m and out_v are required");
-            return -1;
+        for (int d = 0; d < GGML_MAX_DIMS; ++d) {
+            out_tensor->ne[d] = tensor->ne[d];
         }
-        ggml_tensor * m = nullptr;
-        ggml_tensor * v = nullptr;
-        if (!retro::momenta_entry(*state, index, &m, &v, nullptr)) {
-            return -1;
-        }
-        if (n_values != static_cast<size_t>(ggml_nelements(m))) {
-            retro::set_error("momenta buffer length does not match the parameter");
-            return -1;
-        }
-        ggml_backend_tensor_get(m, out_m, 0, n_values * sizeof(float));
-        ggml_backend_tensor_get(v, out_v, 0, n_values * sizeof(float));
+        out_tensor->n_elements = static_cast<uint64_t>(ggml_nelements(tensor));
+        out_tensor->n_bytes = static_cast<uint64_t>(ggml_nbytes(tensor));
+        // Same contract as the inventory's: the data address is the allocation
+        // identity, and 0 means "no identity recorded" rather than "shared".
+        out_tensor->storage_id = tensor->data
+                ? reinterpret_cast<uint64_t>(tensor->data)
+                : 0;
         return 0;
     });
 }
 
-extern "C" int retro_trainer_momenta_write(
+extern "C" int retro_trainer_state_slot_count(
         retro_trainer * trainer,
-        const char * name,
-        const float * m_values,
-        const float * v_values,
-        size_t n_values) {
+        size_t * out_parameter_slots,
+        size_t * out_shared_slots) {
     return retro::boundary([&]() -> int {
         retro::trainer_state * state = retro::checked(trainer);
         if (!state) {
             return -1;
         }
-        if (retro::is_blank(name) || !m_values || !v_values) {
-            retro::set_error("name, m, and v are required");
+        if (out_parameter_slots) {
+            *out_parameter_slots = retro::parameter_slots(*state).size();
+        }
+        if (out_shared_slots) {
+            *out_shared_slots = retro::shared_slots(*state).size();
+        }
+        return 0;
+    });
+}
+
+extern "C" int retro_trainer_state_slot_info(
+        retro_trainer * trainer,
+        int32_t scope,
+        size_t index,
+        retro_optimizer_slot * out_slot) {
+    return retro::boundary([&]() -> int {
+        retro::trainer_state * state = retro::checked(trainer);
+        if (!state) {
             return -1;
         }
-        ggml_opt_context_t opt = retro::opt_context(*state);
-        const int64_t count = opt ? ggml_opt_momenta_count(opt) : 0;
-        if (count == 0) {
-            retro::set_error(
-                    "the optimizer has no momenta yet; "
-                    "call retro_trainer_prepare_optimizer first");
+        if (!out_slot) {
+            retro::set_error("out_slot is required");
             return -1;
         }
-        for (int64_t i = 0; i < count; ++i) {
-            const char * candidate = ggml_opt_momenta_name(opt, i);
-            if (!candidate || std::strcmp(candidate, name) != 0) {
+        std::vector<retro::slot_ref> slots;
+        if (!retro::slot_table(*state, scope, slots)) {
+            return -1;
+        }
+        if (index >= slots.size()) {
+            retro::set_error("optimizer slot index is out of range");
+            return -1;
+        }
+        const retro::slot_ref & entry = slots[index];
+        *out_slot = retro_optimizer_slot {};
+        // A truncated owner is not a shorter name, it is a name that would
+        // restore into the wrong parameter. Same contract as the inventory.
+        if (!retro::copy_fixed_field(entry.owner, out_slot->owner, sizeof(out_slot->owner))
+                || !retro::copy_fixed_field(entry.slot, out_slot->slot, sizeof(out_slot->slot))) {
+            return -1;
+        }
+        const char * type_name = ggml_type_name(entry.tensor->type);
+        if (!retro::copy_fixed_field(
+                    type_name ? type_name : "", out_slot->type_name, sizeof(out_slot->type_name))) {
+            return -1;
+        }
+        for (int d = 0; d < GGML_MAX_DIMS; ++d) {
+            out_slot->ne[d] = entry.tensor->ne[d];
+        }
+        out_slot->n_elements = static_cast<uint64_t>(ggml_nelements(entry.tensor));
+        out_slot->n_bytes = static_cast<uint64_t>(ggml_nbytes(entry.tensor));
+        return 0;
+    });
+}
+
+extern "C" int retro_trainer_state_slot_read(
+        retro_trainer * trainer,
+        int32_t scope,
+        size_t index,
+        uint64_t offset,
+        void * out_bytes,
+        size_t n_bytes) {
+    return retro::boundary([&]() -> int {
+        retro::trainer_state * state = retro::checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        if (n_bytes != 0 && !out_bytes) {
+            retro::set_error("out_bytes is required");
+            return -1;
+        }
+        std::vector<retro::slot_ref> slots;
+        if (!retro::slot_table(*state, scope, slots)) {
+            return -1;
+        }
+        if (index >= slots.size()) {
+            retro::set_error("optimizer slot index is out of range");
+            return -1;
+        }
+        ggml_tensor * tensor = slots[index].tensor;
+        if (!retro::slot_range_ok(tensor, offset, n_bytes)) {
+            return -1;
+        }
+        if (n_bytes != 0) {
+            ggml_backend_tensor_get(tensor, out_bytes, offset, n_bytes);
+        }
+        return 0;
+    });
+}
+
+extern "C" int retro_trainer_state_slot_write(
+        retro_trainer * trainer,
+        int32_t scope,
+        const char * owner,
+        const char * slot,
+        uint64_t offset,
+        const void * bytes,
+        size_t n_bytes) {
+    return retro::boundary([&]() -> int {
+        retro::trainer_state * state = retro::checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        if (retro::is_blank(owner) || retro::is_blank(slot)) {
+            retro::set_error("owner and slot are required");
+            return -1;
+        }
+        if (n_bytes != 0 && !bytes) {
+            retro::set_error("bytes is required");
+            return -1;
+        }
+        std::vector<retro::slot_ref> slots;
+        if (!retro::slot_table(*state, scope, slots)) {
+            return -1;
+        }
+        for (const retro::slot_ref & entry : slots) {
+            if (entry.owner != owner || entry.slot != slot) {
                 continue;
             }
-            ggml_tensor * m = ggml_opt_momenta_m(opt, i);
-            ggml_tensor * v = ggml_opt_momenta_v(opt, i);
-            if (n_values != static_cast<size_t>(ggml_nelements(m))) {
-                retro::set_error(
-                        std::string("momenta length does not match parameter '") + name + "'");
+            if (!retro::slot_range_ok(entry.tensor, offset, n_bytes)) {
                 return -1;
             }
-            ggml_backend_tensor_set(m, m_values, 0, n_values * sizeof(float));
-            ggml_backend_tensor_set(v, v_values, 0, n_values * sizeof(float));
+            if (n_bytes != 0) {
+                ggml_backend_tensor_set(entry.tensor, bytes, offset, n_bytes);
+            }
             return 0;
         }
-        retro::set_error(std::string("no trainable parameter named '") + name + "'");
+        retro::set_error(
+                std::string("the optimizer keeps no slot '") + slot + "' for '" + owner + "'");
         return -1;
     });
 }

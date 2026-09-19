@@ -41,7 +41,7 @@ pub(super) fn choose_geometry(
         let usage = estimate(
             input.model,
             &probe,
-            lora,
+            Some(lora),
             workload,
             calibration_for(input, algorithm, &probe),
         );

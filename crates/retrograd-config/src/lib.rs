@@ -38,8 +38,8 @@ pub use distill::{
 };
 pub use document::{
     CheckpointToml, ConfigDocument, EvaluationToml, LoraToml, MetricsToml, ModelOverride,
-    ModelToml, ObserveToml, RunToml, SamplingToml, SharedPrefixFanoutToml, TrainableToml,
-    TrainingToml,
+    ModelToml, ObserveToml, OutputToml, RunToml, SamplingToml, SharedPrefixFanoutToml,
+    TrainableToml, TrainingToml,
 };
 pub use grpo::{
     AdvantageBaseline, DEFAULT_MAX_STALLED_UPDATES, DynamicSampling, GrpoConfig, GrpoJudge,
@@ -54,7 +54,11 @@ pub use sft::{SftConfig, SftToml};
 pub struct RunConfig {
     pub algorithm: Algorithm,
     pub model: PathBuf,
-    pub lora: LoraRunConfig,
+    /// The adapter this run trains, when it trains one. `None` for `full` and
+    /// `partial`, which have no adapter at all - not an adapter of rank zero.
+    pub lora: Option<LoraRunConfig>,
+    /// What the run writes when it finishes, and what kind of thing that is.
+    pub output: OutputConfig,
     pub training: TrainConfig,
     pub metrics: MetricsConfig,
     pub evaluation: Option<EvaluationConfig>,
@@ -85,10 +89,63 @@ pub enum Algorithm {
 #[derive(Clone, Debug)]
 pub struct LoraRunConfig {
     pub config: LoraConfig,
-    pub output: PathBuf,
     /// Existing adapter GGUF to resume training from, instead of creating a
     /// fresh adapter. Rank, alpha, and targets then come from the file.
     pub init_adapter: Option<PathBuf>,
+}
+
+/// What a finished run writes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutputConfig {
+    pub path: PathBuf,
+    pub kind: OutputKind,
+}
+
+/// Which kind of result an output path holds.
+///
+/// Not interchangeable, and not inferable from the extension: three different
+/// things are GGUFs here, and only one of them loads with
+/// `llama_adapter_lora_init`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputKind {
+    /// A portable LoRA adapter. The only kind a `lora` run produces.
+    Adapter,
+    /// A Retrograd bundle: the trained base tensors by absolute value, plus the
+    /// adapter when the run has one. Requires the matching base model and this
+    /// loader; it is not a standalone model.
+    Trainable,
+    /// A standalone model GGUF. Not implemented: the saver has a
+    /// per-architecture support predicate, and merging an adapter into
+    /// supported weights has no parity coverage, so accepting the name would
+    /// promise a file the run cannot write.
+    Model,
+}
+
+impl OutputKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Adapter => "adapter",
+            Self::Trainable => "trainable",
+            Self::Model => "model",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "adapter" => Ok(Self::Adapter),
+            "trainable" => Ok(Self::Trainable),
+            "model" => Ok(Self::Model),
+            other => Err(Error::config(format!(
+                "output.kind must be adapter, trainable or model; got '{other}'"
+            ))),
+        }
+    }
+}
+
+impl std::fmt::Display for OutputKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -159,6 +216,10 @@ pub enum PromptOrder {
     /// correlated adjacent prompts do not always land in the same update.
     Shuffled,
 }
+/// Seed a run gets when no `[lora].seed` names one: the dataset permutation
+/// and the adapter initialization share it, so a run that trains base tensors
+/// and has no `[lora]` section still shuffles reproducibly.
+pub const DEFAULT_SEED: u32 = 42;
 /// Target set a config gets when `lora.targets` is absent: every attention and
 /// feed-forward projection, the set that actually trains well. `targets =
 /// ['auto']` is still how you defer to the runtime's per-architecture choice.

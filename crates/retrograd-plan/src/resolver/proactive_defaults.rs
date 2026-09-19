@@ -31,7 +31,7 @@ pub(super) fn apply_defaults(
         let usage = estimate(
             input.model,
             training,
-            lora,
+            Some(lora),
             workload,
             calibration_for(input, algorithm, training),
         );

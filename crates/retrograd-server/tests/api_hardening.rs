@@ -315,7 +315,8 @@ async fn complete_configs_apply_roots_to_every_input_and_output() {
             "config": {
                 "run": {"algorithm": "sft"},
                 "model": {"path": fixture.path("model.gguf")},
-                "lora": {"output": output, "rank": 8, "alpha": 16.0},
+                "output": {"path": output},
+                "lora": {"rank": 8, "alpha": 16.0},
                 "training": {"ctx": 128, "micro_batch": 32, "gradient_accumulation": 4, "epochs": 1},
                 "sft": {"data": data, "data_format": "jsonl"}
             }
@@ -358,7 +359,7 @@ fn the_observe_directory_is_held_to_the_path_roots() {
     state.config = Arc::new(config);
     let document = |observe: &std::path::Path| {
         format!(
-            "[run]\nalgorithm='ppo'\n[model]\npath='{}'\n[lora]\noutput='{}'\n\
+            "[run]\nalgorithm='ppo'\n[model]\npath='{}'\n[output]\npath='{}'\n[lora]\n\
              [ppo]\nprompts='{}'\nreward_command=['true']\nupdates=1\nrollout_batch_size=1\n\
              ppo_epochs=1\nclip_range=0.2\nkl_coefficient=0.0\n\
              [ppo.sampling]\ntemperature=1.0\ntop_p=1.0\nmax_new_tokens=8\nseed=1\n\

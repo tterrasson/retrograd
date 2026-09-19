@@ -1,5 +1,7 @@
 use super::*;
 
+use retrograd_core::{TensorDtype, TensorRole, TrainableEntry, TrainableSet};
+
 impl Trainer {
     /// Declares that `completed_epochs` SFT epochs are already done, so the
     /// next SFT run starts there and keeps the restored scheduler step. The
@@ -12,8 +14,8 @@ impl Trainer {
         })
     }
 
-    /// Builds the optimizer graph if it does not exist yet, so the AdamW
-    /// momenta are allocated and can be restored before the first step.
+    /// Builds the optimizer graph if it does not exist yet, so any persistent
+    /// slots are allocated and can be restored before the first step.
     pub fn prepare_optimizer(&mut self) -> Result<()> {
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
         self.check(unsafe { ffi::retro_trainer_prepare_optimizer(self.raw.as_ptr()) })
@@ -26,94 +28,264 @@ impl Trainer {
         Ok(state)
     }
 
-    /// Reads every AdamW momenta pair, keyed by the parameter's stable tensor
-    /// name. Empty before the optimizer graph exists.
-    fn read_moments(&mut self) -> Result<Vec<checkpoint::Moments>> {
+    /// Every tensor the optimizer marked trainable, as a resolved set.
+    ///
+    /// Read from the runtime rather than from the selector that produced it:
+    /// this is what the update step actually writes, and the two are equal only
+    /// because rule 6 compares them. Empty before the optimizer graph exists.
+    pub fn marked_trainable_set(&mut self) -> Result<TrainableSet> {
         let mut count = 0_usize;
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
-        self.check(unsafe { ffi::retro_trainer_momenta_count(self.raw.as_ptr(), &mut count) })?;
-        let mut moments = Vec::with_capacity(count);
+        self.check(unsafe {
+            ffi::retro_trainer_marked_parameter_count(self.raw.as_ptr(), &mut count)
+        })?;
+        let mut entries = Vec::with_capacity(count);
         for index in 0..count {
-            let mut shape = [0_i64; 4];
-            let mut n_elements = 0_usize;
-            // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
-            let name = unsafe {
-                read_string(|buffer, n_buffer, out| {
-                    ffi::retro_trainer_momenta_info(
-                        self.raw.as_ptr(),
-                        index,
-                        buffer,
-                        n_buffer,
-                        out,
-                        shape.as_mut_ptr(),
-                        &mut n_elements,
-                    )
-                })
-            }?;
-            let mut m = vec![0.0_f32; n_elements];
-            let mut v = vec![0.0_f32; n_elements];
+            let mut desc = ffi::RetroTensorDesc::default();
             // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
             self.check(unsafe {
-                ffi::retro_trainer_momenta_read(
-                    self.raw.as_ptr(),
-                    index,
-                    m.as_mut_ptr(),
-                    v.as_mut_ptr(),
-                    n_elements,
-                )
+                ffi::retro_trainer_marked_parameter_info(self.raw.as_ptr(), index, &mut desc)
             })?;
-            moments.push(checkpoint::Moments { name, shape, m, v });
+            let name = fixed_string(&desc.name)?;
+            let dtype = TensorDtype::from_ggml_name(&fixed_string(&desc.type_name)?);
+            entries.push(TrainableEntry {
+                role: role_of(&name),
+                name,
+                ne: desc.ne,
+                dtype,
+                n_elements: desc.n_elements,
+                n_bytes: desc.n_bytes,
+                storage_id: desc.storage_id,
+            });
         }
-        Ok(moments)
+        Ok(TrainableSet {
+            policy: self.trainable_policy(),
+            entries,
+            exclusions: Vec::new(),
+        })
     }
 
-    /// Restores momenta by name. Requires [`Trainer::prepare_optimizer`]; a
-    /// name, shape, or length that does not match the live parameter is an
-    /// error rather than a partial restore.
-    fn write_moments(&mut self, moments: &[checkpoint::Moments]) -> Result<()> {
-        let live = self.read_moments()?;
-        if live.len() != moments.len() {
+    /// Fingerprint of the marked set's canonical manifest, empty when the run
+    /// trains no base tensor.
+    ///
+    /// Empty rather than a digest of the adapter on purpose: a LoRA run's
+    /// identity is already pinned by the adapter file and the trajectory
+    /// signature, and an extra comparison would refuse every resume written
+    /// before this field existed without catching anything new.
+    pub fn trainable_signature(&mut self) -> Result<String> {
+        if !self.trains_base_weights() {
+            return Ok(String::new());
+        }
+        // The declared set first: a resume compares this signature before the
+        // optimizer graph exists, so the marked set is not available yet. Once
+        // it is, rule 6 has already proved the two agree.
+        if let Some(declared) = self.declared_trainable_set() {
+            return Ok(set_signature(declared));
+        }
+        let signature = set_signature(&self.marked_trainable_set()?);
+        if signature.is_empty() {
+            // Neither source can answer, and an empty signature would compare
+            // equal to a LoRA run's - which is the one comparison that must not
+            // pass. `declare_trainable_set` is what resolves it.
+            return Err(Error::invalid(
+                "this run trains base weights but has not declared its resolved trainable \
+                 set, so its checkpoint identity cannot be computed",
+            ));
+        }
+        Ok(signature)
+    }
+
+    /// The slot table of the live optimizer, in file order, with the byte
+    /// offsets a checkpoint addresses its payload by.
+    fn state_slots(&mut self) -> Result<Vec<checkpoint::StateSlot>> {
+        let mut parameter_slots = 0_usize;
+        let mut shared_slots = 0_usize;
+        // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
+        self.check(unsafe {
+            ffi::retro_trainer_state_slot_count(
+                self.raw.as_ptr(),
+                &mut parameter_slots,
+                &mut shared_slots,
+            )
+        })?;
+        let mut slots = Vec::with_capacity(parameter_slots + shared_slots);
+        let mut offset = 0_u64;
+        for (scope, ffi_scope, count) in [
+            (
+                checkpoint::SlotScope::Parameter,
+                ffi::SLOT_SCOPE_PARAMETER,
+                parameter_slots,
+            ),
+            (
+                checkpoint::SlotScope::Shared,
+                ffi::SLOT_SCOPE_SHARED,
+                shared_slots,
+            ),
+        ] {
+            for index in 0..count {
+                let mut info = ffi::RetroOptimizerSlot::default();
+                // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
+                self.check(unsafe {
+                    ffi::retro_trainer_state_slot_info(
+                        self.raw.as_ptr(),
+                        ffi_scope,
+                        index,
+                        &mut info,
+                    )
+                })?;
+                slots.push(checkpoint::StateSlot {
+                    scope,
+                    owner: fixed_string(&info.owner)?,
+                    slot: fixed_string(&info.slot)?,
+                    dtype: fixed_string(&info.type_name)?,
+                    shape: info.ne,
+                    offset,
+                    n_bytes: info.n_bytes,
+                });
+                offset = offset.checked_add(info.n_bytes).ok_or_else(|| {
+                    Error::runtime("the optimizer state exceeds the addressable byte range")
+                })?;
+            }
+        }
+        Ok(slots)
+    }
+
+    /// Streams every slot payload into `sink`, in `slots` order, through one
+    /// bounded staging buffer.
+    ///
+    /// Never a `Vec<Vec<u8>>`: the state of a fully trained model is the size
+    /// of two more models, and collecting it before writing would make saving a
+    /// checkpoint cost more host memory than training does.
+    fn write_state_payload(
+        &mut self,
+        slots: &[checkpoint::StateSlot],
+        sink: &mut impl std::io::Write,
+    ) -> Result<()> {
+        let mut staging = vec![0_u8; checkpoint::STAGING_CHUNK_BYTES];
+        for (index, slot) in slots.iter().enumerate() {
+            let scope = ffi_scope(slot.scope);
+            // Index within the scope, which is what the runtime enumerates.
+            let scoped_index = slots[..index]
+                .iter()
+                .filter(|earlier| earlier.scope == slot.scope)
+                .count();
+            let mut done = 0_u64;
+            while done < slot.n_bytes {
+                let want = (slot.n_bytes - done).min(staging.len() as u64) as usize;
+                // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
+                self.check(unsafe {
+                    ffi::retro_trainer_state_slot_read(
+                        self.raw.as_ptr(),
+                        scope,
+                        scoped_index,
+                        done,
+                        staging.as_mut_ptr().cast(),
+                        want,
+                    )
+                })?;
+                sink.write_all(&staging[..want])?;
+                done += want as u64;
+            }
+        }
+        Ok(())
+    }
+
+    /// Restores slot payloads by `(scope, owner, slot)`, validating the live
+    /// layout against the record before a single byte is written.
+    fn restore_state_payload(
+        &mut self,
+        state_dir: &Path,
+        optimizer: &checkpoint::Optimizer,
+    ) -> Result<()> {
+        let live = self.state_slots()?;
+        if live.len() != optimizer.slots.len() {
             return Err(Error::runtime(format!(
-                "checkpoint holds momenta for {} parameters, the model has {}",
-                moments.len(),
+                "the checkpoint holds {} optimizer slots, this run allocates {}",
+                optimizer.slots.len(),
                 live.len()
             )));
         }
-        for entry in moments {
+        for saved in &optimizer.slots {
             let matching = live
                 .iter()
-                .find(|candidate| candidate.name == entry.name)
+                .find(|candidate| {
+                    candidate.scope == saved.scope
+                        && candidate.owner == saved.owner
+                        && candidate.slot == saved.slot
+                })
                 .ok_or_else(|| {
                     Error::runtime(format!(
-                        "checkpoint holds momenta for unknown parameter '{}'",
-                        entry.name
+                        "the checkpoint holds a '{}' slot for {} '{}' that this run does not \
+                         allocate",
+                        saved.slot,
+                        saved.scope.as_str(),
+                        saved.owner
                     ))
                 })?;
-            if matching.shape != entry.shape {
+            if matching.shape != saved.shape
+                || matching.dtype != saved.dtype
+                || matching.n_bytes != saved.n_bytes
+            {
                 return Err(Error::runtime(format!(
-                    "parameter '{}' has shape {:?} in the checkpoint and {:?} in the model",
-                    entry.name, entry.shape, matching.shape
+                    "slot '{}' of '{}' is {} {:?} ({} bytes) in the checkpoint and {} {:?} \
+                     ({} bytes) in this run",
+                    saved.slot,
+                    saved.owner,
+                    saved.dtype,
+                    saved.shape,
+                    saved.n_bytes,
+                    matching.dtype,
+                    matching.shape,
+                    matching.n_bytes
                 )));
             }
-            if entry.m.len() != entry.v.len() {
-                return Err(Error::runtime(format!(
-                    "parameter '{}' has mismatched m and v lengths",
-                    entry.name
-                )));
-            }
-            let name = CString::new(entry.name.as_str()).map_err(nul_error)?;
-            // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
-            self.check(unsafe {
-                ffi::retro_trainer_momenta_write(
-                    self.raw.as_ptr(),
-                    name.as_ptr(),
-                    entry.m.as_ptr(),
-                    entry.v.as_ptr(),
-                    entry.m.len(),
-                )
+        }
+
+        if optimizer.slots.is_empty() {
+            return Ok(());
+        }
+        let mut reader = checkpoint::OptimizerStateReader::open(state_dir, optimizer)?;
+        let mut staging = vec![0_u8; checkpoint::STAGING_CHUNK_BYTES];
+        for saved in &optimizer.slots {
+            let owner = CString::new(saved.owner.as_str()).map_err(nul_error)?;
+            let slot = CString::new(saved.slot.as_str()).map_err(nul_error)?;
+            let scope = ffi_scope(saved.scope);
+            let raw = self.raw.as_ptr();
+            reader.stream(saved, &mut staging, |offset, chunk| {
+                // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
+                let code = unsafe {
+                    ffi::retro_trainer_state_slot_write(
+                        raw,
+                        scope,
+                        owner.as_ptr(),
+                        slot.as_ptr(),
+                        offset,
+                        chunk.as_ptr().cast(),
+                        chunk.len(),
+                    )
+                };
+                if code == 0 {
+                    Ok(())
+                } else {
+                    Err(runtime_error())
+                }
             })?;
         }
         Ok(())
+    }
+
+    /// Writes the trained base tensors, by absolute value, as a GGUF bundle.
+    pub fn save_trainable(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path_to_cstring(path.as_ref())?;
+        // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
+        self.check(unsafe { ffi::retro_trainer_save_trainable(self.raw.as_ptr(), path.as_ptr()) })
+    }
+
+    /// Restores base tensor values from such a bundle onto the live model.
+    pub fn load_trainable(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path_to_cstring(path.as_ref())?;
+        // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
+        self.check(unsafe { ffi::retro_trainer_load_trainable(self.raw.as_ptr(), path.as_ptr()) })
     }
 
     read_string_method!(private rng_state, retro_trainer_rng_state);
@@ -124,9 +296,10 @@ impl Trainer {
         self.check(unsafe { ffi::retro_trainer_set_rng_state(self.raw.as_ptr(), state.as_ptr()) })
     }
 
-    /// Writes a complete training checkpoint. The authoritative LoRA GGUF and
-    /// every piece of resume state land atomically inside `.state`; a plain
-    /// sibling GGUF is then published for ordinary cold-adapter loading.
+    /// Writes a complete training checkpoint: whatever the run produced - an
+    /// adapter, a trainable bundle, or both - and every piece of resume state,
+    /// landing atomically inside `.state`. A plain sibling GGUF is then
+    /// published for ordinary cold-adapter loading, for a run that has one.
     ///
     /// `state_dir` may be given as either the state directory or the adapter
     /// GGUF path; the sibling is derived from it.
@@ -135,24 +308,37 @@ impl Trainer {
         state_dir: impl AsRef<Path>,
         metadata: &CheckpointMetadata,
     ) -> Result<()> {
-        if self.trains_base_weights {
-            return Err(Error::invalid(
-                "training checkpoints cannot save or restore base weights; only LoRA runs are supported",
-            ));
-        }
         let state_dir = checkpoint::state_dir_for(state_dir.as_ref());
-        let adapter = checkpoint::ADAPTER_FILE.to_string();
+        let trains_base = self.trains_base_weights();
+        // `full` and `partial` train base tensors and create no adapter;
+        // `hybrid` trains both. Read off the policy rather than off whether an
+        // adapter happens to exist, so a checkpoint taken before one is created
+        // still declares the file the run will produce.
+        let has_adapter = matches!(
+            self.trainable_policy(),
+            retrograd_core::TrainablePolicy::Lora | retrograd_core::TrainablePolicy::Hybrid
+        );
 
         let optimizer_state = self.optimizer_state()?;
         // Before the first step the optimizer graph does not exist, so there
-        // are no momenta to save and none to demand back on resume. An
-        // optimizer that keeps none is a different case: its graph exists, and
-        // its RNG state and iteration counter are still worth saving.
-        let moments = if optimizer_state.has_momenta {
-            self.read_moments()?
+        // are no slots to save and none to demand back on resume. An optimizer
+        // that keeps none is a different case: its graph exists, and its RNG
+        // state and iteration counter are still worth saving.
+        let slots = if optimizer_state.graph_ready {
+            self.state_slots()?
         } else {
             Vec::new()
         };
+        let state_bytes = slots.iter().map(|slot| slot.n_bytes).sum::<u64>();
+        let marked = if optimizer_state.graph_ready {
+            self.marked_trainable_set()?
+        } else {
+            TrainableSet::default()
+        };
+        let optimizer_kind = OptimizerKind::from_ffi(optimizer_state.optimizer)?;
+        // The same source a resume reads, so the two sides compare what they
+        // both can see rather than two renderings of the same set.
+        let trainable_signature = self.trainable_signature()?;
         let runtime_mt19937 = optimizer_state
             .graph_ready
             .then(|| self.rng_state())
@@ -170,12 +356,36 @@ impl Trainer {
             artifacts.insert(name.clone(), bytes.clone());
         }
 
+        // The bundle's own description is assembled before the file exists: its
+        // size and fingerprint are filled in after the payload writer has run,
+        // which is the only moment both are knowable.
+        let trainable = trains_base.then(|| checkpoint::TrainableBundle {
+            file: checkpoint::TRAINABLE_FILE.to_string(),
+            bytes: 0,
+            fingerprint: String::new(),
+            signature: trainable_signature,
+            tensors: marked
+                .base_entries()
+                .map(|entry| checkpoint::TrainableTensor {
+                    name: entry.name.clone(),
+                    role: entry.role.as_str().to_string(),
+                    dtype: entry.dtype.name().to_string(),
+                    shape: entry.ne,
+                    n_elements: entry.n_elements,
+                    n_bytes: entry.n_bytes,
+                    aliases: Vec::new(),
+                })
+                .collect(),
+        });
+
         let record = checkpoint::Checkpoint {
             manifest: checkpoint::Manifest {
                 format_version: checkpoint::FORMAT_VERSION,
                 checkpoint_id: metadata.checkpoint_id.clone(),
                 global_step: metadata.progress.global_step,
-                adapter,
+                adapter: has_adapter.then(|| checkpoint::ADAPTER_FILE.to_string()),
+                trainable,
+                trainable_policy: self.trainable_policy().as_str().to_string(),
                 files: checkpoint::REQUIRED_FILES
                     .iter()
                     .map(|name| name.to_string())
@@ -202,14 +412,15 @@ impl Trainer {
             },
             optimizer: checkpoint::Optimizer {
                 version: checkpoint::FORMAT_VERSION,
-                kind: OptimizerKind::from_ffi(optimizer_state.optimizer)?.to_string(),
+                kind: optimizer_kind.to_string(),
                 learning_rate: optimizer_state.learning_rate,
                 weight_decay: optimizer_state.weight_decay,
                 max_grad_norm: optimizer_state.max_grad_norm,
                 iter: optimizer_state.iter,
-                has_moments: optimizer_state.has_momenta,
                 graph_ready: optimizer_state.graph_ready,
-                moments,
+                slots: slots.clone(),
+                assignment: assignment_of(&marked, optimizer_kind),
+                state_bytes,
             },
             rng: checkpoint::Rng {
                 version: checkpoint::FORMAT_VERSION,
@@ -219,53 +430,90 @@ impl Trainer {
             dataset: metadata.dataset.clone(),
             artifacts,
         };
-        record.write(&state_dir, |path| self.save_lora(path))
+
+        record.write(&state_dir, |paths| {
+            if let Some(path) = &paths.adapter {
+                self.save_lora(path)?;
+            }
+            if let Some(path) = &paths.trainable {
+                self.save_trainable(path)?;
+            }
+            if let Some(path) = &paths.optimizer_state {
+                let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+                self.write_state_payload(&slots, &mut file)?;
+                std::io::Write::flush(&mut file)?;
+            }
+            Ok(())
+        })?;
+
+        Ok(())
     }
 
-    /// Restores a checkpoint: loads its adapter, validates it against the run
-    /// configuration, then applies the optimizer, scheduler, and RNG state.
-    /// Nothing is written into the trainer before validation succeeds.
+    /// Restores a checkpoint: loads whatever the run produced, validates it
+    /// against the run configuration, then applies the optimizer, scheduler,
+    /// and RNG state. Nothing is written into the trainer before validation
+    /// succeeds.
     pub fn load_checkpoint(
         &mut self,
         state_dir: impl AsRef<Path>,
         expected: &checkpoint::Compatibility,
     ) -> Result<ResumeInfo> {
-        if self.trains_base_weights {
-            return Err(Error::invalid(
-                "training checkpoints cannot save or restore base weights; only LoRA runs are supported",
-            ));
-        }
         let state_dir = checkpoint::state_dir_for(state_dir.as_ref());
         let record = checkpoint::Checkpoint::read(&state_dir)?;
         record.check_compatible(expected)?;
         let optimizer = OptimizerKind::parse(&record.optimizer.kind)?.as_ffi()?;
 
         let adapter = checkpoint::adapter_for(&state_dir, &record.manifest);
-        if !adapter.is_file() {
-            return Err(Error::runtime(format!(
-                "checkpoint adapter {} is missing",
-                adapter.display()
-            )));
+        if let Some(adapter) = &adapter {
+            if !adapter.is_file() {
+                return Err(Error::runtime(format!(
+                    "checkpoint adapter {} is missing",
+                    adapter.display()
+                )));
+            }
+            self.load_lora(adapter)?;
         }
-        self.load_lora(&adapter)?;
 
-        if record.optimizer.graph_was_ready() {
+        let trainable = checkpoint::trainable_for(&state_dir, &record.manifest);
+        if let Some(bundle) = &trainable {
+            if !bundle.is_file() {
+                return Err(Error::runtime(format!(
+                    "checkpoint trainable bundle {} is missing",
+                    bundle.display()
+                )));
+            }
+            // The manifest records what the bundle was when it was published.
+            // A file that no longer matches is a corrupted or swapped payload,
+            // and restoring it would resume from weights nobody trained.
+            if let Some(declared) = &record.manifest.trainable {
+                let found = checkpoint::fingerprint_file(bundle)?;
+                if found != declared.fingerprint {
+                    return Err(Error::checkpoint(format!(
+                        "checkpoint trainable bundle {} does not match the manifest",
+                        bundle.display()
+                    )));
+                }
+            }
+            self.load_trainable(bundle)?;
+        }
+
+        let mut restored_slots = 0;
+        if record.optimizer.graph_ready {
             // Per-parameter state only exists once the optimizer graph is
             // built, which is why the restore is deferred to here rather than
             // done at read. An optimizer with no slots still needs the graph:
             // that is what its iteration counter and RNG state belong to.
             self.prepare_optimizer()?;
-            if record.optimizer.has_moments {
-                self.write_moments(&record.optimizer.moments)?;
-            }
+            self.restore_state_payload(&state_dir, &record.optimizer)?;
+            restored_slots = record.optimizer.slots.len();
             if let Some(rng) = &record.rng.runtime_mt19937 {
                 self.set_rng_state(rng)?;
             }
         }
         let state = ffi::RetroOptimizerState {
             iter: record.optimizer.iter,
-            has_momenta: record.optimizer.has_moments,
-            graph_ready: record.optimizer.graph_was_ready(),
+            has_momenta: !record.optimizer.slots.is_empty(),
+            graph_ready: record.optimizer.graph_ready,
             optimizer,
             learning_rate: record.optimizer.learning_rate,
             weight_decay: record.optimizer.weight_decay,
@@ -281,11 +529,80 @@ impl Trainer {
 
         Ok(ResumeInfo {
             adapter,
+            trainable,
             progress: record.progress,
             dataset: record.dataset,
             seeds: record.rng.seeds,
             artifacts: record.artifacts,
-            had_moments: record.optimizer.has_moments,
+            had_optimizer_graph: record.optimizer.graph_ready,
+            restored_optimizer_slots: restored_slots,
         })
     }
+}
+
+fn ffi_scope(scope: checkpoint::SlotScope) -> i32 {
+    match scope {
+        checkpoint::SlotScope::Parameter => ffi::SLOT_SCOPE_PARAMETER,
+        checkpoint::SlotScope::Shared => ffi::SLOT_SCOPE_SHARED,
+    }
+}
+
+/// Reads a NUL-terminated fixed-size contract field.
+fn fixed_string(field: &[std::os::raw::c_char]) -> Result<String> {
+    let bytes: Vec<u8> = field
+        .iter()
+        .take_while(|byte| **byte != 0)
+        .map(|byte| *byte as u8)
+        .collect();
+    String::from_utf8(bytes)
+        .map_err(|error| Error::runtime(format!("the runtime returned a non-UTF-8 name: {error}")))
+}
+
+/// Which family a marked tensor belongs to, from its name.
+///
+/// The runtime enumerates adapter factors and base tensors through the same
+/// call because they are the same kind of thing to the update step; the suffix
+/// is what the LoRA loader itself appends, so this reads back its own fact.
+fn role_of(name: &str) -> TensorRole {
+    if name.ends_with(".lora_a") {
+        TensorRole::LoraA
+    } else if name.ends_with(".lora_b") {
+        TensorRole::LoraB
+    } else {
+        TensorRole::Base
+    }
+}
+
+/// Fingerprint of a resolved set's canonical manifest.
+///
+/// Over [`TrainableSet::manifest_lines`] rather than over the entry order,
+/// because that order carries the optimizer's update sequence and identity must
+/// not depend on it.
+fn set_signature(set: &TrainableSet) -> String {
+    if set.base_entries().next().is_none() {
+        return String::new();
+    }
+    checkpoint::fingerprint(set.manifest_lines().join("\n").as_bytes())
+}
+
+/// One row per marked parameter, naming the optimizer that updates it.
+///
+/// Written even when every row is the same name: the table is what a mixed run
+/// compares on resume, and one that listed only the parameters an optimizer
+/// accepted could not express a fallback.
+fn assignment_of(
+    set: &TrainableSet,
+    optimizer: OptimizerKind,
+) -> Vec<checkpoint::ParameterAssignment> {
+    set.entries
+        .iter()
+        .map(|entry| checkpoint::ParameterAssignment {
+            parameter: entry.name.clone(),
+            optimizer: if optimizer.is_eligible(entry) {
+                optimizer.to_string()
+            } else {
+                OptimizerKind::AdamW.to_string()
+            },
+        })
+        .collect()
 }

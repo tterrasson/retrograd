@@ -25,8 +25,8 @@ use std::path::{Path, PathBuf};
 use retrograd::checkpoint::{self, Checkpoint};
 use retrograd::{
     CheckpointMetadata, Device, LoraConfig, LoraDtype, OptimizerKind, TargetSet, TrainConfig,
-    TrainableEntry, TrainablePolicy, TrainableRunConfig, TrainableSelector, Trainer, resolve_base,
-    tensor_inventory,
+    TrainableEntry, TrainablePolicy, TrainableRunConfig, TrainableSelector, TrainableSet, Trainer,
+    resolve_base, tensor_inventory,
 };
 
 const TEXT: &str = concat!(
@@ -59,15 +59,17 @@ fn base_config(policy: TrainablePolicy, optimizer: OptimizerKind) -> TrainConfig
 }
 
 /// The norms of the fixture, resolved the way a run would resolve them.
-fn resolved_norms(model: &Path) -> Vec<TrainableEntry> {
+fn resolved_norm_set(model: &Path, policy: TrainablePolicy) -> TrainableSet {
     let inventory = tensor_inventory(model, Device::Cpu).expect("read the tensor inventory");
     let selector = TrainableSelector {
         norms: true,
         ..Default::default()
     };
-    let set = resolve_base(&inventory, TrainablePolicy::Partial, &selector)
-        .expect("a quantized fixture still has F32 norms");
-    set.entries
+    resolve_base(&inventory, policy, &selector).expect("a quantized fixture still has F32 norms")
+}
+
+fn resolved_norms(model: &Path) -> Vec<TrainableEntry> {
+    resolved_norm_set(model, TrainablePolicy::Partial).entries
 }
 
 fn names(entries: &[TrainableEntry]) -> Vec<String> {
@@ -294,10 +296,20 @@ fn sgd_is_the_optimizer_the_graph_builds_and_the_checkpoint_records() {
     assert_eq!(record.optimizer.kind, "sgd");
     // Zero slots, and initialized all the same. A reader that concluded "no
     // moments, so nothing ran" would restart the schedule from zero.
-    assert!(!record.optimizer.has_moments);
-    assert!(record.optimizer.moments.is_empty());
+    assert!(record.optimizer.slots.is_empty());
+    assert_eq!(record.optimizer.state_bytes, 0);
     assert!(record.optimizer.graph_ready);
-    assert!(record.optimizer.graph_was_ready());
+    // ... and the parameters are still enumerated, each naming its optimizer.
+    // A table that only listed parameters carrying state would be empty here,
+    // and a mixed run could not tell "SGD owns it" from "it was not selected".
+    assert!(!record.optimizer.assignment.is_empty());
+    assert!(
+        record
+            .optimizer
+            .assignment
+            .iter()
+            .all(|row| row.optimizer == "sgd")
+    );
     assert!(record.rng.runtime_mt19937.is_some());
 
     // And the trajectory it names is checked: AdamW cannot resume it.
@@ -340,7 +352,8 @@ fn an_sgd_checkpoint_restores_its_schedule_into_a_fresh_trainer() {
         .expect("restore a zero-slot optimizer");
     // The adapter came back, so the scores do too - the assertion that the
     // restore reached the weights and not only the counters.
-    assert!(!info.had_moments);
+    assert!(info.had_optimizer_graph);
+    assert_eq!(info.restored_optimizer_slots, 0);
     assert_eq!(deviation(&saved, &scores(&mut resumed)), 0.0);
     let restored_state = root.join("restored.state");
     resumed
@@ -410,6 +423,8 @@ fn compatibility_for(
         optimizer_kind: optimizer.into(),
         weight_decay: config.weight_decay,
         max_grad_norm: config.max_grad_norm,
+        trainable_policy: trainer.trainable_policy().as_str().to_string(),
+        trainable_signature: trainer.trainable_signature().expect("trainable signature"),
     }
 }
 
@@ -508,26 +523,219 @@ fn the_policy_checks_whether_an_adapter_belongs_to_the_trainable_set() {
     }
 }
 
+/// The acceptance of the persistence half: train, save, resume, and land where
+/// the run left off - not train alone.
+///
+/// A base run's result is the weights themselves, so the checkpoint carries a
+/// trainable bundle of absolute values and no adapter, and a fresh trainer that
+/// restores it reproduces the scores of the run that wrote it.
 #[test]
-fn a_hybrid_run_cannot_publish_an_incomplete_checkpoint() {
+fn a_partial_run_checkpoints_its_base_weights_and_resumes_where_it_stopped() {
     let model = fixture!();
     let _guard = common::serialize_models();
+    let root = scratch("partial-resume");
+    let set = resolved_norm_set(&model, TrainablePolicy::Partial);
+    let selected = names(&set.entries);
+
+    let config = base_config(TrainablePolicy::Partial, OptimizerKind::AdamW);
+    let mut trainer = Trainer::new(&model, config.clone()).expect("load trainer");
+    trainer
+        .declare_trainable_set(&set)
+        .expect("select the fixture's norms");
+    let step = train_once(&mut trainer);
+    let state = root.join(format!("step-{step:012}.state"));
+    trainer
+        .save_checkpoint(&state, &metadata(&model, step))
+        .expect("a base run publishes its weights");
+    let saved = scores(&mut trainer);
+    drop(trainer);
+
+    let record = Checkpoint::read(&state).expect("read the base checkpoint");
+    assert_eq!(record.manifest.trainable_policy, "partial");
+    // No adapter, and no sibling GGUF either: the name every helper reads as
+    // "the adapter" must not resolve to a file no adapter loader accepts.
+    assert!(record.manifest.adapter.is_none());
+    assert!(!state.join(checkpoint::ADAPTER_FILE).exists());
+    assert!(!root.join(format!("step-{step:012}.gguf")).exists());
+
+    let bundle = record.manifest.trainable.as_ref().expect("a base bundle");
+    assert!(!bundle.signature.is_empty());
+    assert_eq!(
+        bundle.bytes,
+        std::fs::metadata(state.join(&bundle.file)).unwrap().len()
+    );
+    assert_eq!(
+        bundle.fingerprint,
+        checkpoint::fingerprint_file(&state.join(&bundle.file)).unwrap()
+    );
+    let mut declared: Vec<&str> = bundle.tensors.iter().map(|t| t.name.as_str()).collect();
+    declared.sort();
+    let mut expected_names: Vec<&str> = selected.iter().map(String::as_str).collect();
+    expected_names.sort();
+    assert_eq!(declared, expected_names);
+    assert!(
+        bundle
+            .tensors
+            .iter()
+            .all(|t| t.role == "base" && t.dtype == "F32")
+    );
+
+    // The restore is the assertion: a fresh trainer holds the fixture's own
+    // weights until the bundle is applied, so identical scores mean the values
+    // travelled rather than the counters.
+    let mut resumed = Trainer::new(&model, config).expect("load a fresh trainer");
+    resumed
+        .declare_trainable_set(&set)
+        .expect("the same selection");
+    let cold = scores(&mut resumed);
+    assert!(
+        deviation(&saved, &cold) > 0.0,
+        "the fixture was already trained"
+    );
+    let expected = compatibility_for(&mut resumed, &model, "adamw");
+    let info = resumed
+        .load_checkpoint(&state, &expected)
+        .expect("restore a base-weight checkpoint");
+    assert_eq!(info.adapter, None);
+    assert_eq!(info.trainable, Some(state.join(&bundle.file)));
+    assert!(info.had_optimizer_graph);
+    assert_eq!(info.restored_optimizer_slots, record.optimizer.slots.len());
+    assert_eq!(deviation(&saved, &scores(&mut resumed)), 0.0);
+
+    // And a different selection is refused rather than restored into: two
+    // `partial` runs agree on the policy and can share nothing else.
+    let mut narrowed = Trainer::new(
+        &model,
+        base_config(TrainablePolicy::Partial, OptimizerKind::AdamW),
+    )
+    .expect("load a third trainer");
+    let mut narrower = set.clone();
+    narrower.entries.truncate(1);
+    narrowed
+        .declare_trainable_set(&narrower)
+        .expect("a narrower selection");
+    let expected = compatibility_for(&mut narrowed, &model, "adamw");
+    let error = narrowed
+        .load_checkpoint(&state, &expected)
+        .expect_err("a different resolved set is a different trajectory");
+    assert!(error.to_string().contains("trainable set"), "{error}");
+}
+
+/// A hybrid run trains both halves, and its checkpoint carries both. The
+/// adapter alone would be a file a loader cannot tell is incomplete.
+#[test]
+fn a_hybrid_checkpoint_carries_the_adapter_and_the_base_bundle() {
+    let model = fixture!();
+    let _guard = common::serialize_models();
+    let root = scratch("hybrid-checkpoint");
+    let set = resolved_norm_set(&model, TrainablePolicy::Hybrid);
+    let selected = names(&set.entries);
+
     let mut trainer = Trainer::new(
         &model,
         base_config(TrainablePolicy::Hybrid, OptimizerKind::AdamW),
     )
     .expect("load trainer");
+    trainer
+        .declare_trainable_set(&set)
+        .expect("select the norms");
     trainer.create_lora(&f32_lora()).expect("create adapter");
-    let root = scratch("hybrid-checkpoint");
+    let step = train_once(&mut trainer);
     let state = root.join("checkpoint.state");
-    let error = trainer
-        .save_checkpoint(&state, &metadata(&model, 0))
-        .expect_err("adapter-only checkpoint would lose the base weights");
-    assert!(error.to_string().contains("base weights"), "{error}");
-    assert!(!state.exists());
-    let expected = compatibility_for(&mut trainer, &model, "adamw");
-    let error = trainer
+    trainer
+        .save_checkpoint(&state, &metadata(&model, step))
+        .expect("a hybrid run publishes both halves");
+    let saved = scores(&mut trainer);
+    drop(trainer);
+
+    let record = Checkpoint::read(&state).expect("read the hybrid checkpoint");
+    assert_eq!(record.manifest.trainable_policy, "hybrid");
+    assert!(record.manifest.adapter.is_some());
+    assert!(record.manifest.trainable.is_some());
+    assert!(state.join(checkpoint::ADAPTER_FILE).is_file());
+    assert!(state.join(checkpoint::TRAINABLE_FILE).is_file());
+    // The optimizer slots cover both families, which is what makes the
+    // composite restore meaningful rather than an adapter reload beside it.
+    let owners: Vec<&str> = record
+        .optimizer
+        .slots_in(checkpoint::SlotScope::Parameter)
+        .map(|slot| slot.owner.as_str())
+        .collect();
+    assert!(owners.iter().any(|owner| owner.contains("lora")));
+    assert!(
+        owners
+            .iter()
+            .any(|owner| selected.iter().any(|name| name == owner))
+    );
+
+    let mut resumed = Trainer::new(
+        &model,
+        base_config(TrainablePolicy::Hybrid, OptimizerKind::AdamW),
+    )
+    .expect("load a fresh trainer");
+    resumed
+        .declare_trainable_set(&set)
+        .expect("the same selection");
+    let expected = compatibility_for(&mut resumed, &model, "adamw");
+    let info = resumed
         .load_checkpoint(&state, &expected)
-        .expect_err("base-weight restore is unsupported");
-    assert!(error.to_string().contains("base weights"), "{error}");
+        .expect("restore both halves");
+    assert!(info.adapter.is_some());
+    assert!(info.trainable.is_some());
+    assert_eq!(deviation(&saved, &scores(&mut resumed)), 0.0);
+}
+
+/// A bundle whose tensor list is not the run's resolved set is refused before
+/// any weight moves: a partial restore resumes from a model that is neither the
+/// checkpoint's nor the base's.
+#[test]
+fn a_trainable_bundle_must_match_the_run_it_is_restored_into() {
+    let model = fixture!();
+    let _guard = common::serialize_models();
+    let root = scratch("bundle-mismatch");
+    let selected = names(&resolved_norms(&model));
+    assert!(selected.len() > 1, "the fixture carries several norms");
+
+    let mut trainer = Trainer::new(
+        &model,
+        base_config(TrainablePolicy::Partial, OptimizerKind::AdamW),
+    )
+    .expect("load trainer");
+    trainer.set_trainable_base(&selected).expect("select");
+    train_once(&mut trainer);
+    let bundle = root.join("trainable.gguf");
+    trainer.save_trainable(&bundle).expect("write the bundle");
+    drop(trainer);
+
+    let mut narrowed = Trainer::new(
+        &model,
+        base_config(TrainablePolicy::Partial, OptimizerKind::AdamW),
+    )
+    .expect("load trainer");
+    narrowed
+        .set_trainable_base(&selected[..1])
+        .expect("select fewer");
+    let error = narrowed
+        .load_trainable(&bundle)
+        .expect_err("the bundle carries tensors this run does not train");
+    assert!(error.to_string().contains("unexpected"), "{error}");
+
+    // A LoRA run has no bundle to write at all.
+    let mut lora_only = Trainer::new(
+        &model,
+        base_config(TrainablePolicy::Lora, OptimizerKind::AdamW),
+    )
+    .expect("load trainer");
+    lora_only.create_lora(&f32_lora()).expect("create adapter");
+    let error = lora_only
+        .save_trainable(root.join("empty.gguf"))
+        .expect_err("a lora run trains no base tensor");
+    assert!(error.to_string().contains("no base tensor"), "{error}");
+
+    // And the bundle is not an adapter: loading it as one is refused rather
+    // than producing an adapter of whatever happened to parse.
+    let error = lora_only
+        .load_lora(&bundle)
+        .expect_err("a bundle is not an adapter");
+    assert!(!error.to_string().is_empty());
 }

@@ -249,7 +249,9 @@ pub(crate) fn init_trainer(
 
     // --- Phase: LoRA adapter creation. ---
     let t = Instant::now();
-    trainer.create_lora(&run_config.lora.config)?;
+    if let Some(lora) = &run_config.lora {
+        trainer.create_lora(&lora.config)?;
+    }
     let lora_time = t.elapsed();
     let mem_after_lora = snapshot_bytes();
     let vram_after_lora = vram.sample();

@@ -12,7 +12,11 @@ use retrograd_core::{Error, Result};
 /// Sets `checkpoint.resume_from`, defaulting to the most recent step checkpoint
 /// under `checkpoint.directory` when no path is given.
 pub fn apply_resume_override(config: &mut RunConfig, explicit: Option<PathBuf>) -> Result<()> {
-    if config.lora.init_adapter.is_some() {
+    if config
+        .lora
+        .as_ref()
+        .is_some_and(|lora| lora.init_adapter.is_some())
+    {
         return Err(Error::invalid(
             "--resume and lora.init_adapter are mutually exclusive",
         ));
@@ -149,7 +153,8 @@ mod tests {
         assert!(error.to_string().contains("conflicts"));
 
         let mut config = config::load(&config_path).unwrap();
-        config.lora.init_adapter = Some(root.join("adapter.gguf"));
+        config.lora.as_mut().expect("a lora fixture").init_adapter =
+            Some(root.join("adapter.gguf"));
         let error = apply_resume_override(&mut config, None).unwrap_err();
         assert!(error.to_string().contains("mutually exclusive"));
 

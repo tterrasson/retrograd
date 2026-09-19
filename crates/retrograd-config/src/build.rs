@@ -20,14 +20,15 @@ use crate::common::{
 use crate::distill::build_distill;
 use crate::document::{
     CheckpointToml, ConfigDocument, EvaluationToml, LoraToml, ModelOverride, ObserveToml,
-    SharedPrefixFanoutToml, TrainableToml, TrainingToml,
+    OutputToml, SharedPrefixFanoutToml, TrainableToml, TrainingToml,
 };
 use crate::grpo::build_grpo;
 use crate::ppo::build_ppo;
 use crate::sft::build_sft;
 use crate::{
-    Algorithm, CheckpointConfig, CheckpointMode, DEFAULT_TARGETS, EvaluationConfig, LoraRunConfig,
-    MetricsConfig, ObserveConfig, RunConfig, agent, parse_targets,
+    Algorithm, CheckpointConfig, CheckpointMode, DEFAULT_SEED, DEFAULT_TARGETS, EvaluationConfig,
+    LoraRunConfig, MetricsConfig, ObserveConfig, OutputConfig, OutputKind, RunConfig, agent,
+    parse_targets,
 };
 
 /// Reads, parses and builds the TOML file at `path` into a [`RunConfig`].
@@ -91,8 +92,10 @@ pub fn build_with(
         overrides.device,
         file.run.verbose,
     )?;
-    let lora = build_lora(&file.lora)?;
     training.trainable = build_trainable(&file.training, file.trainable.as_ref())?;
+    let policy = training.trainable.policy;
+    let lora = build_lora(policy, file.lora.as_ref())?;
+    let output = build_output(policy, file.output.as_ref(), root)?;
 
     let algorithm_name = file.run.algorithm.to_ascii_lowercase();
     only_the_selected_section(&file, &algorithm_name)?;
@@ -115,7 +118,12 @@ pub fn build_with(
     let algorithm = match algorithm_name.as_str() {
         "sft" => {
             let value = required(sft, "[sft] is required when run.algorithm = 'sft'")?;
-            Algorithm::Sft(build_sft(value, root, &mut training, lora.seed)?)
+            Algorithm::Sft(build_sft(
+                value,
+                root,
+                &mut training,
+                lora.as_ref().map_or(DEFAULT_SEED, |config| config.seed),
+            )?)
         }
         "ppo" => {
             let value = required(ppo, "[ppo] is required when run.algorithm = 'ppo'")?;
@@ -170,19 +178,22 @@ pub fn build_with(
         &algorithm,
         evaluation.as_ref(),
         checkpoint.as_ref(),
-        &lora_toml,
-        &lora,
+        lora_toml.as_ref(),
+        lora.as_ref(),
         &training.trainable,
     )?;
 
     Ok(RunConfig {
         algorithm,
         model,
-        lora: LoraRunConfig {
-            config: lora,
-            output: resolve(root, lora_toml.output),
-            init_adapter: lora_toml.init_adapter.map(|path| resolve(root, path)),
-        },
+        lora: lora.map(|config| LoraRunConfig {
+            config,
+            init_adapter: lora_toml
+                .as_ref()
+                .and_then(|section| section.init_adapter.clone())
+                .map(|path| resolve(root, path)),
+        }),
+        output,
         training,
         metrics: MetricsConfig {
             tensorboard_dir: metrics.tensorboard_dir.map(|path| resolve(root, path)),
@@ -385,20 +396,9 @@ fn build_trainable(
         });
     }
 
-    // Validated before the mode is refused, so that the day the mode lands a
-    // document written against it is already known to be well-formed - and so
-    // that this validation is exercised now rather than on the commit that
-    // enables it.
-    let selector = build_trainable_selector(policy, selector)?;
-    Err(Error::config(format!(
-        "training.trainable = '{policy}' is not available from a configuration file \
-         yet: the runtime trains base weights, but a run built from a document has \
-         no way to save one - a checkpoint carries an adapter, and there is no \
-         model-export surface. Only 'lora' trains from a document today"
-    )))
-    .map(|()| TrainableRunConfig {
+    Ok(TrainableRunConfig {
         policy,
-        selector,
+        selector: build_trainable_selector(policy, selector)?,
         optimizer,
     })
 }
@@ -455,9 +455,96 @@ fn build_trainable_selector(
     Ok(selector)
 }
 
-/// The shared `[lora]` block. `init_adapter` excludes the creation keys: an
+/// The shared `[lora]` block, when the policy has an adapter at all.
+///
+/// Required by `lora` and `hybrid`, refused by `full` and `partial`: a section
+/// describing an adapter the run never creates is a section whose rank, alpha
+/// and targets have no effect, which is the same failure as a `[trainable]`
+/// selector beside `lora`.
+fn build_lora(policy: TrainablePolicy, file: Option<&LoraToml>) -> Result<Option<LoraConfig>> {
+    let trains_adapter = policy != TrainablePolicy::Full && policy != TrainablePolicy::Partial;
+    match (trains_adapter, file) {
+        (true, Some(file)) => build_lora_config(file).map(Some),
+        (true, None) => Err(Error::config(format!(
+            "training.trainable = '{policy}' trains a LoRA adapter and requires a \
+             [lora] section"
+        ))),
+        (false, Some(_)) => Err(Error::config(format!(
+            "training.trainable = '{policy}' trains base tensors and no adapter: \
+             remove [lora], or use 'hybrid' to train both"
+        ))),
+        (false, None) => Ok(None),
+    }
+}
+
+/// Where the run's result goes, and what kind of result it is.
+fn build_output(
+    policy: TrainablePolicy,
+    section: Option<&OutputToml>,
+    root: &Path,
+) -> Result<OutputConfig> {
+    let Some(path) = section.map(|value| value.path.clone()) else {
+        return Err(Error::config(
+            "[output].path is missing: a run must say where to write its result",
+        ));
+    };
+
+    // The default is what the policy produces, so an ordinary document never
+    // has to name a kind - and a document that names the wrong one is told so
+    // rather than silently given the default.
+    let default = if policy.trains_base_weights() {
+        OutputKind::Trainable
+    } else {
+        OutputKind::Adapter
+    };
+    let kind = match section.and_then(|value| value.kind.as_deref()) {
+        Some(value) => OutputKind::parse(value)?,
+        None => default,
+    };
+    match (kind, policy) {
+        (OutputKind::Adapter, TrainablePolicy::Full | TrainablePolicy::Partial) => {
+            return Err(Error::config(format!(
+                "output.kind = 'adapter' with training.trainable = '{policy}': this run \
+                 trains base tensors and creates no adapter, so an adapter export would \
+                 be an empty file"
+            )));
+        }
+        (OutputKind::Adapter, TrainablePolicy::Hybrid) => {
+            // The adapter alone is half of what a hybrid run produced, and the
+            // half a loader cannot tell is incomplete.
+            return Err(Error::config(
+                "output.kind = 'adapter' with training.trainable = 'hybrid' would drop the \
+                 trained base tensors: use the composite 'trainable' bundle",
+            ));
+        }
+        (OutputKind::Trainable, TrainablePolicy::Lora) => {
+            return Err(Error::config(
+                "output.kind = 'trainable' with training.trainable = 'lora': a LoRA run \
+                 trains no base tensor, and its portable result is the adapter",
+            ));
+        }
+        (OutputKind::Model, _) => {
+            // Rejected by name rather than attempted: the model saver supports
+            // a subset of architectures, and merging an adapter into supported
+            // weights has no parity coverage. Accepting the name would promise
+            // a file the run cannot write.
+            return Err(Error::config(
+                "output.kind = 'model' is not available in this build: a standalone model \
+                 GGUF needs the saver's per-architecture support and, for a run with an \
+                 adapter, a validated merge. Use 'trainable' for the bundle",
+            ));
+        }
+        _ => {}
+    }
+    Ok(OutputConfig {
+        path: resolve(root, path),
+        kind,
+    })
+}
+
+/// The `[lora]` block itself. `init_adapter` excludes the creation keys: an
 /// adapter file already carries rank, alpha, seed, dtype and targets.
-fn build_lora(file: &LoraToml) -> Result<LoraConfig> {
+fn build_lora_config(file: &LoraToml) -> Result<LoraConfig> {
     if file.init_adapter.is_some()
         && (file.rank.is_some()
             || file.alpha.is_some()
@@ -471,7 +558,7 @@ fn build_lora(file: &LoraToml) -> Result<LoraConfig> {
         ));
     }
     let mut lora = LoraConfig::auto(file.rank.unwrap_or(8), file.alpha.unwrap_or(16.0));
-    lora.seed = file.seed.unwrap_or(42);
+    lora.seed = file.seed.unwrap_or(DEFAULT_SEED);
     lora.targets = if file.targets.is_empty() {
         parse_targets(&DEFAULT_TARGETS.map(String::from))?
     } else {
@@ -635,10 +722,33 @@ fn check_across_sections(
     algorithm: &Algorithm,
     evaluation: Option<&EvaluationConfig>,
     checkpoint: Option<&CheckpointConfig>,
-    lora: &LoraToml,
-    lora_config: &LoraConfig,
+    lora: Option<&LoraToml>,
+    lora_config: Option<&LoraConfig>,
     trainable: &TrainableRunConfig,
 ) -> Result<()> {
+    // The fixed reference, and why base training cannot have one yet.
+    //
+    // Every consumer below scores against "the model with its adapter
+    // disabled" and calls that the original policy. That identity holds
+    // because a LoRA run leaves the base weights untouched - and a run that
+    // updates them breaks it on the first step, silently: the KL is then taken
+    // against a moving target, and its value keeps being a number.
+    //
+    // Checked on the configured coefficient and schedule rather than on the
+    // current warmup value, because a run that starts at zero and warms up to a
+    // penalty is a run with a reference.
+    if trainable.policy.trains_base_weights()
+        && let Some(consumer) = fixed_reference_consumer(algorithm)
+    {
+        return Err(Error::config(format!(
+            "{consumer} with training.trainable = '{}': the penalty is taken against \
+             the model with its adapter disabled, which is the original policy only \
+             while the base weights are frozen. A run that trains them needs a \
+             separate reference model, which this build does not have - set the \
+             coefficient to zero, or train an adapter",
+            trainable.policy
+        )));
+    }
     // put on it - a verify command, a test suite, a task's own grading. The
     // judge cannot stand in: every RULER strategy scores the members of a group
     // against each other, so its scores are renormalized at every update and a
@@ -670,7 +780,7 @@ fn check_across_sections(
     if checkpoint
         .as_ref()
         .is_some_and(|value| value.resume_from.is_some())
-        && lora.init_adapter.is_some()
+        && lora.is_some_and(|section| section.init_adapter.is_some())
     {
         return Err(Error::config(
             "checkpoint.resume_from and lora.init_adapter are mutually exclusive",
@@ -681,8 +791,8 @@ fn check_across_sections(
     // way to ask for it - and the runtime's own refusal would arrive after the
     // model is loaded and the training graph is built.
     if trainable.optimizer == OptimizerKind::Sgd
-        && lora_config.dtype == LoraDtype::F16
-        && lora.init_adapter.is_none()
+        && lora_config.is_some_and(|config| config.dtype == LoraDtype::F16)
+        && !lora.is_some_and(|section| section.init_adapter.is_some())
         && !checkpoint.is_some_and(|value| value.resume_from.is_some())
     {
         return Err(Error::config(
@@ -692,6 +802,32 @@ fn check_across_sections(
     }
 
     Ok(())
+}
+
+/// Which enabled consumer of a fixed reference this algorithm carries, if any.
+///
+/// A KL coefficient of zero is not a reference: the penalty term is skipped
+/// entirely and nothing scores the frozen model. PPO's stored old-policy
+/// logprobs are a different concept again - they come from the policy that
+/// generated the rollout, not from an anchor - and are deliberately not listed.
+fn fixed_reference_consumer(algorithm: &Algorithm) -> Option<&'static str> {
+    match algorithm {
+        Algorithm::Sft(_) => None,
+        Algorithm::Ppo(ppo) => (ppo.kl_coefficient > 0.0).then_some("ppo.kl_coefficient"),
+        Algorithm::Grpo(grpo) => {
+            // The schedule as well as the value: a run configured to warm up to
+            // a penalty has a reference from the first update, whatever the
+            // coefficient reads at update one.
+            (grpo.kl_coefficient > 0.0 || grpo.kl_schedule.is_some())
+                .then_some("grpo.kl_coefficient")
+        }
+        Algorithm::Distill(distill) => {
+            (distill.kl_coefficient > 0.0).then_some("distill.kl_coefficient")
+        }
+        Algorithm::AgentGrpo(agent) => {
+            (agent.config.kl_coefficient > 0.0).then_some("agent.kl_coefficient")
+        }
+    }
 }
 
 fn build_observe(value: ObserveToml, algorithm: &Algorithm, root: &Path) -> Result<ObserveConfig> {

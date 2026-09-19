@@ -30,7 +30,7 @@ pub(super) fn apply_levers(
         let usage = estimate(
             input.model,
             training,
-            lora,
+            Some(lora),
             workload,
             calibration_for(input, algorithm, training),
         );

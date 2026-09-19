@@ -25,6 +25,7 @@ add_library(retro_lora_train STATIC
     src/retro_fused_ce.cpp
     src/retro_lora_train.cpp
     src/retro_checkpoint.cpp
+    src/retro_trainable.cpp
     src/retro_chat_template.cpp
     src/retro_chat_parser.cpp
     ${LLAMA_CPP_DIR}/common/unicode.cpp

@@ -14,8 +14,8 @@ use std::path::PathBuf;
 
 use retrograd_config::{
     CheckpointToml, ConfigDocument, EvaluationToml, GrpoToml, LoraToml, MetricsToml, ModelToml,
-    PpoToml, RunConfig, RunToml, SamplingToml, SftToml, SharedPrefixFanoutToml, TrainingToml,
-    build as build_run_config,
+    OutputToml, PpoToml, RunConfig, RunToml, SamplingToml, SftToml, SharedPrefixFanoutToml,
+    TrainingToml, build as build_run_config,
 };
 use retrograd_core::{
     ExecutionProfile, LoraConfig, LrScheduler, ModelInfo, PreflightReport, RewardProtocol,
@@ -406,12 +406,28 @@ pub fn resolve(input: &ResolveInput<'_>) -> Result<Resolution, ResolveError> {
     )?;
     apply_params(&mut document, input.params)?;
     let run_config = build_run_config(document.clone(), &input.root)?;
+    if run_config.training.trainable.policy.trains_base_weights() {
+        return Err(ResolveError::Invalid {
+            message: crate::base_training_unpriced(run_config.training.trainable.policy),
+            path: Some("training.trainable".to_string()),
+        });
+    }
 
     // Search geometry, apply defaults, and recover from memory pressure.
     let workload = workload_of(input, &run_config);
     let algorithm = crate::calibration::algorithm_slug(&run_config.algorithm);
     let mut training = run_config.training.clone();
-    let lora = run_config.lora.config.clone();
+    // The cost model sizes an adapter analytically, from the model's geometry
+    // and the target set. A base-weight policy has neither - its gradients and
+    // optimizer state follow a resolved trainable set, which needs the GGUF's
+    // per-tensor inventory - so planning one would answer with a budget short
+    // by the largest term the run pays. Refused rather than answered.
+    let Some(lora) = run_config.lora.as_ref().map(|lora| lora.config.clone()) else {
+        return Err(ResolveError::Invalid {
+            message: crate::base_training_unpriced(run_config.training.trainable.policy),
+            path: Some("training.trainable".to_string()),
+        });
+    };
     let mut limits = Limits {
         min_batch: training.n_seq_max.max(1),
         min_ctx: MIN_CONTEXT.max(round_up_pow2(input.data.percentile(0.5))),
@@ -587,7 +603,7 @@ fn rebuild_and_validate(
     let final_estimate = estimate(
         input.model,
         &config.training,
-        &config.lora.config,
+        config.lora.as_ref().map(|lora| &lora.config),
         workload,
         calibration_for(input, algorithm, &config.training),
     );
@@ -713,7 +729,7 @@ pub fn assess(
     let estimate = estimate(
         model,
         &config.training,
-        &config.lora.config,
+        config.lora.as_ref().map(|lora| &lora.config),
         &workload,
         calibration,
     );

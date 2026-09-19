@@ -224,7 +224,7 @@ fn train_sft_runs_through_the_cli_and_writes_metrics_and_adapter() {
     )
     .unwrap();
     let config = format!(
-        "[run]\nalgorithm='sft'\nverbose=true\n[model]\npath='{}'\ndevice='cpu'\n[lora]\noutput='adapter.gguf'\nrank=2\nalpha=4.0\ndtype='f16'\ntargets=['blk.2.attn_q.weight']\n[training]\nctx=32\nmicro_batch=16\ngradient_accumulation=2\nepochs=3\nlr=0.001\n[metrics]\ntensorboard_dir='tensorboard'\nwandb_export_dir='wandb'\n[sft]\ndata='train.txt'\ndata_format='text'\n[evaluation]\ndata='train.txt'\nevery_iterations=1\npatience=1\nmin_delta=100.0\n[checkpoint]\ndirectory='checkpoints'\nmode='steps_and_best_eval'\nevery_steps=1\n",
+        "[run]\nalgorithm='sft'\nverbose=true\n[model]\npath='{}'\ndevice='cpu'\n[output]\npath='adapter.gguf'\n[lora]\nrank=2\nalpha=4.0\ndtype='f16'\ntargets=['blk.2.attn_q.weight']\n[training]\nctx=32\nmicro_batch=16\ngradient_accumulation=2\nepochs=3\nlr=0.001\n[metrics]\ntensorboard_dir='tensorboard'\nwandb_export_dir='wandb'\n[sft]\ndata='train.txt'\ndata_format='text'\n[evaluation]\ndata='train.txt'\nevery_iterations=1\npatience=1\nmin_delta=100.0\n[checkpoint]\ndirectory='checkpoints'\nmode='steps_and_best_eval'\nevery_steps=1\n",
         model.display()
     );
     let config_path = dir.join("run.toml");
@@ -361,7 +361,7 @@ fn rollout_runs_export_what_they_trained_on() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let common = format!(
-        "[model]\npath='{}'\ndevice='cpu'\n[lora]\noutput='adapter.gguf'\nrank=2\nalpha=4.0\n\
+        "[model]\npath='{}'\ndevice='cpu'\n[output]\npath='adapter.gguf'\n[lora]\nrank=2\nalpha=4.0\n\
          targets=['blk.2.attn_q.weight']\n[training]\nctx=64\nmicro_batch=16\nlr=0.00001\n",
         model.display()
     );
@@ -464,7 +464,7 @@ fn train_failure_is_exported_and_does_not_write_an_adapter() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("train.txt"), "too short").unwrap();
     let config = format!(
-        "[run]\nalgorithm='sft'\n[model]\npath='{}'\ndevice='cpu'\n[lora]\noutput='adapter.gguf'\nrank=2\nalpha=4.0\ntargets=['blk.2.attn_q.weight']\n[training]\nctx=32\nmicro_batch=16\ngradient_accumulation=2\nepochs=1\n[metrics]\nwandb_export_dir='wandb'\n[sft]\ndata='train.txt'\ndata_format='text'\n",
+        "[run]\nalgorithm='sft'\n[model]\npath='{}'\ndevice='cpu'\n[output]\npath='adapter.gguf'\n[lora]\nrank=2\nalpha=4.0\ntargets=['blk.2.attn_q.weight']\n[training]\nctx=32\nmicro_batch=16\ngradient_accumulation=2\nepochs=1\n[metrics]\nwandb_export_dir='wandb'\n[sft]\ndata='train.txt'\ndata_format='text'\n",
         model.display()
     );
     let config_path = dir.join("run.toml");

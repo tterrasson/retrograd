@@ -1560,7 +1560,8 @@ int retro_trainer_advance_scheduler_steps(
 // optimizer steps. The scheduler multiplies this value by its warm-up or decay
 // factor at every step, so the next step uses the new base and the shape of the
 // schedule is unchanged. Nothing else is touched: the step counter, the horizon
-// and the AdamW momenta keep their values, which is what makes this safe to call
+// and the persistent optimizer state keeps its values, which is what makes this
+// safe to call
 // from a progress callback.
 // Rejects a non-finite or non-positive rate, exactly as trainer creation does.
 int retro_trainer_set_learning_rate(
@@ -1570,6 +1571,31 @@ int retro_trainer_set_learning_rate(
 int retro_trainer_save_lora(
     retro_trainer * trainer,
     const char * adapter_path);
+
+// Writes the resolved base trainable tensors to a GGUF, by absolute value.
+//
+// Absolute and not a delta against the source model: a delta is only
+// interpretable beside the exact GGUF it was taken from, while the values are
+// what the run produced and what a reload needs. The file is the trainable
+// half of a checkpoint bundle, never a LoRA adapter - it carries no adapter
+// metadata and llama_adapter_lora_init() would refuse it.
+//
+// Fails for a run that trains no base tensor: an empty bundle claims a run
+// trained something it did not.
+int retro_trainer_save_trainable(
+    retro_trainer * trainer,
+    const char * trainable_path);
+
+// Restores those values onto the live model, matching by tensor name.
+//
+// Every name in the file must be in the run's resolved set and every name in
+// the set must be in the file, with the same shape and dtype: a partial
+// restore would resume from a model that is neither the checkpoint's nor the
+// base's. Call before the first training step - the values it writes are
+// weights, not optimizer state, and the optimizer graph does not have to exist.
+int retro_trainer_load_trainable(
+    retro_trainer * trainer,
+    const char * trainable_path);
 
 // ---------------------------------------------------------------------------
 // Training checkpoints
@@ -1583,14 +1609,19 @@ int retro_trainer_save_lora(
 typedef struct retro_optimizer_state {
     // AdamW bias-correction counter (ggml starts it at 1).
     int64_t iter;
-    // Whether this optimizer keeps per-parameter momenta *and* has allocated
-    // them. False for a cold optimizer and false for SGD, which keeps none.
+    // Whether this optimizer keeps per-parameter state *and* has allocated it.
+    // False for a cold optimizer and false for SGD, which keeps none.
+    //
+    // Named for AdamW's momenta because that is what it meant when the field
+    // was added, and kept because the name is published: the slot enumeration
+    // below is what describes the state, and this is the one-bit summary a
+    // caller reads before deciding whether to walk it.
     bool has_momenta;
     // Whether the optimizer graph exists, i.e. whether
     // retro_trainer_prepare_optimizer() or a training step has run.
     //
     // Distinct from has_momenta because "initialized with zero slots" and
-    // "not initialized" are different states: an SGD run has no momenta and
+    // "not initialized" are different states: an SGD run has no slots and
     // still has an iteration counter, a schedule and an RNG state, and a
     // resume that read the empty slot list as a cold optimizer would restart
     // the schedule from zero.
@@ -1631,42 +1662,99 @@ int retro_trainer_set_resume_point(retro_trainer * trainer, uint32_t completed_e
 // Requires a created or loaded LoRA adapter unless the run trains base weights.
 //
 // Succeeds for an optimizer that keeps no state at all: it reports that the
-// graph exists, not that momenta were allocated.
+// graph exists, not that any slot was allocated.
 int retro_trainer_prepare_optimizer(retro_trainer * trainer);
 
-// Number of trainable parameters that carry AdamW momenta. Zero until the
-// optimizer graph is built, and zero for an optimizer that keeps none.
-int retro_trainer_momenta_count(retro_trainer * trainer, size_t * out_count);
+// Every tensor carrying GGML_TENSOR_FLAG_PARAM once the optimizer graph
+// exists: the set the update step actually writes, whatever the policy
+// selected and whatever the optimizer keeps for it.
+//
+// Distinct from the slot enumeration below, and both are needed. A parameter
+// with no slot is still a parameter - SGD keeps none at all - so a checkpoint
+// that listed only the parameters carrying state could not record which
+// optimizer owns each one, and a resume could not compare selections.
+//
+// Ordered adapter factors first, in the adapter's registration order, then
+// base tensors by name: the same order the resolved trainable set publishes,
+// so the two can be compared line by line.
+int retro_trainer_marked_parameter_count(retro_trainer * trainer, size_t * out_count);
 
-// Describes one momenta entry. `name_buffer` follows the two-call contract of
-// retro_trainer_describe_lora(); `out_ne` receives four dimensions and
-// `out_n_elements` their product, the length expected by the read/write calls.
-int retro_trainer_momenta_info(
+// Describes one marked parameter, reusing the inventory's per-tensor contract.
+int retro_trainer_marked_parameter_info(
     retro_trainer * trainer,
     size_t index,
-    char * name_buffer,
-    size_t n_buffer,
-    size_t * out_n_bytes,
-    int64_t * out_ne,
-    size_t * out_n_elements);
+    retro_tensor_desc * out_tensor);
 
-// Copies the m and v buffers of one entry out of the backend.
-int retro_trainer_momenta_read(
+// Persistent optimizer state, enumerated as slots rather than as AdamW pairs.
+//
+// A slot is one persistent tensor an optimizer keeps: AdamW has "m" and "v"
+// per parameter, SGD has none, and an optimizer with block-shaped or shared
+// state has whichever its layout declares. The enumeration is the contract -
+// nothing here assumes two slots, assumes they are floats, or assumes they are
+// parameter-shaped, because the next optimizer breaks all three.
+//
+// Scopes are separate namespaces: a parameter slot is owned by the trainable
+// tensor it updates, a shared slot by whatever the optimizer declares as its
+// owner (a codebook belongs to the optimizer, not to any one parameter), and a
+// shared slot is allocated once per owner rather than once per parameter.
+#define RETRO_SLOT_SCOPE_PARAMETER 0
+#define RETRO_SLOT_SCOPE_SHARED    1
+
+typedef struct retro_optimizer_slot {
+    // Trainable tensor name for a parameter slot, optimizer-declared owner for
+    // a shared one. The pair (owner, slot) is the identity a restore matches
+    // on; the index is an enumeration order and never an identity.
+    char owner[RETRO_TENSOR_NAME_MAX];
+    // Slot name inside the optimizer's layout: "m", "v", "momentum", ...
+    char slot[RETRO_MODEL_INFO_NAME_MAX];
+    // ggml type name ("F32", "I8", ...), the spelling retro_tensor_desc uses.
+    char type_name[RETRO_MODEL_INFO_NAME_MAX];
+    int64_t ne[4];
+    uint64_t n_elements;
+    // Exact payload length. Reads and writes are byte ranges inside it, so a
+    // caller streams through a bounded staging buffer instead of holding a
+    // model-sized copy of the state.
+    uint64_t n_bytes;
+} retro_optimizer_slot;
+
+// How many slots each scope currently holds. Both are zero until the optimizer
+// graph is built, and the parameter count stays zero for an optimizer that
+// keeps no per-parameter state - which is a fact about the optimizer, not a
+// sign that nothing was initialized. retro_optimizer_state.graph_ready is what
+// tells those apart. Either out pointer may be null.
+int retro_trainer_state_slot_count(
     retro_trainer * trainer,
+    size_t * out_parameter_slots,
+    size_t * out_shared_slots);
+
+// Describes one slot of `scope`, by enumeration index.
+int retro_trainer_state_slot_info(
+    retro_trainer * trainer,
+    int32_t scope,
     size_t index,
-    float * out_m,
-    float * out_v,
-    size_t n_values);
+    retro_optimizer_slot * out_slot);
 
-// Copies m and v back into the parameter identified by name. Matching is by
-// name, never by index, so a checkpoint stays valid across graph orderings.
-// Fails when the name is unknown or the length does not match.
-int retro_trainer_momenta_write(
+// Copies `n_bytes` of one slot's payload out of the backend, starting at
+// `offset`. A range past the end is an error, never a short read.
+int retro_trainer_state_slot_read(
     retro_trainer * trainer,
-    const char * name,
-    const float * m,
-    const float * v,
-    size_t n_values);
+    int32_t scope,
+    size_t index,
+    uint64_t offset,
+    void * out_bytes,
+    size_t n_bytes);
+
+// Copies a byte range back into the slot identified by (owner, slot). Matching
+// is by name, never by index, so a checkpoint stays valid across graph
+// orderings. Fails when the pair is unknown or the range leaves the payload.
+int retro_trainer_state_slot_write(
+    retro_trainer * trainer,
+    int32_t scope,
+    const char * owner,
+    const char * slot,
+    uint64_t offset,
+    const void * bytes,
+    size_t n_bytes);
 
 // Reads or restores the runtime's mt19937 state. Same two-call buffer contract
 // as retro_trainer_describe_lora().

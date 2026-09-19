@@ -431,11 +431,35 @@ impl From<&MemoryReport> for MemoryEstimate {
     }
 }
 
+/// Why a base-weight policy cannot be planned yet, as the message a refusal
+/// carries.
+///
+/// The cost model sizes an adapter from the model's geometry and its target
+/// set. A policy that trains base tensors has neither: its gradients and
+/// optimizer state follow a resolved trainable set, which needs the GGUF's
+/// per-tensor inventory rather than the aggregate `ModelInfo` this crate
+/// reads. Returning a budget without those terms would be short by the largest
+/// thing the run pays, so the planner refuses instead.
+pub fn base_training_unpriced(policy: retrograd_core::TrainablePolicy) -> String {
+    format!(
+        "training.trainable = '{policy}' cannot be planned: the memory estimate sizes a \
+         LoRA adapter from the model's geometry, and the gradients and optimizer state of \
+         a base trainable set are resolved per tensor rather than derived from it. Run it \
+         without the planner, or train an adapter"
+    )
+}
+
 /// Estimates the footprint of one configuration.
+/// `lora` is absent for a policy that trains base tensors and no adapter. The
+/// adapter terms are then zero, which is a fact rather than an omission - but
+/// the base terms that replace them need a resolved trainable set, which this
+/// model-level estimate does not have. [`crate::base_training_unpriced`] is the
+/// refusal that keeps such a configuration from being planned against a budget
+/// that does not include its gradients.
 pub fn estimate(
     model: &ModelInfo,
     training: &TrainConfig,
-    lora: &LoraConfig,
+    lora: Option<&LoraConfig>,
     workload: &Workload,
     calibration: Calibration,
 ) -> MemoryEstimate {
@@ -535,14 +559,16 @@ pub fn estimate(
     // LoRA-only today: the factors are allocated next to the model, so they are
     // not a subset of its weights. A base-training estimate sets that flag.
     let trainable = trainable_parameters(model, lora);
-    let trainable_parameter_bytes = product([trainable, lora_element_bytes(lora.dtype)]);
+    let trainable_parameter_bytes = product([
+        trainable,
+        lora.map_or(0, |lora| lora_element_bytes(lora.dtype)),
+    ]);
     let trainable_gradient_bytes = product([trainable, 4]);
-    let optimizer_state_bytes =
-        if training.trainable.optimizer == retrograd_core::OptimizerKind::Sgd {
-            0
-        } else {
-            product([trainable, 2, 4])
-        };
+    // Through the optimizer's own formula rather than AdamW's `8N`: an SGD run
+    // planned against `8N` is over-budgeted by the whole optimizer, and the
+    // next optimizer's ratio would have to be written here a second time.
+    // Adapter factors, because that is what this estimate sizes.
+    let optimizer_state_bytes = training.trainable.optimizer.adapter_state_bytes(trainable);
 
     MemoryEstimate {
         model_weight_bytes,
@@ -762,7 +788,13 @@ fn attention_parameters(model: &ModelInfo) -> u64 {
 /// estimate assumes the widest plausible set - every attention and FFN
 /// projection. Over-counting a term that is a rounding error next to the KV
 /// cache is the right side to be wrong on.
-pub fn trainable_parameters(model: &ModelInfo, lora: &LoraConfig) -> u64 {
+pub fn trainable_parameters(model: &ModelInfo, lora: Option<&LoraConfig>) -> u64 {
+    let Some(lora) = lora else {
+        // No adapter, so no adapter parameters. The base tensors such a run
+        // trains are a subset of the model weights and are sized from a
+        // resolved set, which this function does not receive.
+        return 0;
+    };
     let n_embd = model.n_embd as u64;
     let n_ff = feed_forward_width(model);
     let q_out = product([model.n_head as u64, model.n_embd_head_k as u64]);
@@ -900,14 +932,14 @@ mod tests {
         let absurd = estimate(
             &model,
             &config,
-            &LoraConfig::auto(8, 16.0),
+            Some(&LoraConfig::auto(8, 16.0)),
             &sft_workload(),
             Calibration::default(),
         );
         let large = estimate(
             &tiny_model(),
             &training(131_072),
-            &LoraConfig::auto(8, 16.0),
+            Some(&LoraConfig::auto(8, 16.0)),
             &sft_workload(),
             Calibration::default(),
         );
@@ -927,14 +959,14 @@ mod tests {
         let small = estimate(
             &model,
             &training(1024),
-            &lora,
+            Some(&lora),
             &sft_workload(),
             Calibration::default(),
         );
         let large = estimate(
             &model,
             &training(2048),
-            &lora,
+            Some(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -946,7 +978,7 @@ mod tests {
                 kv_dtype: KvDtype::F16,
                 ..training(2048)
             },
-            &lora,
+            Some(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -961,7 +993,7 @@ mod tests {
         let adamw = estimate(
             &model,
             &config,
-            &lora,
+            Some(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -969,7 +1001,7 @@ mod tests {
         let sgd = estimate(
             &model,
             &config,
-            &lora,
+            Some(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -988,7 +1020,7 @@ mod tests {
         let plain = estimate(
             &model,
             &training(1024),
-            &lora,
+            Some(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -999,7 +1031,7 @@ mod tests {
                 chunked_ce_tiles: 8,
                 ..training(1024)
             },
-            &lora,
+            Some(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -1017,7 +1049,7 @@ mod tests {
                 chunked_ce_tiles: 32,
                 ..training(1024)
             },
-            &lora,
+            Some(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -1032,7 +1064,7 @@ mod tests {
         let alone = estimate(
             &model,
             &training,
-            &lora,
+            Some(&lora),
             &rollout_workload(),
             Calibration::default(),
         );
@@ -1040,7 +1072,7 @@ mod tests {
         let with_teacher = estimate(
             &model,
             &training,
-            &lora,
+            Some(&lora),
             &distill_workload(TEACHER),
             Calibration::default(),
         );
@@ -1072,7 +1104,7 @@ mod tests {
         let student = estimate(
             &model,
             &narrow,
-            &LoraConfig::auto(8, 16.0),
+            Some(&LoraConfig::auto(8, 16.0)),
             &rollout_workload(),
             Calibration::default(),
         );
@@ -1091,7 +1123,7 @@ mod tests {
         let plain = estimate(
             &model,
             &training(1024),
-            &lora,
+            Some(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -1102,7 +1134,7 @@ mod tests {
                 checkpoint_every_n_layers: 4,
                 ..training(1024)
             },
-            &lora,
+            Some(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -1117,7 +1149,7 @@ mod tests {
                 checkpoint_dtype: CheckpointDtype::F16,
                 ..training(1024)
             },
-            &lora,
+            Some(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -1131,7 +1163,7 @@ mod tests {
         let sft = estimate(
             &model,
             &training(1024),
-            &lora,
+            Some(&lora),
             &sft_workload(),
             Calibration::default(),
         );
@@ -1141,7 +1173,7 @@ mod tests {
         let rollout = estimate(
             &model,
             &rollout_training(1024),
-            &lora,
+            Some(&lora),
             &rollout_workload(),
             Calibration::default(),
         );
@@ -1160,14 +1192,14 @@ mod tests {
                 fast_generation_context: false,
                 ..rollout_training(1024)
             },
-            &lora,
+            Some(&lora),
             &workload,
             Calibration::default(),
         );
         let fast = estimate(
             &model,
             &rollout_training(1024),
-            &lora,
+            Some(&lora),
             &workload,
             Calibration::default(),
         );
@@ -1177,10 +1209,10 @@ mod tests {
     #[test]
     fn trainable_parameters_follow_the_target_set_and_the_rank() {
         let model = tiny_model();
-        let qv = trainable_parameters(&model, &LoraConfig::qv(8, 16.0));
-        let auto = trainable_parameters(&model, &LoraConfig::auto(8, 16.0));
+        let qv = trainable_parameters(&model, Some(&LoraConfig::qv(8, 16.0)));
+        let auto = trainable_parameters(&model, Some(&LoraConfig::auto(8, 16.0)));
         assert!(qv < auto, "QV must be cheaper than every projection");
-        let rank16 = trainable_parameters(&model, &LoraConfig::qv(16, 16.0));
+        let rank16 = trainable_parameters(&model, Some(&LoraConfig::qv(16, 16.0)));
         assert_eq!(rank16, 2 * qv);
 
         let mut patterns = LoraConfig::auto(8, 16.0);
@@ -1188,7 +1220,7 @@ mod tests {
             "blk.*.attn_q.weight".to_string(),
             "blk.*.attn_v.weight".to_string(),
         ]);
-        assert_eq!(trainable_parameters(&model, &patterns), qv);
+        assert_eq!(trainable_parameters(&model, Some(&patterns)), qv);
     }
 
     #[test]

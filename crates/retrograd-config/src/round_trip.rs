@@ -29,8 +29,8 @@
 use std::path::Path;
 
 use retrograd_core::{
-    CheckpointDtype, FeatureDtype, KvDtype, LoraDtype, LrScheduler, OptimizerKind, RewardMode,
-    SharedPrefixFanout, TrainablePolicy, TrainableSelector,
+    CheckpointDtype, FeatureDtype, KvDtype, LayerRange, LoraDtype, LrScheduler, OptimizerKind,
+    RewardMode, SharedPrefixFanout, TrainablePolicy, TrainableSelector,
 };
 use retrograd_dataset::DataFormat;
 
@@ -83,7 +83,6 @@ const KEYS: &[&str] = &[
     "grpo.updates",
     "lora.alpha",
     "lora.dtype",
-    "lora.output",
     "lora.rank",
     "lora.seed",
     "lora.targets",
@@ -94,6 +93,8 @@ const KEYS: &[&str] = &[
     "observe.directory",
     "observe.every",
     "observe.max_text_chars",
+    "output.kind",
+    "output.path",
     "run.algorithm",
     "run.verbose",
     "trainable.biases",
@@ -250,8 +251,11 @@ fn exhaustive_document() -> ConfigDocument {
             path: Some(PathBuf::from("model.gguf")),
             device: Some("cpu".to_string()),
         },
-        lora: LoraToml {
-            output: PathBuf::from("out/adapter.gguf"),
+        output: Some(OutputToml {
+            path: PathBuf::from("out/adapter.gguf"),
+            kind: Some("adapter".to_string()),
+        }),
+        lora: Some(LoraToml {
             rank: Some(16),
             alpha: Some(32.0),
             seed: Some(7),
@@ -260,11 +264,11 @@ fn exhaustive_document() -> ConfigDocument {
             // its own test rather than by this document.
             init_adapter: None,
             dtype: Some(LoraDtype::F16),
-        },
+        }),
         // A `partial` policy with a fully-written selector, because that is the
-        // combination that exercises every key. `build` refuses the mode, which
-        // is why the "reaches RunConfig" test below builds the LoRA
-        // normalization of this document and the refusal has a test of its own.
+        // combination that exercises every key. The "reaches RunConfig" test
+        // below builds the LoRA normalization of this document, since a LoRA
+        // run refuses the section; the base normalization has its own test.
         trainable: Some(TrainableToml {
             layers: Some("1..3".to_string()),
             modules: vec!["attn".to_string(), "ffn_up".to_string()],
@@ -377,28 +381,162 @@ fn lora_normalized(mut document: ConfigDocument) -> ConfigDocument {
     document
 }
 
-/// The `[trainable]` schema is read and validated *before* the mode is refused,
-/// so a document written against it fails on the refusal and not on a typo it
-/// also contains - and so this validation is exercised today rather than on
-/// the change that enables the mode.
-#[test]
-fn the_trainable_section_is_parsed_before_the_mode_is_refused() {
-    let root = Path::new("/tmp/retrograd-round-trip");
-    let error =
-        build(exhaustive_document(), root).expect_err("partial base training is not available yet");
-    assert!(error.is_user_error(), "{error}");
-    let message = error.to_string();
-    assert!(message.contains("'partial' is not available"), "{message}");
-    assert!(
-        message.contains("Only 'lora' trains from a document today"),
-        "{message}"
-    );
+/// The same document as a `partial` base-weight run: no adapter section, and
+/// an output kind the policy actually produces.
+fn base_normalized(mut document: ConfigDocument) -> ConfigDocument {
+    document.lora = None;
+    document.output = Some(OutputToml {
+        path: PathBuf::from("out/adapter.gguf"),
+        kind: None,
+    });
+    document
+}
 
-    // A malformed selector is reported as such, not swallowed by the refusal.
-    let mut broken = exhaustive_document();
+/// A base-weight policy is a run a document can now name, and the whole
+/// `[trainable]` selector reaches the configuration rather than being parsed
+/// and then refused.
+#[test]
+fn a_partial_document_reaches_the_run_config_with_its_selector() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    let mut document = base_normalized(exhaustive_document());
+    // GRPO's KL is taken against the frozen base, which a base-weight run
+    // moves; the section's own test covers the refusal.
+    document.grpo.as_mut().expect("section").kl_coefficient = 0.0;
+    document.grpo.as_mut().expect("section").kl_schedule = None;
+    let config = build(document, root).expect("partial base training builds");
+
+    assert_eq!(config.training.trainable.policy, TrainablePolicy::Partial);
+    assert!(config.lora.is_none(), "a partial run creates no adapter");
+    assert_eq!(config.output.kind, OutputKind::Trainable);
+    assert_eq!(config.output.path, root.join("out/adapter.gguf"));
+    let selector = &config.training.trainable.selector;
+    assert_eq!(selector.layers, LayerRange::Inclusive { first: 1, last: 3 });
+    assert_eq!(selector.modules, ["attn".to_string(), "ffn_up".to_string()]);
+    assert!(selector.norms);
+    assert!(selector.biases);
+    assert!(!selector.output_head);
+
+    // A malformed selector is reported as such.
+    let mut broken = base_normalized(exhaustive_document());
     broken.trainable.as_mut().expect("section").layers = Some("3..1".to_string());
     let error = build(broken, root).expect_err("an inverted range is refused");
     assert!(error.to_string().contains("inclusive"), "{error}");
+}
+
+/// `[lora]` and `[output].kind` are the two halves of "what does this run
+/// produce", and every pairing that would lose half of it is refused.
+#[test]
+fn the_adapter_section_and_the_output_kind_follow_the_policy() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    // A section describing an adapter the run never creates.
+    let mut with_adapter = base_normalized(exhaustive_document());
+    with_adapter.grpo.as_mut().expect("section").kl_coefficient = 0.0;
+    with_adapter.grpo.as_mut().expect("section").kl_schedule = None;
+    with_adapter.lora = Some(LoraToml {
+        rank: Some(8),
+        alpha: Some(16.0),
+        seed: None,
+        targets: Vec::new(),
+        init_adapter: None,
+        dtype: None,
+    });
+    let error = build(with_adapter, root).expect_err("a partial run has no adapter");
+    assert!(error.to_string().contains("remove [lora]"), "{error}");
+
+    // ... and the mirror image: hybrid trains one and requires the section.
+    let mut hybrid = base_normalized(exhaustive_document());
+    hybrid.grpo.as_mut().expect("section").kl_coefficient = 0.0;
+    hybrid.grpo.as_mut().expect("section").kl_schedule = None;
+    hybrid.training.trainable = Some("hybrid".to_string());
+    hybrid.trainable = Some(TrainableToml {
+        norms: Some(true),
+        ..Default::default()
+    });
+    let error = build(hybrid.clone(), root).expect_err("hybrid trains an adapter too");
+    assert!(error.to_string().contains("requires a [lora]"), "{error}");
+
+    // An adapter-only export of a hybrid run drops the base half.
+    hybrid.lora = Some(LoraToml {
+        rank: Some(8),
+        alpha: Some(16.0),
+        seed: None,
+        targets: Vec::new(),
+        init_adapter: None,
+        dtype: Some(LoraDtype::F32),
+    });
+    hybrid.output = Some(OutputToml {
+        path: PathBuf::from("out/adapter.gguf"),
+        kind: Some("adapter".to_string()),
+    });
+    let error = build(hybrid, root).expect_err("an adapter is half of a hybrid run");
+    assert!(
+        error.to_string().contains("drop the trained base"),
+        "{error}"
+    );
+
+    // And a LoRA run has no bundle to write.
+    let mut lora = lora_normalized(exhaustive_document());
+    lora.output = Some(OutputToml {
+        path: PathBuf::from("out/adapter.gguf"),
+        kind: Some("trainable".to_string()),
+    });
+    let error = build(lora, root).expect_err("a lora run trains no base tensor");
+    assert!(error.to_string().contains("portable result"), "{error}");
+}
+
+/// A standalone model GGUF is refused by name rather than attempted: the saver
+/// supports a subset of architectures and an adapter merge has no parity
+/// coverage, so accepting the name would promise a file no run can write.
+#[test]
+fn a_model_export_is_refused_by_name() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    let mut document = lora_normalized(exhaustive_document());
+    document.output = Some(OutputToml {
+        path: PathBuf::from("out/model.gguf"),
+        kind: Some("model".to_string()),
+    });
+    let error = build(document, root).expect_err("model export is not implemented");
+    assert!(error.to_string().contains("not available"), "{error}");
+
+    let mut unknown = lora_normalized(exhaustive_document());
+    unknown.output = Some(OutputToml {
+        path: PathBuf::from("out/model.gguf"),
+        kind: Some("merged".to_string()),
+    });
+    let error = build(unknown, root).expect_err("an unknown kind is refused");
+    assert!(error.to_string().contains("must be adapter"), "{error}");
+}
+
+/// A KL penalty is taken against "the model with its adapter disabled", which
+/// is the original policy only while the base weights are frozen. A run that
+/// updates them has no reference, and the configuration says so rather than
+/// reporting a divergence from a moving target.
+#[test]
+fn a_fixed_reference_consumer_is_refused_beside_base_training() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    let document = base_normalized(exhaustive_document());
+    assert!(
+        document.grpo.as_ref().expect("section").kl_coefficient > 0.0
+            || document
+                .grpo
+                .as_ref()
+                .expect("section")
+                .kl_schedule
+                .is_some()
+    );
+    let error = build(document, root).expect_err("base training has no fixed reference");
+    let message = error.to_string();
+    assert!(message.contains("grpo.kl_coefficient"), "{message}");
+    assert!(message.contains("separate reference model"), "{message}");
+
+    // Zero and unscheduled is not a reference: the term is skipped entirely.
+    // (A schedule without a positive coefficient is refused by `[grpo]` itself,
+    // which is why the schedule half of the rule is exercised above rather than
+    // on its own.)
+    let mut without = base_normalized(exhaustive_document());
+    without.grpo.as_mut().expect("section").kl_coefficient = 0.0;
+    without.grpo.as_mut().expect("section").kl_schedule = None;
+    build(without, root).expect("a zero KL needs no anchor");
 }
 
 /// A selector a policy ignores is a selector the user believes is in effect.
@@ -444,7 +582,7 @@ fn a_selectable_optimizer_reaches_the_training_configuration() {
         document.training.optimizer = Some(name.to_string());
         // SGD's update step is F32-only and F16 is the default adapter
         // storage, so an SGD document has to name the dtype it can write.
-        document.lora.dtype = Some(LoraDtype::F32);
+        document.lora.as_mut().expect("section").dtype = Some(LoraDtype::F32);
         let config = build(document, root).expect("the optimizer is selectable");
         assert_eq!(config.training.trainable.optimizer, expected);
     }
@@ -459,7 +597,7 @@ fn sgd_is_refused_against_the_default_f16_adapter() {
     let mut document = lora_normalized(exhaustive_document());
     document.checkpoint.as_mut().unwrap().resume_from = None;
     document.training.optimizer = Some("sgd".to_string());
-    document.lora.dtype = Some(LoraDtype::F16);
+    document.lora.as_mut().expect("section").dtype = Some(LoraDtype::F16);
     let error = build(document, root).expect_err("the sgd kernel is F32-only");
     assert!(error.is_user_error(), "{error}");
     assert!(error.to_string().contains("F32-only"), "{error}");
@@ -470,7 +608,7 @@ fn sgd_resume_uses_the_checkpoint_adapter_dtype() {
     let root = Path::new("/tmp/retrograd-round-trip");
     let mut document = lora_normalized(exhaustive_document());
     document.training.optimizer = Some("sgd".to_string());
-    document.lora.dtype = Some(LoraDtype::F16);
+    document.lora.as_mut().expect("section").dtype = Some(LoraDtype::F16);
     assert!(document.checkpoint.as_ref().unwrap().resume_from.is_some());
     build(document, root).expect("the runtime checks the restored adapter's dtype");
 }
@@ -538,14 +676,16 @@ fn every_toml_field_reaches_the_run_config() {
     );
 
     assert_eq!(config.model, root.join("model.gguf"));
-    assert_eq!(config.lora.output, root.join("out/adapter.gguf"));
-    assert_eq!(config.lora.init_adapter, None);
-    assert_eq!(config.lora.config.rank, 16);
-    assert_eq!(config.lora.config.alpha, 32.0);
-    assert_eq!(config.lora.config.seed, 7);
-    assert_eq!(config.lora.config.dtype, LoraDtype::F16);
+    assert_eq!(config.output.path, root.join("out/adapter.gguf"));
+    assert_eq!(config.output.kind, OutputKind::Adapter);
+    let lora = config.lora.as_ref().expect("a lora run has an adapter");
+    assert_eq!(lora.init_adapter, None);
+    assert_eq!(lora.config.rank, 16);
+    assert_eq!(lora.config.alpha, 32.0);
+    assert_eq!(lora.config.seed, 7);
+    assert_eq!(lora.config.dtype, LoraDtype::F16);
     assert_eq!(
-        config.lora.config.targets,
+        lora.config.targets,
         parse_targets(&["q".to_string(), "v".to_string()]).unwrap()
     );
 
@@ -812,8 +952,10 @@ algorithm = "grpo"
 [model]
 path = "model.gguf"
 
+[output]
+path = "adapter.gguf"
+
 [lora]
-output = "adapter.gguf"
 
 [training]
 ctx = 256
@@ -842,14 +984,17 @@ seed = 0
     let config = build(document, root).expect("the minimal document builds");
 
     assert!(!config.training.verbose);
-    assert_eq!(config.lora.config.rank, 8);
-    assert_eq!(config.lora.config.alpha, 16.0);
-    assert_eq!(config.lora.config.seed, 42);
-    assert_eq!(config.lora.config.dtype, LoraDtype::default());
+    let lora = config.lora.as_ref().expect("a lora run has an adapter");
+    assert_eq!(lora.config.rank, 8);
+    assert_eq!(lora.config.alpha, 16.0);
+    assert_eq!(lora.config.seed, DEFAULT_SEED);
+    assert_eq!(lora.config.dtype, LoraDtype::default());
     assert_eq!(
-        config.lora.config.targets,
+        lora.config.targets,
         parse_targets(&DEFAULT_TARGETS.map(String::from)).unwrap()
     );
+    // `[output]` names no kind, so the policy's default is what it gets.
+    assert_eq!(config.output.kind, OutputKind::Adapter);
     // A rollout algorithm pins the optimizer window to the whole context.
     assert_eq!(config.training.n_batch, config.training.n_ctx);
     // `min(prompts_per_update * group_size, n_batch, 256)`.

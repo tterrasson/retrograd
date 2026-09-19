@@ -32,7 +32,7 @@ async fn a_created_run_is_answered_immediately_and_runs_to_completion() {
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let id = created["id"].as_str().expect("an id").to_string();
     assert_eq!(
-        created["effective_config"]["lora"]["output"],
+        created["effective_config"]["output"]["path"],
         fixture
             .state_dir()
             .join(&id)

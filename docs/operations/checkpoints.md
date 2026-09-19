@@ -12,17 +12,27 @@ mode = "steps"
 every_steps = 100
 ```
 
-Each checkpoint is a state directory containing the adapter and the optimizer,
-progress, dataset identity, and run metadata needed for compatibility checks.
-The loader refuses a checkpoint when the model, dataset, schedule, optimizer
-settings, or algorithm no longer match the saved run.
+Each checkpoint is a state directory containing whatever the run produced, the
+optimizer state, progress, dataset identity, and the run metadata needed for
+compatibility checks. The loader refuses a checkpoint when the model, dataset,
+schedule, optimizer settings, trainable policy, resolved trainable set, or
+algorithm no longer match the saved run.
+
+What the directory holds follows what the run trains. A `lora` run writes
+`adapter.gguf`; a `full` or `partial` run writes `trainable.gguf`, the trained
+base tensors by absolute value rather than as a delta; a `hybrid` run writes
+both. Optimizer state is kept out of those files entirely: it lives in
+`optimizer-state.bin` as the concatenated payloads of the slots the manifest
+lists, so saving and restoring a multi-gigabyte state streams through a bounded
+buffer instead of a host copy of it.
 
 `steps` writes `step-XXXXXXXXXXXX.state` (the zero-padded optimizer step),
 `best_eval` maintains `best.state`, and `steps_and_best_eval` does both. The
-`.state` directory is the authoritative adapter plus resume state, written as
-one atomic unit; the sibling `.gguf` is a cold-load export of the same adapter.
-`lora.output` always receives the final adapter, including after early
-stopping.
+`.state` directory is the authoritative result plus resume state, written as one
+atomic unit; the sibling `.gguf` is a cold-load export of the same adapter, and
+is published only for a run that has one - the name every helper reads as "the
+adapter" must not resolve to a file no adapter loader accepts. `[output].path`
+always receives the final result, including after early stopping.
 
 ## Best evaluation checkpoints
 

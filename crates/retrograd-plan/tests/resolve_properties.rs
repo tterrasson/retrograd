@@ -16,6 +16,46 @@ use serde_json::{Value, json};
 
 const GIB: u64 = 1024 * 1024 * 1024;
 
+#[test]
+fn hybrid_params_cannot_bypass_the_base_training_budget_refusal() {
+    let recipe = sft_recipe();
+    let model = tiny_model();
+    let data = uniform_dataset(100, 128);
+    let params = json!({
+        "training": { "trainable": "hybrid" },
+        "trainable": { "norms": true }
+    });
+    let error = resolve(&input(
+        &recipe,
+        &params,
+        &model,
+        &data,
+        machine(24 * GIB, 64 * GIB),
+    ))
+    .unwrap_err();
+    assert!(error.to_string().contains("cannot be planned"), "{error}");
+}
+
+#[test]
+fn an_output_override_replaces_the_drafted_path() {
+    let recipe = sft_recipe();
+    let model = tiny_model();
+    let data = uniform_dataset(100, 128);
+    let params = json!({ "output": { "path": "/tmp/custom-adapter.gguf" } });
+    let resolution = resolve(&input(
+        &recipe,
+        &params,
+        &model,
+        &data,
+        machine(24 * GIB, 64 * GIB),
+    ))
+    .unwrap();
+    assert_eq!(
+        resolution.config.output.path,
+        PathBuf::from("/tmp/custom-adapter.gguf")
+    );
+}
+
 /// Every budget a resolution is tried against, from roomy to hopeless.
 const BUDGETS: [u64; 6] = [
     48 * GIB,
@@ -162,7 +202,16 @@ fn a_client_parameter_is_never_modified() {
             !resolution.config.training.gradient_checkpointing,
             "a lever overwrote an override at {budget} bytes"
         );
-        assert_eq!(resolution.config.lora.config.rank, 4);
+        assert_eq!(
+            resolution
+                .config
+                .lora
+                .as_ref()
+                .expect("the resolver drafts lora runs")
+                .config
+                .rank,
+            4
+        );
         for path in [
             "training.ctx",
             "training.gradient_checkpointing",
@@ -756,7 +805,13 @@ fn more_data_means_more_rank_and_a_smaller_step() {
             machine(24 * GIB, 64 * GIB),
         ))
         .expect("resolves");
-        let rank = resolution.config.lora.config.rank;
+        let rank = resolution
+            .config
+            .lora
+            .as_ref()
+            .expect("the resolver drafts lora runs")
+            .config
+            .rank;
         let rate = resolution.config.training.learning_rate;
         if let Some((fewer, smaller_rank, larger_rate)) = previous {
             assert!(

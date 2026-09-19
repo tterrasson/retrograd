@@ -109,6 +109,7 @@ fn main() {
         "retro_fused_ce.cpp",
         "retro_lora_train.cpp",
         "retro_checkpoint.cpp",
+        "retro_trainable.cpp",
         "retro_chat_template.cpp",
         "retro_chat_parser.cpp",
     ];
