@@ -58,14 +58,12 @@ use retrograd_core::{Error, Result};
 /// Bumped whenever a structure below changes in a way older readers cannot
 /// interpret. Loading a checkpoint with a different value is a hard error.
 ///
-/// Version 4 is the coordinated bump: typed optimizer slots and shared state
-/// on one side, the trainable bundle and an optional adapter on the other.
-/// Both had to land in the same version because both change what the directory
-/// contains, and a reader that knew only one of them would accept a checkpoint
-/// it cannot restore. A version-3 directory is refused rather than migrated:
-/// its `moments` list is an AdamW pair per parameter with no slot identity and
-/// no record of which optimizer wrote it in the payload itself.
-pub const FORMAT_VERSION: u32 = 4;
+/// Version 1 describes a directory whose optimizer state is a typed slot table
+/// with its own shared scope, and whose trained values are an optional adapter
+/// beside an optional trainable bundle. The two belong to one version because
+/// both describe what the directory contains, and a reader that knew only one
+/// of them would accept a checkpoint it cannot restore.
+pub const FORMAT_VERSION: u32 = 1;
 
 /// Directory suffix of the state directory that accompanies `<name>.gguf`.
 pub const STATE_SUFFIX: &str = "state";
