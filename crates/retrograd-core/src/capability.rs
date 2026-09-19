@@ -1,0 +1,250 @@
+//! Trainable tensor families per architecture.
+//!
+//! `full` derives the trainable set instead of reading one from the document.
+//! A suffix rule fails in both directions: parameters do not all end in
+//! `.weight` or `.bias` (`blk.N.ssm_a`, `blk.N.hc_attn_scale`), and "every
+//! non-frozen F32 tensor" sweeps up non-parameter data.
+//!
+//! Families are therefore enumerated per architecture. An architecture with
+//! no row refuses `full` rather than guessing. Rows arrive with the test lane
+//! that resolves them against a real file.
+//!
+//! Scope is the architecture: dtype is the resolver's rule, the loss path
+//! follows the output head, and per-device kernel differences are a runtime
+//! refusal.
+
+/// The family of a tensor name: the name minus its `blk.<N>.` prefix and its
+/// `.weight`/`.bias` suffix.
+///
+/// Total where [`crate::TensorDesc::stem`] is partial: a name with no suffix
+/// is its own family. `blk.3.attn_q.weight` and `blk.7.attn_q.bias` are both
+/// `attn_q`, `blk.0.shortconv.conv.weight` is `shortconv.conv`, `blk.2.ssm_a`
+/// is `ssm_a`.
+pub fn tensor_family(name: &str) -> &str {
+    let rest = match name.strip_prefix("blk.") {
+        Some(rest) => match rest.split_once('.') {
+            Some((digits, rest)) if digits.bytes().all(|byte| byte.is_ascii_digit()) => rest,
+            _ => name,
+        },
+        None => name,
+    };
+    rest.strip_suffix(".weight")
+        .or_else(|| rest.strip_suffix(".bias"))
+        .unwrap_or(rest)
+}
+
+/// The trainable families of one architecture.
+///
+/// Block families repeat per layer and follow a layer range; global families
+/// exist once. The input embedding and the rotary tables are in neither list:
+/// they are frozen for every architecture, and listing them would make them
+/// unfreezable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArchitectureCapability {
+    /// `general.architecture`, as the GGUF spells it.
+    pub architecture: &'static str,
+    /// Families under `blk.<N>.`, in the order a report lists them.
+    pub block_families: &'static [&'static str],
+    /// Families outside every block.
+    pub global_families: &'static [&'static str],
+}
+
+impl ArchitectureCapability {
+    /// Whether `full` may take this tensor, by name alone.
+    ///
+    /// Position matters, not just family: block names check the block list
+    /// and non-block names the global one, so an invented
+    /// `blk.0.token_embd_norm.weight` does not pass on the model-wide row.
+    pub fn admits(&self, name: &str) -> bool {
+        let family = tensor_family(name);
+        let list = if crate::trainable::block_index(name).is_some() {
+            self.block_families
+        } else {
+            self.global_families
+        };
+        list.contains(&family)
+    }
+
+    /// Every family in the row, block families first; shown by a refusal of
+    /// something the row does not name.
+    pub fn families(&self) -> impl Iterator<Item = &'static str> {
+        self.block_families
+            .iter()
+            .chain(self.global_families)
+            .copied()
+    }
+}
+
+/// The block families every dense transformer shares. Not a row: rows are
+/// checked against it, so a row that drops one of them fails a test rather
+/// than reading as a deliberate exclusion.
+const DENSE_BLOCK: [&str; 12] = [
+    "attn_norm",
+    "attn_q",
+    "attn_k",
+    "attn_v",
+    "attn_qkv",
+    "attn_output",
+    "attn_q_norm",
+    "attn_k_norm",
+    "ffn_norm",
+    "ffn_up",
+    "ffn_down",
+    "ffn_gate",
+];
+
+const LLAMA_BLOCK: [&str; 12] = DENSE_BLOCK;
+
+/// LFM2 adds a short-convolution to the dense block. Its kernel is
+/// `blk.<N>.shortconv.conv.weight`, a family with a dot in it, which is why
+/// the family rule strips a suffix rather than splitting on the first
+/// separator.
+const LFM2_BLOCK: [&str; 15] = [
+    "attn_norm",
+    "attn_q",
+    "attn_k",
+    "attn_v",
+    "attn_qkv",
+    "attn_output",
+    "attn_q_norm",
+    "attn_k_norm",
+    "ffn_norm",
+    "ffn_up",
+    "ffn_down",
+    "ffn_gate",
+    "shortconv.conv",
+    "shortconv.in_proj",
+    "shortconv.out_proj",
+];
+
+/// Global families of a dense transformer. `output` is the untied vocabulary
+/// projection; a tied one is frozen by storage identity before this check.
+const DENSE_GLOBAL: [&str; 3] = ["output_norm", "output", "token_embd_norm"];
+
+/// The architectures `full` can derive a set for.
+///
+/// `lfm2` is the CPU fixture, checked against a real file by
+/// `tests/trainable_inventory.rs`; `llama` follows llama.cpp naming. Neither
+/// row claims a trained model, only a list of parameters; the dtype rule
+/// decides which a given file can carry.
+pub const CAPABILITY_TABLE: &[ArchitectureCapability] = &[
+    ArchitectureCapability {
+        architecture: "llama",
+        block_families: &LLAMA_BLOCK,
+        global_families: &DENSE_GLOBAL,
+    },
+    ArchitectureCapability {
+        architecture: "lfm2",
+        block_families: &LFM2_BLOCK,
+        global_families: &DENSE_GLOBAL,
+    },
+];
+
+/// The row for an architecture, or `None` if this build has none.
+pub fn architecture_capability(architecture: &str) -> Option<&'static ArchitectureCapability> {
+    CAPABILITY_TABLE
+        .iter()
+        .find(|row| row.architecture == architecture)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_family_survives_the_block_prefix_and_both_suffixes() {
+        assert_eq!(tensor_family("blk.3.attn_q.weight"), "attn_q");
+        assert_eq!(tensor_family("blk.11.attn_q.bias"), "attn_q");
+        assert_eq!(tensor_family("attn_q.weight"), "attn_q");
+        assert_eq!(tensor_family("output_norm.weight"), "output_norm");
+    }
+
+    #[test]
+    fn a_parameter_with_no_suffix_is_its_own_family() {
+        assert_eq!(tensor_family("blk.2.ssm_a"), "ssm_a");
+        assert_eq!(tensor_family("blk.2.hc_attn_scale"), "hc_attn_scale");
+        assert_eq!(
+            tensor_family("blk.0.shortconv.conv.weight"),
+            "shortconv.conv"
+        );
+    }
+
+    /// `blk.` is a prefix, not a keyword: a family starting with those
+    /// letters keeps them.
+    #[test]
+    fn a_name_that_only_looks_like_a_block_keeps_its_prefix() {
+        assert_eq!(tensor_family("blk.weight"), "blk");
+        assert_eq!(tensor_family("blkx.0.attn_q.weight"), "blkx.0.attn_q");
+    }
+
+    #[test]
+    fn position_is_part_of_what_a_row_admits() {
+        let row = architecture_capability("lfm2").expect("the fixture's architecture has a row");
+        assert!(row.admits("blk.0.attn_q.weight"));
+        assert!(row.admits("blk.0.shortconv.conv.weight"));
+        assert!(row.admits("token_embd_norm.weight"));
+        // The same family, in the wrong half of the model.
+        assert!(!row.admits("blk.0.token_embd_norm.weight"));
+        assert!(!row.admits("attn_q.weight"));
+    }
+
+    #[test]
+    fn no_row_can_unfreeze_the_tensors_every_policy_freezes() {
+        for row in CAPABILITY_TABLE {
+            for frozen in crate::trainable::ALWAYS_FROZEN {
+                assert!(
+                    !row.admits(frozen),
+                    "{} admits '{frozen}'",
+                    row.architecture
+                );
+            }
+            assert!(
+                !row.admits("blk.0.rope_freqs.weight"),
+                "{}",
+                row.architecture
+            );
+        }
+    }
+
+    /// Rows spell every family out so they can be read in one place; the
+    /// price is that a line can drop in an edit. Every row starts from the
+    /// dense block, so that half is checked rather than trusted.
+    #[test]
+    fn every_row_carries_the_whole_dense_block() {
+        for row in CAPABILITY_TABLE {
+            for family in DENSE_BLOCK {
+                assert!(
+                    row.block_families.contains(&family),
+                    "{} is missing '{family}'",
+                    row.architecture
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_row_names_a_distinct_architecture_and_distinct_families() {
+        let mut architectures: Vec<&str> = CAPABILITY_TABLE
+            .iter()
+            .map(|row| row.architecture)
+            .collect();
+        let before = architectures.len();
+        architectures.sort_unstable();
+        architectures.dedup();
+        assert_eq!(architectures.len(), before, "two rows for one architecture");
+
+        for row in CAPABILITY_TABLE {
+            let mut families: Vec<&str> = row.families().collect();
+            let before = families.len();
+            families.sort_unstable();
+            families.dedup();
+            assert_eq!(
+                families.len(),
+                before,
+                "{} repeats a family",
+                row.architecture
+            );
+            assert!(families.iter().all(|family| !family.is_empty()));
+        }
+    }
+}

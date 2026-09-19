@@ -1692,6 +1692,42 @@ int retro_trainer_marked_parameter_info(
     size_t index,
     retro_tensor_desc * out_tensor);
 
+// The three reads below expose every input and output of one update step: the
+// parameter before and after it, the gradient it multiplied, and (via the slot
+// enumeration further down) any persistent state. An optimizer that keeps no
+// slot (SGD) has no other input to check its arithmetic against.
+//
+// Like the slot reads, these are byte ranges: callers stream through bounded
+// staging, and a range past the end is an error, not a short read.
+
+// Copies `n_bytes` of one marked parameter, starting at `offset`.
+int retro_trainer_marked_parameter_read(
+    retro_trainer * trainer,
+    size_t index,
+    uint64_t offset,
+    void * out_bytes,
+    size_t n_bytes);
+
+// Describes the gradient accumulator of one marked parameter, by the same
+// index. Always F32 and parameter-shaped, whatever the parameter's own dtype.
+//
+// The accumulators outlive individual graph allocations, so the gradient a
+// step consumed is readable after that step returned. It holds what the last
+// backward accumulated: one micro-batch's gradient at opt_period 1, the
+// period's sum otherwise.
+int retro_trainer_parameter_gradient_info(
+    retro_trainer * trainer,
+    size_t index,
+    retro_tensor_desc * out_tensor);
+
+// Copies `n_bytes` of that accumulator, starting at `offset`.
+int retro_trainer_parameter_gradient_read(
+    retro_trainer * trainer,
+    size_t index,
+    uint64_t offset,
+    void * out_bytes,
+    size_t n_bytes);
+
 // Persistent optimizer state, enumerated as slots rather than as AdamW pairs.
 //
 // A slot is one persistent tensor an optimizer keeps: AdamW has "m" and "v"

@@ -8,14 +8,15 @@ pub use retrograd_run as run;
 pub use retrograd_training as training;
 
 pub use retrograd_core::{
-    CheckpointDtype, CheckpointMetadata, DEFAULT_CE_SEQ_CHUNK, DEFAULT_CHECKPOINT_STRIDE, Device,
-    Error, EvalMetrics, FeatureDtype, FusedCeProbe, FusedCeWeightType, Generation, KernelImpl,
-    KernelReject, KernelRunInfo, KvDtype, LayerRange, LoraConfig, LoraDtype, LrScheduler,
-    MemoryReport, ModelInfo, OptimizerKind, ProbeOp, Result, ResumeInfo, RewardMode,
-    RewardProtocol, RirCounters, RirMode, SamplingParams, SharedPrefixFanout,
-    TENSOR_INVENTORY_VERSION, TargetSet, TensorDesc, TensorDtype, TensorInventory, TensorRole,
-    TrainConfig, TrainMetrics, TrainableEntry, TrainablePolicy, TrainableRunConfig,
-    TrainableSelector, TrainableSet, WeightedBatch, checkpoint_stride_for, resolve_base,
+    ALWAYS_FROZEN, ArchitectureCapability, CAPABILITY_TABLE, CheckpointDtype, CheckpointMetadata,
+    DEFAULT_CE_SEQ_CHUNK, DEFAULT_CHECKPOINT_STRIDE, Device, Error, EvalMetrics, FeatureDtype,
+    FusedCeProbe, FusedCeWeightType, Generation, HyperparameterValue, KernelImpl, KernelReject,
+    KernelRunInfo, KvDtype, LayerRange, LoraConfig, LoraDtype, LrScheduler, MemoryReport,
+    ModelInfo, OptimizerKind, ProbeOp, Result, ResumeInfo, RewardMode, RewardProtocol, RirCounters,
+    RirMode, SamplingParams, SharedPrefixFanout, TENSOR_INVENTORY_VERSION, TargetSet, TensorDesc,
+    TensorDtype, TensorInventory, TensorRole, TrainConfig, TrainMetrics, TrainableEntry,
+    TrainablePolicy, TrainableRunConfig, TrainableSelector, TrainableSet, WeightedBatch,
+    architecture_capability, checkpoint_stride_for, resolve_base, tensor_family,
 };
 pub use retrograd_engine::{
     DutyCycleStats, FusedCeProbeInputs, FusedCeProbeShape, OptimizerMemory, ProbeInputs,

@@ -187,3 +187,31 @@ fn a_selection_never_issues_two_updates_against_one_allocation() {
          the first had already moved"
     );
 }
+
+/// The capability row checked against the file it claims to describe: every
+/// fixture tensor, minus the ones frozen for every model, must be a family
+/// the row names. Otherwise the table silently freezes real parameters.
+#[test]
+fn the_fixtures_architecture_row_covers_every_parameter_it_carries() {
+    let inventory = fixture_inventory!();
+    let row = retrograd::architecture_capability(&inventory.architecture)
+        .unwrap_or_else(|| panic!("no capability row for '{}'", inventory.architecture));
+
+    for tensor in &inventory.tensors {
+        if retrograd::ALWAYS_FROZEN.contains(&tensor.name.as_str()) || tensor.is_rotary_constant() {
+            assert!(
+                !row.admits(&tensor.name),
+                "'{}' is frozen for every model and must not be listed",
+                tensor.name
+            );
+            continue;
+        }
+        assert!(
+            row.admits(&tensor.name),
+            "'{}' is a parameter of {} and the row does not name family '{}'",
+            tensor.name,
+            inventory.architecture,
+            retrograd::tensor_family(&tensor.name),
+        );
+    }
+}

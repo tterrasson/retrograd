@@ -24,9 +24,9 @@ use std::path::{Path, PathBuf};
 
 use retrograd::checkpoint::{self, Checkpoint};
 use retrograd::{
-    CheckpointMetadata, Device, LoraConfig, LoraDtype, OptimizerKind, TargetSet, TrainConfig,
-    TrainableEntry, TrainablePolicy, TrainableRunConfig, TrainableSelector, TrainableSet, Trainer,
-    resolve_base, tensor_inventory,
+    CheckpointMetadata, Device, LoraConfig, LoraDtype, OptimizerKind, TargetSet, TensorDtype,
+    TrainConfig, TrainableEntry, TrainablePolicy, TrainableRunConfig, TrainableSelector,
+    TrainableSet, Trainer, resolve_base, tensor_inventory,
 };
 
 const TEXT: &str = concat!(
@@ -925,5 +925,157 @@ fn the_backward_prunes_the_blocks_below_the_lowest_trainable_one() {
         top_compute < middle_compute && middle_compute < bottom_compute,
         "compute is not monotonic in the lowest trainable block: \
          {bottom_compute} / {middle_compute} / {top_compute}"
+    );
+}
+
+/// Whole-tensor reads because the fixture's tensors are small; the FFI
+/// surface is byte ranges for the ones that are not.
+fn read_f32(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .copied()
+        .map(f32::from_ne_bytes)
+        .collect()
+}
+
+fn parameter_values(trainer: &mut Trainer, index: usize, n_bytes: u64) -> Vec<f32> {
+    let mut bytes = vec![0_u8; usize::try_from(n_bytes).expect("a host-sized tensor")];
+    trainer
+        .read_marked_parameter(index, 0, &mut bytes)
+        .expect("read a marked parameter");
+    read_f32(&bytes)
+}
+
+fn parameter_gradient(trainer: &mut Trainer, index: usize) -> Vec<f32> {
+    let info = trainer
+        .parameter_gradient_info(index)
+        .expect("describe a gradient");
+    // F32 and parameter-shaped, whatever the parameter's own storage: both
+    // are what the arithmetic below assumes.
+    assert_eq!(info.dtype, TensorDtype::F32, "{}", info.name);
+    assert_eq!(info.n_bytes, info.n_elements * 4, "{}", info.name);
+    let mut bytes = vec![0_u8; usize::try_from(info.n_bytes).expect("a host-sized tensor")];
+    trainer
+        .read_parameter_gradient(index, 0, &mut bytes)
+        .expect("read a gradient");
+    read_f32(&bytes)
+}
+
+/// The update is the arithmetic it claims to be, checked on real weights and
+/// a real gradient.
+///
+/// SGD is the interesting case: it keeps no persistent state, so without the
+/// gradient its step could only be compared with itself. With the gradient
+/// readable after the step, every input and the result are observable.
+#[test]
+fn an_sgd_step_is_the_arithmetic_it_claims_to_be() {
+    let model = fixture!();
+    let _guard = common::serialize_models();
+
+    let mut config = base_config(TrainablePolicy::Partial, OptimizerKind::Sgd);
+    // Non-zero, so the decay term is actually exercised.
+    config.weight_decay = 0.1;
+    // A ceiling no gradient reaches leaves the clipping scale at exactly one;
+    // the norm is measured below rather than assumed.
+    config.max_grad_norm = 1.0e9;
+
+    let mut trainer = Trainer::new(&model, config).expect("load trainer");
+    let set = resolved_norm_set(&model, TrainablePolicy::Partial);
+    trainer
+        .declare_trainable_set(&set)
+        .expect("select the fixture's norms");
+    trainer
+        .prepare_optimizer()
+        .expect("the marked set is the resolved set");
+
+    let marked = trainer
+        .marked_trainable_set()
+        .expect("the marked parameters");
+    assert!(!marked.entries.is_empty());
+    let sizes: Vec<u64> = marked.entries.iter().map(|entry| entry.n_bytes).collect();
+    let before: Vec<Vec<f32>> = (0..sizes.len())
+        .map(|index| parameter_values(&mut trainer, index, sizes[index]))
+        .collect();
+
+    // Exactly one optimizer step: the equation below relates one gradient to
+    // one update.
+    let tokens = trainer.tokenize_text(&TEXT.repeat(12)).expect("tokenize");
+    let step = trainer.train_tokens(&tokens).expect("train").global_step;
+    assert_eq!(step, 1, "the equation below describes exactly one step");
+
+    let after: Vec<Vec<f32>> = (0..sizes.len())
+        .map(|index| parameter_values(&mut trainer, index, sizes[index]))
+        .collect();
+    let gradients: Vec<Vec<f32>> = (0..sizes.len())
+        .map(|index| parameter_gradient(&mut trainer, index))
+        .collect();
+
+    // The norm over every trainable gradient is what the clipping scale is
+    // computed from; under the ceiling, the scale is one.
+    let norm = gradients
+        .iter()
+        .flatten()
+        .map(|value| f64::from(*value) * f64::from(*value))
+        .sum::<f64>()
+        .sqrt();
+    assert!(norm > 0.0, "the backward produced no gradient at all");
+    assert!(norm < 1.0e9, "the gradient was clipped: {norm}");
+
+    let knobs = trainer
+        .optimizer_hyperparameters()
+        .expect("the values the update read");
+    let scalar = |name: &str| match knobs.get(name) {
+        Some(retrograd::HyperparameterValue::Scalar(value)) => value,
+        other => panic!("{name} is {other:?}"),
+    };
+    let alpha = scalar("learning_rate");
+    let decay = scalar("weight_decay");
+    let keep = 1.0_f32 - alpha * decay;
+    assert!(alpha > 0.0 && decay > 0.0 && keep < 1.0);
+
+    let mut compared = 0_usize;
+    let mut worst = 0.0_f32;
+    // Each term is checked by dropping it: with small steps, an equation
+    // satisfied by any small update would pass. Both rejections must fail the
+    // tolerance the full expression passes.
+    let mut without_gradient = 0.0_f32;
+    let mut without_decay = 0.0_f32;
+    for (index, entry) in marked.entries.iter().enumerate() {
+        assert_eq!(before[index].len(), after[index].len(), "{}", entry.name);
+        assert_eq!(
+            before[index].len(),
+            gradients[index].len(),
+            "{}",
+            entry.name
+        );
+        for ((w0, w1), g) in before[index]
+            .iter()
+            .zip(&after[index])
+            .zip(&gradients[index])
+        {
+            let error =
+                |expected: f32| (expected - w1).abs() / expected.abs().max(w1.abs()).max(1.0e-6);
+            worst = worst.max(error(w0 * keep - alpha * g));
+            without_gradient = without_gradient.max(error(w0 * keep));
+            without_decay = without_decay.max(error(w0 - alpha * g));
+            compared += 1;
+        }
+    }
+    assert!(compared > 0);
+    // Not bit-exact: the kernel may fuse the multiply and the subtract.
+    const TOLERANCE: f32 = 1.0e-5;
+    assert!(
+        worst < TOLERANCE,
+        "the step is not `w * (1 - lr * wd) - lr * g`: worst relative error {worst}"
+    );
+    assert!(
+        without_gradient > TOLERANCE,
+        "the gradient term changes nothing, so the comparison proves nothing"
+    );
+    assert!(
+        without_decay > TOLERANCE,
+        "the decay term changes nothing, so the comparison proves nothing"
     );
 }

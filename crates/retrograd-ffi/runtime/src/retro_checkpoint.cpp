@@ -120,6 +120,31 @@ std::vector<const ggml_tensor *> marked_parameters(trainer_state & state) {
     return marked;
 }
 
+// The gradient accumulator of one marked parameter, keyed by the parameter's
+// name, not by a graph node: the graphs are dropped after every evaluation,
+// but the accumulators are allocated once and outlive them, the way the
+// momenta do.
+ggml_tensor * parameter_gradient(trainer_state & state, size_t index) {
+    ggml_opt_context_t opt = opt_context(state);
+    if (!opt) {
+        set_error("the optimizer graph does not exist yet, so no gradient has been computed");
+        return nullptr;
+    }
+    const std::vector<const ggml_tensor *> marked = marked_parameters(state);
+    if (index >= marked.size()) {
+        set_error("marked parameter index is out of range");
+        return nullptr;
+    }
+    ggml_tensor * grad = ggml_opt_grad_acc_by_name(opt, marked[index]->name);
+    if (!grad) {
+        set_error(
+                std::string("no gradient accumulator for '") + marked[index]->name
+                + "': the parameter was marked after the optimizer graph was built");
+        return nullptr;
+    }
+    return grad;
+}
+
 // A byte range is inside the payload, or it is an error. Never a short read:
 // a caller that staged fewer bytes than it asked for would write a truncated
 // slot into a checkpoint and call it complete.
@@ -340,6 +365,102 @@ extern "C" int retro_trainer_marked_parameter_info(
         out_tensor->storage_id = tensor->data
                 ? reinterpret_cast<uint64_t>(tensor->data)
                 : 0;
+        return 0;
+    });
+}
+
+extern "C" int retro_trainer_marked_parameter_read(
+        retro_trainer * trainer,
+        size_t index,
+        uint64_t offset,
+        void * out_bytes,
+        size_t n_bytes) {
+    return retro::boundary([&]() -> int {
+        retro::trainer_state * state = retro::checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        if (n_bytes != 0 && !out_bytes) {
+            retro::set_error("out_bytes is required");
+            return -1;
+        }
+        const std::vector<const ggml_tensor *> marked = retro::marked_parameters(*state);
+        if (index >= marked.size()) {
+            retro::set_error("marked parameter index is out of range");
+            return -1;
+        }
+        const ggml_tensor * tensor = marked[index];
+        if (!retro::slot_range_ok(tensor, offset, n_bytes)) {
+            return -1;
+        }
+        if (n_bytes != 0) {
+            ggml_backend_tensor_get(tensor, out_bytes, offset, n_bytes);
+        }
+        return 0;
+    });
+}
+
+extern "C" int retro_trainer_parameter_gradient_info(
+        retro_trainer * trainer,
+        size_t index,
+        retro_tensor_desc * out_tensor) {
+    return retro::boundary([&]() -> int {
+        retro::trainer_state * state = retro::checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        if (!out_tensor) {
+            retro::set_error("out_tensor is required");
+            return -1;
+        }
+        const ggml_tensor * grad = retro::parameter_gradient(*state, index);
+        if (!grad) {
+            return -1;
+        }
+        *out_tensor = retro_tensor_desc {};
+        const char * type_name = ggml_type_name(grad->type);
+        if (!retro::copy_fixed_field(grad->name, out_tensor->name, sizeof(out_tensor->name))
+                || !retro::copy_fixed_field(
+                        type_name ? type_name : "",
+                        out_tensor->type_name,
+                        sizeof(out_tensor->type_name))) {
+            return -1;
+        }
+        for (int d = 0; d < GGML_MAX_DIMS; ++d) {
+            out_tensor->ne[d] = grad->ne[d];
+        }
+        out_tensor->n_elements = static_cast<uint64_t>(ggml_nelements(grad));
+        out_tensor->n_bytes = static_cast<uint64_t>(ggml_nbytes(grad));
+        out_tensor->storage_id = grad->data ? reinterpret_cast<uint64_t>(grad->data) : 0;
+        return 0;
+    });
+}
+
+extern "C" int retro_trainer_parameter_gradient_read(
+        retro_trainer * trainer,
+        size_t index,
+        uint64_t offset,
+        void * out_bytes,
+        size_t n_bytes) {
+    return retro::boundary([&]() -> int {
+        retro::trainer_state * state = retro::checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        if (n_bytes != 0 && !out_bytes) {
+            retro::set_error("out_bytes is required");
+            return -1;
+        }
+        const ggml_tensor * grad = retro::parameter_gradient(*state, index);
+        if (!grad) {
+            return -1;
+        }
+        if (!retro::slot_range_ok(grad, offset, n_bytes)) {
+            return -1;
+        }
+        if (n_bytes != 0) {
+            ggml_backend_tensor_get(grad, out_bytes, offset, n_bytes);
+        }
         return 0;
     });
 }

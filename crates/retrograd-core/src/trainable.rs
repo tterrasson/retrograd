@@ -15,6 +15,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::capability::{ArchitectureCapability, architecture_capability, tensor_family};
 use crate::error::{Error, Result};
 
 /// Schema version of [`TensorInventory`]. A reader that keys on a field must be
@@ -483,6 +484,12 @@ pub enum ExclusionReason {
     UnsupportedDtype(TensorDtype),
     /// A second name for storage already in the set.
     DuplicateStorage { of: String },
+    /// The architecture's row does not name this family, so `full` leaves it
+    /// alone rather than guessing it is a parameter.
+    UnlistedFamily {
+        architecture: String,
+        family: String,
+    },
 }
 
 impl fmt::Display for ExclusionReason {
@@ -497,6 +504,10 @@ impl fmt::Display for ExclusionReason {
                 write!(f, "dtype {dtype} is not supported for base training")
             }
             Self::DuplicateStorage { of } => write!(f, "shares storage with '{of}'"),
+            Self::UnlistedFamily {
+                architecture,
+                family,
+            } => write!(f, "family '{family}' is not trainable on {architecture}"),
         }
     }
 }
@@ -671,7 +682,10 @@ pub fn resolve_base(
 /// A dtype refusal here is loud on purpose: silently keeping the F32 norms of a
 /// Q4 model and calling that "full" would report a trainable set two orders of
 /// magnitude smaller than the word promises.
+///
 fn resolve_full(inventory: &TensorInventory, set: &mut TrainableSet) -> Result<()> {
+    let capability = architecture_capability(&inventory.architecture)
+        .ok_or_else(|| untabled_architecture_error(&inventory.architecture))?;
     let mut unsupported: Vec<(&str, &TensorDtype)> = Vec::new();
     let mut candidates: Vec<&TensorDesc> = Vec::new();
     for tensor in &inventory.tensors {
@@ -680,6 +694,18 @@ fn resolve_full(inventory: &TensorInventory, set: &mut TrainableSet) -> Result<(
                 name: tensor.name.clone(),
                 reason,
             }),
+            // Before the dtype check (no format question for a family this
+            // build does not train) and after the frozen one (the more
+            // specific reason).
+            None if !capability.admits(&tensor.name) => {
+                set.exclusions.push(TrainableExclusion {
+                    name: tensor.name.clone(),
+                    reason: ExclusionReason::UnlistedFamily {
+                        architecture: inventory.architecture.clone(),
+                        family: tensor_family(&tensor.name).to_string(),
+                    },
+                });
+            }
             None if !tensor.dtype.is_trainable_base() => {
                 unsupported.push((&tensor.name, &tensor.dtype));
             }
@@ -691,6 +717,22 @@ fn resolve_full(inventory: &TensorInventory, set: &mut TrainableSet) -> Result<(
     }
     push_deduplicated(candidates, set);
     Ok(())
+}
+
+/// `full` on an architecture this build has no family list for. The message
+/// points at the way out: `partial` reads its tensors from the document.
+fn untabled_architecture_error(architecture: &str) -> Error {
+    let known: Vec<&str> = crate::capability::CAPABILITY_TABLE
+        .iter()
+        .map(|row| row.architecture)
+        .collect();
+    Error::config(format!(
+        "trainable = 'full' has to derive the trainable set itself, and this build lists no \
+         trainable families for architecture '{architecture}' (it lists: {}). Use \
+         trainable = 'partial' and name the tensors, or add '{architecture}' to the \
+         capability table once a lane resolves against its real tensor names",
+        known.join(", ")
+    ))
 }
 
 /// The union of the requested modules, norms and biases, intersected with the
@@ -706,6 +748,9 @@ fn resolve_selected(
              set at least one of [trainable].modules, .norms, .biases or .output_head",
         ));
     }
+    // A selection is the set, so `partial` works on an untabled architecture:
+    // the user spelled the tensors. Where a row exists, it is checked.
+    let capability = architecture_capability(&inventory.architecture);
     let layers = selector.layers.resolve(inventory.n_layer)?;
     let in_range = |tensor: &TensorDesc| match tensor.layer() {
         Some(layer) => layers.contains(&layer),
@@ -759,14 +804,15 @@ fn resolve_selected(
     for tensor in &inventory.tensors {
         let mut wanted = false;
         let in_block_range = in_range(tensor);
+        // Family, not stem: a stem is `None` for a name with no suffix, which
+        // would make `blk.N.ssm_a` reachable only by wildcard.
+        let family = tensor_family(&tensor.name);
 
         for request in &mut requests {
             let hit = (in_block_range
                 && !tensor.is_bias()
                 && !tensor.is_norm()
-                && tensor
-                    .stem()
-                    .is_some_and(|stem| request.stems.iter().any(|want| want == stem)))
+                && request.stems.iter().any(|want| want == family))
                 || (tensor.layer().is_none() || in_block_range)
                     && request
                         .patterns
@@ -810,7 +856,12 @@ fn resolve_selected(
                     tensor.name
                 )));
             }
-            None => selected.push(tensor),
+            None => {
+                if let Some(capability) = capability {
+                    check_family_is_trainable(capability, &tensor.name)?;
+                }
+                selected.push(tensor);
+            }
         }
     }
 
@@ -840,6 +891,33 @@ fn resolve_selected(
     }
     push_deduplicated(selected, set);
     Ok(())
+}
+
+/// Refuses a selected tensor whose family the row does not name, listing the
+/// families that are available: a miss is usually a name spelled the way
+/// another architecture spells it.
+fn check_family_is_trainable(capability: &ArchitectureCapability, name: &str) -> Result<()> {
+    if capability.admits(name) {
+        return Ok(());
+    }
+    const SHOWN: usize = 12;
+    let available: Vec<&str> = capability.families().take(SHOWN).collect();
+    let rest = capability
+        .families()
+        .count()
+        .saturating_sub(available.len());
+    let tail = if rest > 0 {
+        format!(" and {rest} more")
+    } else {
+        String::new()
+    };
+    Err(Error::config(format!(
+        "trainable selection names '{name}', whose family '{}' is not a trainable parameter \
+         of {} in this build. Trainable families: {}{tail}",
+        tensor_family(name),
+        capability.architecture,
+        available.join(", "),
+    )))
 }
 
 /// Why this tensor can never be trained, or `None` if it can.
@@ -1324,8 +1402,10 @@ mod tests {
             .get("blk.0.attn_q.weight")
             .expect("fixture")
             .storage_id;
+        // A second listed family (not an unknown one), chosen to sort after
+        // `attn_q` so the survivor is the one asserted.
         inventory.tensors.push(tensor(
-            "blk.0.attn_q_alias.weight",
+            "blk.0.ffn_gate.weight",
             [8, 8, 1, 1],
             TensorDtype::F32,
             shared,
@@ -1347,6 +1427,116 @@ mod tests {
             &exclusion.reason,
             ExclusionReason::DuplicateStorage { of } if of == "blk.0.attn_q.weight"
         )));
+    }
+
+    /// An unlisted tensor is left alone and named in the exclusions, not
+    /// trained just because it is F32 and unfrozen.
+    #[test]
+    fn full_leaves_an_unlisted_family_alone_and_says_so() {
+        let mut inventory = inventory();
+        inventory.tensors.push(tensor(
+            "blk.0.quantization_scratch.weight",
+            [8, 1, 1, 1],
+            TensorDtype::F32,
+            999_000,
+        ));
+        let set = resolve_base(
+            &inventory,
+            TrainablePolicy::Full,
+            &TrainableSelector::default(),
+        )
+        .expect("the rest of the model still resolves");
+        assert!(
+            !names(&set).contains(&"blk.0.quantization_scratch.weight"),
+            "{:?}",
+            names(&set)
+        );
+        let excluded = set
+            .exclusions
+            .iter()
+            .find(|exclusion| exclusion.name == "blk.0.quantization_scratch.weight")
+            .expect("an unlisted tensor is reported, not dropped silently");
+        assert_eq!(
+            excluded.reason,
+            ExclusionReason::UnlistedFamily {
+                architecture: "llama".into(),
+                family: "quantization_scratch".into(),
+            }
+        );
+    }
+
+    /// A parameter without a suffix is a listed family, not a wildcard miss.
+    #[test]
+    fn a_listed_family_needs_no_weight_suffix_to_be_selected() {
+        let mut inventory = inventory();
+        inventory.tensors.push(tensor(
+            "blk.0.ffn_gate",
+            [8, 1, 1, 1],
+            TensorDtype::F32,
+            888_000,
+        ));
+        let selector = TrainableSelector {
+            modules: vec!["ffn_gate".into()],
+            ..Default::default()
+        };
+        let set = resolve_base(&inventory, TrainablePolicy::Partial, &selector)
+            .expect("a suffix-less parameter of a listed family resolves");
+        assert_eq!(names(&set), vec!["blk.0.ffn_gate"]);
+    }
+
+    #[test]
+    fn full_refuses_an_architecture_it_has_no_family_list_for() {
+        let inventory =
+            TensorInventory::new("an-architecture-nobody-tabled", false, inventory().tensors);
+        let error = resolve_base(
+            &inventory,
+            TrainablePolicy::Full,
+            &TrainableSelector::default(),
+        )
+        .expect_err("full has nothing to derive a set from");
+        assert!(error.is_user_error(), "{error}");
+        let message = error.to_string();
+        assert!(
+            message.contains("an-architecture-nobody-tabled"),
+            "{message}"
+        );
+        assert!(message.contains("partial"), "{message}");
+    }
+
+    /// `partial` needs no family list, so an untabled architecture is still
+    /// trainable.
+    #[test]
+    fn partial_resolves_on_an_architecture_full_refuses() {
+        let inventory =
+            TensorInventory::new("an-architecture-nobody-tabled", false, inventory().tensors);
+        let selector = TrainableSelector {
+            norms: true,
+            ..Default::default()
+        };
+        let set = resolve_base(&inventory, TrainablePolicy::Partial, &selector)
+            .expect("an explicit selection needs no family list");
+        assert!(!set.is_empty());
+    }
+
+    #[test]
+    fn partial_refuses_a_selected_tensor_of_an_unlisted_family() {
+        let mut inventory = inventory();
+        inventory.tensors.push(tensor(
+            "blk.0.quantization_scratch.weight",
+            [8, 1, 1, 1],
+            TensorDtype::F32,
+            999_000,
+        ));
+        let selector = TrainableSelector {
+            modules: vec!["blk.0.quantization_scratch.weight".into()],
+            ..Default::default()
+        };
+        let error = resolve_base(&inventory, TrainablePolicy::Partial, &selector)
+            .expect_err("a listed family is what makes a tensor a parameter");
+        let message = error.to_string();
+        assert!(message.contains("quantization_scratch"), "{message}");
+        // The refusal lists the trainable families, not just the wall.
+        assert!(message.contains("attn_q"), "{message}");
     }
 
     #[test]

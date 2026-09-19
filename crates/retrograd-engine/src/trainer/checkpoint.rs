@@ -87,6 +87,72 @@ impl Trainer {
         })
     }
 
+    /// Copies one marked parameter's bytes, starting at `offset`, in the
+    /// parameter's stored dtype (see [`Self::marked_trainable_set`]).
+    pub fn read_marked_parameter(
+        &mut self,
+        index: usize,
+        offset: u64,
+        out: &mut [u8],
+    ) -> Result<()> {
+        // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
+        self.check(unsafe {
+            ffi::retro_trainer_marked_parameter_read(
+                self.raw.as_ptr(),
+                index,
+                offset,
+                out.as_mut_ptr().cast(),
+                out.len(),
+            )
+        })
+    }
+
+    /// Describes the gradient accumulator of one marked parameter. Always F32
+    /// and parameter-shaped; `role` is the parameter's, since that is how a
+    /// caller identifies it.
+    pub fn parameter_gradient_info(&mut self, index: usize) -> Result<TrainableEntry> {
+        let mut desc = ffi::RetroTensorDesc::default();
+        // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
+        self.check(unsafe {
+            ffi::retro_trainer_parameter_gradient_info(self.raw.as_ptr(), index, &mut desc)
+        })?;
+        let name = fixed_string(&desc.name)?;
+        let dtype = TensorDtype::from_ggml_name(&fixed_string(&desc.type_name)?);
+        Ok(TrainableEntry {
+            role: role_of(&name),
+            name,
+            ne: desc.ne,
+            dtype,
+            n_elements: desc.n_elements,
+            n_bytes: desc.n_bytes,
+            storage_id: desc.storage_id,
+        })
+    }
+
+    /// Copies bytes of the parameter's gradient accumulator, starting at
+    /// `offset`.
+    ///
+    /// The accumulators outlive the graph that wrote them, so this answers
+    /// after the step. That makes slot-less optimizers (SGD) checkable: the
+    /// gradient is the only other input to their update.
+    pub fn read_parameter_gradient(
+        &mut self,
+        index: usize,
+        offset: u64,
+        out: &mut [u8],
+    ) -> Result<()> {
+        // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
+        self.check(unsafe {
+            ffi::retro_trainer_parameter_gradient_read(
+                self.raw.as_ptr(),
+                index,
+                offset,
+                out.as_mut_ptr().cast(),
+                out.len(),
+            )
+        })
+    }
+
     /// Fingerprint of the marked set's canonical manifest, empty when the run
     /// trains no base tensor.
     ///

@@ -8,6 +8,7 @@
 //! catalogue schema is declared in `rir-core` and only re-exported here, since
 //! the RIR chain never depends on this crate.
 
+mod capability;
 mod dims;
 mod error;
 mod execution;
@@ -19,6 +20,9 @@ mod types;
 #[macro_use]
 mod wire_enum;
 
+pub use capability::{
+    ArchitectureCapability, CAPABILITY_TABLE, architecture_capability, tensor_family,
+};
 pub use dims::{saturating_dim, saturating_dim_product};
 pub use error::{Error, ErrorKind, Result};
 pub use execution::{

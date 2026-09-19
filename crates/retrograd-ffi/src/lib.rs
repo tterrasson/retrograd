@@ -1128,6 +1128,28 @@ unsafe extern "C" {
         out_tensor: *mut RetroTensorDesc,
     ) -> c_int;
 
+    pub fn retro_trainer_marked_parameter_read(
+        trainer: *mut RetroTrainer,
+        index: usize,
+        offset: u64,
+        out_bytes: *mut c_void,
+        n_bytes: usize,
+    ) -> c_int;
+
+    pub fn retro_trainer_parameter_gradient_info(
+        trainer: *mut RetroTrainer,
+        index: usize,
+        out_tensor: *mut RetroTensorDesc,
+    ) -> c_int;
+
+    pub fn retro_trainer_parameter_gradient_read(
+        trainer: *mut RetroTrainer,
+        index: usize,
+        offset: u64,
+        out_bytes: *mut c_void,
+        n_bytes: usize,
+    ) -> c_int;
+
     pub fn retro_trainer_state_slot_count(
         trainer: *mut RetroTrainer,
         out_parameter_slots: *mut usize,
@@ -2090,6 +2112,25 @@ mod contract_tests {
                 ptr::null_mut(),
                 0,
                 &mut tensor,
+            ));
+            assert_null_trainer(retro_trainer_marked_parameter_read(
+                ptr::null_mut(),
+                0,
+                0,
+                ptr::null_mut(),
+                0,
+            ));
+            assert_null_trainer(retro_trainer_parameter_gradient_info(
+                ptr::null_mut(),
+                0,
+                &mut tensor,
+            ));
+            assert_null_trainer(retro_trainer_parameter_gradient_read(
+                ptr::null_mut(),
+                0,
+                0,
+                ptr::null_mut(),
+                0,
             ));
             assert_null_trainer(retro_trainer_state_slot_count(
                 ptr::null_mut(),
