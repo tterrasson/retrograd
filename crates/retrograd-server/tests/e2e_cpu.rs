@@ -140,7 +140,8 @@ fn recipe(workspace: &Workspace, model: &Path, epochs: u32) -> Value {
             // costing a second and one costing twenty, and every assertion below
             // is about what the pieces do, not about how much padding they chew.
             "training": {"ctx": 128, "micro_batch": 128},
-            "lora": {"rank": 4, "output": workspace.path("adapter.gguf")},
+            "lora": {"rank": 4},
+            "output": {"path": workspace.path("adapter.gguf")},
             "checkpoint": {
                 "directory": workspace.path("checkpoints"),
                 "mode": "steps",
@@ -298,7 +299,7 @@ async fn a_run_on_the_cpu_fixture_is_planned_driven_and_forked() {
             "budget": {"epochs": 1},
             "seed": 7
         },
-        "params": {"lora": {"output": workspace.path("bare-adapter.gguf")}},
+        "params": {"output": {"path": workspace.path("bare-adapter.gguf")}},
         "name": "no-params"
     });
     let (status, derived) = post(&router, "/v1/runs?dry_run=true", bare).await;

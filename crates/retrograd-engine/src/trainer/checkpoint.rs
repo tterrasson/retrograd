@@ -379,6 +379,17 @@ impl Trainer {
         self.check(unsafe { ffi::retro_trainer_load_trainable(self.raw.as_ptr(), path.as_ptr()) })
     }
 
+    /// Writes the whole model back out as a standalone GGUF, trained weights
+    /// included. The result needs neither the source model nor this loader.
+    ///
+    /// Refused for a run that changes no base tensor or carries an adapter.
+    /// Check [`retrograd_core::architecture_exports_model`] before training.
+    pub fn save_model(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path_to_cstring(path.as_ref())?;
+        // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
+        self.check(unsafe { ffi::retro_trainer_save_model(self.raw.as_ptr(), path.as_ptr()) })
+    }
+
     read_string_method!(private rng_state, retro_trainer_rng_state);
 
     fn set_rng_state(&mut self, state: &str) -> Result<()> {

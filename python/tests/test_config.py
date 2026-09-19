@@ -110,6 +110,7 @@ def test_configs_coerce_sequences_paths_and_preserve_native_options(tmp_path: Pa
         "max_grad_norm": 1.0,
         "scheduler": "cosine",
         "warmup_steps": 0,
+        "optimizer": "adamw",
         "chunked_cross_entropy": True,
         "chunked_ce_tiles": 8,
         "chunked_ce_seq_chunk": 512,

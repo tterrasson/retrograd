@@ -21,7 +21,8 @@ mod types;
 mod wire_enum;
 
 pub use capability::{
-    ArchitectureCapability, CAPABILITY_TABLE, architecture_capability, tensor_family,
+    ArchitectureCapability, CAPABILITY_TABLE, architecture_capability, architecture_exports_model,
+    model_export_architectures, tensor_family,
 };
 pub use dims::{saturating_dim, saturating_dim_product};
 pub use error::{Error, ErrorKind, Result};

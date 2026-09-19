@@ -484,19 +484,53 @@ fn the_adapter_section_and_the_output_kind_follow_the_policy() {
     assert!(error.to_string().contains("portable result"), "{error}");
 }
 
-/// A standalone model GGUF is refused by name rather than attempted: the saver
-/// supports a subset of architectures and an adapter merge has no parity
-/// coverage, so accepting the name would promise a file no run can write.
+/// A standalone model GGUF is what a base-weight run publishes: `lora` and
+/// `hybrid` are refused, since merging an adapter into the weights is not
+/// covered here.
 #[test]
-fn a_model_export_is_refused_by_name() {
+fn a_model_export_belongs_to_the_policies_that_carry_no_adapter() {
     let root = Path::new("/tmp/retrograd-round-trip");
-    let mut document = lora_normalized(exhaustive_document());
+    let mut document = base_normalized(exhaustive_document());
+    document.grpo.as_mut().expect("section").kl_coefficient = 0.0;
+    document.grpo.as_mut().expect("section").kl_schedule = None;
     document.output = Some(OutputToml {
         path: PathBuf::from("out/model.gguf"),
         kind: Some("model".to_string()),
     });
-    let error = build(document, root).expect_err("model export is not implemented");
-    assert!(error.to_string().contains("not available"), "{error}");
+    let config = build(document, root).expect("a partial run writes its weights back out");
+    assert_eq!(config.output.kind, OutputKind::Model);
+    assert_eq!(config.output.path, root.join("out/model.gguf"));
+
+    let mut lora = lora_normalized(exhaustive_document());
+    lora.output = Some(OutputToml {
+        path: PathBuf::from("out/model.gguf"),
+        kind: Some("model".to_string()),
+    });
+    let error = build(lora, root).expect_err("a lora run's result is not in the weights");
+    assert!(error.to_string().contains("parity coverage"), "{error}");
+
+    let mut hybrid = base_normalized(exhaustive_document());
+    hybrid.grpo.as_mut().expect("section").kl_coefficient = 0.0;
+    hybrid.grpo.as_mut().expect("section").kl_schedule = None;
+    hybrid.training.trainable = Some("hybrid".to_string());
+    hybrid.trainable = Some(TrainableToml {
+        norms: Some(true),
+        ..Default::default()
+    });
+    hybrid.lora = Some(LoraToml {
+        rank: Some(8),
+        alpha: Some(16.0),
+        seed: None,
+        targets: Vec::new(),
+        init_adapter: None,
+        dtype: Some(LoraDtype::F32),
+    });
+    hybrid.output = Some(OutputToml {
+        path: PathBuf::from("out/model.gguf"),
+        kind: Some("model".to_string()),
+    });
+    let error = build(hybrid, root).expect_err("a hybrid run would lose its adapter");
+    assert!(error.to_string().contains("drop the adapter"), "{error}");
 
     let mut unknown = lora_normalized(exhaustive_document());
     unknown.output = Some(OutputToml {

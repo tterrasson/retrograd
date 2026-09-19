@@ -134,6 +134,9 @@ pub fn execute_controlled(
         )?;
         observer.info(&trainable_selection_line(&set));
         trainer.declare_trainable_set(&set)?;
+        // Checked now, not in save_output: this branch has the model's
+        // architecture, and `[output]` alone cannot validate it.
+        check_model_export(config, &inventory.architecture)?;
     }
 
     // A resume owns what it restores: the checkpoint brings back the adapter,
@@ -281,12 +284,35 @@ fn save_output(
                 observer.info(&format!("adapter written to {}", adapter.display()));
             }
         }
-        // Refused by the configuration: nothing reaches here.
-        OutputKind::Model => {
-            return Err(Error::invalid(
-                "standalone model export is not implemented in this build",
-            ));
-        }
+        OutputKind::Model => trainer.save_model(&config.output.path)?,
+    }
+    Ok(())
+}
+
+/// Refuses a `model` export before training starts: the architecture must be
+/// covered by a round-trip test here, and the output filesystem must hold a
+/// file the size of the model.
+fn check_model_export(config: &RunConfig, architecture: &str) -> Result<()> {
+    if config.output.kind != OutputKind::Model {
+        return Ok(());
+    }
+    if !retrograd_core::architecture_exports_model(architecture) {
+        let known: Vec<&str> = retrograd_core::model_export_architectures().collect();
+        return Err(Error::config(format!(
+            "output.kind = 'model' is not available for architecture '{architecture}': a \
+             standalone GGUF is published only where writing one and loading it back is \
+             covered here, which is [{}] today. Use 'trainable' for the bundle",
+            known.join(", ")
+        )));
+    }
+    let required = model_bytes(&config.model);
+    let free = retrograd_checkpoint::free_space(&config.output.path)?;
+    if free < required {
+        return Err(Error::checkpoint(format!(
+            "output.kind = 'model' writes {required} bytes to {} and its filesystem has \
+             {free} free: a model export is the size of the model it was loaded from",
+            config.output.path.display()
+        )));
     }
     Ok(())
 }

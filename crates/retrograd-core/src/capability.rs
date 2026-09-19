@@ -47,6 +47,10 @@ pub struct ArchitectureCapability {
     pub block_families: &'static [&'static str],
     /// Families outside every block.
     pub global_families: &'static [&'static str],
+    /// Whether a standalone model GGUF for this architecture has been
+    /// exported, reloaded and compared in a test here. `false` means "not
+    /// measured", never "known broken".
+    pub exports_model: bool,
 }
 
 impl ArchitectureCapability {
@@ -132,11 +136,13 @@ pub const CAPABILITY_TABLE: &[ArchitectureCapability] = &[
         architecture: "llama",
         block_families: &LLAMA_BLOCK,
         global_families: &DENSE_GLOBAL,
+        exports_model: false, // no fixture of this architecture runs here
     },
     ArchitectureCapability {
         architecture: "lfm2",
         block_families: &LFM2_BLOCK,
         global_families: &DENSE_GLOBAL,
+        exports_model: true,
     },
 ];
 
@@ -145,6 +151,21 @@ pub fn architecture_capability(architecture: &str) -> Option<&'static Architectu
     CAPABILITY_TABLE
         .iter()
         .find(|row| row.architecture == architecture)
+}
+
+/// Whether this build may publish a standalone model GGUF for `architecture`.
+/// An unlisted architecture answers `false`: nothing here has measured it.
+pub fn architecture_exports_model(architecture: &str) -> bool {
+    architecture_capability(architecture).is_some_and(|row| row.exports_model)
+}
+
+/// The architectures a standalone model export is available for, for a
+/// refusal to name.
+pub fn model_export_architectures() -> impl Iterator<Item = &'static str> {
+    CAPABILITY_TABLE
+        .iter()
+        .filter(|row| row.exports_model)
+        .map(|row| row.architecture)
 }
 
 #[cfg(test)]
@@ -246,5 +267,21 @@ mod tests {
             );
             assert!(families.iter().all(|family| !family.is_empty()));
         }
+    }
+
+    #[test]
+    fn a_model_export_is_available_only_where_a_row_grants_it() {
+        assert!(architecture_exports_model("lfm2"));
+        assert!(!architecture_exports_model("llama"));
+        assert!(!architecture_exports_model("an-architecture-with-no-row"));
+
+        let granted: Vec<&str> = model_export_architectures().collect();
+        assert_eq!(granted, vec!["lfm2"]);
+        assert!(
+            granted
+                .iter()
+                .all(|architecture| architecture_capability(architecture).is_some()),
+            "a granted architecture with no row would be unreachable"
+        );
     }
 }

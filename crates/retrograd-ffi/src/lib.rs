@@ -1100,6 +1100,9 @@ unsafe extern "C" {
         trainable_path: *const c_char,
     ) -> c_int;
 
+    pub fn retro_trainer_save_model(trainer: *mut RetroTrainer, model_path: *const c_char)
+    -> c_int;
+
     pub fn retro_trainer_optimizer_state(
         trainer: *mut RetroTrainer,
         out_state: *mut RetroOptimizerState,
@@ -2162,6 +2165,7 @@ mod contract_tests {
             ));
             assert_null_trainer(retro_trainer_save_trainable(ptr::null_mut(), text.as_ptr()));
             assert_null_trainer(retro_trainer_load_trainable(ptr::null_mut(), text.as_ptr()));
+            assert_null_trainer(retro_trainer_save_model(ptr::null_mut(), text.as_ptr()));
             assert_null_trainer(retro_trainer_rng_state(
                 ptr::null_mut(),
                 ptr::null_mut(),

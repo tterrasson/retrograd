@@ -11,6 +11,11 @@
 // was subtracted from, while the values are what the run produced; the base
 // model's fingerprint is recorded by the caller and compared on restore, so
 // the pairing is checked rather than assumed.
+//
+// The third writer is the standalone model export: the source file's metadata
+// and tensor list, copied rather than reconstructed, with the live values in
+// place of the stored ones. Copying the metadata is what makes the result
+// loadable by whatever loaded the input.
 
 #include "retro_runtime.hpp"
 
@@ -234,6 +239,94 @@ bool load_trainable_bundle(trainer_state & state, const char * path) {
     return true;
 }
 
+bool save_model_gguf(trainer_state & state, const char * path) {
+    // Without changed base weights, the file would be a copy of the input.
+    if (!trains_base_weights(state)) {
+        set_error(
+                "this run trains no base tensor, so a model export would be a copy of the "
+                "model it was loaded from; a LoRA run's result is its adapter");
+        return false;
+    }
+    // An adapter does not live in the weights, and folding it in is a merge
+    // this build does not do.
+    if (state.has_lora) {
+        set_error(
+                "this run carries a LoRA adapter, which a standalone model GGUF cannot hold: "
+                "merging an adapter into the weights it multiplies is not implemented, so "
+                "export the composite trainable bundle instead");
+        return false;
+    }
+
+    // Re-read the source file for its metadata; it is copied, not reconstructed.
+    ggml_context * meta = nullptr;
+    gguf_init_params params {};
+    params.no_alloc = true;
+    params.ctx = &meta;
+    gguf_context_ptr source(gguf_init_from_file(state.model_path.c_str(), params));
+    if (!source) {
+        set_error("failed to re-read the model file for its metadata: " + state.model_path);
+        return false;
+    }
+    struct meta_guard {
+        ggml_context * ctx;
+        ~meta_guard() { if (ctx) { ggml_free(ctx); } }
+    } guard { meta };
+
+    const int64_t split_key = gguf_find_key(source.get(), "split.count");
+    if (split_key >= 0
+            && (gguf_get_kv_type(source.get(), split_key) != GGUF_TYPE_UINT16
+                || gguf_get_val_u16(source.get(), split_key) > 1)) {
+        set_error(
+                "this model is stored as several GGUF files and a model export writes one; "
+                "the trainable bundle carries the tensors this run changed");
+        return false;
+    }
+
+    gguf_context_ptr out(gguf_init_empty());
+    if (!out) {
+        set_error("failed to allocate the model export GGUF context");
+        return false;
+    }
+    gguf_set_kv(out.get(), source.get());
+    // gguf_set_kv copies the key and not the alignment it implies, so a file
+    // that sets its own would be written at one alignment and read at another.
+    if (gguf_get_alignment(out.get()) != gguf_get_alignment(source.get())) {
+        set_error(
+                "this model declares a GGUF alignment this build does not reproduce; "
+                "the trainable bundle carries the tensors this run changed");
+        return false;
+    }
+
+    const int64_t n_tensors = gguf_get_n_tensors(source.get());
+    for (int64_t i = 0; i < n_tensors; ++i) {
+        const char * name = gguf_get_tensor_name(source.get(), i);
+        ggml_tensor * live = model_tensor(state, name);
+        if (!live) {
+            set_error(
+                    std::string("the loaded model carries no tensor named '") + name
+                    + "', which the model file declares; a model export writes the file's "
+                      "own tensor list");
+            return false;
+        }
+        const ggml_tensor * declared = ggml_get_tensor(meta, name);
+        if (!declared || live->type != declared->type
+                || !ggml_are_same_shape(live, declared)) {
+            set_error(
+                    std::string("tensor '") + name
+                    + "' is not the shape or dtype the model file declares for it");
+            return false;
+        }
+        // Weights on a device are copied out one tensor at a time.
+        gguf_add_tensor(out.get(), live);
+    }
+
+    if (!gguf_write_to_file(out.get(), path, false)) {
+        set_error("failed to write the model export: " + std::string(path));
+        return false;
+    }
+    return true;
+}
+
 } // namespace retro
 
 extern "C" int retro_trainer_save_trainable(
@@ -265,5 +358,21 @@ extern "C" int retro_trainer_load_trainable(
             return -1;
         }
         return retro::load_trainable_bundle(*state, trainable_path) ? 0 : -1;
+    });
+}
+
+extern "C" int retro_trainer_save_model(
+        retro_trainer * trainer,
+        const char * model_path) {
+    return retro::boundary([&]() -> int {
+        retro::trainer_state * state = retro::checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        if (retro::is_blank(model_path)) {
+            retro::set_error("model_path is required");
+            return -1;
+        }
+        return retro::save_model_gguf(*state, model_path) ? 0 : -1;
     });
 }

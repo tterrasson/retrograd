@@ -1597,6 +1597,19 @@ int retro_trainer_load_trainable(
     retro_trainer * trainer,
     const char * trainable_path);
 
+// Writes the whole loaded model back out as a standalone GGUF, trained weights
+// included, in the dtypes it was loaded in. Unlike the bundle above, the result
+// needs neither the source model nor this loader.
+//
+// Refused when the run trains no base tensor, when an adapter is loaded (merging
+// it into the weights is not implemented here), or when a weight is on a buffer
+// the host cannot read.
+//
+// The architecture is the caller's check via retrograd_core::architecture_exports_model.
+int retro_trainer_save_model(
+    retro_trainer * trainer,
+    const char * model_path);
+
 // ---------------------------------------------------------------------------
 // Training checkpoints
 // The GGUF written by retro_trainer_save_lora() stays a pure adapter export.

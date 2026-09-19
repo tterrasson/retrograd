@@ -47,12 +47,20 @@ does not name `[output].path` is rejected.
 | Key | Default | Description |
 | --- | ---: | --- |
 | `path` | required | Destination file. |
-| `kind` | `adapter` for `lora`, `trainable` otherwise | `adapter` is a portable LoRA GGUF. `trainable` is a Retrograd bundle: the trained base tensors by absolute value, plus the adapter beside it for a hybrid run; it requires the matching base model and this loader. `model`, a standalone merged GGUF, is rejected in this build. |
+| `kind` | `adapter` for `lora`, `trainable` otherwise | `adapter` is a portable LoRA GGUF. `trainable` is a Retrograd bundle: the trained base tensors by absolute value, plus the adapter beside it for a hybrid run; it requires the matching base model and this loader. `model` is a standalone GGUF that needs neither the source model nor this loader: the file the model was loaded from, with the trained weights in it. |
 
 A kind the policy does not produce is rejected rather than defaulted: `adapter`
 for a run that trains no adapter would be an empty file, `adapter` for a hybrid
 run would drop its trained base tensors, and `trainable` for a LoRA run has no
 base tensor to carry.
+
+`model` belongs to `full` and `partial`, the two policies whose whole result is
+in the weights. `lora` and `hybrid` are rejected: folding an adapter into the
+weights it multiplies is a merge with no parity coverage here, and a model
+written around it would load and not be the run. Two further checks run before
+the first step rather than after the last one - the architecture must be one
+this build has written and loaded back, and the filesystem under
+`[output].path` must have room for a file the size of the model.
 
 ### `[trainable]`
 

@@ -1079,3 +1079,246 @@ fn an_sgd_step_is_the_arithmetic_it_claims_to_be() {
         "the decay term changes nothing, so the comparison proves nothing"
     );
 }
+
+/// The standalone model export: the exported GGUF is the run, opened with the
+/// exported path and nothing else. Both directions are asserted: reloading it
+/// must match the trained run, and the source must still match the cold one.
+#[test]
+fn a_model_export_is_the_run_and_needs_nothing_beside_it() {
+    let model = fixture!();
+    let _guard = common::serialize_models();
+    let root = scratch("model-export");
+    let config = base_config(TrainablePolicy::Partial, OptimizerKind::AdamW);
+    let set = resolved_norm_set(&model, TrainablePolicy::Partial);
+
+    let mut trainer = Trainer::new(&model, config.clone()).expect("load trainer");
+    trainer
+        .declare_trainable_set(&set)
+        .expect("select the fixture's norms");
+    let cold = scores(&mut trainer);
+    train_once(&mut trainer);
+    let trained = scores(&mut trainer);
+    assert!(
+        deviation(&cold, &trained) > 0.0,
+        "the run has to move the model for the reload to mean anything"
+    );
+
+    let exported = root.join("trained-model.gguf");
+    trainer.save_model(&exported).expect("write the model");
+    drop(trainer);
+    assert!(exported.is_file());
+    // The source file is untouched; only its metadata is re-read.
+    assert_ne!(
+        checkpoint::fingerprint_file(&exported).expect("fingerprint the export"),
+        checkpoint::fingerprint_file(&model).expect("fingerprint the fixture"),
+    );
+
+    // Opened as a model in its own right; the selection resolves against the
+    // exported file's own inventory.
+    let reloaded_set = resolved_norm_set(&exported, TrainablePolicy::Partial);
+    assert_eq!(names(&reloaded_set.entries), names(&set.entries));
+    let mut reloaded = Trainer::new(&exported, config.clone()).expect("load the exported model");
+    reloaded
+        .declare_trainable_set(&reloaded_set)
+        .expect("the same selection");
+    assert_eq!(deviation(&trained, &scores(&mut reloaded)), 0.0);
+    drop(reloaded);
+
+    // And it is not the model it was trained from.
+    let mut source = Trainer::new(&model, config).expect("load the fixture again");
+    source
+        .declare_trainable_set(&set)
+        .expect("the same selection");
+    assert_eq!(deviation(&cold, &scores(&mut source)), 0.0);
+}
+
+/// `lora` and `hybrid` are refused: a standalone GGUF holds weights, and an
+/// adapter is not in them.
+#[test]
+fn a_model_export_refuses_what_it_would_have_to_leave_out() {
+    let model = fixture!();
+    let _guard = common::serialize_models();
+    let root = scratch("model-export-refusals");
+
+    let mut lora_only = Trainer::new(
+        &model,
+        base_config(TrainablePolicy::Lora, OptimizerKind::AdamW),
+    )
+    .expect("load trainer");
+    lora_only.create_lora(&f32_lora()).expect("create adapter");
+    let error = lora_only
+        .save_model(root.join("lora.gguf"))
+        .expect_err("a lora run changes no weight");
+    assert!(error.to_string().contains("no base tensor"), "{error}");
+
+    let mut hybrid = Trainer::new(
+        &model,
+        base_config(TrainablePolicy::Hybrid, OptimizerKind::AdamW),
+    )
+    .expect("load trainer");
+    hybrid
+        .declare_trainable_set(&resolved_norm_set(&model, TrainablePolicy::Hybrid))
+        .expect("select the norms");
+    hybrid.create_lora(&f32_lora()).expect("create adapter");
+    let error = hybrid
+        .save_model(root.join("hybrid.gguf"))
+        .expect_err("the adapter would be dropped");
+    assert!(error.to_string().contains("merging an adapter"), "{error}");
+    assert!(!root.join("hybrid.gguf").exists());
+}
+
+/// AdamW's update, on the same fixture and with the same method as SGD's.
+///
+/// On a cold optimizer's first step the bias correction cancels: `m` is the
+/// gradient and `sqrt(v)` its magnitude, so the step reduces to
+/// `-lr * g/(|g| + eps)` on top of the decay.
+#[test]
+fn an_adamw_step_is_the_arithmetic_it_claims_to_be() {
+    let model = fixture!();
+    let _guard = common::serialize_models();
+    let root = scratch("adamw-arithmetic");
+
+    let mut config = base_config(TrainablePolicy::Partial, OptimizerKind::AdamW);
+    config.weight_decay = 0.1;
+    config.max_grad_norm = 1.0e9;
+
+    let mut trainer = Trainer::new(&model, config).expect("load trainer");
+    let set = resolved_norm_set(&model, TrainablePolicy::Partial);
+    trainer
+        .declare_trainable_set(&set)
+        .expect("select the fixture's norms");
+    trainer
+        .prepare_optimizer()
+        .expect("the marked set is the resolved set");
+
+    let marked = trainer
+        .marked_trainable_set()
+        .expect("the marked parameters");
+    assert!(!marked.entries.is_empty());
+    let sizes: Vec<u64> = marked.entries.iter().map(|entry| entry.n_bytes).collect();
+    let before: Vec<Vec<f32>> = (0..sizes.len())
+        .map(|index| parameter_values(&mut trainer, index, sizes[index]))
+        .collect();
+
+    let tokens = trainer.tokenize_text(&TEXT.repeat(12)).expect("tokenize");
+    let step = trainer.train_tokens(&tokens).expect("train").global_step;
+    assert_eq!(step, 1, "the arithmetic below is the first step's");
+
+    let after: Vec<Vec<f32>> = (0..sizes.len())
+        .map(|index| parameter_values(&mut trainer, index, sizes[index]))
+        .collect();
+    let gradients: Vec<Vec<f32>> = (0..sizes.len())
+        .map(|index| parameter_gradient(&mut trainer, index))
+        .collect();
+    let norm = gradients
+        .iter()
+        .flatten()
+        .map(|value| f64::from(*value) * f64::from(*value))
+        .sum::<f64>()
+        .sqrt();
+    assert!(norm > 0.0, "the backward produced no gradient at all");
+    assert!(norm < 1.0e9, "the gradient was clipped: {norm}");
+
+    // The state the step kept, read back the way a resume reads it.
+    let state = root.join("step.state");
+    trainer
+        .save_checkpoint(&state, &metadata(&model, step))
+        .expect("publish the state this step wrote");
+    let knobs = trainer
+        .optimizer_hyperparameters()
+        .expect("the values the update read");
+    drop(trainer);
+
+    let record = Checkpoint::read(&state).expect("read the checkpoint");
+    let mut reader = checkpoint::OptimizerStateReader::open(&state, &record.optimizer)
+        .expect("open the payload");
+    let mut slot_values = |slot: &checkpoint::StateSlot| -> Vec<f32> {
+        let mut bytes = Vec::with_capacity(slot.n_bytes as usize);
+        let mut staging = vec![0_u8; checkpoint::STAGING_CHUNK_BYTES];
+        reader
+            .stream(slot, &mut staging, |_, chunk| {
+                bytes.extend_from_slice(chunk);
+                Ok(())
+            })
+            .expect("read a slot payload");
+        read_f32(&bytes)
+    };
+
+    let scalar = |name: &str| match knobs.get(name) {
+        Some(retrograd::HyperparameterValue::Scalar(value)) => value,
+        other => panic!("{name} is {other:?}"),
+    };
+    let alpha = scalar("learning_rate");
+    let decay = scalar("weight_decay");
+    let beta1 = scalar("beta1");
+    let beta2 = scalar("beta2");
+    let eps = scalar("eps");
+    let keep = 1.0_f32 - alpha * decay;
+    assert!(alpha > 0.0 && decay > 0.0 && keep < 1.0);
+    assert!(beta1 > 0.0 && beta1 < 1.0 && beta2 > 0.0 && beta2 < 1.0 && eps > 0.0);
+
+    let mut compared = 0_usize;
+    let mut worst_moments = 0.0_f32;
+    let mut worst = 0.0_f32;
+    let mut without_gradient = 0.0_f32;
+    let mut without_decay = 0.0_f32;
+    let mut without_normalization = 0.0_f32;
+    for (index, entry) in marked.entries.iter().enumerate() {
+        let (m_slot, v_slot) = record
+            .optimizer
+            .adamw_moments(&entry.name)
+            .expect("both moments of a marked parameter");
+        let moment = slot_values(m_slot);
+        let second = slot_values(v_slot);
+        assert_eq!(moment.len(), before[index].len(), "{}", entry.name);
+        assert_eq!(second.len(), before[index].len(), "{}", entry.name);
+
+        for (position, ((w0, w1), g)) in before[index]
+            .iter()
+            .zip(&after[index])
+            .zip(&gradients[index])
+            .enumerate()
+        {
+            let error =
+                |expected: f32| (expected - w1).abs() / expected.abs().max(w1.abs()).max(1.0e-6);
+            // On a cold first step, m and v are the gradient and its square,
+            // scaled by what the moving average keeps of a new sample.
+            let relative = |expected: f32, actual: f32| {
+                (expected - actual).abs() / expected.abs().max(actual.abs()).max(1.0e-12)
+            };
+            worst_moments = worst_moments
+                .max(relative(g * (1.0 - beta1), moment[position]))
+                .max(relative(g * g * (1.0 - beta2), second[position]));
+            // Both bias corrections cancel, leaving a normalized step.
+            worst = worst.max(error(w0 * keep - alpha * g / (g.abs() + eps)));
+            without_gradient = without_gradient.max(error(w0 * keep));
+            without_decay = without_decay.max(error(w0 - alpha * g / (g.abs() + eps)));
+            // What separates this step from SGD's: AdamW steps along the
+            // gradient's direction at a fixed size.
+            without_normalization = without_normalization.max(error(w0 * keep - alpha * g));
+            compared += 1;
+        }
+    }
+    assert!(compared > 0);
+    const TOLERANCE: f32 = 1.0e-5;
+    assert!(
+        worst_moments < 1.0e-4,
+        "m and v are not the first step's moments: worst relative error {worst_moments}"
+    );
+    assert!(
+        worst < TOLERANCE,
+        "the step is not `w * (1 - lr * wd) - lr * g / (|g| + eps)`: worst relative error {worst}"
+    );
+    assert!(
+        without_gradient > TOLERANCE,
+        "the gradient term changes nothing, so the comparison proves nothing"
+    );
+    assert!(
+        without_decay > TOLERANCE,
+        "the decay term changes nothing, so the comparison proves nothing"
+    );
+    assert!(
+        without_normalization > TOLERANCE,
+        "the normalization changes nothing, so this passes for an SGD step"
+    );
+}

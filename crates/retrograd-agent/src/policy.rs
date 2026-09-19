@@ -202,11 +202,10 @@ enum PolicyRequest {
         sequences: Vec<(Vec<i32>, Vec<bool>)>,
         reply: oneshot::Sender<Result<Vec<Vec<f32>>>>,
     },
+    /// Boxed: these fields are bigger than any other variant's, and the enum
+    /// travels by value through the channel on every call.
     TrainBatch {
-        sequences: Vec<TrainSequence>,
-        params: GrpoBatchParams,
-        training: TrainConfig,
-        observation: Option<BatchObservation>,
+        job: Box<TrainBatchJob>,
         reply: oneshot::Sender<Result<(TrainMetrics, Vec<Progress>)>>,
     },
     /// Hands the trainer to the borrower for the duration of one job, then
@@ -230,6 +229,14 @@ enum PolicyRequest {
     Shutdown {
         reply: oneshot::Sender<()>,
     },
+}
+
+/// One GRPO update's inputs, boxed so the request that carries it stays small.
+struct TrainBatchJob {
+    sequences: Vec<TrainSequence>,
+    params: GrpoBatchParams,
+    training: TrainConfig,
+    observation: Option<BatchObservation>,
 }
 
 #[derive(Clone)]
@@ -267,14 +274,14 @@ impl PolicyHandle {
         training: TrainConfig,
         observation: Option<BatchObservation>,
     ) -> Result<(TrainMetrics, Vec<Progress>)> {
-        self.request(|reply| PolicyRequest::TrainBatch {
+        let job = Box::new(TrainBatchJob {
             sequences,
             params,
             training,
             observation,
-            reply,
-        })
-        .await
+        });
+        self.request(|reply| PolicyRequest::TrainBatch { job, reply })
+            .await
     }
 }
 
@@ -536,12 +543,11 @@ enum QueuedGeneration {
 /// What [`QueuedGeneration::from_request`] answers: a request that joins the
 /// wave, or the one it was handed back untouched.
 ///
-/// Deliberately not a `Result`. Nothing here failed - the second case is the
-/// ordinary path for every non-generation request, and the caller services it
-/// on the spot. `Result` would have made `clippy::result_large_err` right for
-/// the wrong reason: the cure it suggests, boxing, would allocate once per
-/// render or capability request and force a deref pattern on arms that read
-/// the variant's fields directly.
+/// Deliberately not a `Result`: nothing here failed, and the second case is
+/// the ordinary path for every non-generation request. `Result` would have
+/// made `clippy::result_large_err` suggest boxing, which would allocate once
+/// per render or capability request; large payloads stay boxed at the source
+/// instead.
 enum Queued {
     Generation(QueuedGeneration),
     Other(PolicyRequest),
@@ -918,20 +924,14 @@ impl PolicyActor {
                             scoring_capacity,
                         ));
                     }
-                    PolicyRequest::TrainBatch {
-                        sequences,
-                        params,
-                        training,
-                        observation,
-                        reply,
-                    } => {
+                    PolicyRequest::TrainBatch { job, reply } => {
                         let mut progress = Vec::new();
                         let result = train_grpo_batch_observed(
                             &mut trainer,
-                            &sequences,
-                            &params,
-                            &training,
-                            observation.as_ref(),
+                            &job.sequences,
+                            &job.params,
+                            &job.training,
+                            job.observation.as_ref(),
                             &mut |value| progress.push(value),
                         )
                         .map(|metrics| (metrics, progress))

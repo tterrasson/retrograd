@@ -114,10 +114,11 @@ pub enum OutputKind {
     /// adapter when the run has one. Requires the matching base model and this
     /// loader; it is not a standalone model.
     Trainable,
-    /// A standalone model GGUF. Not implemented: the saver has a
-    /// per-architecture support predicate, and merging an adapter into
-    /// supported weights has no parity coverage, so accepting the name would
-    /// promise a file the run cannot write.
+    /// A standalone model GGUF: the model written back out with the trained
+    /// weights in it, readable by any GGUF loader.
+    ///
+    /// Only for policies that train base tensors and no adapter. The
+    /// architecture is checked against the model, because a document has none.
     Model,
 }
 

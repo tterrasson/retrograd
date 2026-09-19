@@ -524,15 +524,20 @@ fn build_output(
                  trains no base tensor, and its portable result is the adapter",
             ));
         }
-        (OutputKind::Model, _) => {
-            // Rejected by name rather than attempted: the model saver supports
-            // a subset of architectures, and merging an adapter into supported
-            // weights has no parity coverage. Accepting the name would promise
-            // a file the run cannot write.
+        (OutputKind::Model, TrainablePolicy::Lora) => {
             return Err(Error::config(
-                "output.kind = 'model' is not available in this build: a standalone model \
-                 GGUF needs the saver's per-architecture support and, for a run with an \
-                 adapter, a validated merge. Use 'trainable' for the bundle",
+                "output.kind = 'model' with training.trainable = 'lora': the run's result \
+                 lives in the adapter, and folding it into the weights is a merge with no \
+                 parity coverage here. Use 'adapter'",
+            ));
+        }
+        (OutputKind::Model, TrainablePolicy::Hybrid) => {
+            // Same merge problem, quieter: the base tensors would be written
+            // and the adapter dropped.
+            return Err(Error::config(
+                "output.kind = 'model' with training.trainable = 'hybrid' would write the \
+                 trained base tensors and drop the adapter: merging one into the weights \
+                 has no parity coverage here. Use the composite 'trainable' bundle",
             ));
         }
         _ => {}

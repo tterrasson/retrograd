@@ -453,6 +453,9 @@ bool fused_loss_enabled(const trainer_state & state);
 // the run's resolved set.
 bool save_trainable_bundle(trainer_state & state, const char * path);
 bool load_trainable_bundle(trainer_state & state, const char * path);
+// The whole loaded model as a standalone GGUF: the source file's metadata and
+// tensor list, with the live values written into it.
+bool save_model_gguf(trainer_state & state, const char * path);
 const char * lora_dtype_name(int32_t dtype);
 int64_t count_lora_parameters(const trainer_state & state);
 size_t count_lora_parameter_bytes(const trainer_state & state);
