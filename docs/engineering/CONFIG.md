@@ -5,9 +5,12 @@ the server, the Python binding. The schema is strict: unknown keys are refused
 rather than ignored, because a misspelled key that trains something other than
 what its author read is the failure mode this file exists to prevent.
 
-Seven sections are shared by every algorithm - `[run]`, `[model]`, `[lora]`,
-`[training]`, `[metrics]`, `[evaluation]`, `[checkpoint]` - plus `[observe]` for
-the rollout algorithms. `[run].algorithm` selects exactly one of `[sft]`,
+Nine sections are shared by every algorithm: `[run]`, `[model]`, `[lora]`,
+`[output]`, `[trainable]`, `[training]`, `[metrics]`, `[evaluation]`,
+`[checkpoint]`, plus `[observe]` for the rollout algorithms. `[lora]` and
+`[trainable]` are each required or refused depending on `training.trainable`
+(see [`[lora]`](#lora) and [`[trainable]`](#trainable) below); `[output]` is
+always present. `[run].algorithm` selects exactly one of `[sft]`,
 `[ppo]`, `[grpo]`, `[distill]` or `[agent]` as the run's own section. Declaring a second one is an error, not a silently ignored
 leftover.
 
@@ -23,6 +26,8 @@ environment declarations in `retrograd-spec`.
 - [`[run]`](#run)
 - [`[model]`](#model)
 - [`[lora]`](#lora)
+- [`[output]`](#output)
+- [`[trainable]`](#trainable)
 - [`[training]`](#training)
 - [`[metrics]`](#metrics)
 - [`[evaluation]`](#evaluation)
@@ -63,7 +68,9 @@ creation when no backend is present, which is what you want in CI.
 
 ## `[lora]`
 
-`output` - **required**. Where the trained adapter GGUF is written.
+Required when `training.trainable` is `"lora"` (the default) or `"hybrid"`.
+Refused for `"full"` and `"partial"`, which train base tensors and create no
+adapter.
 
 `rank` - default `8`. `alpha` - default `16.0`. The scaling applied to the
 adapter is `alpha / rank`.
@@ -93,6 +100,63 @@ fresh one. Rank, alpha, seed, dtype and targets then come *from the file*, so
 combining it with any of those five keys is refused rather than silently
 overridden. Mutually exclusive with `checkpoint.resume_from`, which owns the
 adapter it restores.
+
+## `[output]`
+
+Always present. Where the run writes its result, and which kind of result
+that is; a document naming no `[output].path` is refused.
+
+`path` - **required**. Destination file.
+
+`kind` - defaults to `"adapter"` for `training.trainable = "lora"`, otherwise
+`"trainable"`. `"adapter"` is a portable LoRA GGUF; refused for a run that
+trains no adapter (`full`/`partial`). `"trainable"` is a Retrograd bundle of
+the trained base tensors by absolute value, with the adapter beside it for a
+`hybrid` run; refused for a LoRA-only run, which has no base tensor to carry.
+`"model"` exports a standalone GGUF that needs neither the source model nor
+this loader: the file the model was loaded from, with the trained weights
+folded in. It is only valid for `full`/`partial`; `lora`/`hybrid` are
+refused because folding an adapter into the weights it multiplies is a merge
+with no parity coverage here. `"model"` is checked before the first step: the
+architecture must be one this build has written and loaded back, and the
+filesystem under `path` must have room for a file the model's size.
+
+## `[trainable]`
+
+Which base tensors a `partial` or `hybrid` run trains. **Required** by those
+two policies, **refused** beside `training.trainable = "lora"` (a selector
+the run would ignore) and beside `"full"`, which derives every supported
+eligible tensor on its own and takes no narrowing selector.
+
+`layers` - default `"all"`. `"all"`, `"last:<count>"`, or an inclusive
+`"<first>..<last>"`. Bounds-checked against the model.
+
+`modules` - default none. Module aliases (`attn`, `ffn`), individual stems
+(`attn_q`), or explicit tensor patterns. Norms are not modules: they follow
+`norms`.
+
+`norms` - default `false`. Every norm: the in-range block norms, and every
+norm carrying no block index.
+
+`biases` - default `false`. The `.bias` tensors of the selected modules.
+
+`output_head` - default `false`. The output projection and its bias,
+independently of the layer range. A head sharing the input-embedding storage
+stays frozen, and asking for it is refused.
+
+At least one of `modules`, `norms`, `biases` or `output_head` must select
+something. `hybrid` initially permits only `norms` and `biases` beside the
+adapter. Quantized tensors are never selected (a quantized model may still
+carry trainable F32 norms), and selection validates the *selected* tensors
+rather than the model's dominant dtype. The resolved exclusions (input
+embedding, rotary constants wherever they sit, a tied head, unsupported
+dtypes, duplicate storage) are reported at the start of the run.
+
+Selecting the output head changes the loss graph: the fused cross-entropy
+folds the projection into the loss and differentiates only its input, so a run
+that trains the head takes the dense path instead. `training.chunked_cross_entropy`
+is honoured for every other selection and resolved off for this one; the
+backend report and the training preflight both name the result as `loss_path`.
 
 ## `[training]`
 
@@ -129,13 +193,91 @@ for the width formula, device restrictions, and padding costs.
 `threads` - default `0`, meaning "select performance cores automatically". The
 `RETRO_THREADS` environment variable takes precedence at runtime.
 
+### Trainable policy
+
+`trainable` - `"lora"` (default), `"full"`, `"partial"`, or `"hybrid"`. `lora`
+trains only the adapter and requires `[lora]`, refusing `[trainable]`. `full`
+trains every supported eligible base tensor, requires no `[trainable]`
+selector, and refuses `[lora]`. `partial` trains a named subset of base
+tensors via `[trainable]` and likewise refuses `[lora]`. `hybrid` trains an
+adapter (`[lora]`) alongside a `[trainable]`-selected subset of base tensors,
+initially limited to norms and biases beside the adapter. See
+[`[trainable]`](#trainable) for the selector and [`[output]`](#output) for
+where the result lands.
+
+A run that trains base weights and carries an enabled KL term
+(`kl_coefficient > 0` in `[grpo]`/`[agent]`, or on-policy `[distill]`) needs a
+`[reference]` section: without it the anchor would be "this model with its
+adapter disabled," which is the original policy only while the base weights
+stay frozen.
+
 ### Optimizer
+
+`optimizer` - `"adamw"` (default), `"sgd"`, `"muon"`, or `"gefen"`. Each of the
+last three reads its own hyperparameter table under `[optimizer.<name>]`
+(refused unless selected). Only AdamW's update kernel writes an F16
+parameter, so every other name is refused beside the default F16 adapter
+dtype; set `lora.dtype = "f32"` or train base weights instead. Gefen's
+update phases are written for the CPU alone and are refused at preflight on a
+GPU device, because its state mutations must not be answered on a fallback
+backend.
+
+`sgd` keeps no persistent state (`0` bytes/param) but still has a step
+counter and a schedule: "no slot" and "no optimizer" are different states.
+`muon` orthogonalizes the momentum of eligible **hidden base matrices**:
+tensors with exactly two non-trivial logical dimensions, excluding
+embeddings, the output head, norms and biases by role. Everything Muon
+declines, including LoRA factors, is updated by AdamW at its own
+`fallback_learning_rate`, which is not a ratio of `training.lr`, since an
+orthogonalized update and an AdamW one are not in the same units. `gefen`
+keeps fixed-block state (`min_numel` below which a parameter falls back to
+AdamW) under a `variant`: `shared_v` (default, `4N + 4K`) or `quantized_m`
+(`N + 8K`, an 8-bit first moment against a shared 256-entry codebook). The two
+variants are different slot layouts, so a checkpoint written under one is not
+readable as the other. Every non-AdamW optimizer's ineligible or unsupported
+tensors fall back to AdamW, and the planner's state-bytes and memory-plan
+figures always price that fallback rather than assume the whole model is
+eligible.
+
+#### `[optimizer.muon]`
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `momentum` | `0.95` | EMA coefficient of the first moment, in `[0, 1]`. |
+| `nesterov` | `true` | Use the updated momentum in the update direction. |
+| `ns_steps` | `5` | Newton-Schulz iterations, at least `1`. Structural: decides the update graph's size. |
+| `ns_epsilon` | `1e-7` | Added to the Frobenius norm before normalizing. |
+| `fallback_learning_rate` | `0.001` | AdamW's rate for the parameters Muon declines. |
+
+Muon keeps one F32 momentum per eligible parameter (`4N`) plus AdamW's pair
+for the rest. F32 weights only.
+
+#### `[optimizer.gefen]`
+
+Experimental.
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `variant` | `"shared_v"` | `"shared_v"` (F32 first moment + one F32 second moment per block) or `"quantized_m"` (one-byte first moment against a shared codebook, F32 scale + second moment per block). |
+| `block_size` | `1024` | Elements per block; a positive power of two. A partial trailing block still costs a row. |
+| `min_numel` | `4096` | Below this element count a selected parameter falls back to AdamW; its fallback state is part of the reported total. |
+| `codebook` | `"uniform"` | Only value that exists. |
+| `codebook_levels` | `256` | `quantized_m` only, and must equal `256`: the index is one unsigned byte. |
+| `partition` | `"fixed"` | Only value that exists. |
+| `beta1` | `0.9` | First-moment coefficient. |
+| `beta2` | `0.999` | Per-block second-moment coefficient. |
+| `eps` | `1e-8` | Epsilon in the update denominator. |
+
+At `block_size = 1`, `shared_v` keeps AdamW's own second moment, the cheapest
+available correctness anchor. F32 weights only; both update phases are CPU
+only.
 
 `epochs` - default `1`. Passes over an SFT dataset. A rollout algorithm counts in
 updates instead and spells its own passes `grpo_epochs` / `ppo_epochs` /
 `epochs_per_update`.
 
-`lr` - default `1e-4`. Must be finite and positive.
+`lr` - default `1e-4`. Must be finite and positive. Base learning rate of the
+chosen optimizer; Muon and Gefen read their own rates as described above.
 
 `weight_decay` - default `0.0`. `max_grad_norm` - default `1.0`, the global L2
 norm all trainable gradients are clipped to together, preserving their relative

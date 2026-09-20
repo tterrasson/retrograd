@@ -5,7 +5,7 @@
 <h1 align="center">Retrograd</h1>
 
 <p align="center">
-  Train LoRA adapters on GGUF models, from SFT to agentic GRPO.
+  Fine-tune GGUF models, with LoRA or full weights, from SFT to agentic GRPO.
 </p>
 
 <p align="center">
@@ -14,13 +14,17 @@
 </p>
 
 Retrograd is built on a `llama.cpp`/`ggml` fork and driven by a Rust CLI. The
-GGUF base model is loaded as is, with no conversion step: its tensors stay
-frozen while `ggml` autograd trains the adapter in memory. The adapter is
-exported as a standalone GGUF in the standard `llama.cpp` LoRA format: a stock
-`llama.cpp` loads it with `--lora`, without the fork.
+GGUF base model is loaded as is, with no conversion step, and `ggml` autograd
+trains it in memory. By default only a LoRA adapter trains, exported as a
+standalone GGUF that a stock `llama.cpp` loads with `--lora`; setting
+`training.trainable` to `full`, `partial`, or `hybrid` trains base weight
+tensors instead of, or alongside, the adapter.
 
 - **Algorithms**: SFT, PPO, GRPO, distillation from a teacher model, and
   multi-turn agentic GRPO.
+- **Training policies**: LoRA (default), full, partial, or hybrid base-weight
+  training.
+- **Optimizers**: AdamW (default), SGD, Muon, and Gefen.
 - **Devices**: CPU everywhere, and GPU through Metal (macOS), Vulkan, or CUDA.
 - **Quantizations**: the base model can be F16 or quantized - Q4_0/Q4_1,
   Q5_0/Q5_1, Q8_0, the K-quants (Q2_K to Q6_K), the i-quants (IQ2_XXS to
@@ -77,10 +81,10 @@ scripts/fetch-cpu-fixture.sh
 cargo run --release -q -- train examples/smoke_tiny_sft.toml
 ```
 
-The example sets `run.verbose = true`. A successful LoRA-only run reports
-`base_trainable_tensors: 0`, a `lora_trainable_tensors` greater than 0, and a
-finite `train_loss` on the final `done` line. The export step reloads the
-adapter and fails the run if the written GGUF is invalid.
+The example sets `run.verbose = true`. A successful run reports
+`lora_trainable_tensors` greater than 0 and a finite `train_loss` on the final
+`done` line. The export step reloads the adapter and fails the run if the
+written GGUF is invalid.
 
 `examples/smoke_tiny_ppo.toml` and `examples/smoke_tiny_grpo.toml` run the same
 check for the rollout algorithms, on eight addition questions scored by
@@ -147,6 +151,11 @@ fn main() -> Result<()> {
     Ok(())
 }
 ```
+
+`TrainablePolicy` (`Full`, `Partial`, `Hybrid`) trains base weight tensors
+instead of, or alongside, a LoRA adapter. See the
+[configuration reference](https://tterrasson.github.io/retrograd/reference/configuration)
+for the equivalent TOML surface.
 
 ## Tests
 

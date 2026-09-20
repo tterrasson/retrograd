@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: Retrograd
-  text: LoRA training from GGUF models
-  tagline: Train a LoRA adapter on a GGUF model with SFT, PPO, or GRPO. One TOML file, no Python training stack.
+  text: LoRA and full-weight training from GGUF models
+  tagline: Train a LoRA adapter, or full/partial base weights, on a GGUF model with SFT, PPO, or GRPO. One TOML file, no Python training stack.
   image:
     src: /logo.png
     alt: Retrograd
@@ -44,9 +44,15 @@ features:
 
 ## What Retrograd changes
 
-The base model stays frozen. Training updates the LoRA tensors and writes them
-to the path in `[lora].output`. The training binary reads a GGUF model and a
-TOML configuration; it does not require a Python training framework.
+By default the base model stays frozen: training updates the LoRA tensors and
+writes them to the path in `[output]`. Setting `training.trainable` to
+`full`, `partial`, or `hybrid` instead trains base weight tensors directly,
+either every one of them, a named subset (by layer, module, norms, biases,
+output head), or a subset alongside an adapter, and writes the changed
+tensors to `[output]`. The default optimizer is AdamW; `training.optimizer`
+also accepts `sgd`, `muon`, and `gefen`. The training binary reads a GGUF
+model and a TOML configuration; it does not require a Python training
+framework.
 
 The main CLI commands are:
 

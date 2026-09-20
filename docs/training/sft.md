@@ -1,8 +1,12 @@
 # SFT training
 
-Supervised fine-tuning trains the LoRA adapter against known assistant
-responses. It is the direct choice when the dataset contains the behavior the
-model should reproduce.
+Supervised fine-tuning trains against known assistant responses. It is the
+direct choice when the dataset contains the behavior the model should
+reproduce. This guide walks through the default LoRA path; setting
+`training.trainable` to `full`, `partial`, or `hybrid` trains base weight
+tensors instead of, or beside, an adapter. See
+[Configuration reference](../reference/configuration) for the `[trainable]`
+selector and `[output]` kinds.
 
 ## Minimal configuration
 
@@ -57,8 +61,9 @@ multiple assistant turns; each assistant span is a target. For plain text, the
 file is treated as a continuous token stream and all next-token labels are
 active.
 
-The base model weights remain frozen. The adapter is initialized from the LoRA
-settings and written as a standalone GGUF file after training.
+With the default `lora` policy, the base model weights remain frozen: the
+adapter is initialized from the LoRA settings and written as a standalone
+GGUF file after training.
 
 ## Context and batch geometry
 
@@ -125,8 +130,10 @@ for saving the best evaluation result and resuming a run.
 | `training.ctx` | `128` | Training context length in tokens. |
 | `training.micro_batch` | `32` | Physical forward/backward width. |
 | `training.gradient_accumulation` | `1` | Micro-batches per optimizer step. |
-| `training.lr` | `0.0001` | AdamW learning rate. |
+| `training.lr` | `0.0001` | Base learning rate of the chosen optimizer (`training.optimizer`, default `adamw`). |
 | `training.lr_scheduler` | `constant` | `constant`, `linear`, or `cosine`. |
 | `training.warmup_steps` | `0` | Scheduler warmup steps. |
-| `training.weight_decay` | `0.0` | AdamW weight decay. |
+| `training.weight_decay` | `0.0` | Decoupled weight decay. |
 | `training.max_grad_norm` | `1.0` | Global gradient norm limit. |
+| `training.optimizer` | `adamw` | `adamw`, `sgd`, `muon`, or `gefen`. See [Configuration reference](../reference/configuration#optimizer-muon) for per-optimizer hyperparameters. |
+| `training.trainable` | `lora` | `lora`, `full`, `partial`, or `hybrid`. See [Configuration reference](../reference/configuration#trainable). |

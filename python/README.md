@@ -74,6 +74,39 @@ with Trainer(
 masking. Other extensions use the overlapping next-token text preparation.
 The optional `format=` argument can override detection.
 
+`TrainingConfig.optimizer` selects `"adamw"` (default), `"sgd"`, `"muon"`, or
+`"gefen"`. See
+[`../docs/reference/configuration.md`](../docs/reference/configuration.md)
+for the per-optimizer hyperparameters.
+
+## Full and partial base-weight training
+
+By default `Trainer` trains a LoRA adapter and leaves the base model frozen.
+Passing `trainable=` instead of (or alongside) `lora=` trains base weight
+tensors directly:
+
+```python
+from retrograd import Trainer, TrainableConfig, TrainingConfig
+
+with Trainer(
+    "model.gguf",
+    training=TrainingConfig(epochs=1, learning_rate=1e-5),
+    trainable=TrainableConfig(policy="partial", layers="last:4", norms=True),
+) as trainer:
+    train = trainer.prepare_dataset("train.jsonl")
+    trainer.fit(train)
+    trainer.save_trainable("trainable.gguf")
+```
+
+`TrainableConfig.policy` is `"full"`, `"partial"` (a named subset via
+`layers`, `modules`, `norms`, `biases`, `output_head`), or `"hybrid"` (an
+adapter, passed as `lora=`, plus a partial base selection). `save_trainable`
+writes the changed base tensors as a GGUF bundle; `save_model` exports the
+whole model as a standalone GGUF instead. A KL-penalized run that trains base
+weights needs `trainer.attach_reference("model.gguf")` before training, since
+freezing the adapter alone no longer stands in for the reference policy once
+the base weights themselves move.
+
 ## Sharing a GPU
 
 `TrainingConfig(max_gpu_duty_cycle=0.5)` bounds the fraction of wall time the
