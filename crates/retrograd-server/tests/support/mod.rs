@@ -563,6 +563,7 @@ pub fn write_checkpoint(
             model_bytes: std::fs::metadata(model).map(|meta| meta.len()).unwrap_or(0),
             model_fingerprint: retrograd_checkpoint::fingerprint_file(model)
                 .expect("fingerprint the model stub"),
+            reference_fingerprint: String::new(),
             algorithm: algorithm.to_string(),
             trajectory_signature: trajectory_signature.to_string(),
             resume_boundary: "epoch".into(),

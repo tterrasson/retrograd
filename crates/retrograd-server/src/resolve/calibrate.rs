@@ -151,12 +151,11 @@ pub async fn measure(
     let (uncorrected, _, _) = retrograd_plan::assess(
         config,
         model,
-        // Deliberately absent, even on a `distill` document: the measurement
-        // this estimate is divided by comes from `probe.measure`, which loads
-        // the student alone. Charging the estimate for a teacher the
-        // measurement never held would drive the correction factor below one on
-        // every distillation run.
-        None,
+        // Deliberately empty, even on a document that names a second model:
+        // `probe.measure` loads the trained model alone, so charging the
+        // estimate for a model the measurement never held would push the
+        // correction factor below one.
+        retrograd_plan::CoResident::default(),
         // The set the key is taken over, so the ratio compares the estimate
         // and the measurement of this run.
         base_trainable,

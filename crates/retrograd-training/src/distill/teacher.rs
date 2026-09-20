@@ -13,23 +13,15 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use retrograd_core::{Error, MemoryReport, Result, TrainConfig};
-use retrograd_engine::{TopLogprobs, Trainer};
+use retrograd_engine::{TopLogprobs, Trainer, VocabularyMismatch};
 
 use crate::TokenSpan;
 use crate::rollout::score_train_mask_group;
 
-/// Sentences the two tokenizers must agree on, id for id.
-/// Chosen to cover what actually differs between two vocabularies of the same
-/// family: ASCII words, digit grouping, a leading-space merge, non-Latin
-/// scripts and an astral-plane codepoint. No chat control marker appears here
-/// on purpose - a teacher and a student may legitimately be an instruct and a
-/// base checkpoint, whose templates differ while their vocabulary does not, and
-/// scoring the student's tokens only depends on the vocabulary.
-pub const WITNESS_SENTENCES: &[&str] = &[
-    "The quick brown fox jumps over the lazy dog.",
-    "Distillation: 3.14159 nats, 1_000_000 tokens, 42% done.",
-    "Écrire 你好世界 puis 🙂 sans rien perdre.",
-];
+/// Sentences the two tokenizers must agree on, id for id. One list for every
+/// pairing of two models: see [`retrograd_engine::VOCABULARY_WITNESSES`]. The
+/// alias keeps the name the offline sidecar's fingerprint was written under.
+pub use retrograd_engine::VOCABULARY_WITNESSES as WITNESS_SENTENCES;
 
 /// A frozen model that notes the student's tokens.
 pub struct Teacher {
@@ -124,28 +116,24 @@ impl Teacher {
     /// the worst failure mode this algorithm has, and the only one that costs a
     /// single forward pass to rule out.
     pub fn compatibility(&self, student: &Trainer) -> Result<()> {
-        let teacher_vocab = self.trainer.vocab_size()?;
-        let student_vocab = student.vocab_size()?;
-        if teacher_vocab != student_vocab {
-            return Err(Error::config(format!(
-                "distillation teacher {} has vocabulary size {teacher_vocab}, the student has \
-                 {student_vocab}: the teacher can only score the student's tokens if both models \
+        match self.trainer.vocabulary_mismatch(student)? {
+            None => Ok(()),
+            Some(VocabularyMismatch::Size { left, right }) => Err(Error::config(format!(
+                "distillation teacher {} has vocabulary size {left}, the student has \
+                 {right}: the teacher can only score the student's tokens if both models \
                  share one tokenizer",
                 self.path.display()
-            )));
+            ))),
+            Some(VocabularyMismatch::Tokens {
+                sentence,
+                left,
+                right,
+            }) => Err(Error::config(format!(
+                "distillation teacher {} tokenizes {sentence:?} as {left:?}, the student as \
+                 {right:?}: the two models do not share one tokenizer",
+                self.path.display()
+            ))),
         }
-        for sentence in WITNESS_SENTENCES {
-            let teacher = self.trainer.tokenize_text(sentence)?;
-            let student = student.tokenize_text(sentence)?;
-            if teacher != student {
-                return Err(Error::config(format!(
-                    "distillation teacher {} tokenizes {sentence:?} as {teacher:?}, the student as \
-                     {student:?}: the two models do not share one tokenizer",
-                    self.path.display()
-                )));
-            }
-        }
-        Ok(())
     }
 
     /// What this teacher costs, for the invariant it is loaded under: its

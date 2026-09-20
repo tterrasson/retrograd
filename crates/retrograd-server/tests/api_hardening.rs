@@ -351,6 +351,41 @@ async fn complete_configs_apply_roots_to_every_input_and_output() {
 }
 
 #[test]
+fn the_reference_model_is_held_to_the_path_roots() {
+    let fixture = Fixture::new("hardening-reference");
+    let mut state = state_of(&fixture, FakeEngine::succeeding(), false);
+    let mut server = (*state.config).clone();
+    server.path_roots = vec![fixture.dir.clone()];
+    state.config = Arc::new(server);
+    let source = format!(
+        "[run]\nalgorithm='grpo'\n[model]\npath='{}'\n[output]\npath='{}'\n[lora]\n\
+         [grpo]\nprompts='{}'\nreward_command=['true']\nupdates=1\nprompts_per_update=1\ngroup_size=2\n\
+         grpo_epochs=1\nkl_coefficient=0.1\n\
+         [grpo.sampling]\ntemperature=1.0\ntop_p=1.0\nmax_new_tokens=8\nseed=1\n\
+         [reference]\nmodel='{}'\n",
+        fixture.path("model.gguf"),
+        fixture.path("adapter.gguf"),
+        fixture.path("data.jsonl"),
+        fixture.path("model.gguf"),
+    );
+    let mut config = retrograd_config::build(
+        retrograd_config::parse_toml(&source, "run.toml").expect("parse"),
+        std::path::Path::new("/"),
+    )
+    .expect("build");
+    state
+        .validate_run_paths(&config, false)
+        .expect("inside the root");
+    let outside = Fixture::new("hardening-reference-outside");
+    config.reference.as_mut().expect("reference").model = outside.dir.join("model.gguf");
+    let error = state
+        .validate_run_paths(&config, false)
+        .expect_err("outside the root");
+    let body = format!("{error:?}");
+    assert!(body.contains("/config/reference/model"), "{body}");
+}
+
+#[test]
 fn the_observe_directory_is_held_to_the_path_roots() {
     let fixture = Fixture::new("hardening-observe");
     let mut state = state_of(&fixture, FakeEngine::succeeding(), false);

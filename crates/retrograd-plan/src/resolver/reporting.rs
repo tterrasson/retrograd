@@ -149,19 +149,26 @@ pub(super) fn workload_of(input: &ResolveInput<'_>, config: &RunConfig) -> Workl
     Workload {
         kind: workload_kind_of(config),
         examples: input.data.examples,
-        co_resident_bytes: co_resident_bytes(config, input.teacher),
+        co_resident_bytes: co_resident_bytes(config, input.co_resident()),
     }
 }
 
-/// Device bytes a second model holds beside the one being sized.
-///
-/// Non-zero for exactly one algorithm, and only when its geometry was supplied.
-/// Zero on a `distill` document whose teacher was not inspected is a *known*
-/// under-estimate, not a claim that there is no teacher: `distill_warnings`
-/// says so on the same resolution, because a budget that is short by a whole
-/// model and silent about it is worse than one that refuses.
-pub(super) fn co_resident_bytes(config: &RunConfig, teacher: Option<&ModelInfo>) -> u64 {
-    match (&config.algorithm, teacher) {
+/// The models a run holds beside the one being sized, as geometry the caller
+/// could read. A declared model whose geometry is `None` is a cost missing
+/// from the budget; `collect_warnings` says so.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CoResident<'a> {
+    /// Geometry of the distillation teacher, when the document names one.
+    pub teacher: Option<&'a ModelInfo>,
+    /// Geometry of the fixed-reference anchor, when the document names one.
+    pub reference: Option<&'a ModelInfo>,
+}
+
+/// Device bytes those models hold beside the one being sized. A model that is
+/// declared but arrives without geometry is a *known* under-estimate, flagged
+/// by `collect_warnings`.
+pub(super) fn co_resident_bytes(config: &RunConfig, models: CoResident<'_>) -> u64 {
+    let teacher = match (&config.algorithm, models.teacher) {
         // The offline mode never opens the teacher - the sidecar is what it left
         // behind - so charging its weights to the device would refuse
         // configurations that run.
@@ -171,7 +178,18 @@ pub(super) fn co_resident_bytes(config: &RunConfig, teacher: Option<&ModelInfo>)
             crate::cost::co_resident_model_bytes(teacher, &config.training)
         }
         _ => 0,
-    }
+    };
+    // The anchor is resident for the whole run regardless of algorithm, and at
+    // its own width when the document gave it one.
+    let reference = match (&config.reference, models.reference) {
+        (Some(declared), Some(geometry)) => crate::cost::co_resident_model_bytes_at(
+            geometry,
+            &config.training,
+            declared.n_ctx.unwrap_or(config.training.n_ctx),
+        ),
+        _ => 0,
+    };
+    teacher.saturating_add(reference)
 }
 
 /// `(iterations, total_steps)`.
@@ -249,10 +267,11 @@ pub(super) fn judge_calls(input: &ResolveInput<'_>, config: &RunConfig) -> u64 {
 
 pub(super) fn collect_warnings(
     config: &RunConfig,
-    teacher: Option<&ModelInfo>,
+    models: CoResident<'_>,
     backend: Backend,
     warnings: &mut Vec<PlanWarning>,
 ) {
+    let teacher = models.teacher;
     // Every backend this crate can name carries both fused cross-entropy nodes,
     // so the only run whose fused tail might not be on the device is one whose
     // accelerator nobody recognised. Whether it really does is a probe
@@ -316,6 +335,18 @@ pub(super) fn collect_warnings(
             "the memory estimate does not include the distillation teacher, which stays \
              resident beside the student for the whole run: supply the teacher's geometry to \
              size it, or read the device figure as a lower bound",
+        );
+    }
+    // Same gap, other model: an anchor named without its geometry keeps the
+    // estimate one model short.
+    if config.reference.is_some() && models.reference.is_none() {
+        warn(
+            warnings,
+            "reference_absent_from_the_memory_budget",
+            Some("reference.model"),
+            "the memory estimate does not include the fixed-reference model, which stays \
+             resident beside the trained model for the whole run: supply the anchor's \
+             geometry to size it, or read the device figure as a lower bound",
         );
     }
     let generates = match &config.algorithm {

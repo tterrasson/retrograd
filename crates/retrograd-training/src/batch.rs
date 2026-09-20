@@ -348,7 +348,7 @@ pub fn train_grpo_batch_observed(
     // zero coefficient the reference term is identically zero, so the whole
     // teacher-forced pass is skipped and members carry an empty slice.
     let reference_rows = if params.kl_coefficient != 0.0 {
-        trainer.with_lora_disabled(|trainer| {
+        trainer.with_reference_policy(|trainer| {
             trainable
                 .iter()
                 .map(|&index| {

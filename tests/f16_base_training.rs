@@ -867,6 +867,7 @@ fn compatibility_for(trainer: &mut Trainer, model: &Path) -> checkpoint::Compati
         model_signature: trainer.model_signature().expect("model signature"),
         model_bytes: std::fs::metadata(model).map(|meta| meta.len()).unwrap_or(0),
         model_fingerprint: checkpoint::fingerprint_file(model).expect("fingerprint"),
+        reference_fingerprint: trainer.reference_fingerprint().expect("anchor fingerprint"),
         algorithm: "sft".into(),
         trajectory_signature: "test-f16-v1".into(),
         dataset_fingerprint: checkpoint::fingerprint(TEXT.as_bytes()),

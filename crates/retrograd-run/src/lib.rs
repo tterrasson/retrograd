@@ -139,6 +139,17 @@ pub fn execute_controlled(
         check_model_export(config, &inventory.architecture)?;
     }
 
+    // The fixed reference, before anything reads one: an anchor that cannot
+    // stand in (another tokenizer, a missing path) fails here, not an hour
+    // into the run.
+    if let Some(reference) = &config.reference {
+        observer.info(&format!("fixed reference: {}", reference.model.display()));
+        trainer.attach_reference(&reference.model, &config.training, reference.n_ctx)?;
+        if let Some(line) = tracker.phase("reference model") {
+            observer.info(&line);
+        }
+    }
+
     // A resume owns what it restores: the checkpoint brings back the adapter,
     // the trained base tensors, or both, together with the optimizer state,
     // once the dataset it was taken on has been validated.

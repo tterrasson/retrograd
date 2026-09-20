@@ -334,9 +334,9 @@ fn run_chat_loop(trainer: &mut Trainer, args: &ChatArgs, n_ctx: u32, ui: &CliUi)
     Ok(())
 }
 
-/// Generates one completion for `prompt`, either with the adapter (`base =
-/// false`) or under the frozen base model (`base = true`), and returns the
-/// decoded text with end-of-generation markers stripped.
+/// Generates one completion for `prompt`, either with the trained weights
+/// (`base = false`) or under the run's reference policy (`base = true`), and
+/// returns the decoded text with end-of-generation markers stripped.
 fn generate_reply(
     trainer: &mut Trainer,
     prompt: &[i32],

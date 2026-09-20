@@ -71,6 +71,11 @@ pub struct ConfigDocument {
     pub agent: Option<AgentToml>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observe: Option<ObserveToml>,
+    /// `[reference]`: the frozen model a KL penalty is scored against. Its own
+    /// section rather than a field of `[ppo]` or `[grpo]`, because one file
+    /// serves every objective that declares a KL term.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<ReferenceToml>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -273,6 +278,20 @@ pub struct ObserveToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_text_chars: Option<usize>,
 }
+/// `[reference]`: the anchor, and the width it runs at.
+///
+/// The anchor's precision is the one in its file: a quantization key here
+/// would make the scores depend on a setting rather than on the model the
+/// path names.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReferenceToml {
+    pub model: PathBuf,
+    /// Context width of the anchor. Absent follows `[training].ctx`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ctx: Option<u32>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SamplingToml {

@@ -292,11 +292,11 @@ pub async fn plan_recipe(
             recipe: &recipe,
             params,
             model: &model,
-            // No `Objective` resolves to `distill`, so a resolution never
-            // produces a document with a teacher to size. The `/assess` path
-            // below is where a client-written one arrives, and where the
-            // teacher's geometry is read.
+            // No objective resolves to a document that names a second model;
+            // the `/assess` path below is where a client-written one arrives,
+            // with its geometry.
             teacher: None,
+            reference: None,
             inventory: inventory.as_ref(),
             data: &data,
             eval: eval_data.as_ref(),
@@ -543,10 +543,19 @@ pub async fn plan_config(
         }
         _ => None,
     };
+    // The anchor is resident whatever the algorithm; what makes it resident
+    // is `[reference]`.
+    let reference = match &config.reference {
+        Some(reference) => Some(geometry(state, &reference.model, config.training.device).await?),
+        None => None,
+    };
     let (estimate, budgets, overflow) = retrograd_plan::assess(
         &config,
         &model,
-        teacher.as_ref(),
+        retrograd_plan::CoResident {
+            teacher: teacher.as_ref(),
+            reference: reference.as_ref(),
+        },
         base_trainable.as_ref(),
         &data,
         state.baseline,

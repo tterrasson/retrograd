@@ -181,10 +181,11 @@ impl Trainer {
             .collect()
     }
 
-    /// Teacher-forced scoring under the frozen base model, with the LoRA
-    /// adapter temporarily disabled. This is GRPO's fixed reference policy.
+    /// Teacher-forced scoring under this run's reference policy: the attached
+    /// anchor when there is one, otherwise the frozen base model with the LoRA
+    /// adapter temporarily disabled.
     pub fn score_reference_tokens(&mut self, tokens: &[i32]) -> Result<Vec<f32>> {
-        self.with_lora_disabled(|trainer| trainer.score_tokens(tokens))
+        self.with_reference_policy(|trainer| trainer.score_tokens(tokens))
     }
 
     pub(super) fn set_lora_enabled(&mut self, enabled: bool) -> Result<()> {
@@ -192,18 +193,23 @@ impl Trainer {
         self.check(unsafe { ffi::retro_trainer_set_lora_enabled(self.raw.as_ptr(), enabled) })
     }
 
-    /// Runs several forward-only calls with LoRA disabled, restoring it even
-    /// if the operation fails. GRPO uses this to amortize the graph rebuild
-    /// over a whole fixed-reference scoring batch.
-    /// Refuses base-weight training: disabling LoRA cannot recover a frozen
-    /// reference once the base weights are trainable.
-    pub fn with_lora_disabled<T>(
+    /// Runs several forward-only calls against this run's reference policy.
+    ///
+    /// With an anchor attached the closure is handed the anchor; without one it
+    /// is handed this model with its adapter disabled, which is the original
+    /// policy only while the base weights are frozen, so a base-weight run with
+    /// no [`Trainer::attach_reference`] is refused.
+    pub fn with_reference_policy<T>(
         &mut self,
         operation: impl FnOnce(&mut Self) -> Result<T>,
     ) -> Result<T> {
+        if let Some(reference) = self.reference.as_mut() {
+            return operation(reference);
+        }
         if self.trains_base_weights() {
             return Err(Error::invalid(
-                "a fixed reference requires a separate frozen model when training base weights",
+                "a fixed reference requires a separate frozen model when training base \
+                 weights: this run declares no [reference] model",
             ));
         }
         self.set_lora_enabled(false)?;

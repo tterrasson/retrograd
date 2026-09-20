@@ -243,12 +243,12 @@ pub(super) fn build_baseline(
             .sum();
         (sum / trainable.len() as f64) as f32
     };
-    // Standard GRPO regularizes against a fixed reference policy. The
-    // runtime temporarily disables LoRA for these scores, so the anchor is
-    // the immutable base model rather than the freshly sampled policy.
+    // Standard GRPO regularizes against a fixed reference policy: the anchor
+    // the run declared, or with none declared, this model with its adapter
+    // disabled. The runtime picks between the two.
     // Only live rollouts are scored: dead ones never reach the optimizer.
-    // Item 1: when the *effective* coefficient is zero the reference term
-    // is identically zero, so this whole teacher-forced pass is skipped and
+    // When the *effective* coefficient is zero the reference term is
+    // identically zero, so this whole teacher-forced pass is skipped and
     // members carry an empty reference slice. Testing the effective value
     // rather than the base one also skips the pass during the KL warm-up,
     // where `warmup_factor` is still zero and the term cannot contribute.
@@ -262,7 +262,7 @@ pub(super) fn build_baseline(
     // indexes into.
     let reference_started = Instant::now();
     let reference_rows = if effective_kl != 0.0 {
-        trainer.with_lora_disabled(|trainer| {
+        trainer.with_reference_policy(|trainer| {
             let mut rows = Vec::with_capacity(trainable.len());
             for (group_index, group) in rollouts.chunks(config.group_size).enumerate() {
                 let base = group_index * config.group_size;

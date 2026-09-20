@@ -44,6 +44,36 @@ async fn parent(fixture: &Fixture, name: &str) -> (axum::Router, String, std::pa
 }
 
 #[tokio::test]
+async fn a_fork_that_drops_the_checkpoint_reference_is_refused_before_startup() {
+    let fixture = Fixture::new("fork-reference");
+    let (router, id, directory) = parent(&fixture, "parent").await;
+    let path = directory.join("step-000000000020.state");
+    let mut checkpoint = retrograd_checkpoint::Checkpoint::read(&path).unwrap();
+    checkpoint.manifest.reference_fingerprint = "saved-anchor".into();
+    checkpoint
+        .write(&path, |paths| {
+            std::fs::write(paths.adapter.as_ref().unwrap(), b"not a real adapter")
+                .map_err(Into::into)
+        })
+        .unwrap();
+    let (status, body) = post(
+        &router,
+        "/v1/runs?dry_run=true",
+        json!({"fork_from": {"run": id}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error["pointer"] == "/config/reference/model"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
 async fn a_fork_of_a_run_reuses_its_configuration_and_resumes_the_latest_checkpoint() {
     let fixture = Fixture::new("fork-run");
     let (router, id, directory) = parent(&fixture, "parent").await;

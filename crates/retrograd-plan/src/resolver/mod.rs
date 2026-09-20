@@ -83,6 +83,10 @@ pub struct ResolveInput<'a> {
     /// that arrives without one is warned about rather than quietly sized as if
     /// one model were resident.
     pub teacher: Option<&'a ModelInfo>,
+    /// Geometry of the fixed-reference anchor, when the document names one.
+    /// Resident for the whole run, like `teacher`; a budget that omits it is
+    /// short by a model.
+    pub reference: Option<&'a ModelInfo>,
     /// The model's own tensor table, when the caller could read one.
     ///
     /// What a base-weight policy is priced from; a `lora` document never needs
@@ -119,6 +123,16 @@ pub struct ResolveInput<'a> {
     pub reward_protocol: Option<RewardProtocol>,
     /// Base directory relative paths in the document resolve against.
     pub root: PathBuf,
+}
+
+impl<'a> ResolveInput<'a> {
+    /// The models this run holds beside the one being sized.
+    pub fn co_resident(&self) -> CoResident<'a> {
+        CoResident {
+            teacher: self.teacher,
+            reference: self.reference,
+        }
+    }
 }
 
 /// What the resolution produced.
@@ -663,7 +677,7 @@ fn rebuild_and_validate(
 
     collect_warnings(
         &config,
-        input.teacher,
+        input.co_resident(),
         input.hardware.backend,
         &mut warnings,
     );
@@ -736,13 +750,13 @@ fn rebuild_and_validate(
 ///
 /// The semantic phases are skipped - the caller chose - but the budget check is
 /// not: an overflow is still a 422 unless the caller forces it.
-// Eight now that a distillation run has a second model to size, and every one
-// of them is a distinct fact about the run being assessed.
 #[expect(clippy::too_many_arguments)]
 pub fn assess(
     config: &RunConfig,
     model: &ModelInfo,
-    teacher: Option<&ModelInfo>,
+    // Geometry of the models held beside the one being sized.
+    co_resident: CoResident<'_>,
+
     // The resolved base trainable set, from `crate::resolve_trainable_set`; `None`
     // for a LoRA document.
     base: Option<&retrograd_core::TrainableSet>,
@@ -756,7 +770,7 @@ pub fn assess(
     let workload = Workload {
         kind: workload_kind_of(config),
         examples: data.examples,
-        co_resident_bytes: co_resident_bytes(config, teacher),
+        co_resident_bytes: co_resident_bytes(config, co_resident),
     };
     let estimate = estimate(
         model,

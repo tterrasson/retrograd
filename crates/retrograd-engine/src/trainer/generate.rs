@@ -27,16 +27,16 @@ impl Trainer {
             .collect())
     }
 
-    /// Samples a completion under the frozen base model, temporarily disabling
-    /// any loaded LoRA adapter and restoring it afterwards. Mirrors
-    /// [`Trainer::generate`] but ignores the adapter, so a caller can compare
-    /// base and adapted output for the same prompt turn by turn.
+    /// Samples a completion under this run's reference policy: the attached
+    /// anchor when there is one, otherwise the frozen base model with any
+    /// loaded LoRA adapter temporarily disabled. A base-weight run with no
+    /// anchor is refused: there is no frozen model left to sample from.
     pub fn generate_base(
         &mut self,
         prompt: &[i32],
         sampling: &SamplingParams,
     ) -> Result<Generation> {
-        self.with_lora_disabled(|trainer| trainer.generate(prompt, sampling))
+        self.with_reference_policy(|trainer| trainer.generate(prompt, sampling))
     }
 
     /// Logprob-free sibling of [`Trainer::generate_batch`] used by rollout

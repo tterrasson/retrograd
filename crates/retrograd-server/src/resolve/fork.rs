@@ -40,7 +40,8 @@ use crate::state::AppState;
 /// what a resume may not cross. The same ground `trajectory_signature` covers,
 /// named in the *document* grammar so the pointers a 409 reports are the ones the
 /// client wrote.
-const TRAJECTORY_SECTIONS: [&str; 5] = ["training", "sft", "ppo", "grpo", "evaluation"];
+const TRAJECTORY_SECTIONS: [&str; 6] =
+    ["training", "sft", "ppo", "grpo", "evaluation", "reference"];
 
 /// What a fork continues from.
 pub struct ForkTarget {
@@ -295,7 +296,12 @@ fn manifest(state_dir: &Path) -> ApiResult<Manifest> {
 /// architecture and shape hyperparameters - is not, because reading it needs a
 /// loaded model; `RunController::begin` compares it on the worker and remains the
 /// authority.
-pub fn check_compatible(target: &ForkTarget, config: &RunConfig, params: &Value) -> ApiResult<()> {
+pub async fn check_compatible(
+    state: &AppState,
+    target: &ForkTarget,
+    config: &RunConfig,
+    params: &Value,
+) -> ApiResult<()> {
     let conflict = |message: String| {
         ApiError::new(ProblemKind::Conflict, message).with_field(
             "/fork_from",
@@ -324,6 +330,19 @@ pub fn check_compatible(target: &ForkTarget, config: &RunConfig, params: &Value)
             target.manifest.model_bytes
         ))
         .with_field("/model/path", ErrorCode::Conflict, "a different base model"));
+    }
+    let reference_fingerprint = match &config.reference {
+        Some(reference) => state.model_fingerprint(&reference.model).await?,
+        None => String::new(),
+    };
+    if target.manifest.reference_fingerprint != reference_fingerprint {
+        return Err(
+            conflict("the checkpoint uses a different fixed reference".to_string()).with_field(
+                "/config/reference/model",
+                ErrorCode::Conflict,
+                "a different fixed reference",
+            ),
+        );
     }
     let signature = retrograd_run::trajectory_signature(config).map_err(ApiError::from)?;
     if signature == target.manifest.trajectory_signature {
@@ -393,6 +412,7 @@ mod tests {
                 model_signature: String::new(),
                 model_bytes: 0,
                 model_fingerprint: String::new(),
+                reference_fingerprint: String::new(),
                 algorithm: "sft".into(),
                 trajectory_signature: String::new(),
                 resume_boundary: "epoch".into(),

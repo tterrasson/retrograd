@@ -325,7 +325,7 @@ struct UpdateBatch {
     token_advantages: Vec<Option<Vec<f32>>>,
     /// Ascending indices of the slots that reach the optimizer.
     trainable: Vec<usize>,
-    /// Per-slot position into an (always empty) reference-row table; `None`
+    /// Per-slot position into the reference-row table; `None`
     /// marks a dead slot, so this doubles as the liveness mask the epochs read.
     reference_positions: Vec<Option<usize>>,
     metrics: BatchMetrics,
@@ -674,11 +674,26 @@ fn run_epochs(
     // finding a scalar advantage in a distillation batch knows it is a bug and
     // not a value someone chose.
     let scalar_advantages = vec![0.0_f32; rollouts.len()];
-    // The teacher is the anchor, so the base-model reference pass never runs
-    // and this stays empty. `grpo_token_weights_into` already accepts an empty
-    // reference slice, which is the same path a `kl_coefficient = 0` GRPO run
-    // takes.
-    let reference_rows: Vec<Vec<f32>> = Vec::new();
+    // The optional KL term is separate from the teacher-derived advantages.
+    // Score live rows once, before any optimizer epoch changes the policy.
+    let reference_rows = if config.kl_coefficient != 0.0 {
+        trainer.with_reference_policy(|reference| {
+            let mut rows = Vec::with_capacity(trainable.len());
+            for (group_index, group) in rollouts.chunks(config.samples_per_prompt).enumerate() {
+                let base = group_index * config.samples_per_prompt;
+                let members = group
+                    .iter()
+                    .enumerate()
+                    .filter(|(member, _)| reference_positions[base + member].is_some())
+                    .map(|(_, rollout)| rollout)
+                    .collect::<Vec<_>>();
+                rows.extend(score_train_mask_group(reference, &members)?);
+            }
+            Ok(rows)
+        })?
+    } else {
+        Vec::new()
+    };
     let epoch_batch = EpochBatch {
         rollouts,
         group_ids,

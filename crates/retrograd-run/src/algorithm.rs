@@ -97,9 +97,9 @@ impl RunControls for LiveControls<'_, '_> {
         };
         let sampled = self.trainer.generate(&prompt, &sampling)?;
         let completion = self.trainer.detokenize(&sampled.tokens, false)?;
-        // The base pass reuses the same seed on purpose: with sampling held
-        // fixed, the difference between the two texts is the adapter and nothing
-        // else.
+        // The reference pass reuses the same seed on purpose: with sampling
+        // held fixed, the difference between the two texts is training and
+        // nothing else.
         let base_text = request
             .include_base
             .then(|| {

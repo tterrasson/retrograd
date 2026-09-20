@@ -131,6 +131,11 @@ pub struct Manifest {
     /// different weights from being accepted on resume.
     #[serde(default)]
     pub model_fingerprint: String,
+    /// Fingerprint of the fixed-reference model, empty when the run declares
+    /// no anchor. Old checkpoints that lack the field read as empty, which is
+    /// their actual state: their anchor was their own frozen weights.
+    #[serde(default)]
+    pub reference_fingerprint: String,
     pub algorithm: String,
     /// Fingerprint of every run setting that can change the training
     /// trajectory (algorithm geometry, sampling, objective and evaluation).
@@ -918,6 +923,13 @@ impl Checkpoint {
                 expected.model_fingerprint.clone(),
             );
         }
+        if self.manifest.reference_fingerprint != expected.reference_fingerprint {
+            return mismatch(
+                "fixed reference",
+                describe_anchor(&self.manifest.reference_fingerprint),
+                describe_anchor(&expected.reference_fingerprint),
+            );
+        }
         if self.manifest.algorithm != expected.algorithm {
             return mismatch(
                 "algorithm",
@@ -1048,6 +1060,15 @@ impl Checkpoint {
     }
 }
 
+/// Renders a fingerprint for an error message; empty means no anchor.
+fn describe_anchor(fingerprint: &str) -> String {
+    if fingerprint.is_empty() {
+        "none".to_string()
+    } else {
+        fingerprint.to_string()
+    }
+}
+
 /// The first `name=value` row two vectors disagree on, as `(saved, found)`.
 /// A row present on one side only is reported against `absent`.
 fn first_difference(saved: &[String], found: &[String]) -> (String, String) {
@@ -1071,6 +1092,10 @@ pub struct Compatibility {
     pub model_signature: String,
     pub model_bytes: u64,
     pub model_fingerprint: String,
+    /// Fingerprint of this run's anchor, empty when none is declared. Changing
+    /// the anchor mid-run is a different objective, so it is compared on
+    /// resume like the base model's.
+    pub reference_fingerprint: String,
     pub algorithm: String,
     pub trajectory_signature: String,
     pub dataset_fingerprint: String,
@@ -1328,6 +1353,7 @@ mod tests {
                 model_signature: "arch=llama n_embd=64".into(),
                 model_bytes: 1234,
                 model_fingerprint: "model-content".into(),
+                reference_fingerprint: "anchor-content".into(),
                 algorithm: "sft".into(),
                 trajectory_signature: "trajectory-1".into(),
                 resume_boundary: "epoch".into(),
@@ -1430,6 +1456,7 @@ mod tests {
             model_signature: "arch=llama n_embd=64".into(),
             model_bytes: 1234,
             model_fingerprint: "model-content".into(),
+            reference_fingerprint: "anchor-content".into(),
             algorithm: "sft".into(),
             trajectory_signature: "trajectory-1".into(),
             dataset_fingerprint: fingerprint(b"rows"),
@@ -1944,10 +1971,18 @@ mod tests {
         // Each case is something a silent resume would corrupt: a different
         // model, dataset, schedule, or optimizer regularization.
         type Case = (&'static str, fn(&mut Compatibility));
-        let cases: [Case; 10] = [
+        let cases: [Case; 12] = [
             ("model", |c| c.model_signature = "arch=qwen3".into()),
             ("model size", |c| c.model_bytes = 999),
             ("model content", |c| c.model_fingerprint = "other".into()),
+            ("fixed reference", |c| {
+                c.reference_fingerprint = "other".into()
+            }),
+            // A run that dropped its anchor resumes onto a penalty against
+            // something else.
+            ("fixed reference", |c| {
+                c.reference_fingerprint = String::new()
+            }),
             ("algorithm", |c| c.algorithm = "grpo".into()),
             ("training trajectory", |c| {
                 c.trajectory_signature = "other".into()

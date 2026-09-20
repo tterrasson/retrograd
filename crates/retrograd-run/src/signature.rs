@@ -60,6 +60,16 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
         training.warmup_steps,
         training.device,
     );
+    if let Some(reference) = &config.reference {
+        // The context can change RoPE scaling and therefore the anchor's scores.
+        // Its file identity is checked separately by the checkpoint manifest.
+        write!(
+            &mut descriptor,
+            "|reference_ctx={}",
+            reference.n_ctx.unwrap_or(training.n_ctx)
+        )
+        .expect("writing to a String never fails");
+    }
     match &config.algorithm {
         Algorithm::Sft(sft) => {
             write!(&mut descriptor, "|sft|format={:?}", sft.data_format)
@@ -339,6 +349,24 @@ mod tests {
         );
         assert_eq!(checked_total_steps("test", &[2, 3, 4]).unwrap(), 24);
         assert!(checked_total_steps("test", &[u64::MAX, 2]).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reference_context_changes_the_trajectory_but_its_path_does_not() {
+        let root = temp_path("reference-signature");
+        let mut config = config::load(&write_sft_config(&root)).unwrap();
+        config.reference = Some(retrograd_config::ReferenceConfig {
+            model: root.join("anchor.gguf"),
+            n_ctx: None,
+        });
+        let signature = trajectory_signature(&config).unwrap();
+        config.reference.as_mut().unwrap().n_ctx = Some(config.training.n_ctx);
+        assert_eq!(signature, trajectory_signature(&config).unwrap());
+        config.reference.as_mut().unwrap().model = root.join("renamed.gguf");
+        assert_eq!(signature, trajectory_signature(&config).unwrap());
+        config.reference.as_mut().unwrap().n_ctx = Some(config.training.n_ctx * 2);
+        assert_ne!(signature, trajectory_signature(&config).unwrap());
         fs::remove_dir_all(root).unwrap();
     }
 

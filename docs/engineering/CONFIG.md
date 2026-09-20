@@ -300,6 +300,41 @@ puts on a trajectory, and a judge cannot stand in - every RULER strategy scores
 the members of a group against each other, so its scores are renormalized at
 every update and a mean over them is not comparable across the run.
 
+## `[reference]`
+
+The frozen model a fixed-reference term is scored against. Its own section
+shared by GRPO, agentic GRPO and on-policy distillation. PPO uses the rollout
+policy for its KL term and does not consume this section.
+
+`model` - **required**. The GGUF the anchor is loaded from, resolved relative
+to the document.
+
+`ctx` - the anchor's own context width, defaulting to `training.ctx`. A value
+below `training.ctx` is refused: the anchor scores the sequences the run
+produces, so it cannot hold fewer tokens than they can carry.
+
+There is no precision key. The anchor's dtype is the one in its file, because a
+setting that converted it on load would make the penalty depend on a number the
+document chose rather than on the model the path names.
+
+Two refusals, one per direction. A run that trains base weights and carries an
+enabled KL term without this section is refused: the penalty would be taken
+against "the model with its adapter disabled", which is the original policy
+only while the base weights are frozen. And a document that declares this
+section with no enabled KL term is refused too - the model would be loaded,
+budgeted and never read.
+
+The anchor is loaded at model-load time, not at the first scoring pass, and is
+checked before it is used: vocabulary size and a fixed set of witness sentences
+must tokenize identically to the trained model's, and one teacher-forced pass
+must return finite, non-positive values. Its file's content fingerprint goes
+into every checkpoint, so a resume refuses an anchor that is not the one the
+penalty was measured against before it.
+
+The anchor is forward-only - no adapter, therefore no backward graph, no
+gradients and no optimizer state - so it costs its weights plus its KV, which
+is the term the memory estimate carries beside the trained model's.
+
 ## `[checkpoint]`
 
 `directory` - **required**. `mode` - **required**, one of `"steps"`,
@@ -370,8 +405,8 @@ also covers the worker's startup on the first batch in persistent mode.
 
 `clip_range` - **required**, strictly between 0 and 1.
 
-`kl_coefficient` - **required**, non-negative. The anchor toward the frozen base
-model.
+`kl_coefficient` - **required**, non-negative. The KL penalty against the
+policy that generated the rollout; it does not use `[reference]`.
 
 ### `[ppo.critic]`
 
@@ -509,8 +544,8 @@ Spelled in full because `training.epochs` is a different quantity.
 `clip_range_low` / `clip_range_high` - defaults `0.2` / `0.28`, same rule as
 `[grpo]`.
 
-`kl_coefficient` - default `0.0`. A reference pass with the adapter disabled over
-every trainable sequence is the most expensive thing a KL coefficient buys; on a
+`kl_coefficient` - default `0.0`. A reference pass over every trainable
+sequence is the most expensive thing a KL coefficient buys; on a
 task whose reward is an exit-code-grade fact there is no reward hacking for it to
 leash. Raise it to 0.01–0.05, not to 5e-4, if the policy starts leaving its
 language behind.

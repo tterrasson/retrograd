@@ -339,6 +339,9 @@ pub(super) fn draft_document(
             // of the shapes it derives, so the section is never emitted.
             agent: None,
             observe: None,
+            // The drafts are LoRA runs, whose anchor is their own frozen base
+            // weights; a separate one is declared in the document, if at all.
+            reference: None,
         },
         rollout,
     ))

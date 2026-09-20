@@ -509,6 +509,7 @@ impl Trainer {
             .map(|meta| meta.len())
             .unwrap_or(0);
         let model_fingerprint = checkpoint::fingerprint_file_cached(&metadata.model_path)?;
+        let reference_fingerprint = self.reference_fingerprint()?;
         let signature = self.model_signature()?;
 
         let mut artifacts = std::collections::BTreeMap::new();
@@ -557,6 +558,7 @@ impl Trainer {
                 model_signature: signature,
                 model_bytes,
                 model_fingerprint,
+                reference_fingerprint,
                 algorithm: metadata.algorithm.clone(),
                 trajectory_signature: metadata.trajectory_signature.clone(),
                 resume_boundary: metadata.resume_boundary.clone(),

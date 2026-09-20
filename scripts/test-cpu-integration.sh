@@ -36,6 +36,7 @@ if [[ "${RETRO_PROFILE_TESTS:-0}" == "1" ]]; then
     --test trainable_inventory \
     --test base_training \
     --test f16_base_training \
+    --test fixed_reference \
     --test ppo_runtime \
     --test grpo_runtime \
     --test distill_runtime \
@@ -72,6 +73,7 @@ timed_step run:capabilities-suite cargo test --no-default-features --features ag
   --test trainable_inventory \
   --test base_training \
   --test f16_base_training \
+  --test fixed_reference \
   -- --test-threads=1
 
 # CPU-only slices of mixed CPU/GPU binaries, merged into a single cargo start.

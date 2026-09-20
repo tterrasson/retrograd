@@ -21,6 +21,8 @@ impl Trainer {
             trainable_policy: config.trainable.policy,
             declared_trainable: None,
             declared_assignment: Vec::new(),
+            reference: None,
+            reference_path: None,
         });
         test_timing("model_load", started);
         let trainer = result?;
@@ -244,12 +246,14 @@ mod generate;
 mod introspect;
 #[path = "checkpoint.rs"]
 mod persistence;
+mod reference;
 mod score;
 mod tokenize;
 
 /// Chat-template and tool-call-parsing helpers that take a template or parser
 /// directly instead of a loaded model; see [`Trainer::format_chat_messages`]
 /// and [`Trainer::tool_call_parser`] for the model-backed equivalents.
+pub use reference::{VOCABULARY_WITNESSES, VocabularyMismatch};
 pub use tokenize::{
     parse_assistant_output, render_chat_template_source, tool_call_parser_from_source,
 };

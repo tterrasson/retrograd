@@ -535,6 +535,7 @@ fn compatibility_for(
         model_signature: trainer.model_signature().expect("model signature"),
         model_bytes: std::fs::metadata(model).map(|meta| meta.len()).unwrap_or(0),
         model_fingerprint: checkpoint::fingerprint_file(model).expect("fingerprint"),
+        reference_fingerprint: trainer.reference_fingerprint().expect("anchor fingerprint"),
         algorithm: "sft".into(),
         trajectory_signature: "test-base-v1".into(),
         dataset_fingerprint: checkpoint::fingerprint(TEXT.as_bytes()),
@@ -621,7 +622,7 @@ fn the_policy_checks_whether_an_adapter_belongs_to_the_trainable_set() {
             Trainer::new(&model, base_config(policy, OptimizerKind::AdamW)).expect("load trainer");
         trainer.set_trainable_base(&selected).expect("select norms");
         let error = trainer
-            .with_lora_disabled(|_| Ok(()))
+            .with_reference_policy(|_| Ok(()))
             .expect_err("disabling LoRA cannot freeze trainable base weights");
         assert!(
             error.to_string().contains("separate frozen model"),

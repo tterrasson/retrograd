@@ -159,6 +159,31 @@ PPO, GRPO and agentic GRPO only. See [Observing rollouts](../training/observe).
 | `every` | `1` | Positive interval: export rollouts for updates N, 2N, …; summaries for every update. |
 | `max_text_chars` | `0` | Keep this many characters per text, plus a truncation marker; `0` keeps full texts. |
 
+### `[reference]`
+
+The frozen model used by the KL penalty in GRPO, agentic GRPO and on-policy
+distillation. PPO takes its KL against the rollout policy and does not use
+this section.
+
+Without it, the reference policy is this model with its adapter disabled -
+which is the original policy only while the base weights are frozen. A run that
+trains base weights and carries a KL term needs this section; a run that
+carries no KL term may not declare it.
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `model` | required | GGUF the anchor is loaded from. |
+| `ctx` | `training.ctx` | Context width of the anchor. Never narrower than `training.ctx`. |
+
+The anchor's precision is the one in its file. There is no conversion knob: a
+setting that re-quantized it on load would make the penalty depend on a number
+the document chose rather than on the model the path names.
+
+The anchor's tokenizer is compared with the trained model's before it is used,
+and its file's content fingerprint is recorded in every checkpoint, so a resume
+refuses an anchor that is not the one the first half of the run measured
+against.
+
 ### `[checkpoint]`
 
 | Key | Default | Description |
@@ -192,7 +217,7 @@ See [SFT training](../training/sft) for the data contract and a complete file.
 | `rollout_batch_size` | required | Rollouts per update. |
 | `ppo_epochs` | required | Policy passes over one rollout batch. |
 | `clip_range` | required | Strictly between `0` and `1`. |
-| `kl_coefficient` | required | Non-negative KL anchor toward the frozen base model. |
+| `kl_coefficient` | required | Non-negative KL penalty against the policy that generated the rollout. |
 
 ### `[ppo.critic]`
 

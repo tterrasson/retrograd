@@ -75,7 +75,7 @@ pub use levers::{AppliedLever, LEVERS};
 pub use provenance::{Origin, Provenance, Source};
 pub use recipe::{Allow, DataSpec, JudgeRef, Limits, Objective, Recipe, RewardRef};
 pub use resolver::{
-    InsufficientMemory, MemoryPlan, PlanSummary, PlanWarning, Resolution, ResolveError,
+    CoResident, InsufficientMemory, MemoryPlan, PlanSummary, PlanWarning, Resolution, ResolveError,
     ResolveInput, assess, resolve,
 };
 pub use rules::AppliedRule;

@@ -864,6 +864,12 @@ impl AppState {
         managed_adapter: bool,
     ) -> ApiResult<()> {
         self.resolve_path(&config.model.to_string_lossy(), "/config/model/path")?;
+        if let Some(reference) = &config.reference {
+            self.resolve_path(
+                &reference.model.to_string_lossy(),
+                "/config/reference/model",
+            )?;
+        }
         match &config.algorithm {
             retrograd_config::Algorithm::Sft(value) => {
                 self.resolve_path(&value.data.to_string_lossy(), "/config/sft/data")?;

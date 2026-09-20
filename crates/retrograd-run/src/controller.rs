@@ -174,6 +174,9 @@ impl RunController {
             model_signature: trainer.model_signature()?,
             model_bytes: model_bytes(&self.context.model_path),
             model_fingerprint: checkpoint::fingerprint_file_cached(&self.context.model_path)?,
+            // From the trainer, not the document: the resume is compared
+            // against the anchor actually attached.
+            reference_fingerprint: trainer.reference_fingerprint()?,
             algorithm: self.context.algorithm.clone(),
             trajectory_signature: self.context.trajectory_signature.clone(),
             dataset_fingerprint: self.context.dataset.fingerprint.clone(),

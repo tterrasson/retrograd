@@ -23,7 +23,7 @@
 //!
 //! `[agent]` is deliberately absent: `AgentToml` is `#[serde(default)]` and
 //! carries the whole agentic stack's declarations, which are typed and tested
-//! in their own crates. The fifteen types here are the ones `build` and its six
+//! in their own crates. The sixteen types here are the ones `build` and its
 //! `build_*` helpers copy by hand.
 
 use std::path::Path;
@@ -95,6 +95,8 @@ const KEYS: &[&str] = &[
     "observe.max_text_chars",
     "output.kind",
     "output.path",
+    "reference.ctx",
+    "reference.model",
     "run.algorithm",
     "run.verbose",
     "trainable.biases",
@@ -365,6 +367,12 @@ fn exhaustive_document() -> ConfigDocument {
             every: Some(3),
             max_text_chars: Some(2000),
         }),
+        // Legal here only because the GRPO section above carries a positive KL
+        // coefficient.
+        reference: Some(ReferenceToml {
+            model: PathBuf::from("original.gguf"),
+            ctx: Some(512),
+        }),
     }
 }
 
@@ -399,10 +407,10 @@ fn base_normalized(mut document: ConfigDocument) -> ConfigDocument {
 fn a_partial_document_reaches_the_run_config_with_its_selector() {
     let root = Path::new("/tmp/retrograd-round-trip");
     let mut document = base_normalized(exhaustive_document());
-    // GRPO's KL is taken against the frozen base, which a base-weight run
-    // moves; the section's own test covers the refusal.
+    // No KL term, so no anchor.
     document.grpo.as_mut().expect("section").kl_coefficient = 0.0;
     document.grpo.as_mut().expect("section").kl_schedule = None;
+    document.reference = None;
     let config = build(document, root).expect("partial base training builds");
 
     assert_eq!(config.training.trainable.policy, TrainablePolicy::Partial);
@@ -493,6 +501,7 @@ fn a_model_export_belongs_to_the_policies_that_carry_no_adapter() {
     let mut document = base_normalized(exhaustive_document());
     document.grpo.as_mut().expect("section").kl_coefficient = 0.0;
     document.grpo.as_mut().expect("section").kl_schedule = None;
+    document.reference = None;
     document.output = Some(OutputToml {
         path: PathBuf::from("out/model.gguf"),
         kind: Some("model".to_string()),
@@ -548,7 +557,8 @@ fn a_model_export_belongs_to_the_policies_that_carry_no_adapter() {
 #[test]
 fn a_fixed_reference_consumer_is_refused_beside_base_training() {
     let root = Path::new("/tmp/retrograd-round-trip");
-    let document = base_normalized(exhaustive_document());
+    let mut document = base_normalized(exhaustive_document());
+    document.reference = None;
     assert!(
         document.grpo.as_ref().expect("section").kl_coefficient > 0.0
             || document
@@ -561,7 +571,7 @@ fn a_fixed_reference_consumer_is_refused_beside_base_training() {
     let error = build(document, root).expect_err("base training has no fixed reference");
     let message = error.to_string();
     assert!(message.contains("grpo.kl_coefficient"), "{message}");
-    assert!(message.contains("separate reference model"), "{message}");
+    assert!(message.contains("separate anchor"), "{message}");
 
     // Zero and unscheduled is not a reference: the term is skipped entirely.
     // (A schedule without a positive coefficient is refused by `[grpo]` itself,
@@ -570,7 +580,78 @@ fn a_fixed_reference_consumer_is_refused_beside_base_training() {
     let mut without = base_normalized(exhaustive_document());
     without.grpo.as_mut().expect("section").kl_coefficient = 0.0;
     without.grpo.as_mut().expect("section").kl_schedule = None;
+    without.reference = None;
     build(without, root).expect("a zero KL needs no anchor");
+}
+
+/// The other half of the anchor rule: a declared anchor with no KL term would
+/// be loaded and never read.
+#[test]
+fn ppo_uses_its_rollout_policy_without_a_fixed_reference() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    let mut document = base_normalized(exhaustive_document());
+    document.run.algorithm = "ppo".to_string();
+    document.grpo = None;
+    document.ppo = Some(exhaustive_ppo());
+    document.training.generation_concurrency = None;
+    document.reference = None;
+    build(document.clone(), root).expect("PPO's old policy does not require frozen base weights");
+    document.reference = exhaustive_document().reference;
+    let error = build(document, root).expect_err("PPO does not read a fixed reference");
+    assert!(
+        error
+            .to_string()
+            .contains("no enabled fixed-reference term"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_anchor_no_term_scores_against_is_refused() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    let mut document = lora_normalized(exhaustive_document());
+    document.grpo.as_mut().expect("section").kl_coefficient = 0.0;
+    document.grpo.as_mut().expect("section").kl_schedule = None;
+    let error = build(document, root).expect_err("nothing scores against this anchor");
+    let message = error.to_string();
+    assert!(message.contains("[reference]"), "{message}");
+}
+
+/// A declared anchor lifts the base-weight refusal, and the path and width
+/// both reach the configuration.
+#[test]
+fn a_declared_anchor_admits_a_kl_penalty_beside_base_training() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    let document = base_normalized(exhaustive_document());
+    assert!(document.grpo.as_ref().expect("section").kl_coefficient > 0.0);
+    let config = build(document, root).expect("a declared anchor is a fixed reference");
+    let reference = config.reference.expect("[reference] was declared");
+    assert_eq!(reference.model, root.join("original.gguf"));
+    assert_eq!(reference.n_ctx, Some(512));
+
+    // The width is optional.
+    let mut default_width = base_normalized(exhaustive_document());
+    default_width.reference.as_mut().expect("section").ctx = None;
+    let config = build(default_width, root).expect("the anchor follows the training width");
+    assert_eq!(config.reference.expect("section").n_ctx, None);
+
+    // Zero is not a width.
+    let mut zero = base_normalized(exhaustive_document());
+    zero.reference.as_mut().expect("section").ctx = Some(0);
+    let error = build(zero, root).expect_err("zero is not a context");
+    assert!(error.to_string().contains("reference.ctx"), "{error}");
+
+    // Nor a width the run's own sequences would overflow.
+    let mut narrow = base_normalized(exhaustive_document());
+    let training_ctx = narrow.training.ctx.expect("the document names a width");
+    narrow.reference.as_mut().expect("section").ctx = Some(training_ctx - 1);
+    let error = build(narrow, root).expect_err("the anchor cannot hold the rollouts");
+    assert!(error.to_string().contains("narrower"), "{error}");
+
+    let mut empty = base_normalized(exhaustive_document());
+    empty.reference.as_mut().expect("section").model = PathBuf::new();
+    let error = build(empty, root).expect_err("an empty path is not the document directory");
+    assert!(error.to_string().contains("reference.model"), "{error}");
 }
 
 /// A selector a policy ignores is a selector the user believes is in effect.
@@ -842,6 +923,7 @@ fn the_other_algorithm_sections_reach_the_run_config() {
     document.run.algorithm = "ppo".to_string();
     document.grpo = None;
     document.ppo = Some(exhaustive_ppo());
+    document.reference = None;
     // `generation_concurrency` is GRPO-only, and PPO has no group size to pin
     // `n_seq_max` from.
     document.training.generation_concurrency = None;
@@ -913,6 +995,8 @@ fn the_other_algorithm_sections_reach_the_run_config() {
     // Offline distillation does not generate, so the rollout-only geometry the
     // exhaustive document pins would be describing a sampler that never runs.
     document.training.generation_concurrency = None;
+    // Offline distillation carries no KL term, so no anchor.
+    document.reference = None;
     let config = build(document, root).expect("the offline distillation document builds");
     let Algorithm::Distill(distill) = &config.algorithm else {
         panic!("run.algorithm = 'distill' builds a distillation run");
@@ -960,6 +1044,8 @@ fn the_other_algorithm_sections_reach_the_run_config() {
     document.grpo = None;
     document.sft = Some(exhaustive_sft());
     document.training.generation_concurrency = None;
+    // SFT carries no KL term, so no anchor either.
+    document.reference = None;
     let config = build(document, root).expect("the SFT document builds");
     let Algorithm::Sft(sft) = &config.algorithm else {
         panic!("run.algorithm = 'sft' builds an SFT run");

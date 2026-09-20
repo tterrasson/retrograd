@@ -133,7 +133,7 @@ pub(crate) async fn resolve_body(
     // that would actually run - the parent's, or the recipe's, with every
     // parameter already merged in.
     if let Some(target) = &target {
-        resolve::fork::check_compatible(target, &resolved.config, &params)?;
+        resolve::fork::check_compatible(state, target, &resolved.config, &params).await?;
     }
     Ok(resolved)
 }

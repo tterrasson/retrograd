@@ -19,6 +19,7 @@ mod distill;
 mod document;
 mod grpo;
 mod ppo;
+mod reference;
 mod sft;
 
 #[cfg(test)]
@@ -38,14 +39,15 @@ pub use distill::{
 };
 pub use document::{
     CheckpointToml, ConfigDocument, EvaluationToml, LoraToml, MetricsToml, ModelOverride,
-    ModelToml, ObserveToml, OutputToml, RunToml, SamplingToml, SharedPrefixFanoutToml,
-    TrainableToml, TrainingToml,
+    ModelToml, ObserveToml, OutputToml, ReferenceToml, RunToml, SamplingToml,
+    SharedPrefixFanoutToml, TrainableToml, TrainingToml,
 };
 pub use grpo::{
     AdvantageBaseline, DEFAULT_MAX_STALLED_UPDATES, DynamicSampling, GrpoConfig, GrpoJudge,
     GrpoToml, KlSchedule, KlScheduleToml, OverlongPenalty,
 };
 pub use ppo::{CriticConfig, CriticToml, PpoConfig, PpoToml};
+pub use reference::ReferenceConfig;
 pub use sft::{SftConfig, SftToml};
 /// The engine-shaped configuration a run is built from. Produced from a
 /// [`ConfigDocument`] by [`build`]/[`build_with`], which is the only path a
@@ -64,6 +66,10 @@ pub struct RunConfig {
     pub evaluation: Option<EvaluationConfig>,
     pub checkpoint: Option<CheckpointConfig>,
     pub observe: Option<ObserveConfig>,
+    /// The frozen anchor a KL term scores against, when the document declares
+    /// one. `None` means the reference is this model with its adapter
+    /// disabled, valid only while the base weights stay frozen.
+    pub reference: Option<ReferenceConfig>,
 }
 
 /// Which training objective a run carries, with that objective's own settings.

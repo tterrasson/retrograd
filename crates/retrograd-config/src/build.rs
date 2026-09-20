@@ -25,11 +25,12 @@ use crate::document::{
 };
 use crate::grpo::build_grpo;
 use crate::ppo::build_ppo;
+use crate::reference::build_reference;
 use crate::sft::build_sft;
 use crate::{
     Algorithm, CheckpointConfig, CheckpointMode, DEFAULT_SEED, DEFAULT_TARGETS, EvaluationConfig,
-    LoraRunConfig, MetricsConfig, ObserveConfig, OutputConfig, OutputKind, RunConfig, agent,
-    parse_targets,
+    LoraRunConfig, MetricsConfig, ObserveConfig, OutputConfig, OutputKind, ReferenceConfig,
+    RunConfig, agent, parse_targets,
 };
 
 /// Reads, parses and builds the TOML file at `path` into a [`RunConfig`].
@@ -112,6 +113,7 @@ pub fn build_with(
         lora: lora_toml,
         metrics,
         training: training_toml,
+        reference: reference_toml,
         ..
     } = file;
     // `trainable` was consumed above; the destructuring drops the DTO.
@@ -175,6 +177,9 @@ pub fn build_with(
     let observe = observe
         .map(|value| build_observe(value, &algorithm, root))
         .transpose()?;
+    let reference = reference_toml
+        .map(|value| build_reference(value, root, training.n_ctx))
+        .transpose()?;
     check_across_sections(
         &algorithm,
         evaluation.as_ref(),
@@ -182,6 +187,7 @@ pub fn build_with(
         lora_toml.as_ref(),
         lora.as_ref(),
         &training.trainable,
+        reference.as_ref(),
     )?;
 
     Ok(RunConfig {
@@ -203,6 +209,7 @@ pub fn build_with(
         evaluation,
         checkpoint,
         observe,
+        reference,
     })
 }
 
@@ -723,7 +730,7 @@ fn pin_rollout_geometry(
 }
 
 /// The rules no single section can check: they hold between the algorithm and
-/// `[evaluation]`, `[checkpoint]` or `[lora]`.
+/// `[evaluation]`, `[checkpoint]`, `[lora]` or `[reference]`.
 fn check_across_sections(
     algorithm: &Algorithm,
     evaluation: Option<&EvaluationConfig>,
@@ -731,29 +738,36 @@ fn check_across_sections(
     lora: Option<&LoraToml>,
     lora_config: Option<&LoraConfig>,
     trainable: &TrainableRunConfig,
+    reference: Option<&ReferenceConfig>,
 ) -> Result<()> {
-    // The fixed reference, and why base training cannot have one yet.
-    //
-    // Every consumer below scores against "the model with its adapter
-    // disabled" and calls that the original policy. That identity holds
-    // because a LoRA run leaves the base weights untouched - and a run that
-    // updates them breaks it on the first step, silently: the KL is then taken
-    // against a moving target, and its value keeps being a number.
-    //
-    // Checked on the configured coefficient and schedule rather than on the
-    // current warmup value, because a run that starts at zero and warms up to a
-    // penalty is a run with a reference.
-    if trainable.policy.trains_base_weights()
-        && let Some(consumer) = fixed_reference_consumer(algorithm)
+    // Without `[reference]`, the reference policy is "the model with its
+    // adapter disabled". That identity holds only while the base weights are
+    // frozen: a run that updates them takes its KL against a moving target.
+    // Checked on the configured coefficient and schedule rather than the
+    // current warmup value, because a run that warms up to a penalty is a run
+    // with a reference.
+    let consumer = fixed_reference_consumer(algorithm);
+    if let Some(consumer) = consumer
+        && trainable.policy.trains_base_weights()
+        && reference.is_none()
     {
         return Err(Error::config(format!(
             "{consumer} with training.trainable = '{}': the penalty is taken against \
              the model with its adapter disabled, which is the original policy only \
              while the base weights are frozen. A run that trains them needs a \
-             separate reference model, which this build does not have - set the \
-             coefficient to zero, or train an adapter",
+             separate anchor - declare [reference].model, set the coefficient to \
+             zero, or train an adapter",
             trainable.policy
         )));
+    }
+    // The reverse: an anchor nothing scores against would be loaded and never
+    // read.
+    if reference.is_some() && consumer.is_none() {
+        return Err(Error::config(
+            "[reference] with no enabled fixed-reference term: nothing in this run \
+             scores against an anchor, so the model would be loaded and never read - \
+             remove the section, or set a KL coefficient",
+        ));
     }
     // put on it - a verify command, a test suite, a task's own grading. The
     // judge cannot stand in: every RULER strategy scores the members of a group
@@ -827,8 +841,7 @@ fn check_across_sections(
 /// generated the rollout, not from an anchor - and are deliberately not listed.
 fn fixed_reference_consumer(algorithm: &Algorithm) -> Option<&'static str> {
     match algorithm {
-        Algorithm::Sft(_) => None,
-        Algorithm::Ppo(ppo) => (ppo.kl_coefficient > 0.0).then_some("ppo.kl_coefficient"),
+        Algorithm::Sft(_) | Algorithm::Ppo(_) => None,
         Algorithm::Grpo(grpo) => {
             // The schedule as well as the value: a run configured to warm up to
             // a penalty has a reference from the first update, whatever the

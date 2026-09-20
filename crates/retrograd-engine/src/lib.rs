@@ -579,6 +579,14 @@ pub struct Trainer {
     /// Which optimizer owns each marked parameter, when an assignment was
     /// declared; empty for a single-optimizer run.
     declared_assignment: Vec<(String, retrograd_core::OptimizerKind)>,
+    /// The frozen model this run's reference term scores against, when one was
+    /// attached. `generate_base` and `score_reference_tokens` fall back to
+    /// this model with its adapter disabled when it is absent. Boxed to keep
+    /// `Trainer` a bounded type.
+    reference: Option<Box<Trainer>>,
+    /// The file that anchor was loaded from, kept for the checkpoint's
+    /// fingerprint and diagnostics.
+    reference_path: Option<std::path::PathBuf>,
 }
 
 impl Trainer {
@@ -630,7 +638,8 @@ pub use probe::*;
 pub use quant::*;
 pub use rir::*;
 pub use trainer::{
-    parse_assistant_output, render_chat_template_source, tool_call_parser_from_source,
+    VOCABULARY_WITNESSES, VocabularyMismatch, parse_assistant_output, render_chat_template_source,
+    tool_call_parser_from_source,
 };
 
 // The "uninitialized buffer filled through FFI" helpers below each mark a

@@ -177,15 +177,14 @@ pub struct Workload {
     pub kind: WorkloadKind,
     /// Prepared rows held on the host: `tokens` and `labels`, both `i32`.
     pub examples: u64,
-    /// Device bytes a *second* model occupies beside the one being sized, for
-    /// the whole run. Zero for every algorithm but distillation, where the
-    /// teacher is resident from the first update to the last.
+    /// Device bytes the *other* models occupy beside the one being sized,
+    /// for the whole run: distillation's teacher, the fixed-reference anchor,
+    /// or both.
     ///
-    /// A flat term and not a second geometry, because the teacher is
-    /// forward-only: it has no adapter, therefore no backward graph, no
-    /// gradients and no AdamW moments (see `distill::Teacher`). Its whole cost
-    /// is weights plus KV, which the caller can compute from the teacher's own
-    /// `ModelInfo` - and *must*, since the cost model here only ever sees one.
+    /// A flat term rather than a second geometry, because both are
+    /// forward-only: no adapter, no backward graph, no optimizer state. Their
+    /// cost is weights plus KV, computed by the caller from each model's
+    /// `ModelInfo`; the cost model here only ever sees one model.
     pub co_resident_bytes: u64,
 }
 
@@ -222,10 +221,10 @@ impl Default for Calibration {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MemoryEstimate {
     pub model_weight_bytes: u64,
-    /// A second model held beside this one for the whole run - the distillation
-    /// teacher, and nothing else today. Separate from `model_weight_bytes`
-    /// because a reader comparing an estimate against a `MemoryReport` needs to
-    /// know which of the two models a byte belongs to.
+    /// The models held beside this one for the whole run: a distillation
+    /// teacher, a fixed-reference anchor, or both. Separate from
+    /// `model_weight_bytes` so an estimate can be compared with a
+    /// `MemoryReport` byte by byte.
     pub co_resident_bytes: u64,
     /// Transient dequantization buffers the backend allocates for a quantized
     /// weight. Several GiB have been observed on CUDA.
@@ -736,27 +735,30 @@ fn rollout_host_bytes(rollouts_per_update: u64, n_ctx: u64) -> u64 {
 /// What a forward-only second model costs on the device for a whole run:
 /// its weights, plus the KV cache the context it runs in reserves.
 ///
-/// Weights plus KV and nothing else, because a `Trainer` with no adapter has no
-/// backward graph, no gradients and no AdamW moments - the invariant
-/// `distill::Teacher` is loaded under and that `tests/distill_runtime.rs`
-/// measures. The compute term is left out for the same reason it is left out of
-/// the student's generation context when there is none: a forward pass through a
-/// scoring batch peaks below the optimizer graph this budget is already sized
-/// for, and adding a second peak would refuse configurations that run.
+/// Weights plus KV and nothing else, because a `Trainer` with no adapter has
+/// no backward graph, no gradients and no AdamW moments (see `distill::Teacher`
+/// and `tests/distill_runtime.rs`). The compute term is
+/// left out because a forward pass through a scoring batch peaks below the
+/// optimizer graph this budget is already sized for.
 ///
-/// The geometry read is the *teacher's*, and the context terms are the
-/// student's: the teacher inherits `n_ctx`, `n_seq_max` and `kv_dtype` from the
-/// training configuration, and nothing else.
-pub fn co_resident_model_bytes(teacher: &ModelInfo, training: &TrainConfig) -> u64 {
-    let weights = if teacher.model_size_bytes > 0 {
-        teacher.model_size_bytes
+/// The model inherits `n_ctx`, `n_seq_max` and `kv_dtype` from the training
+/// configuration and nothing else.
+pub fn co_resident_model_bytes(model: &ModelInfo, training: &TrainConfig) -> u64 {
+    co_resident_model_bytes_at(model, training, training.n_ctx)
+}
+
+/// Like [`co_resident_model_bytes`] but at a context width other than the
+/// training one. Only the KV term moves with it; the weights do not.
+pub fn co_resident_model_bytes_at(model: &ModelInfo, training: &TrainConfig, n_ctx: u32) -> u64 {
+    let weights = if model.model_size_bytes > 0 {
+        model.model_size_bytes
     } else {
-        teacher.file_size_bytes
+        model.file_size_bytes
     };
     total([
         weights,
-        teacher.kv_cache_bytes(training.n_ctx as u64, kv_element_bytes(training.kv_dtype)),
-        recurrent_state_bytes(teacher, training.n_seq_max.max(1) as u64),
+        model.kv_cache_bytes(n_ctx as u64, kv_element_bytes(training.kv_dtype)),
+        recurrent_state_bytes(model, training.n_seq_max.max(1) as u64),
     ])
 }
 
