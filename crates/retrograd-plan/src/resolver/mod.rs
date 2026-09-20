@@ -322,6 +322,11 @@ impl From<retrograd_core::Error> for ResolveError {
 /// `algorithm` comes from [`crate::calibration::algorithm_slug`] on the built
 /// configuration - never from the recipe's objective. The written key is derived
 /// the same way, and two mappings would drift into never matching each other.
+///
+/// The trainable set is resolved here rather than passed in: it depends on
+/// the policy, the selector and the tensor table, none of which the geometry
+/// search moves. An unresolvable set reads as no set, which only costs a
+/// correction factor.
 fn calibration_for(
     input: &ResolveInput<'_>,
     algorithm: &str,
@@ -330,7 +335,16 @@ fn calibration_for(
     let (Some(profile), Some(store)) = (input.execution_profile, input.calibrations) else {
         return Calibration::default();
     };
-    let key = crate::calibration_key_for(profile, input.model, algorithm, training);
+    let base_trainable = resolve_trainable_set(&training.trainable, input.inventory)
+        .ok()
+        .flatten();
+    let key = crate::calibration_key_for(
+        profile,
+        input.model,
+        algorithm,
+        training,
+        base_trainable.as_ref(),
+    );
     store.factors(&key)
 }
 

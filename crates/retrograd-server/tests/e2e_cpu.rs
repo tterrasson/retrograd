@@ -480,3 +480,76 @@ async fn a_run_on_the_cpu_fixture_is_planned_driven_and_forked() {
     let table = std::fs::read_to_string(&calibration).expect("read");
     assert!(table.contains("entries"), "{table}");
 }
+
+/// A calibrated base-weight plan: the probe builds the run the document
+/// describes, and the factor it writes lands under a key of its own, separate
+/// from an adapter run of the same model and shape.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_base_weight_plan_is_measured_as_the_run_it_describes() {
+    let Some(model) = fixture_model() else {
+        return;
+    };
+    let workspace = Workspace::new();
+    let router = router(&workspace);
+
+    // The fixture is quantized, so `partial` with `norms = true`, never `full`.
+    // A whole document rather than a recipe, since `partial` trains no adapter.
+    let base = json!({
+        "config": {
+            "run": {"algorithm": "sft"},
+            "model": {"path": model.to_string_lossy()},
+            "output": {"path": workspace.path("trained.gguf")},
+            "training": {
+                "ctx": 128,
+                "micro_batch": 128,
+                "epochs": 1,
+                "trainable": "partial"
+            },
+            "trainable": {"norms": true},
+            "sft": {"data": workspace.path("train.jsonl"), "data_format": "jsonl"}
+        }
+    });
+    let (status, plan) = post(&router, "/v1/plan?calibrate=true", base).await;
+    assert_eq!(status, StatusCode::OK, "{plan}");
+    assert_eq!(plan["effective_config"]["training"]["trainable"], "partial");
+
+    let measured = &plan["plan"]["memory"]["measured"];
+    assert!(
+        measured.is_object(),
+        "a calibrated base plan reports what it measured: {plan}"
+    );
+    for post in [
+        "model_weight_bytes",
+        "optimizer_kv_bytes",
+        "optimizer_compute_bytes",
+        "trainable_gradient_bytes",
+        "optimizer_state_bytes",
+    ] {
+        assert!(
+            measured[post].as_u64().unwrap_or(0) > 0,
+            "{post} was not measured on a base run: {measured}"
+        );
+    }
+    // A second plan, adapter this time, over the same model and shape. It must
+    // record separately, so the calibration file gains an entry.
+    let (status, adapter) = post(
+        &router,
+        "/v1/plan?calibrate=true",
+        recipe(&workspace, &model, 1),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{adapter}");
+    let calibration: Value = serde_json::from_str(
+        &std::fs::read_to_string(workspace.dir.join("state").join("calibration.json"))
+            .expect("the calibration table"),
+    )
+    .expect("valid json");
+    let entries = calibration["entries"]
+        .as_object()
+        .expect("an entry map")
+        .len();
+    assert!(
+        entries >= 2,
+        "the base run and the adapter run shared a calibration key: {calibration}"
+    );
+}

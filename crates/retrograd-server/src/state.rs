@@ -418,6 +418,25 @@ pub trait ModelProbe: Send + Sync {
     ) -> CoreResult<Vec<u32>>;
 }
 
+/// A trainer with the trainable half declared: the parameter filter reads the
+/// base set at graph build. Shared by the two graph-building probes below.
+fn trainer_for(model: &Path, config: &RunConfig) -> CoreResult<Trainer> {
+    let mut trainer = Trainer::new(model, config.training.clone())?;
+    if config.training.trainable.policy.trains_base_weights() {
+        let inventory = retrograd_engine::tensor_inventory(model, config.training.device)?;
+        let set = retrograd_core::resolve_base(
+            &inventory,
+            config.training.trainable.policy,
+            &config.training.trainable.selector,
+        )?;
+        trainer.declare_trainable_set(&set)?;
+    }
+    if let Some(lora) = &config.lora {
+        trainer.create_lora(&lora.config)?;
+    }
+    Ok(trainer)
+}
+
 /// The real probe: what the `retrograd preflight` CLI command does.
 pub struct EngineProbe;
 
@@ -511,18 +530,12 @@ impl ModelProbe for EngineProbe {
         config: &RunConfig,
         profile_fingerprint: String,
     ) -> CoreResult<PreflightReport> {
-        let mut trainer = Trainer::new(model, config.training.clone())?;
-        if let Some(lora) = &config.lora {
-            trainer.create_lora(&lora.config)?;
-        }
+        let mut trainer = trainer_for(model, config)?;
         trainer.structured_preflight(profile_fingerprint)
     }
 
     fn measure(&self, model: &Path, config: &RunConfig) -> CoreResult<MemoryReport> {
-        let mut trainer = Trainer::new(model, config.training.clone())?;
-        if let Some(lora) = &config.lora {
-            trainer.create_lora(&lora.config)?;
-        }
+        let mut trainer = trainer_for(model, config)?;
         trainer.prepare_optimizer()?;
         // The compute buffers only exist once the backward graph has been
         // reserved, and the preflight is what reserves it. Reading the report

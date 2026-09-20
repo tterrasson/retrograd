@@ -38,6 +38,15 @@ const TEXT: &str = concat!(
 );
 
 fn base_config(policy: TrainablePolicy, optimizer: OptimizerKind) -> TrainConfig {
+    base_config_on(Device::Cpu, policy, optimizer)
+}
+
+/// [`base_config`] on a chosen device.
+fn base_config_on(
+    device: Device,
+    policy: TrainablePolicy,
+    optimizer: OptimizerKind,
+) -> TrainConfig {
     TrainConfig {
         n_ctx: 32,
         n_batch: 32,
@@ -46,7 +55,7 @@ fn base_config(policy: TrainablePolicy, optimizer: OptimizerKind) -> TrainConfig
         // Large enough that a norms-only update is visible in the scores, and
         // still small enough to stay finite over one step.
         learning_rate: 1.0e-3,
-        device: Device::Cpu,
+        device,
         trainable: TrainableRunConfig {
             policy,
             selector: TrainableSelector {
@@ -927,22 +936,18 @@ fn a_trainable_bundle_must_match_the_run_it_is_restored_into() {
 }
 
 /// What a frozen prefix costs. Same-size selections (one block's norms) at
-/// different heights: the parameter, gradient and state halves are identical by
-/// construction, so anything that differs is the backward graph. `norms =
-/// true` cannot ask this, since the model-wide norms sit below every block.
+/// different heights: the parameter, gradient and state halves are identical
+/// by construction, so anything that differs is the backward graph.
+/// `norms = true` cannot ask this, since the model-wide norms sit below every
+/// block.
 ///
-/// Measured on this fixture: the optimizer context's compute buffer falls from
-/// about 25 MB for block 0 of 14 to about 4.4 MB for the last, roughly
-/// linearly. The blocks below the lowest trainable one carry no backward node,
-/// and `retrograd_plan::cost` charges the activation term over the span
-/// because of this.
-#[test]
-fn the_backward_prunes_the_blocks_below_the_lowest_trainable_one() {
-    let model = fixture!();
-    let _guard = common::serialize_models();
-    let inventory = tensor_inventory(&model, Device::Cpu).expect("inventory");
+/// Only the shape is asserted: monotonic, and at least a factor of two between
+/// the ends. The per-block coefficient is printed, not checked, since it is a
+/// property of one architecture's block width.
+fn assert_the_frozen_prefix_is_pruned(model: &Path, label: &str) {
+    let inventory = tensor_inventory(model, Device::Cpu).expect("inventory");
     let last = inventory.n_layer - 1;
-    assert!(last >= 3, "the fixture is too shallow to have a prefix");
+    assert!(last >= 3, "{label} is too shallow to have a prefix");
 
     // One measurement per height.
     let measure = |block: u32| -> (usize, u64, u64) {
@@ -957,7 +962,7 @@ fn the_backward_prunes_the_blocks_below_the_lowest_trainable_one() {
             &config.trainable.selector,
         )
         .expect("one block's norms resolve");
-        let mut trainer = Trainer::new(&model, config).expect("load trainer");
+        let mut trainer = Trainer::new(model, config).expect("load trainer");
         trainer
             .set_trainable_base(&names(&set.entries))
             .expect("declare the set");
@@ -974,21 +979,50 @@ fn the_backward_prunes_the_blocks_below_the_lowest_trainable_one() {
     let (top_tensors, top_gradient, top_compute) = measure(last);
     // Same work: if the tensors or gradients differ, the comparison below is
     // measuring the selection instead.
-    assert_eq!(bottom_tensors, top_tensors);
-    assert_eq!(bottom_gradient, top_gradient);
+    assert_eq!(bottom_tensors, top_tensors, "{label}");
+    assert_eq!(bottom_gradient, top_gradient, "{label}");
     assert!(
         top_compute * 2 < bottom_compute,
-        "the frozen prefix was not pruned: {bottom_compute} bytes at block 0, \
-         {top_compute} at block {last}"
+        "{label}: the frozen prefix was not pruned: {bottom_compute} bytes at \
+         block 0, {top_compute} at block {last}"
     );
 
     // A middle selection costs strictly between the two ends.
-    let (_, _, middle_compute) = measure(last / 2);
+    let middle = last / 2;
+    let (_, _, middle_compute) = measure(middle);
     assert!(
         top_compute < middle_compute && middle_compute < bottom_compute,
-        "compute is not monotonic in the lowest trainable block: \
+        "{label}: compute is not monotonic in the lowest trainable block: \
          {bottom_compute} / {middle_compute} / {top_compute}"
     );
+
+    let per_block = (bottom_compute - top_compute) as f64 / f64::from(last);
+    eprintln!(
+        "{label}: {} blocks, optimizer compute {bottom_compute} B at block 0, \
+         {middle_compute} B at block {middle}, {top_compute} B at block {last} \
+         - {per_block:.0} B per frozen block",
+        inventory.n_layer
+    );
+}
+
+/// On the download fixture, 14 blocks of a real width. Measured here: the
+/// optimizer compute buffer falls from about 25 MB at block 0 to about 4.4 MB
+/// at the last block, roughly linearly.
+#[test]
+fn the_backward_prunes_the_blocks_below_the_lowest_trainable_one() {
+    let model = fixture!();
+    let _guard = common::serialize_models();
+    assert_the_frozen_prefix_is_pruned(&model, "lfm2 fixture");
+}
+
+/// The same check on a second architecture: a model whose prefix did not
+/// prune would make the span multiplier in `retrograd_plan::cost` an
+/// under-estimate.
+#[test]
+fn the_backward_prunes_the_prefix_on_a_second_architecture() {
+    let model = tiny_fixture!();
+    let _guard = common::serialize_models();
+    assert_the_frozen_prefix_is_pruned(&model, "generated qwen2 fixture");
 }
 
 /// Whole-tensor reads because the fixture's tensors are small; the FFI
@@ -1632,6 +1666,115 @@ fn a_model_export_of_the_generated_fixture_is_the_run_it_came_from() {
         .declare_trainable_set(&set)
         .expect("the same selection");
     assert_eq!(deviation(&cold, &scores(&mut source)), 0.0);
+}
+
+/// The same export, from a run whose weights live on the device: every weight
+/// the writer emits must come back off the device.
+///
+/// Both trainers run on the device: scoring is not bit-identical across
+/// backends, so the reload happens on the device too.
+#[test]
+fn a_model_export_of_a_device_resident_run_is_the_run_it_came_from() {
+    let model = tiny_fixture!();
+    if !common::gpu_device_present() {
+        eprintln!("skipping: no GPU device");
+        return;
+    }
+    let _guard = common::serialize_models();
+    let root = scratch("tiny-model-export-gpu");
+    let set = resolved_norm_set(&model, TrainablePolicy::Partial);
+    let config = base_config_on(Device::Gpu, TrainablePolicy::Partial, OptimizerKind::AdamW);
+
+    let inventory = tensor_inventory(&model, Device::Gpu).expect("inventory");
+    assert!(
+        retrograd::architecture_exports_model(&inventory.architecture),
+        "the row for '{}' does not grant a model export",
+        inventory.architecture
+    );
+
+    let mut trainer = Trainer::new(&model, config.clone()).expect("load trainer");
+    trainer
+        .declare_trainable_set(&set)
+        .expect("select the fixture's norms");
+    // The selected weights are on the device, which is the point of the case.
+    let report = trainer.memory_report().expect("memory report");
+    assert!(
+        !report.base_trainable_on_host,
+        "the selected base tensors did not land on the device: {report:?}"
+    );
+
+    let cold = scores(&mut trainer);
+    train_once(&mut trainer);
+    let trained = scores(&mut trainer);
+    assert!(
+        deviation(&cold, &trained) > 0.0,
+        "the run has to move the model for the export to mean anything"
+    );
+
+    let exported = root.join("trained-model.gguf");
+    trainer.save_model(&exported).expect("write the model");
+    drop(trainer);
+    assert!(exported.is_file());
+
+    let reloaded_set = resolved_norm_set(&exported, TrainablePolicy::Partial);
+    assert_eq!(names(&reloaded_set.entries), names(&set.entries));
+    let mut reloaded = Trainer::new(&exported, config.clone()).expect("load the exported model");
+    reloaded
+        .declare_trainable_set(&reloaded_set)
+        .expect("the same selection");
+    assert_eq!(
+        deviation(&trained, &scores(&mut reloaded)),
+        0.0,
+        "the exported model is not the run it came from"
+    );
+    drop(reloaded);
+
+    // The source file is untouched.
+    let mut source = Trainer::new(&model, config).expect("load the fixture again");
+    source
+        .declare_trainable_set(&set)
+        .expect("the same selection");
+    assert_eq!(deviation(&cold, &scores(&mut source)), 0.0);
+}
+
+/// The trainable bundle from a device-resident run: a different writer from
+/// the model export, so the device read is a separate claim.
+#[test]
+fn a_trainable_bundle_of_a_device_resident_run_is_the_run_it_came_from() {
+    let model = tiny_fixture!();
+    if !common::gpu_device_present() {
+        eprintln!("skipping: no GPU device");
+        return;
+    }
+    let _guard = common::serialize_models();
+    let root = scratch("tiny-bundle-gpu");
+    let set = resolved_norm_set(&model, TrainablePolicy::Partial);
+    let config = base_config_on(Device::Gpu, TrainablePolicy::Partial, OptimizerKind::AdamW);
+
+    let mut trainer = Trainer::new(&model, config.clone()).expect("load trainer");
+    trainer
+        .declare_trainable_set(&set)
+        .expect("select the fixture's norms");
+    let cold = scores(&mut trainer);
+    train_once(&mut trainer);
+    let trained = scores(&mut trainer);
+    assert!(deviation(&cold, &trained) > 0.0);
+
+    let bundle = root.join("result.gguf");
+    trainer.save_trainable(&bundle).expect("write the bundle");
+    drop(trainer);
+
+    let mut reloaded = Trainer::new(&model, config).expect("load a fresh trainer");
+    reloaded
+        .declare_trainable_set(&set)
+        .expect("the same selection");
+    assert_eq!(deviation(&cold, &scores(&mut reloaded)), 0.0);
+    reloaded.load_trainable(&bundle).expect("load the bundle");
+    assert_eq!(
+        deviation(&trained, &scores(&mut reloaded)),
+        0.0,
+        "the published bundle is not the run it came from"
+    );
 }
 
 /// Two optimizers in one run, on a cold first step where both closed forms

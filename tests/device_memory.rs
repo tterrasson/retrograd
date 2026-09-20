@@ -21,7 +21,9 @@ mod common;
 
 use retrograd::training::batch::train_grpo_batch;
 use retrograd::{
-    Device, GrpoBatchParams, LoraConfig, LoraDtype, TargetSet, TrainConfig, TrainSequence, Trainer,
+    Device, GrpoBatchParams, LoraConfig, LoraDtype, OptimizerKind, TargetSet, TrainConfig,
+    TrainSequence, TrainableEntry, TrainablePolicy, TrainableRunConfig, TrainableSelector, Trainer,
+    resolve_base, tensor_inventory,
 };
 
 fn config(device: Device) -> TrainConfig {
@@ -312,4 +314,178 @@ fn the_report_follows_the_peak_across_further_training() {
             "the cached report drifted from the live {key}:\n{second}"
         );
     }
+}
+
+/// The same shape as [`config`], with a base policy. `partial` rather than
+/// `full`: the download fixture is quantized, so its F32 norms are the only
+/// eligible tensors.
+fn base_config(device: Device) -> TrainConfig {
+    TrainConfig {
+        trainable: TrainableRunConfig {
+            policy: TrainablePolicy::Partial,
+            selector: TrainableSelector {
+                norms: true,
+                ..Default::default()
+            },
+            optimizer: OptimizerKind::AdamW,
+        },
+        ..config(device)
+    }
+}
+
+/// Trains one base update the way a run does, set resolved against the model's
+/// tensor table and declared before the graph exists, and returns the trainer.
+fn trained_base(device: Device) -> Trainer {
+    let cfg = base_config(device);
+    let inventory = tensor_inventory(common::model_path(), device).expect("tensor inventory");
+    let set = resolve_base(&inventory, cfg.trainable.policy, &cfg.trainable.selector)
+        .expect("a quantized fixture still has F32 norms");
+    assert!(!set.entries.is_empty());
+    let names: Vec<String> = set
+        .entries
+        .iter()
+        .map(|entry: &TrainableEntry| entry.name.clone())
+        .collect();
+
+    let mut trainer = Trainer::new(common::model_path(), cfg).expect("load trainer");
+    trainer.set_trainable_base(&names).expect("declare the set");
+    let tokens = trainer
+        .tokenize_text(&"A shared prompt asks for the first answer. ".repeat(64))
+        .expect("tokenize");
+    let metrics = trainer
+        .train_tokens(&tokens)
+        .expect("train one base update");
+    assert!(metrics.train_loss.is_finite());
+    trainer
+}
+
+/// A base run's components and its measured peak, asserted apart.
+///
+/// The component totals are exact: the device/host split is a partition of
+/// their sum. The measured peak is not exact: it is the device-wide budget,
+/// so it carries other processes, and the gap is backend scratch plus the
+/// allocator's transient reserve. The gap is recorded, not gated.
+#[test]
+fn a_gpu_base_run_accounts_for_its_components_and_measures_its_peak() {
+    let Some(_model) = common::model_path_if_available() else {
+        eprintln!("skipping: no local test model");
+        return;
+    };
+    if !common::gpu_device_present() {
+        eprintln!("skipping: no GPU device");
+        return;
+    }
+    let _guard = common::serialize_models();
+
+    let trainer = trained_base(Device::Gpu);
+    let report = trainer.memory_report().expect("memory report");
+
+    // --- The run trains what is claimed -------------------------------
+    assert!(
+        report.trainable_parameters_are_model_subset,
+        "a base run trains tensors that are already in the loaded weights: {report:?}"
+    );
+    assert!(report.trainable_gradient_bytes > 0, "{report:?}");
+    assert!(
+        report.optimizer_state_bytes >= report.trainable_gradient_bytes * 2,
+        "AdamW keeps two F32 moments per parameter: {report:?}"
+    );
+    assert!(report.model_weight_bytes > 0, "{report:?}");
+    assert!(report.optimizer_compute_bytes > 0, "{report:?}");
+
+    // --- Components: an exact partition ---------------------------------
+    // No adapter, so `trainable_parameter_bytes` is a slice of the model
+    // weights and is not added.
+    let components = report.model_weight_bytes
+        + report.optimizer_kv_bytes
+        + report.optimizer_compute_bytes
+        + report.generation_kv_bytes
+        + report.generation_compute_bytes
+        + report.trainable_gradient_bytes
+        + report.optimizer_state_bytes;
+    assert_eq!(
+        report.device_bytes + report.host_bytes,
+        components,
+        "the device/host split is not a partition of the components: {report:?}"
+    );
+    assert!(
+        report.device_bytes > 0,
+        "an offloaded base run allocates on the device: {report:?}"
+    );
+
+    // --- Measurement: self-consistency only -----------------------------
+    assert!(
+        report.is_measured(),
+        "an active GPU optimizer context must sample its device budget: {report:?}"
+    );
+    assert!(report.device_total_bytes > 0, "{report:?}");
+    assert!(
+        report.device_used_bytes <= report.device_total_bytes,
+        "{report:?}"
+    );
+    assert!(
+        report.device_peak_used_bytes >= report.device_used_bytes,
+        "{report:?}"
+    );
+    assert!(
+        report.backend_scratch_peak_bytes <= report.device_total_bytes,
+        "{report:?}"
+    );
+
+    // --- Recorded, not gated ---------------------------------------------
+    let unaccounted = report
+        .unaccounted_device_bytes()
+        .expect("a measured run answers the gap");
+    eprintln!(
+        "base gpu run: components {components} B (device {} B, host {} B), \
+         device peak {} B over {} sample(s), backend scratch peak {} B, \
+         unaccounted (driver + allocator reserve) {unaccounted} B, \
+         base trainable on host: {}",
+        report.device_bytes,
+        report.host_bytes,
+        report.device_peak_used_bytes,
+        report.device_memory_samples,
+        report.backend_scratch_peak_bytes,
+        report.base_trainable_on_host,
+    );
+}
+
+/// The CPU counterpart: every measured field is zero on the CPU, and the
+/// component partition must still hold.
+#[test]
+fn a_cpu_base_run_accounts_for_its_components_and_reports_no_measurement() {
+    let Some(_model) = common::model_path_if_available() else {
+        eprintln!("skipping: no local test model");
+        return;
+    };
+    let _guard = common::serialize_models();
+
+    let trainer = trained_base(Device::Cpu);
+    let report = trainer.memory_report().expect("memory report");
+
+    let components = report.model_weight_bytes
+        + report.optimizer_kv_bytes
+        + report.optimizer_compute_bytes
+        + report.generation_kv_bytes
+        + report.generation_compute_bytes
+        + report.trainable_gradient_bytes
+        + report.optimizer_state_bytes;
+    assert_eq!(
+        report.device_bytes + report.host_bytes,
+        components,
+        "{report:?}"
+    );
+    assert_eq!(
+        report.device_bytes, 0,
+        "a CPU run has no device budget to draw on: {report:?}"
+    );
+    assert!(
+        report.base_trainable_on_host,
+        "a CPU run's base tensors are host tensors: {report:?}"
+    );
+
+    assert!(!report.is_measured(), "{report:?}");
+    assert_eq!(report.device_peak_used_bytes, 0);
+    assert_eq!(report.backend_scratch_peak_bytes, 0);
+    assert_eq!(report.unaccounted_device_bytes(), None);
 }

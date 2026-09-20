@@ -315,7 +315,25 @@ pub async fn plan_recipe(
         })
         .map_err(problem)?;
         state.validate_run_paths(&resolution.config, managed_adapter)?;
-        let key = retrograd_plan::calibration_key(&execution_profile, &model, &resolution.config);
+        // Re-resolve the set the resolution priced: the correction factor
+        // depends on the selection, not just the shape.
+        let base_trainable = retrograd_plan::resolve_trainable_set(
+            &resolution.config.training.trainable,
+            inventory.as_ref(),
+        )
+        .map_err(|error| {
+            ApiError::from(error).with_field(
+                "/config/training/trainable",
+                ErrorCode::InvalidValue,
+                "not resolvable against this model",
+            )
+        })?;
+        let key = retrograd_plan::calibration_key(
+            &execution_profile,
+            &model,
+            &resolution.config,
+            base_trainable.as_ref(),
+        );
         if preflight_key.as_deref() != Some(key.as_str()) {
             let report = preflight_candidate(
                 state,
@@ -349,8 +367,15 @@ pub async fn plan_recipe(
                 continue;
             }
         }
-        let measurement =
-            calibrate::measure(state, &model_path, &model, &resolution.config, &key).await?;
+        let measurement = calibrate::measure(
+            state,
+            &model_path,
+            &model,
+            &resolution.config,
+            base_trainable.as_ref(),
+            &key,
+        )
+        .await?;
         passes += 1;
         if measurement.observation.raised && passes < MAX_CALIBRATION_PASSES {
             // Reapply memory levers using the measured costs. The levers are
@@ -486,7 +511,12 @@ pub async fn plan_config(
                 )
             })?;
     let execution_profile = execution_profile(state, &model_path, config.training.device).await?;
-    let key = retrograd_plan::calibration_key(&execution_profile, &model, &config);
+    let key = retrograd_plan::calibration_key(
+        &execution_profile,
+        &model,
+        &config,
+        base_trainable.as_ref(),
+    );
     let preflight = preflight_candidate(
         state,
         &model_path,
@@ -580,7 +610,15 @@ pub async fn plan_config(
     // cannot change it - it can only confirm it or refuse it. That asymmetry with
     // the recipe form is the point of forms (b) and (c): the caller chose.
     if calibrate {
-        let measurement = calibrate::measure(state, &model_path, &model, &config, &key).await?;
+        let measurement = calibrate::measure(
+            state,
+            &model_path,
+            &model,
+            &config,
+            base_trainable.as_ref(),
+            &key,
+        )
+        .await?;
         if !force && let Some(error) = calibrate::over_budget(&measurement, &plan) {
             return Err(error);
         }

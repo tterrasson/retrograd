@@ -382,6 +382,8 @@ invocations below directly on such a machine.
 | `lora_metal` | trainable LoRA tensors allocated on the Metal buffer, and a short step updating them |
 | `model_offload` | `--device` actually offloads model tensors to the GPU |
 | `train_parity` | a full CPU against Metal epoch (train, save, reload) with matching losses |
+| `device_memory` | the optimizer path's measured device budget, for an adapter run and for a base one |
+| `base_training` | its two `device_resident` cases: a base run's model export and trainable bundle, read off the device |
 | `vulkan_backend` | Vulkan registration, isolated ops, model offload, LoRA placement, a minimal training step |
 | `cuda_backend` | CUDA registration, CPU against CUDA op parity, model offload, LoRA placement, the training preflight |
 
@@ -398,6 +400,21 @@ CPU lanes:
 RETRO_REQUIRE_GPU_RESIDENT=1 cargo test --features metal --release \
   --test metal_ops --test lora_metal --test fused_ce --test scoring_logprobs \
   -- --test-threads=1
+```
+
+`device_memory` and the base-training export cases need the CPU fixtures rather
+than a device-specific model, so they take the lane's fixture variables and run
+beside the list above. Every GPU case in both binaries skips itself without a
+device. Two invocations rather than one: a libtest filter applies to every
+selected binary, and `base_training` needs one to keep the rest of that binary
+- which belongs to the CPU lane - out of the GPU run.
+
+```sh
+export RETRO_REQUIRE_GPU_RESIDENT=1
+export RETRO_CPU_FIXTURE=tests/fixtures/LFM2.5-230M-Q4_K_M.gguf
+export RETRO_TINY_FIXTURE=tests/fixtures/retrograd-tiny-qwen2-f32.gguf
+cargo test --features metal --test device_memory -- --test-threads=1
+cargo test --features metal --test base_training -- --test-threads=1 device_resident
 ```
 
 Vulkan and CUDA, whole binaries. Model-dependent Vulkan cases want

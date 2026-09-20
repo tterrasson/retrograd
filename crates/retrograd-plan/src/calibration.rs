@@ -26,7 +26,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use retrograd_config::{Algorithm, RunConfig};
-use retrograd_core::{Error, ExecutionProfile, ModelInfo, Result, SharedPrefixFanout};
+use retrograd_core::{
+    Error, ExecutionProfile, ModelInfo, Result, SharedPrefixFanout, TrainableSet,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -57,6 +59,10 @@ pub struct CalibrationKey {
     pub model: CalibrationModelClass,
     pub shape: CalibrationShapeClass,
     pub graph: CalibrationGraphClass,
+    /// What a base-weight run trains. `None` for an adapter run and skipped in
+    /// the JSON, so pre-existing adapter keys stay byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trainable: Option<CalibrationTrainableClass>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -97,6 +103,51 @@ pub struct CalibrationGraphClass {
     pub fast_generation_context: bool,
     pub kv_dtype: String,
     pub require_gpu_resident: bool,
+}
+
+/// What a `full`, `partial` or `hybrid` run trains, as the key reads it.
+///
+/// The backward stops at the lowest trainable block, so two selections of the
+/// same model build graphs of different heights and need different factors.
+/// `manifest_digest` identifies the set; the other fields are carried because
+/// each is a term of the estimate the factor corrects.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CalibrationTrainableClass {
+    pub policy: String,
+    pub optimizer: String,
+    /// `None` when the set reaches outside every block, i.e. the whole
+    /// backward runs.
+    pub lowest_trainable_layer: Option<u32>,
+    /// The set carries the vocabulary projection, which builds a different,
+    /// larger loss graph.
+    pub trains_loss_head: bool,
+    /// `None` when the caller had no resolved set; kept representable so it
+    /// cannot read back as an empty set.
+    pub manifest_digest: Option<String>,
+}
+
+impl CalibrationTrainableClass {
+    /// `None` for an adapter policy, whatever set was resolved: its key must
+    /// stay unchanged.
+    pub fn of(
+        training: &retrograd_core::TrainableRunConfig,
+        set: Option<&TrainableSet>,
+    ) -> Option<Self> {
+        if !training.policy.trains_base_weights() {
+            return None;
+        }
+        Some(Self {
+            policy: training.policy.as_str().to_string(),
+            optimizer: training.optimizer.as_str().to_string(),
+            lowest_trainable_layer: set.and_then(TrainableSet::lowest_trainable_layer),
+            trains_loss_head: set.is_some_and(TrainableSet::trains_loss_head),
+            manifest_digest: set.map(|set| {
+                let manifest = set.manifest_lines().join("\n");
+                retrograd_core::hex_lower(&Sha256::digest(manifest.as_bytes()))
+            }),
+        })
+    }
 }
 
 /// What a measurement on this machine taught about one geometry.
@@ -261,16 +312,21 @@ fn ratio(estimated: u64, measured: u64) -> f64 {
 /// Stable V2 key for one measured execution class. The readable prefix helps
 /// operators inspect the file; the digest covers every structured field and
 /// avoids ambiguous ad-hoc separators.
+/// `base_trainable` is the resolved set for this configuration, or `None` for
+/// an adapter run. A base run passed `None` still gets its own key (no
+/// manifest), so it never collides with an adapter key.
 pub fn calibration_key(
     profile: &ExecutionProfile,
     model: &ModelInfo,
     config: &RunConfig,
+    base_trainable: Option<&TrainableSet>,
 ) -> String {
     calibration_key_for(
         profile,
         model,
         algorithm_slug(&config.algorithm),
         &config.training,
+        base_trainable,
     )
 }
 
@@ -294,6 +350,7 @@ pub fn calibration_key_for(
     model: &ModelInfo,
     algorithm: &str,
     training: &retrograd_core::TrainConfig,
+    base_trainable: Option<&TrainableSet>,
 ) -> String {
     let key = CalibrationKey {
         cost_model_version: COST_MODEL_VERSION,
@@ -338,6 +395,7 @@ pub fn calibration_key_for(
             kv_dtype: format!("{:?}", training.kv_dtype).to_ascii_lowercase(),
             require_gpu_resident: training.require_gpu_resident,
         },
+        trainable: CalibrationTrainableClass::of(&training.trainable, base_trainable),
     };
     let encoded = serde_json::to_vec(&key).expect("CalibrationKey is serializable");
     let digest = retrograd_core::hex_lower(&Sha256::digest(encoded));
@@ -349,6 +407,8 @@ pub fn calibration_key_for(
 
 #[cfg(test)]
 mod tests {
+    use retrograd_core::{TrainablePolicy, TrainableSet};
+
     use super::*;
 
     fn estimate(compute: u64, scratch: u64) -> MemoryEstimate {
@@ -468,17 +528,209 @@ mod tests {
         let document: retrograd_config::ConfigDocument = toml::from_str(source).unwrap();
         let mut config = retrograd_config::build(document, Path::new(".")).unwrap();
 
-        let key = calibration_key(&profile, &model, &config);
+        let key = calibration_key(&profile, &model, &config, None);
         assert!(
             key.starts_with(&format!("v{COST_MODEL_VERSION}/metal:")),
             "{key}"
         );
-        assert_eq!(calibration_key(&profile, &model, &config), key);
+        assert_eq!(calibration_key(&profile, &model, &config, None), key);
 
         config.training.n_ubatch /= 2;
-        assert_ne!(calibration_key(&profile, &model, &config), key);
+        assert_ne!(calibration_key(&profile, &model, &config, None), key);
         config.training.n_ubatch *= 2;
         profile.kernel_catalog_fingerprint = "catalog-b".to_string();
-        assert_ne!(calibration_key(&profile, &model, &config), key);
+        assert_ne!(calibration_key(&profile, &model, &config, None), key);
+    }
+
+    /// An adapter and two base selections of the same model and shape must all
+    /// key apart, or one would borrow another's correction factor.
+    #[test]
+    fn a_base_run_and_an_adapter_run_of_the_same_shape_key_apart() {
+        let model = ModelInfo {
+            n_layer: 24,
+            n_embd: 1024,
+            n_ff: 4096,
+            n_head: 16,
+            n_embd_k_gqa: 512,
+            n_embd_v_gqa: 512,
+            n_vocab: 151_936,
+            dominant_weight_type: "F16".into(),
+            ..Default::default()
+        };
+        let profile = ExecutionProfile {
+            schema_version: retrograd_core::EXECUTION_PROFILE_VERSION,
+            engine_fingerprint: "engine-a".to_string(),
+            kernel_catalog_fingerprint: "catalog-a".to_string(),
+            device: retrograd_core::DeviceProfile {
+                stable_id: "metal:0".to_string(),
+                backend: "metal".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let document = |policy: &str, sections: &str| -> RunConfig {
+            let source = format!(
+                r#"
+                [run]
+                algorithm = "sft"
+                [model]
+                path = "model.gguf"
+                [output]
+                path = "out.gguf"
+                [training]
+                ctx = 1024
+                micro_batch = 128
+                trainable = "{policy}"
+                [sft]
+                data = "data.txt"
+                {sections}
+                "#
+            );
+            let document: retrograd_config::ConfigDocument = toml::from_str(&source).unwrap();
+            retrograd_config::build(document, Path::new(".")).unwrap()
+        };
+
+        let adapter = document("lora", "[lora]");
+        let base = document("partial", "[trainable]\n                norms = true");
+        assert_eq!(base.training.trainable.policy, TrainablePolicy::Partial);
+
+        let low = base_set(TrainablePolicy::Partial, &["blk.0.attn_norm.weight"]);
+        let high = base_set(TrainablePolicy::Partial, &["blk.11.attn_norm.weight"]);
+
+        let adapter_key = calibration_key(&profile, &model, &adapter, None);
+        let low_key = calibration_key(&profile, &model, &base, Some(&low));
+        let high_key = calibration_key(&profile, &model, &base, Some(&high));
+
+        assert_ne!(adapter_key, low_key);
+        assert_ne!(low_key, high_key);
+        assert_ne!(adapter_key, high_key);
+        // Deterministic, like every other key.
+        assert_eq!(
+            calibration_key(&profile, &model, &base, Some(&low)),
+            low_key
+        );
+        // A base document with no set is a third key, not the adapter's.
+        assert!(
+            ![adapter_key, low_key, high_key]
+                .contains(&calibration_key(&profile, &model, &base, None))
+        );
+    }
+
+    fn base_set(policy: TrainablePolicy, names: &[&str]) -> TrainableSet {
+        TrainableSet {
+            policy,
+            entries: names
+                .iter()
+                .map(|name| retrograd_core::TrainableEntry {
+                    name: (*name).to_string(),
+                    role: retrograd_core::TensorRole::Base,
+                    ne: [1024, 1, 1, 1],
+                    dtype: retrograd_core::TensorDtype::F32,
+                    n_elements: 1024,
+                    n_bytes: 4096,
+                    storage_id: 0,
+                })
+                .collect(),
+            exclusions: Vec::new(),
+        }
+    }
+
+    fn base_training(policy: TrainablePolicy) -> retrograd_core::TrainableRunConfig {
+        retrograd_core::TrainableRunConfig {
+            policy,
+            selector: retrograd_core::TrainableSelector {
+                norms: true,
+                ..Default::default()
+            },
+            optimizer: retrograd_core::OptimizerKind::AdamW,
+        }
+    }
+
+    /// An adapter run has no trainable class, and the field is skipped rather
+    /// than serialized as null, keeping pre-existing keys valid.
+    #[test]
+    fn an_adapter_key_carries_no_trainable_class_and_is_unchanged_by_one() {
+        let lora = retrograd_core::TrainableRunConfig::default();
+        assert_eq!(lora.policy, TrainablePolicy::Lora);
+        // The policy decides, not the set the caller found.
+        let set = base_set(TrainablePolicy::Partial, &["blk.3.attn_norm.weight"]);
+        assert_eq!(CalibrationTrainableClass::of(&lora, Some(&set)), None);
+
+        let encoded = serde_json::to_string(&CalibrationKey {
+            cost_model_version: COST_MODEL_VERSION,
+            engine_fingerprint: String::new(),
+            kernel_catalog_fingerprint: String::new(),
+            profile_fingerprint: String::new(),
+            backend: "cpu".to_string(),
+            device_id: "cpu".to_string(),
+            model: CalibrationModelClass {
+                architecture: "qwen2".to_string(),
+                layers: 4,
+                embedding: 64,
+                feed_forward: 128,
+                heads: 4,
+                kv_heads: 2,
+                kv_width: 64,
+                vocabulary: 260,
+                weight_dtype: "F32".to_string(),
+            },
+            shape: CalibrationShapeClass {
+                n_ctx: 32,
+                n_batch: 32,
+                n_ubatch: 16,
+                generation_concurrency: 1,
+                generation_batch: 1,
+                packed_fanout: "auto".to_string(),
+            },
+            graph: CalibrationGraphClass {
+                algorithm: "sft".to_string(),
+                chunked_cross_entropy: false,
+                chunked_ce_tiles: 0,
+                chunked_ce_seq_chunk: 0,
+                gradient_checkpointing: false,
+                checkpoint_every_n_layers: 0,
+                checkpoint_dtype: "f32".to_string(),
+                fast_generation_context: false,
+                kv_dtype: "f16".to_string(),
+                require_gpu_resident: false,
+            },
+            trainable: None,
+        })
+        .unwrap();
+        assert!(!encoded.contains("trainable"), "{encoded}");
+    }
+
+    /// Two base selections of the same model build backward graphs of
+    /// different heights, so they must not share a factor.
+    #[test]
+    fn a_base_selection_keys_on_the_set_it_resolved() {
+        let training = base_training(TrainablePolicy::Partial);
+        let low = base_set(TrainablePolicy::Partial, &["blk.0.attn_norm.weight"]);
+        let high = base_set(TrainablePolicy::Partial, &["blk.11.attn_norm.weight"]);
+
+        let of = |set: Option<&TrainableSet>| CalibrationTrainableClass::of(&training, set);
+        let low_class = of(Some(&low)).expect("a base policy has a class");
+        let high_class = of(Some(&high)).expect("a base policy has a class");
+        assert_eq!(low_class.lowest_trainable_layer, Some(0));
+        assert_eq!(high_class.lowest_trainable_layer, Some(11));
+        assert_ne!(low_class.manifest_digest, high_class.manifest_digest);
+
+        // The digest covers the set's content, not listing order.
+        let again = base_set(TrainablePolicy::Partial, &["blk.0.attn_norm.weight"]);
+        assert_eq!(of(Some(&again)), Some(low_class.clone()));
+
+        // No resolved set is its own case, not the adapter one.
+        let unresolved = of(None).expect("a base policy has a class");
+        assert_eq!(unresolved.manifest_digest, None);
+        assert_ne!(unresolved, low_class);
+
+        // The optimizer is part of the key: different optimizers keep
+        // different amounts of state.
+        let mut sgd = training.clone();
+        sgd.optimizer = retrograd_core::OptimizerKind::Sgd;
+        assert_ne!(
+            CalibrationTrainableClass::of(&sgd, Some(&low)),
+            Some(low_class)
+        );
     }
 }

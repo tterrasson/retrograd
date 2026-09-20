@@ -25,7 +25,7 @@
 use std::path::Path;
 
 use retrograd_config::RunConfig;
-use retrograd_core::{MemoryReport, ModelInfo};
+use retrograd_core::{MemoryReport, ModelInfo, TrainableSet};
 use retrograd_plan::cost::{Calibration, MemoryEstimate};
 use retrograd_plan::packing_tuning::{PackingMeasurement, PackingMeasurements, PackingProbe};
 use retrograd_plan::provenance::Provenance;
@@ -142,6 +142,7 @@ pub async fn measure(
     model_path: &Path,
     model: &ModelInfo,
     config: &RunConfig,
+    base_trainable: Option<&TrainableSet>,
     key: &str,
 ) -> ApiResult<Measurement> {
     // The ratio has to be taken against an *uncorrected* estimate. Comparing the
@@ -156,9 +157,9 @@ pub async fn measure(
         // measurement never held would drive the correction factor below one on
         // every distillation run.
         None,
-        // Calibration keys on the policy through the configuration, not on a
-        // second resolution of the base set.
-        None,
+        // The set the key is taken over, so the ratio compares the estimate
+        // and the measurement of this run.
+        base_trainable,
         &DatasetStats::default(),
         state.baseline,
         state.server_budgets(),
