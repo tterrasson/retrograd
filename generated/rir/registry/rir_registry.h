@@ -202,7 +202,7 @@ typedef struct rir_variant_desc {
     // device half of the contract has to compare against a device limit, and a
     // backend cannot derive it - the shared arrays are a lowering decision, and
     // the only other place they exist is inside the compiled kernel. It is the
-    // `shared_bytes` field of `KernelNeeds`, rendered a fourth time (§5.4).
+    // `shared_bytes` field of `KernelNeeds`, rendered a fourth time.
     uint32_t     shared_bytes;
     uint32_t     push_constant_bytes;
 } rir_variant_desc;
@@ -218,9 +218,9 @@ typedef struct rir_op_policy {
     // ...). Zero means the kernel claims the op entirely.
     //
     // This is what turns a native fallback from observed into *published*.
-    // A rejection whose bit is set here is the
-    // declared restriction doing its job, and §11 allows the native kernel to
-    // be kept for it. A rejection whose bit is *clear* is a node the kernel
+    // A rejection whose bit is set here is the declared restriction doing its
+    // job, and the native kernel is kept for it. A rejection whose bit is
+    // *clear* is a node the kernel
     // said it would serve and did not - a defect, and the lane fails on it.
     //
     // The granularity is the *category*, not the node: this says "some dtypes
@@ -232,7 +232,7 @@ typedef struct rir_op_policy {
     // 1 when the **native kernel of this op no longer exists** on this backend.
     // Only ever set on a pair whose `assumed_domain`
     // is zero: a pair with a published restriction keeps its native kernel for
-    // that restriction, which is what §11 allows it to be kept for.
+    // that restriction, which is the only reason to keep one.
     //
     // Two consumers read it, and neither could derive it. `supports_op` answers
     // on the RIR contract alone for such a pair, so a node the contract declines

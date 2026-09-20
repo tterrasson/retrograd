@@ -51,8 +51,8 @@ pub(super) fn l2_norm_back(name: String) -> IntegrationSpec {
         // And because nothing is assumed, this pair may lose its native kernel
         // entirely: the RIR contract *is* the ggml domain of the op on
         // these two backends, so the native kernel served no node the
-        // generated one declines. It is gone from the fork
-        // (ADR-5 section 5), and what proves the claim is that
+        // generated one declines. It is gone from the fork,
+        // and what proves the claim is that
         // `supports_op` now answers on the contract alone - a node RIR
         // would refuse leaves for the CPU instead of finding a kernel
         // that no longer exists.
@@ -71,7 +71,7 @@ pub(super) fn l2_norm_back(name: String) -> IntegrationSpec {
     }
 }
 
-/// The second production op (ADR-5 section 4). Exact for F32
+/// The second production op. Exact for F32
 /// over the full ggml rank, but the scan is sequential *within* one
 /// invocation, where the native Metal and Vulkan kernels use a
 /// blocked scan: the variant is registered and measured, never
@@ -121,7 +121,7 @@ pub(super) fn mat_mul_naive(name: String) -> IntegrationSpec {
 /// One spec per `src0` dtype, in the order `ids()` builds them. They
 /// are the **same** ggml op: the policy row the registry emits is
 /// merged across them, and the declared domain of `GGML_OP_OUT_PROD`
-/// is what *none* of them claims (ADR-4 section 6).
+/// is what *none* of them claims.
 pub(super) fn out_prod(name: String, format: Option<QuantType>) -> IntegrationSpec {
     {
         // What each kernel leaves out. Both are real ggml, both are
@@ -226,8 +226,7 @@ pub(super) fn rms_norm_back(name: String) -> IntegrationSpec {
         // identical shapes.
         assumed_domain: vec![],
         // And the same consequence: the second of the two pairs allowed
-        // to lose its native kernel entirely
-        // (ADR-5 section 5).
+        // to lose its native kernel entirely.
         retired_native: vec![Vulkan, Metal],
         native_exception: None,
     }
@@ -373,7 +372,7 @@ pub(super) fn elementwise(name: String, band: elementwise::Band) -> IntegrationS
         // is the one that claims `ggml_can_repeat`, and only its
         // intersection with the non-repeating member reaches the op's
         // policy row - which is how `shape` leaves `GGML_OP_ADD` and
-        // `GGML_OP_MUL` altogether (ADR-1 section 5). The two
+        // `GGML_OP_MUL` altogether. The two
         // kernels together claim the shape domain of the op; neither
         // does alone, and that is exactly the reading `out_prod`'s dtype
         // line already had.
@@ -381,8 +380,8 @@ pub(super) fn elementwise(name: String, band: elementwise::Band) -> IntegrationS
         // The dtype row for `ADD` and `MUL` restricts **one kernel in the
         // pair**, not the op. The F32 member carries it because it rejects F16;
         // the F16 member declares nothing, so the intersection is empty
-        // and `dtype` leaves `GGML_OP_ADD` and `GGML_OP_MUL`
-        // (ADR-3 section 6). Both native kernels accept exactly
+        // and `dtype` leaves `GGML_OP_ADD` and `GGML_OP_MUL`.
+        // Both native kernels accept exactly
         // `F32 | F16` for these ops, so the two generated kernels
         // together claim the whole domain, as 86/86 coverage shows.
         //

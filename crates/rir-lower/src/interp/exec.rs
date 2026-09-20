@@ -247,7 +247,7 @@ fn exec_compute(
             };
             regs.f[d] = if t { 1.0 } else { 0.0 };
         }
-        // The hoisted half of an address (ADR-2 section 7). Evaluated by the same
+        // The hoisted half of an address. Evaluated by the same
         // `byte_addr` the accesses use, so a split address and a whole one
         // cannot disagree.
         LExpr::AddrSum { arg, terms } => {

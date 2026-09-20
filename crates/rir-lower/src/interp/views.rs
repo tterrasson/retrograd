@@ -25,8 +25,8 @@ pub struct TensorViewMut<'a> {
     pub nb: [usize; 4],
 }
 
-/// A **written** binding held as bytes, which is what an F16 destination is
-/// (ADR-3 section 6). The oracle keeps no `f16` type of its own: it
+/// A **written** binding held as bytes, which is what an F16 destination is.
+/// The oracle keeps no `f16` type of its own: it
 /// narrows at the store, exactly where a shader does, and the caller compares
 /// the bytes it gets back.
 #[derive(Debug)]

@@ -1,4 +1,4 @@
-//! `supports_op`: variant selection at dispatch (ADR-4 section 5).
+//! `supports_op`: variant selection at dispatch.
 //!
 //! Selection never relies on an operation name alone. It checks kernel
 //! constraints against the tensor's **actual shape and layout**: dtype, rank,
@@ -76,7 +76,7 @@ pub enum RejectReason {
         block: usize,
     },
     /// A repeated dimension whose extent does not divide the extent it is
-    /// replayed under (`ggml_can_repeat`, ADR-1). Same category
+    /// replayed under (`ggml_can_repeat`). Same category
     /// as the disagreement below on purpose: both are `shape`, and both say the
     /// shader would address past the end of one operand.
     #[error(
@@ -185,7 +185,7 @@ pub fn supports_op(kernel: &Kernel, descs: &[TensorDesc]) -> Result<(), RejectRe
     // under, which is `ggml_can_repeat`. It is derived from the graph's own
     // `RepeatIndex` nodes rather than declared per kernel - the same reading as
     // the axis agreement above, which is why a failure lands in the same
-    // `shape` category (ADR-1 section 5).
+    // `shape` category.
     for op in &kernel.ops {
         let Op::RepeatIndex { index, over } = op else {
             continue;

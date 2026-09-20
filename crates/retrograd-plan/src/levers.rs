@@ -404,7 +404,7 @@ mod tests {
                 "context_length",
                 "device_cpu",
             ],
-            "the phase 3 table of SERVER_V1.md §5.6 moved"
+            "the phase 3 lever table moved"
         );
         // Every lever whose cost is unrecoverable declares its opt-in, and no
         // other claims one.

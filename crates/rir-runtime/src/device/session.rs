@@ -1,5 +1,5 @@
 //! The measurement session: buffers allocated and uploaded once, then one
-//! submission per dispatch (ADR-5 section 2 level 1).
+//! submission per dispatch.
 
 use std::cell::Cell;
 

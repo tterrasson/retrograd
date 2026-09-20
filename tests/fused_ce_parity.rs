@@ -118,7 +118,7 @@ fn sequences(trainer: &mut Trainer) -> Vec<TrainSequence> {
 }
 
 /// Trains one GRPO step on the fused cross-entropy path with the given
-/// plan rl/OPTIMIZE memory knobs, and returns the reported loss plus a fixed
+/// memory knobs, and returns the reported loss plus a fixed
 /// probe's summed logprob under the trained adapter.
 fn run_tiled(tiles: u32, seq_chunk: u32) -> (f32, f32) {
     let model = common::model_path().clone();

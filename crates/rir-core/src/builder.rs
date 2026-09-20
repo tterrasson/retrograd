@@ -112,7 +112,7 @@ impl KernelBuilder {
     }
 
     /// **Repeated** logical read: dimension `d` is indexed by `idx[d]` folded
-    /// into the extent of `over[d]` (ADR-1 section 5).
+    /// into the extent of `over[d]`.
     ///
     /// This is `ggml_can_repeat` written down: `src1` is replayed under `src0`,
     /// so element `i` of the destination reads element `i % ne_src1[d]` of the

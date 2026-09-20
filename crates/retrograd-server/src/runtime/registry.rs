@@ -964,7 +964,7 @@ mod tests {
         assert_eq!(
             reopened.get(&live.id).unwrap().status(),
             dto::RunStatus::Interrupted,
-            "the V1 does not re-attach: a run left running is interrupted (§6.5)"
+            "the V1 does not re-attach: a run left running is interrupted"
         );
         assert_eq!(reopened.active(), 0);
         let _ = std::fs::remove_dir_all(&dir);

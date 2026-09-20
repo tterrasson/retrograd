@@ -1,4 +1,4 @@
-//! Level-1 measurement loop (ADR-5 section 2): time the generated
+//! Level-1 measurement loop: time the generated
 //! shader alone, without ggml or rebuilding the fork.
 //!
 //! What this harness provides and the promotion lane does not: the kernel is
@@ -303,7 +303,7 @@ fn cumsum_scan_cost_against_row_length() {
             rir_lower::schedule::bench::vulkan_shared_scan(),
         ),
         // The tiled scan keeps its predecessor opposite it here even though it
-        // replaced it in the production table (ADR-2 section 5): they
+        // replaced it in the production table: they
         // differ by an access plan with *identical* serial depth, exactly the
         // difference isolated by this harness and no longer visible to a lane
         // measuring only one variant per shape after the table changes.

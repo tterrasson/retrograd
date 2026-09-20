@@ -9,7 +9,7 @@
 //! dispatch, one wait): this runtime primarily validates the **correctness** of
 //! generated code.
 //!
-//! It also provides the short measurement loop (ADR-5 section 2, level 1),
+//! It also provides the short measurement loop,
 //! which justifies `Session`: `Pipeline::run` uploads, dispatches, and reads back
 //! in one call, so timing it would include two host copies in addition to the
 //! shader. `Pipeline::prepare` allocates and uploads once;

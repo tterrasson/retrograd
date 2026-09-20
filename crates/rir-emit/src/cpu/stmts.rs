@@ -251,7 +251,7 @@ impl CpuPrinter<'_> {
                         // The oracle narrows exactly where a shader does, and
                         // with the same rounding: `f32_to_f16` is
                         // round-to-nearest-even, which is what `half(x)` and
-                        // `float16_t(x)` are (ADR-3 section 6).
+                        // `float16_t(x)` are.
                         MemType::F16 => {
                             let addr_var = format!("{}_a", self.var(*value));
                             self.line(&format!("let {addr_var} = {a};"));

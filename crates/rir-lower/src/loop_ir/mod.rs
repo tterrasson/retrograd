@@ -1,4 +1,4 @@
-//! Loop IR (ADR-2 section 8): a backend-agnostic imperative loop nest.
+//! Loop IR: a backend-agnostic imperative loop nest.
 //!
 //! Lowering has already selected the reduction strategy, phase boundaries,
 //! logical-axis mapping to loops or lanes, address algebra (including
@@ -21,8 +21,8 @@
 //! row that is not a multiple of that width is an explicit `Stmt::VecTail`
 //! branch - never an out-of-bounds vector nobody guards.
 //!
-//! Shared memory is also used for **staging** (`Stmt::StageTiles`,
-//! ADR-2): a workgroup loads a tile of an argument once,
+//! Shared memory is also used for **staging** (`Stmt::StageTiles`): a
+//! workgroup loads a tile of an argument once,
 //! cooperatively, and every invocation of that workgroup then consumes it from
 //! shared memory. The tile geometry is carried by the statement, and the
 //! storage it needs is declared with every other shared array in
@@ -107,7 +107,7 @@ pub enum VarKind {
     /// vector `Load` to a vector `Store` through componentwise arithmetic.
     Vec(u32),
     /// `w` predicates in one register (`bool4`, `bvec4`) - the widened form of
-    /// `Bool` (ADR-1 section 7).
+    /// `Bool`.
     ///
     /// It exists because the unary family is written with `Cmp` and `Select`
     /// and its lowering is vectorized: a family whose members are `relu`,
@@ -199,8 +199,8 @@ pub struct LoopKernel {
     /// the manifest publishes it: it is what lets a caller bound the byte range
     /// a dispatch addresses on each buffer.
     pub arg_axes: Vec<Vec<Option<AxisId>>>,
-    /// `(index, over)` for each index fold the kernel performs
-    /// (ADR-1 section 5): position on `index` is replayed modulo the
+    /// `(index, over)` for each index fold the kernel performs:
+    /// position on `index` is replayed modulo the
     /// extent of `over`. Carried over from the semantic IR for the same reason
     /// `arg_axes` is - the registry publishes it, so a dispatcher can require
     /// `extent(index) % extent(over) == 0` on exactly the dimensions the kernel
@@ -354,7 +354,7 @@ impl LoopKernel {
     /// `shared_collectives` and `shared_tiles`, and for the same reason: what a
     /// backend declares in its preamble is **derived** from the statements it is
     /// about to print, never a list kept in step by hand beside the format
-    /// table (ADR-3 section 4).
+    /// table.
     pub fn luts(&self) -> Vec<rir_core::LutId> {
         fn walk(stmts: &[Stmt], out: &mut Vec<rir_core::LutId>) {
             for s in stmts {

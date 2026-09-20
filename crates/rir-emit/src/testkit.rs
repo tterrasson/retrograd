@@ -636,7 +636,7 @@ pub fn arithmetic() -> Probe {
 }
 
 /// Cooperative staging: one tile of an argument loaded once by the whole
-/// workgroup, consumed by every invocation of it (ADR-2 section 6).
+/// workgroup, consumed by every invocation of it.
 pub fn staging() -> Probe {
     Probe {
         vars: vec![

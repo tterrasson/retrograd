@@ -2,17 +2,16 @@
 //!
 //! A benchmark predecessor is not dead code and it is not a production
 //! constructor either: it is the measurement that justified the variant which
-//! replaced it (ADR-2 section 5). Keeping it is deliberate - a claim that
+//! replaced it. Keeping it is deliberate - a claim that
 //! `gpu_tiled_scan` is faster is only checkable against what it replaced, and
-//! `device_timing` compares the two on the same shapes in the same session
-//! (ADR-5 section 2).
+//! `device_timing` compares the two on the same shapes in the same session.
 //!
 //! What this module buys over a paragraph saying the same thing: the **type**
 //! says it. `rir_lower::schedule::bench::vulkan_shared_scan()` cannot be read as
 //! a production form by accident, `schedules_for` has no reason to reach into
 //! this module, and a reviewer sees the path in the diff.
 //!
-//! The rules of ADR-2 apply here unchanged: a schedule in this module is built
+//! The schedule rules apply here unchanged: a schedule in this module is built
 //! by the same private constructors, validated by the same `check_shape`, and
 //! lowered by the same passes. It is out of the *table*, not out of the
 //! contract.

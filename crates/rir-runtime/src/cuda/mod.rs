@@ -1,8 +1,8 @@
 //! CUDA device and kernel, built **from the manifest** - the short measurement
 //! loop's second backend.
 //!
-//! The carrier is the cheap one the plan recommends: **compile on the fly and
-//! load**. A generated `.cu` already contains its `extern "C"` launch stub
+//! The carrier is the cheap one: **compile on the fly and load**. A generated
+//! `.cu` already contains its `extern "C"` launch stub
 //!, so what this module adds is a fixed host harness - allocate, upload,
 //! download, synchronize - compiled once per process, and one shared object per
 //! kernel compiled by the same `nvcc` the fork uses, with the same

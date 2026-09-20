@@ -1,4 +1,4 @@
-//! Declarative schedules (ADR-2 section 3), handwritten per kernel and backend.
+//! Declarative schedules, handwritten per kernel and backend.
 //! The domain is finite, so there is no autotuning.
 
 pub mod backend;
@@ -451,8 +451,8 @@ impl Schedule {
     }
 
     /// Coalesced tiled scan: `lanes` lanes walking the axis in tiles of
-    /// `lanes · items`, staged and flushed interleaved through shared memory
-    /// (ADR-2 section 5). The lane count comes from the block, so the same
+    /// `lanes · items`, staged and flushed interleaved through shared memory.
+    /// The lane count comes from the block, so the same
     /// constructor serves both the very long row and the many-row class; which
     /// widths are worth publishing is the schedule table's decision, and the
     /// bench's.
@@ -505,7 +505,7 @@ impl Schedule {
     /// Grid schedule reading and writing **four elements per invocation** on
     /// the contiguous axis.
     ///
-    /// The lever the elementwise band was waiting for (ADR-2 section 6):
+    /// The lever the elementwise band was waiting for:
     /// the native kernels of that band walk their row in `float4` while the
     /// scalar lowering recomputes a full address - four stride products and
     /// three sums - for one `float`. Four is not tuned: it is the width both
@@ -589,8 +589,8 @@ impl Schedule {
         .named(FLAT_LINEAR)
     }
 
-    /// Grid schedule whose contraction reads **staged tiles**
-    /// (ADR-2 section 6). The workgroup covers a `block[0] × block[1]`
+    /// Grid schedule whose contraction reads **staged tiles**.
+    /// The workgroup covers a `block[0] × block[1]`
     /// tile of the output; on each round it stages a `depth`-deep slice of each
     /// contracted operand into shared memory, then every invocation accumulates
     /// that slice from there.

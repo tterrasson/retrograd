@@ -65,7 +65,7 @@ pub fn emit_metal(k: &LoopKernel) -> Result<String, EmitError> {
     // carry the artifact name - the kernel's for a pair's fallback, and the
     // kernel plus the variant otherwise. Naming them after the kernel alone
     // would have two lowerings of one kernel redefine the same struct in that
-    // single translation unit (ADR-4 section 8).
+    // single translation unit.
     for lut in k.luts() {
         let values: Vec<String> = lut.values().iter().map(|v| format!("{v}.0f")).collect();
         p.line(&format!(

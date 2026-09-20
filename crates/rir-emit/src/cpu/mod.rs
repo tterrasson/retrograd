@@ -148,7 +148,7 @@ pub fn emit_cpu(k: &LoopKernel) -> Result<String, EmitError> {
     }
     // Declare each **written element type actually present**. The two types are
     // independent because a kernel may write an F32 destination and an F16 one
-    // at once (ADR-3 section 6).
+    // at once.
     let writes = |dtype: DType| {
         k.args
             .iter()
@@ -191,7 +191,7 @@ pub fn emit_cpu(k: &LoopKernel) -> Result<String, EmitError> {
     }
     // Constant tables, derived from the loop nest and printed as floats - the
     // same values every backend prints, so the oracle and the shader index the
-    // same numbers (ADR-3 section 4).
+    // same numbers.
     for lut in k.luts() {
         let values: Vec<String> = lut.values().iter().map(|v| format!("{v:?}f32")).collect();
         p.line(&format!(

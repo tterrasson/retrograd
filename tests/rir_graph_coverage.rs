@@ -234,8 +234,8 @@ fn the_real_graph_never_falls_back_silently_under_prefer() {
             );
             assert!(
                 site.domain.is_empty(),
-                "{}/{}: native retired but a domain is declared ({:?}) - §11 only allows \
-                 retiring native when no restriction is published",
+                "{}/{}: native retired but a domain is declared ({:?}) - retiring the \
+                 native kernel is only allowed when no restriction is published",
                 site.op,
                 site.backend,
                 site.domain
@@ -500,8 +500,8 @@ fn the_backward_graph_census_ranks_the_ops_worth_writing_next() {
     }
     assert!(
         rows.iter().any(|r| r.coverage == "uncovered"),
-        "every op of the graph is already registered - R2 would have nothing to \
-         rank:\n{report}"
+        "every op of the graph is already registered - the census would have \
+         nothing to rank:\n{report}"
     );
 
     // The chain rows. Same discipline as above: the

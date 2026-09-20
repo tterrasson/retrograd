@@ -41,7 +41,7 @@ pub enum LExpr {
     /// Integer addition (`Idx` registers). Distinct from `Add`, which is the
     /// F32 one: the two banks are separate all the way to the emitters.
     IAdd(VarId, VarId),
-    /// `x & c` on the `Idx` bank (ADR-3 section 4).
+    /// `x & c` on the `Idx` bank.
     ///
     /// Not a synonym of `IModC` with a power of two, and the distinction is the
     /// point: `IModC` is index arithmetic - the remainder of a division that
@@ -60,8 +60,7 @@ pub enum LExpr {
     IShr(VarId, VarId),
     /// `x | y` on the `Idx` bank, for concatenating disjoint bit fields.
     IOr(VarId, VarId),
-    /// `x % extent(axis)` on the `Idx` bank: the fold of `Op::RepeatIndex`
-    /// (ADR-1 section 5).
+    /// `x % extent(axis)` on the `Idx` bank: the fold of `Op::RepeatIndex`.
     ///
     /// Distinct from `IModC` because the divisor is a **runtime** extent, and
     /// distinct from a plain `IMod` because that extent is one every emitter

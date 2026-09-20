@@ -10,7 +10,7 @@
 //! test tautological - it would compare a function with itself.
 
 /// Round-to-nearest-even narrowing, the rounding `half(x)` and `float16_t(x)`
-/// perform (ADR-3 section 6). Written here rather than taken from a crate
+/// perform. Written here rather than taken from a crate
 /// for the reason every oracle in RIR is written by hand: it is the second,
 /// independent witness of what a shader does.
 pub fn f32_to_f16(f: f32) -> u16 {

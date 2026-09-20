@@ -1,4 +1,4 @@
-//! The dequantization oracle (ADR-3 section 3).
+//! The dequantization oracle.
 //!
 //! One independent decoder per **portable** format, working on the exact bytes
 //! ggml stores. It is what makes a quantized kernel testable: the parity rule
@@ -167,7 +167,7 @@ pub fn dequantize_row(format: QuantType, src: &[u8], n: usize) -> Result<Vec<f32
 }
 
 /// Random bytes for `blocks` whole blocks of `format` - **one fixture for every
-/// format**, derived from the description (ADR-3 section 7).
+/// format**, derived from the description.
 ///
 /// It lives here, beside the oracle, because it is the fixture *of a format*
 /// and not of a kernel. A hand-written encoder would be the wrong reference,

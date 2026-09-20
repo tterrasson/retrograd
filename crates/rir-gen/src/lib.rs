@@ -1,4 +1,4 @@
-//! rir-gen - the AOT generator (ADR-4 section 10).
+//! rir-gen - the AOT generator.
 //!
 //! This build-time binary writes files to disk. Generated code is **committed**
 //! under `generated/rir/`; the `regenerating_produces_no_diff` unit test is
@@ -61,10 +61,10 @@ pub const REGISTRY_DIR: &str = "registry";
 pub const CATALOG_DIR: &str = "catalog";
 pub const CATALOG_FILE: &str = "catalog.json";
 
-/// Directory name of the quantized-format pseudo-kernel (ADR-3 section 2).
+/// Directory name of the quantized-format pseudo-kernel.
 pub const QUANT_DIR: &str = "quant";
 
-/// Directory name of the Metal aggregate pseudo-kernel (ADR-4 section 8).
+/// Directory name of the Metal aggregate pseudo-kernel.
 pub const METAL_DIR: &str = "metal";
 
 /// The single Metal file the fork carries: every production kernel body,
@@ -83,7 +83,7 @@ pub const METAL_AGGREGATE: &str = "rir.metal";
 /// Where the fork carries [`METAL_AGGREGATE`], relative to `ggml/src/`.
 pub const METAL_FORK_DIR: &str = "ggml-metal/kernels";
 
-/// Directory name of the Vulkan artifact-list pseudo-kernel (ADR-4).
+/// Directory name of the Vulkan artifact-list pseudo-kernel.
 pub const VULKAN_DIR: &str = "vulkan";
 
 /// The single Vulkan file the fork includes: the list of generated shader
@@ -144,7 +144,7 @@ pub fn generate_all() -> Result<Vec<GeneratedKernel>, GenError> {
     // single file the fork includes.
     let mut metal_bodies: Vec<(String, String)> = Vec::new();
     // Artifact names of the production Vulkan variants, in the same order, for
-    // the list the shader generator includes (ADR-4 section 8).
+    // the list the shader generator includes.
     let mut vulkan_artifacts: Vec<String> = Vec::new();
     // Artifact names of the production CUDA variants, for the launcher table the
     // fork expands.
@@ -235,7 +235,7 @@ pub fn generate_all() -> Result<Vec<GeneratedKernel>, GenError> {
         files: vec![(CATALOG_FILE.to_string(), emit_catalog(&refs, &specs))],
     });
 
-    // The Metal aggregate (ADR-4 section 8): the fork includes this one
+    // The Metal aggregate: the fork includes this one
     // file in one line instead of carrying a copy of every body between two
     // markers. It is an include fragment, not a translation unit - the
     // standalone per-variant sources keep their own header and stay what the
@@ -245,7 +245,7 @@ pub fn generate_all() -> Result<Vec<GeneratedKernel>, GenError> {
         files: vec![(METAL_AGGREGATE.to_string(), metal_aggregate(&metal_bodies))],
     });
 
-    // The Vulkan artifact list (ADR-4 section 8). Vulkan has no aggregate
+    // The Vulkan artifact list. Vulkan has no aggregate
     // to build - each shader is compiled to its own SPIR-V module - so what the
     // fork needs from the generator is the *list*, not the code. Emitting it
     // here is what makes adding a variant stop touching a vendored file.
@@ -269,7 +269,7 @@ pub fn generate_all() -> Result<Vec<GeneratedKernel>, GenError> {
         )],
     });
 
-    // The quantized-format table (ADR-3 section 2). One output: the X-macro
+    // The quantized-format table. One output: the X-macro
     // header the fork, MSL and the Vulkan shader generator consume. The Rust
     // side of the same rows is expanded by `rir_core::quant_table` at compile
     // time, so no generated file sits below the generator.

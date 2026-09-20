@@ -1680,8 +1680,8 @@ std::string backend_report(const trainer_state & state) {
         out << "  backend_scratch_peak_bytes: " << totals.backend_scratch_peak_bytes << "\n";
     }
 
-    // The retained activation checkpoints, which O7 has to size against the
-    // measured peak before an offload ring can be justified. `checkpoint_count: 0`
+    // The retained activation checkpoints, sized against the measured peak
+    // before an offload ring can be justified. `checkpoint_count: 0`
     // means the run is not checkpointing or has not built a backward graph yet;
     // optional checkpoint lines are then absent rather than zero, so an unmeasured run and a run
     // that genuinely retains nothing do not read alike.

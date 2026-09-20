@@ -51,7 +51,7 @@ pub(crate) fn collect_contraction_reads(
     }
 }
 
-/// Tiled contraction (ADR-2 section 6).
+/// Tiled contraction.
 ///
 /// ```text
 /// parallel i (grid x, unbounded)   parallel j (grid y, unbounded)   …
@@ -261,7 +261,7 @@ struct Staging {
     /// Register tiling: one invocation owns `vector` consecutive indices of
     /// grid x, so its tile is that many times taller and its share of the
     /// cooperative load that many times wider - a staged row read in one
-    /// transaction instead of four (ADR-2 section 6).
+    /// transaction instead of four.
     vector: u32,
     depth: u32,
     inner_axis: AxisId,
@@ -375,7 +375,7 @@ fn stage_tiles(
         let slot = lo.new_var(&format!("{name}_at"), VarKind::Idx);
         // How many consecutive rows one invocation stages. Above one only for
         // a quantized operand, and only under three conditions lowering can
-        // *prove* rather than hope (ADR-3 section 3):
+        // *prove* rather than hope:
         //
         //   - `span` divides `block_elements`, so a segment never straddles two
         //     blocks and the header it reads is the header of all of them;

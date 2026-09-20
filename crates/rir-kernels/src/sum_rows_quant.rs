@@ -8,8 +8,8 @@
 //! The write is independent of the inner axis, so lowering hoists it to row
 //! scope: one write per row rather than per element.
 //!
-//! One kernel is built **per format**, from the canonical table
-//! (ADR-3 section 2). The kernel body does not change between them: the
+//! One kernel is built **per format**, from the canonical table.
+//! The kernel body does not change between them: the
 //! only difference is the dtype, and lowering expands the right block shape.
 //! That is the phase E claim in executable form - a format is a row, not a
 //! kernel rewrite. `variants()` is what decides which rows get a kernel, and it
@@ -94,7 +94,7 @@ mod tests {
         let mut logical = Vec::new();
         for r in 0..n_row {
             // One fixture, derived from the description
-            // (`rir_core::random_block_bytes`, ADR-3), so a new
+            // (`rir_core::random_block_bytes`), so a new
             // format needs no hand-written encoder here. Random bytes are a *legal* block whatever
             // their value, and the reference is the portable oracle, which
             // `tests/rir_quant_oracle.rs` compares element by element against

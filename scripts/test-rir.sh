@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# RIR promotion lane (ADR-5 section 2): for every (op, backend) pair the
+# RIR promotion lane: for every (op, backend) pair the
 # generated registry declares, run the ggml op matrix twice on the same shapes,
 # once native, once RIR - assert the counters, then time both and publish the
 # ratio.
@@ -20,7 +20,7 @@ build="$fork/build-rir"
 registry="$repo_root/generated/rir/registry/rir_registry.cpp"
 # Claimed-node counts per pair on the matrix, recorded so a *narrowing* is
 # visible. See the check in `assert_counters` for why the declared domain alone
-# cannot do this (ADR-4 section 6).
+# cannot do this.
 baseline="$repo_root/scripts/rir-domain-baseline.tsv"
 
 backends_arg="all"
@@ -30,8 +30,8 @@ run_perf=1
 force_build=0
 run_timeout=300
 repeat=3
-# Extra passes a *refusal* must survive before the lane calls it a regression
-# (ADR-5 section 6). Zero disables the escalation and restores the
+# Extra passes a *refusal* must survive before the lane calls it a regression.
+# Zero disables the escalation and restores the
 # behaviour that produced a refusal from three draws.
 escalate=6
 update_baseline=0
@@ -226,9 +226,8 @@ done
 # --- the session stamp ---------------------------------------------------------
 # A ratio compares two runs of *this* pass, and nothing else: 28% of machine
 # drift has been measured between two days on the same native kernel and the
-# same shape. The lane therefore names its session, and the
-# rule that follows is written in ADR-5: a ratio is cited with its
-# stamp, or not at all.
+# same shape. The lane therefore names its session, and the rule is
+# simple: a ratio is cited with its stamp, or not at all.
 #
 # A before/after between two RIR versions is done by running the lane **twice
 # in the same session**, and checking that the native column is stable across
@@ -261,7 +260,7 @@ echo "    repo     : $(git_stamp "$repo_root")"
 echo "    fork     : $(git_stamp "$fork")"
 echo "    filters  : --backend $backends_arg --op ${ops_filter:-(all)}"
 echo "    measure  : --repeat $repeat --escalate $escalate --tolerance $tolerance"
-echo "    a ratio is only cited with this identifier (ADR-5 §7): native and RIR"
+echo "    a ratio is only cited with this identifier: native and RIR"
 echo "    are measured here, yesterday's measurement does not compare to this one."
 
 # --- one run of the matrix ----------------------------------------------------
@@ -377,7 +376,7 @@ assert_counters() {
     # for each next to the row that carries it. A rejection for a reason outside
     # that declaration is a node the kernel said it would serve and did not:
     # otherwise indistinguishable from an op whose domain had
-    # always been partial (ADR-4 section 6).
+    # always been partial.
     local domain
     domain="$(sed -nE 's/.* domain=([a-z|_]+).*/\1/p' <<<"$line")"
     if [[ -z "$domain" ]]; then
@@ -609,7 +608,7 @@ timing_passes() {
 # the signature of the 5-40 µs class, not of a slow kernel. It is the only state
 # where more passes can change the answer. A median over the tolerance whose
 # *best* pass is still over it is a regression on every draw; escalating it
-# would only cost minutes (ADR-5 section 6).
+# would only cost minutes.
 has_undecided_refusal() {
     local samples="$1" label stats ratio rmin
     while IFS= read -r label; do
@@ -635,7 +634,7 @@ for pair in ${pairs[@]+"${pairs[@]}"}; do
 
     # The native half of the lane, where there still is one.
     #
-    # For a pair whose native kernel has been removed (ADR-5 section 5)
+    # For a pair whose native kernel has been removed
     # this run cannot be made to mean anything, and the failure mode is worse
     # than useless: under `RETRO_RIR_MODE=off`, `ggml_rir_supports_op` answers
     # false, the backend declines every case, and `test-backend-ops` prints
@@ -798,7 +797,7 @@ if [[ ${#perf_rows[@]} -gt 0 ]]; then
     echo "== performance - session $session_id (median µs/run, tolerance" \
          "$tolerance ; \u201cparity\u201d = the gap fits within the passes' spread)"
     echo "   both columns come from this session; a ratio cited without it"
-    echo "   means nothing (ADR-5 §7)"
+    echo "   means nothing"
     { printf 'pair\tshape\tnative\tRIR\tratio\tmin–max\tpasses\tverdict\n'
       printf '%s\n' "${perf_rows[@]}"; } | column -t -s$'\t'
 fi

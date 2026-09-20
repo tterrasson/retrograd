@@ -25,7 +25,7 @@
 //! The strip has one member per element type (eight total for `ADD`/`MUL`). Only
 //! `SCALE` retains the `dtype` row, for its
 //! own reason: `ggml_compute_forward_scale` has no F16 arm, so no benchmark
-//! could judge a kernel serving such a node (ADR-3 section 6).
+//! could judge a kernel serving such a node.
 //!
 //! **In-place is safe without declaring anything.** ggml calls these three ops
 //! with `dst` aliasing `src0` (`ggml_add_inplace`, `ggml_scale_inplace`, …), each
@@ -58,7 +58,7 @@ pub enum BandOp {
     MulRepeat,
 }
 
-/// Member element type (ADR-3 section 6).
+/// Member element type.
 ///
 /// This is the **only** distinction between otherwise identical members, and
 /// the point of F4: both native kernels accept `F32 | F16` for these three ops,
@@ -107,7 +107,7 @@ pub struct Band {
 /// artifacts do not move - followed by five F16 members.
 ///
 /// The two repeated members are distinct kernels, not schedule variants of the
-/// first two, for **correctness**, not speed (ADR-1 section 5). A vectorized
+/// first two, for **correctness**, not speed. A vectorized
 /// variant reads four consecutive `src1` elements; under repetition of the
 /// contiguous dimension, four consecutive indices are not necessarily four
 /// consecutive addresses, and this depends on an extent known at dispatch.
@@ -134,7 +134,7 @@ pub fn variants() -> [Band; 9] {
     // benchmark can judge - "declared and never dispatched," a rejection the
     // lane already states three times in this document - and one no ggml graph
     // can produce without crashing its own CPU. Reopening trigger: when ggml
-    // gives `SCALE` an F16 CPU arm (ADR-3 section 6).
+    // gives `SCALE` an F16 CPU arm.
     let f16_ops = [
         BandOp::Add,
         BandOp::Mul,
@@ -234,7 +234,7 @@ pub fn build(band: Band) -> Result<ValidatedKernel, ValidateError> {
     // The four `src1` axes, declared only for their **extent**: no `Index` names
     // them, so lowering opens no loop over them, and dispatch fills them like
     // any other extent. This gives the shader the repetition divisor without
-    // adding a push-constant class (ADR-1 section 5).
+    // adding a push-constant class.
     let b_axes = b.filter(|_| band.repeats()).map(|b| {
         [
             k.axis("col_b", Extent::Dim { arg: b, dim: 0 }),
@@ -414,7 +414,7 @@ mod tests {
         }
     }
 
-    /// Vectorized lowering (ADR-2 section 6) over decisive row lengths: a
+    /// Vectorized lowering over decisive row lengths: a
     /// multiple of four, all three possible remainders, then a row **shorter**
     /// than the vector. These are the only shapes exercising the scalar tail,
     /// without them, the shader's `else` branch would be tested nowhere.
@@ -671,7 +671,7 @@ mod tests {
     }
 
     /// F16 members against the same analytical reference and under the same
-    /// vectorized lowering as their F32 twins (ADR-3 section 6).
+    /// vectorized lowering as their F32 twins.
     ///
     /// The oracle does not compare F32 values: it **narrows** at the store like
     /// the shader, and compares stored half-floats. This is the only way to see

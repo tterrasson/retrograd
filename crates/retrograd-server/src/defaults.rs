@@ -132,7 +132,7 @@ mod tests {
         }
         assert_eq!(
             degrading, 1,
-            "only fast_sampling_context is a degradation by default (D4)"
+            "only fast_sampling_context is a degradation by default"
         );
     }
 

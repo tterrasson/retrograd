@@ -7,7 +7,7 @@
 //! is a field the other side sees at compile time, which is exactly what a
 //! `schema_version` alone cannot enforce.
 //!
-//! Field **order is part of the contract** (ADR-4 section 4) and is the declaration
+//! Field **order is part of the contract** and is the declaration
 //! order of `Manifest` below: `serde_json` serializes a struct in that order, so
 //! moving a field here moves it in every generated artifact - which the
 //! regeneration-diff test reports.
@@ -227,7 +227,7 @@ pub struct Manifest {
     pub variant_id: String,
     pub production: bool,
     /// Empty means the kernel claims its op entirely - and then a contract
-    /// rejection at a dispatch site contradicts this manifest (ADR-4 section 6).
+    /// rejection at a dispatch site contradicts this manifest.
     pub assumed_domain: Vec<DomainRestriction>,
     pub backend: Backend,
     pub bindings: Vec<Binding>,
@@ -248,7 +248,7 @@ pub struct Manifest {
     pub priority: u8,
     /// Elements one invocation covers on the contiguous axis. Above one it is
     /// also a claim: the variant only accepts a tensor whose contiguous stride
-    /// is one element (ADR-4 section 5).
+    /// is one element.
     pub vector_width: u32,
     /// Whether the flattened index is also the **address**, in units of the
     /// element. Like `vector_width` above, it is a

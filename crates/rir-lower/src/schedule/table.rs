@@ -73,7 +73,7 @@ impl Family {
     }
 }
 
-/// Declarative schedule table (ADR-2 section 2), handwritten per family and backend.
+/// Declarative schedule table, handwritten per family and backend.
 /// The AOT pipeline emits every plausible variant; `supports_op` selects one
 /// at dispatch.
 ///
@@ -91,8 +91,7 @@ pub fn schedules_for(family: Family) -> Vec<Schedule> {
     // lowering concern, not a scheduling one. Same for the `UNARY` family and
     // for `out_prod`, whose members differ by a member enum or a `src0` dtype,
     // a member that changed schedules would be a member whose formula, or whose
-    // decoding, leaked out of the semantic graph ADR-1 section 7,
-    // ADR-3).
+    // decoding, leaked out of the semantic graph.
     match family {
         Family::RowReduce => row_reduce(&mut v),
         Family::RmsNorm => rms_norm(&mut v),
@@ -171,7 +170,7 @@ fn rms_norm(v: &mut Vec<Schedule>) {
 /// slice of the domain narrower, and the lane counts that slice at 2 of
 /// the 32 claimed nodes.
 ///
-/// **Repeated** members (ADR-1 section 5): the same kernel shape,
+/// **Repeated** members: the same kernel shape,
 /// mapping, and two lowerings as their contiguous twins.
 ///
 /// Here `vec4` has **one additional claim**: four consecutive `src1`
@@ -303,8 +302,7 @@ fn elementwise_repeat(v: &mut Vec<Schedule>) {
 }
 
 /// F16 members share the table of their F32 twins: element type lives at
-/// the memory boundary, not in the schedule
-/// (ADR-3 section 6).
+/// the memory boundary, not in the schedule.
 fn elementwise(v: &mut Vec<Schedule>) {
     let family = Family::Elementwise;
     for gpu in grid_targets_for(family) {
@@ -479,7 +477,7 @@ fn out_prod(v: &mut Vec<Schedule>) {
 ///
 /// Device timing places the blocked-scan crossover between 128 and 256
 /// total rows, so the claim uses `row × plane × batch ≤ 128`.
-/// The third is the **tiled** scan (ADR-2 section 5), using the same 256 lanes
+/// The third is the **tiled** scan, using the same 256 lanes
 /// as `SharedTree` with coalesced access. It requires at least 4,096
 /// columns; at 1,024, most lanes are idle and the blocked scan ties it.
 ///

@@ -12,7 +12,7 @@
 //!   There is no index division because there is nothing typed to index. A
 //!   vector read is *w* scalar reads from a common base address - deliberately
 //!   not a `float4`, which would demand a sixteen-byte alignment the contract
-//!   does not require (ADR-2 section 6).
+//!   does not require.
 //! - **Metal** also reinterprets at a byte offset, but its vector read is
 //!   **one** `packed_float{w}` load, whose alignment is one element - so unlike
 //!   the two others it has no per-component expansion at all.

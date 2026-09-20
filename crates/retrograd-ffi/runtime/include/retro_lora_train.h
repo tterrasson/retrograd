@@ -677,8 +677,8 @@ typedef struct retro_memory_report {
     // `checkpoint_count == 0` to distinguish that state.
     // `checkpoint_retained_bytes` is what the checkpoints hold *as held*: a run
     // with checkpoint_dtype=f16 reports the 16-bit copies, not the F32 tensors the
-    // forward built. It is the numerator of O7's trigger, whose denominator is
-    // `device_peak_used_bytes`.
+    // forward built. It is the numerator of the offload trigger, whose
+    // denominator is `device_peak_used_bytes`.
     uint64_t checkpoint_count;
     uint64_t checkpoint_retained_bytes;
     uint64_t checkpoint_live_peak_bytes;

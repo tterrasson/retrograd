@@ -1,4 +1,4 @@
-//! IR-level autodiff (ADR-1 section 8): derive the backward pass by transposing the
+//! IR-level autodiff: derive the backward pass by transposing the
 //! SSA graph.
 //!
 //! The derived `{name}_grad` kernel takes the forward inputs plus one
@@ -239,7 +239,7 @@ fn import(
         // The transpose of a repeat is a *reduction* over the replayed range,
         // which is a shape autodiff would have to introduce rather than
         // transpose. Refused with its reason rather than differentiated as if
-        // the fold were the identity (ADR-1 section 5).
+        // the fold were the identity.
         Op::RepeatIndex { .. } => {
             return Err(AutodiffError::UnsupportedOp {
                 value: v,

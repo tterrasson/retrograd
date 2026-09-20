@@ -126,7 +126,7 @@ mod tests {
         }
     }
 
-    /// The coalesced tiled scan (ADR-2 section 5) computes the same
+    /// The coalesced tiled scan computes the same
     /// prefixes as the sequential one. Two lane counts and two tile widths,
     /// against row lengths that are a whole number of tiles, a fraction of one,
     /// and one element past a tile - the boundary where the tail slots must

@@ -52,7 +52,7 @@ pub fn emit_catalog(
             .collect::<Vec<_>>();
         // The declared domain is the **intersection** of what the serving
         // kernels declare, exactly as the C++ registry publishes it
-        // (`rir-emit/src/registry/`, ADR-4): each says what
+        // (`rir-emit/src/registry/`): each says what
         // *it* does not claim, so the op leaves to the native kernel only what
         // none of them claims. Unioning them instead publishes a row that
         // rejects every input it is meant to serve - `GGML_OP_OUT_PROD` would
@@ -242,7 +242,7 @@ pub fn metal_aggregate(bodies: &[(String, String)]) -> String {
 }
 
 /// Writes the X-macro the Vulkan shader generator expands into one
-/// `string_to_spv` call per generated module (ADR-4 section 8).
+/// `string_to_spv` call per generated module.
 ///
 /// The list is the whole content: a RIR shader takes no `#define`, its file
 /// name is its artifact name, and its module name is that name prefixed,

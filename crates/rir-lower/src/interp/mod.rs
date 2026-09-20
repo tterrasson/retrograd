@@ -51,8 +51,7 @@ pub enum InterpError {
     MisplacedCollective,
     /// A constant-table read past the table. The masks of a bit field make this
     /// unreachable by construction, which is exactly why it is an error and not
-    /// a clamp: a saturating read would turn a wrong mask into plausible values
-    /// (ADR-3 section 4).
+    /// a clamp: a saturating read would turn a wrong mask into plausible values.
     #[error("{}: index {index} outside table",.table.symbol())]
     LutOutOfRange {
         table: rir_core::LutId,

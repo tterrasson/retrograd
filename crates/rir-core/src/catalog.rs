@@ -79,7 +79,7 @@ pub enum BackendPolicy {
     /// dispatch site, but the native kernel always runs. This is the state a
     /// newly integrated op enters: it produces the coverage and rejection
     /// numbers a benchmark decision needs, on a backend where nothing yet
-    /// justifies encoding it (ADR-5 section 4).
+    /// justifies encoding it.
     ///
     /// Distinct from the process-wide `observe` *mode*, which says how much any
     /// integrated op may do; this says how far **this** op on **this** backend

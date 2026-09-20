@@ -2,17 +2,16 @@
 //!
 //! Quantized formats are **not declared here**. The canonical table lives in
 //! `crate::quant_table`, which expands it into `QuantType` and its descriptors
-//! and which `rir-gen` expands into `ggml-retro-quant.h` for the ggml fork
-//! (ADR-3 section 2). Before that, `QuantType` restated by hand what the header
-//! already said, which is the double source of truth ADR-3 closes.
+//! and which `rir-gen` expands into `ggml-retro-quant.h` for the ggml fork.
+//! `QuantType` never restates by hand what that header already says: one
+//! table, one source of truth.
 //!
 //! What stays here is the *semantics*: what the columns of a row mean, and - in
 //! `crate::quant` - how a portable format decodes. Decoding is applied during
-//! lowering from that descriptor (ADR-3 section 3), so emitters never choose an
+//! lowering from that descriptor, so emitters never choose an
 //! approximation.
 
-/// How a backend obtains F32 values from a block of a format
-/// (ADR-3 section 5).
+/// How a backend obtains F32 values from a block of a format.
 ///
 /// This is a property of the *format*, not of a kernel: it says whether the
 /// decoding formula can be expressed in RIR at all. Which of the two a given
@@ -71,7 +70,7 @@ pub enum BlockShape {
 
 /// Which training ops may read a frozen tensor of a format in place. `dequant`
 /// is the narrow table shared with Metal and fused sparse CE; `out_prod` is the
-/// wider one (ADR-3 section 2).
+/// wider one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct OpFamilies {
     pub dequant: bool,
@@ -143,7 +142,7 @@ impl DType {
 
 /// Type of a uniform scalar parameter (a push constant on GPU).
 ///
-/// One variant, and that is the contract rather than a gap (ADR-1 section 6): lowering
+/// One variant, and that is the contract rather than a gap: lowering
 /// puts every parameter in an F32 register and the oracle is fed `&[f32]`, so an
 /// integer uniform is an integer register bank in the lowering, the oracle and
 /// three emitters - not a variant to declare. An `I32` arm existed here, was

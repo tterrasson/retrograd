@@ -1,6 +1,6 @@
 //! Tensor layouts using the ggml convention.
 //!
-//! Invariant (ADR-1 section 2): **nothing in the IR assumes contiguity.** Strides
+//! Invariant: **nothing in the IR assumes contiguity.** Strides
 //! `nb[]` (in bytes) and shape `ne[]` are supplied at dispatch, as they are in
 //! `ggml_tensor`; the IR only knows rank and dtype. A kernel that requires
 //! contiguity declares `Constraint::Contiguous`, and `supports_op` rejects any
@@ -43,7 +43,7 @@ impl TensorType {
         Self::f32(2)
     }
 
-    /// An F16 tensor (ADR-3 section 6). Half the bytes, the same `nb[]`
+    /// An F16 tensor. Half the bytes, the same `nb[]`
     /// algebra: strides are in bytes, so nothing above the memory boundary
     /// changes.
     pub fn f16(rank: usize) -> Self {

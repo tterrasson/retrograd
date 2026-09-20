@@ -16,9 +16,8 @@ use crate::schedule::Family;
 /// existed the same fact was the conjunction of one `push(Schedule::vulkan_*)`
 /// and one `push(Schedule::metal_*)` per lowering: fourteen pairs, and nothing
 /// checking that the two halves agreed. A kernel that had lost one half kept
-/// CPU-only coverage on that backend, silently - the regression mode
-/// ADR-5 names, where a test does not break, it becomes
-/// tautological.
+/// CPU-only coverage on that backend, silently: the regression mode where a
+/// test does not break, it becomes tautological.
 ///
 /// The order is the emission order, so it is ABI-adjacent: `generated/rir/`
 /// carries the Metal aggregate and the Vulkan artifact list in this sequence.

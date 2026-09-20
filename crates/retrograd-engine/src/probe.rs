@@ -196,8 +196,8 @@ pub fn fused_sparse_ce_probe(
     fused_sparse_ce_probe_offloaded(shape, false, use_gpu, inputs, grad_loss)
 }
 
-/// Same probe as [`fused_sparse_ce_probe`], with the plan rl/OPTIMIZE feature 3
-/// knob exposed: `offload_h` places `grad_h` on top of `h`, reproducing the
+/// Same probe as [`fused_sparse_ce_probe`], with the offload knob exposed:
+/// `offload_h` places `grad_h` on top of `h`, reproducing the
 /// in-place allocation the training graph gets from ggml-alloc when the fused CE
 /// nodes are built with the flag. It is a pure memory knob - the loss and
 /// `grad_h` this returns must be bit-identical with and without it - so the

@@ -1,4 +1,4 @@
-//! RIR schedules and lowering (ADR-2).
+//! RIR schedules and lowering.
 //!
 //! Loop IR keeps emitters mechanical. After applying a schedule, loop nests,
 //! accumulators, and memory accesses are explicit but still backend-agnostic.

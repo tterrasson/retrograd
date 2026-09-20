@@ -151,7 +151,7 @@ pub(crate) fn lower_blocked_scan(
 
 /// Coalesced tiled scan (`ScanStrategy::TiledLanes`): the workgroup walks the
 /// scanned axis in tiles of `lanes · items`, and everything that crosses lanes
-/// happens in shared memory (ADR-2 section 5).
+/// happens in shared memory.
 ///
 /// The whole strategy is lowered here - the tile loop, interleaved staging,
 /// barriers, per-lane serial scan, and prefix over lane totals. What varies from kernel
@@ -210,7 +210,7 @@ pub(crate) fn lower_tiled_scan(
     // memory bank as soon as `items` is a multiple of the bank count. Storing
     // element `q` at `q + q / items` makes that stride `items + 1`, coprime
     // with any power-of-two bank count, and leaves the two coalesced phases
-    // walking consecutive words (ADR-2 section 5).
+    // walking consecutive words.
     lo.shared.push((tile, width + lanes));
     let totals = lo.new_var("scan_totals", VarKind::F32);
     lo.shared.push((totals, lanes));

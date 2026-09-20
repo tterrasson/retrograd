@@ -421,7 +421,7 @@ mod tests {
             assert_eq!(
                 item.degrades,
                 item.warning.is_some(),
-                "{} disagrees with D4",
+                "{} declares a degradation without a warning, or the reverse",
                 item.id
             );
             assert!(!item.touches.is_empty(), "{}", item.id);

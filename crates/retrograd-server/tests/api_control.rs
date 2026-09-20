@@ -42,7 +42,7 @@ async fn a_paused_run_holds_the_device_and_resumes_where_it_stopped() {
     let paused = wait_for_status(&router, &id, "paused").await;
     assert!(
         paused["holds_device"].as_bool().unwrap(),
-        "pause keeps the weights, the KV caches and the optimizer state (§9)"
+        "pause keeps the weights, the KV caches and the optimizer state"
     );
     let stopped_at = paused["progress"]["iteration"].as_u64().unwrap();
 

@@ -1,4 +1,4 @@
-//! Level-one validation (ADR-1 section 3), without a GPU or execution.
+//! Level-one validation, without a GPU or execution.
 //!
 //! Checks SSA form, access permissions, index arity, output coverage, and the
 //! **kind** of every value. Schedule-dependent checks, such as reduction
@@ -101,7 +101,7 @@ pub enum ValidateError {
         expected: &'static str,
         got: &'static str,
     },
-    /// A malformed `RepeatIndex` (ADR-1 section 5). Three shapes, one
+    /// A malformed `RepeatIndex`. Three shapes, one
     /// cause: the fold would produce a divisor the contract cannot publish.
     ///
     /// - `over` is not declared on the dimension being folded - the divisor
@@ -219,7 +219,7 @@ impl std::ops::Deref for ValidatedKernel {
 pub fn validate(k: &Kernel) -> Result<(), ValidateError> {
     for arg_idx in 0..k.args.len() {
         let arg = &k.args[arg_idx];
-        // F16 is readable **and** writable since F4 (ADR-3 section 6): it
+        // F16 is readable **and** writable since F4: it
         // is a memory element type, and lowering narrows at the store the way
         // it already widened at the load. `BF16`, `I32`, `U32` and `Bool` stay
         // out - they are declarable in `DType` and no emitter prints them, and
@@ -341,7 +341,7 @@ pub fn validate(k: &Kernel) -> Result<(), ValidateError> {
             // is an axis position, so a chain would validate, lower, and then
             // reach a dispatcher with a divisibility nobody checks and an
             // extent nobody fills. Refusing it here is the one place where the
-            // refusal is cheap and total (ADR-1 section 5).
+            // refusal is cheap and total.
             Op::RepeatIndex { index, over } => {
                 check_operand(*index)?;
                 expect(&kinds, value, *index, Kind::Index)?;
@@ -690,7 +690,7 @@ mod tests {
         ));
     }
 
-    /// The three malformed `RepeatIndex` forms (ADR-1 section 5). Each
+    /// The three malformed `RepeatIndex` forms. Each
     /// would produce a divisor the contract cannot publish, and the third - a
     /// repetition of a repetition - is the one that `Kind::Index` alone let
     /// through: it validated, lowered, and reached dispatch with divisibility

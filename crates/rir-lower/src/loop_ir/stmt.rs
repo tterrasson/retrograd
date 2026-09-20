@@ -24,7 +24,7 @@ pub struct Inst {
 /// in scope, leaving the element in `value`.
 ///
 /// **`load` is a body and not an address**, and that is what lets a tile stage
-/// a quantized operand (ADR-3 section 3). A plain F32 operand lowers to
+/// a quantized operand. A plain F32 operand lowers to
 /// a single `Load`; a quantized one lowers to the same fused decoder a direct
 /// read gets, block arithmetic included. The format's formula therefore stays
 /// in lowering, once, and no emitter learns a block layout - which is the rule
@@ -58,8 +58,8 @@ pub struct TileStage {
     /// Consecutive `row` indices one invocation stages. `1` is one element per
     /// invocation, the mapping every F32 tile uses.
     ///
-    /// Above one it is what makes a quantized tile affordable
-    /// (ADR-3 section 3): a block header - an F16 scale, a packed
+    /// Above one it is what makes a quantized tile affordable:
+    /// a block header - an F16 scale, a packed
     /// 6-bit scale pair - is shared by `block_elements` consecutive elements,
     /// and with one element per invocation it was re-read for each of them.
     /// A segment reads it once and lowering puts the per-element work in a
@@ -380,7 +380,7 @@ pub enum Stmt {
         body: Vec<Stmt>,
     },
     /// Cooperative staging of one or more tiles into shared memory, then the
-    /// body that consumes them (ADR-2 section 6).
+    /// body that consumes them.
     ///
     /// The expansion is fixed, like the collectives above: barrier, one
     /// cooperative load loop per tile spread over the workgroup's `threads`
@@ -442,7 +442,7 @@ pub enum Stmt {
     },
     Store {
         arg: ArgId,
-        /// Element type **in memory** (ADR-3 section 6). The register that
+        /// Element type **in memory**. The register that
         /// feeds a store is always F32; this says what it is narrowed to on the
         /// way out, exactly as `Load::ty` says what a register was widened from.
         ///

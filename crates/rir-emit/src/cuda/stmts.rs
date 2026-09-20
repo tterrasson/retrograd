@@ -9,7 +9,7 @@
 //! Vulkan, so the Loop IR's byte address is already the address and the access
 //! type only decides what it is reinterpreted as. A vector access is *w* scalar
 //! accesses from one base address - not a `float4`, which would demand a
-//! sixteen-byte address the contract deliberately does not require (ADR-2 section 6).
+//! sixteen-byte address the contract deliberately does not require.
 
 use rir_lower::MemType;
 
@@ -32,7 +32,7 @@ impl MemoryModel for crate::dialect::Cuda {
         let a = p.addr(arg, addr);
         let (mem_ty, elem) = CudaPrinter::mem_ty(ty);
         // One value read at a byte offset from the binding's base, converted to
-        // the F32 register every computation uses downstream (ADR-3 section 6).
+        // the F32 register every computation uses downstream.
         let read = |at: String| {
             let raw = format!("*(const {mem_ty} *)({arg_name} + ({at}))");
             match ty {
@@ -45,7 +45,7 @@ impl MemoryModel for crate::dialect::Cuda {
             // The byte address is computed **once** and the components read
             // from it: what the width buys is the amortized address algebra,
             // four stride products and three sums for four elements instead of
-            // one (ADR-2 section 6).
+            // one.
             let base = format!("{}_i", p.var(dst));
             p.line(&format!("const {} {base} = {a};", Self::UINT));
             let comps: Vec<String> = (0..width)
@@ -96,7 +96,7 @@ impl MemoryModel for crate::dialect::Cuda {
         let a = p.addr(arg, addr);
         let (mem_ty, elem) = CudaPrinter::mem_ty(ty);
         // The narrowing conversion, printed only when there is one: an F32
-        // store must stay the exact line it already was (ADR-3 section 6).
+        // store must stay the exact line it already was.
         // `__float2half` is CUDA's round-to-nearest-even, which is what the
         // native kernel storing an F16 result does.
         let narrow = |v: String| match ty {
@@ -109,7 +109,7 @@ impl MemoryModel for crate::dialect::Cuda {
         // A bounded vector store: whole while the vector fits, one component at
         // a time on the last, partial one. The `for` is a branch on
         // uniform-per-thread data, not on a barrier, so it costs nothing the
-        // other threads wait on (ADR-2 section 6).
+        // other threads wait on.
         if let Some((base, axis)) = bound {
             let b = p.var(base).to_string();
             let n = p.extent(axis);

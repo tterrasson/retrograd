@@ -62,7 +62,7 @@ pub(crate) fn analyze(kernel: &Kernel) -> Result<Analysis, LowerError> {
     // not necessarily walked: a `RepeatIndex`'s `over`
     // axis is declared for its *extent* alone - it is the divisor of a fold,
     // and opening a loop over it would traverse the repeated operand a second
-    // time (ADR-1 section 5). It still gets its push constant and its
+    // time. It still gets its push constant and its
     // `arg_axes` row, which is exactly what a dispatcher needs to fill it.
     let walked: std::collections::HashSet<AxisId> = kernel
         .ops()

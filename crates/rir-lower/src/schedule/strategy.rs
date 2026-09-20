@@ -13,7 +13,7 @@ pub enum ReductionStrategy {
     /// Shared-memory tree with a fixed, run-to-run deterministic topology.
     SharedTree,
     /// Sequential accumulation, as `Serial`, over operands **staged** in shared
-    /// memory a tile at a time (ADR-2 section 6). The workgroup loads a
+    /// memory a tile at a time. The workgroup loads a
     /// `tile_depth`-deep slice of each contracted operand cooperatively, then
     /// every invocation of the workgroup accumulates that slice from shared
     /// memory instead of re-reading the same rows from global memory once per
@@ -138,7 +138,7 @@ pub enum ScanStrategy {
     BlockedLanes,
     /// The axis is walked in tiles of `block[0] · items` elements, each tile
     /// staged **interleaved** into shared memory, scanned there, and flushed
-    /// interleaved (`ScanTiles`, ADR-2).
+    /// interleaved (`ScanTiles`).
     ///
     /// Same serial depth as `BlockedLanes` and the same regrouping - hence the
     /// same `Deterministic` semantics - but a different *access plan*: what

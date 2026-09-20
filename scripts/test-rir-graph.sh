@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# RIR coverage lane on a **real** training graph (ADR-5 section 5).
+# RIR coverage lane on a **real** training graph.
 #
 # `scripts/test-rir.sh` judges a kernel in isolation, on the shapes a
 # conformance bench enumerates. This lane checks the condition for removing a

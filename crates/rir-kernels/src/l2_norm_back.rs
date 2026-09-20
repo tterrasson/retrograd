@@ -15,8 +15,7 @@
 //! reduction axis `col`, i.e. the full ggml rank. A rank-2 tensor is the same
 //! problem with `n_plane = n_batch = 1`; what the outer axes buy is a distinct
 //! `nb[2]`/`nb[3]` per argument, the only way to address a view inside a
-//! packed tensor - measured as the sole blocker on the real Qwen3.5 graph
-//! (ADR-5 section 3).
+//! packed tensor - measured as the sole blocker on the real Qwen3.5 graph.
 
 use rir_core::{
     Constraint, DType, Extent, KernelBuilder, ReduceOp, ReductionSemantics, ScalarType, TensorType,
@@ -195,7 +194,7 @@ mod tests {
     /// The shape class that motivated the three outer axes: `x` is a view
     /// inside a packed QKV tensor, so its planes are `gap` times further apart
     /// than the rows they contain. No fold can express that; only a distinct
-    /// `nb[2]` per argument can (ADR-5 section 3).
+    /// `nb[2]` per argument can.
     #[test]
     fn parity_on_a_rank_4_view_with_a_plane_gap() {
         let kernel = build().unwrap();

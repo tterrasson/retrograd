@@ -266,7 +266,7 @@ pub fn candidates(subject: &Subject, gpu: GpuBackend) -> Vec<Candidate> {
             }
         }
         // The scan, with its benchmark predecessor opposite it: the pair
-        // `schedule::bench` exists for (ADR-2 section 5).
+        // `schedule::bench` exists for.
         Family::Cumsum => {
             v.push(Candidate::new(
                 "shared 256",

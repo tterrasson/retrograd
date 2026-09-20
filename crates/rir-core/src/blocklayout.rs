@@ -1,5 +1,4 @@
-//! The layout **description** of a quantized format
-//! (ADR-3 section 4).
+//! The layout **description** of a quantized format.
 //!
 //! It answers one question, the same one that seven hand-written expansion arms
 //! answered seven times: *where are element `e`'s bits, and what should multiply
@@ -137,8 +136,8 @@ pub enum ScalePlan {
     },
 }
 
-/// The five sub-block scale packings actually used by ggml
-/// (ADR-3 section 4). One more would be a line here and an arm in
+/// The five sub-block scale packings actually used by ggml.
+/// One more would be a line here and an arm in
 /// lowering; this is the only part of the description not derived from an index
 /// plan, because ggml did not make it regular.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

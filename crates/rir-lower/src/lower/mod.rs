@@ -306,7 +306,7 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
             // that is not a power of two through the check below: the tree would
             // then combine the wrong lanes and the scan would simply be false.
             // The strategy a lowering does not honour is an error, never a
-            // relabelling (ADR-2 section 5).
+            // relabelling.
             if matches!(schedule.scan, ScanStrategy::TiledLanes { .. })
                 && schedule.reduction != ReductionStrategy::SharedTree
             {
@@ -338,8 +338,8 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
                 }
                 // A scan recombines through `workgroup_scan_stmts`, which is the
                 // shared tree and consults no strategy: accepting it here would
-                // publish `hierarchical_tree` for a kernel that uses none - the
-                // relabelling ADR-2 forbids.
+                // publish `hierarchical_tree` for a kernel that uses none, a
+                // relabelling the schedule rules forbid.
                 if !a.scans.is_empty() {
                     return Err(LowerError::HierarchicalTreeGeometry {
                         why: "kernel with a scan: the prefix of lane totals is the shared tree, \
@@ -378,7 +378,7 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
         parallel_nest(&schedule, &a, &par_vars, innermost, vector)
     };
 
-    // Strength reduction on the finished nest (ADR-2 section 7). It runs
+    // Strength reduction on the finished nest. It runs
     // last, on the loop nest every emitter and the interpreter will consume, so
     // the oracle judges the addresses the device actually computes.
     crate::hoist::hoist_invariants(&mut body, &mut lo.var_names, &mut lo.var_kinds);

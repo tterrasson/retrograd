@@ -35,8 +35,8 @@ upstream_commit = "f072b103714dfa1eee531f80b24512faf38e3dd2"
 #           a training-loop choice in llama-context.cpp does not.
 #   probe   a symbol this family introduces that upstream does not have, checked
 #           both ways by the script. The day it appears upstream, the family has
-#           become redundant and the patch is free to delete - the "reuse before
-#           writing" rule of §17, made mechanical. Empty when the family fixes
+#           become redundant and the patch is free to delete: the "reuse before
+#           writing" rule, made mechanical. Empty when the family fixes
 #           behaviour in existing code and adds no symbol: there the redundancy
 #           signal is a rebase conflict, not a name, and the key says so.
 #   why     the reason for the classification, in one sentence.

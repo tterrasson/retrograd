@@ -8,7 +8,7 @@
 //!
 //! - [`IrId::at`] is what the code calls. It panics past the limit, with the
 //!   kind named, because an allocation the host cannot make is not a kernel
-//!   limit and the crate's "every limit is an explicit error" rule (ADR-1 section 3) is
+//!   limit and the crate's "every limit is an explicit error" rule is
 //!   about the latter. A `Result` here would put a `?` on every builder method
 //!   and change the DSL for a case no caller can reach;
 //! - [`IrId::try_at`] is the same conversion, checked, and it is what makes

@@ -1,4 +1,4 @@
-//! Semantic IR: a pure tensor SSA graph (ADR-1 section 2).
+//! Semantic IR: a pure tensor SSA graph.
 //!
 //! Hard rule: no `threadIdx`, `gl_WorkGroupID`, or equivalent exists at this
 //! level. Values are functions over a logical index space; hardware mapping
@@ -86,7 +86,7 @@ impl ScanDirection {
     }
 }
 
-/// Reduction reassociation semantics (ADR-1 section 2). A schedule that violates
+/// Reduction reassociation semantics. A schedule that violates
 /// these semantics is a compilation error in `rir-lower`, not a test failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReductionSemantics {
@@ -131,8 +131,8 @@ pub enum Op {
     /// Uniform scalar parameter (epsilon, scale, and so on).
     Param(ParamId),
 
-    /// **Index arithmetic**: `index` folded into the extent of `over`
-    /// (ADR-1 section 5). Its value is `index % extent(over)`.
+    /// **Index arithmetic**: `index` folded into the extent of `over`.
+    /// Its value is `index % extent(over)`.
     ///
     /// It is a node of the *semantic graph* and not a property of an access,
     /// and the choice is `Dequant`'s precedent: the Loop IR guesses nothing, so
@@ -168,7 +168,7 @@ pub enum Op {
     Div(ValueId, ValueId),
     Sqrt(ValueId),
     Exp(ValueId),
-    /// Hyperbolic tangent (ADR-1 section 7).
+    /// Hyperbolic tangent.
     ///
     /// Written as an operation rather than composed from `Exp` because the
     /// three emitters have it natively and ggml's own `tanhf` is what the
@@ -190,7 +190,7 @@ pub enum Op {
 
     /// Explicit dequantization of a `Read` from a quantized tensor. Lowering
     /// always fuses it into its consumer, so no dequantized tensor is ever
-    /// materialized (ADR-3 section 3).
+    /// materialized.
     Dequant {
         value: ValueId,
         from: crate::quant_table::QuantType,
@@ -215,7 +215,7 @@ pub enum Op {
 }
 
 /// Constraints checked by `supports_op` against the actual tensor description
-/// at dispatch (ADR-4 section 5), never by operation-name recognition alone.
+/// at dispatch, never by operation-name recognition alone.
 #[derive(Clone, Debug)]
 pub enum Constraint {
     DType {
@@ -318,8 +318,7 @@ pub fn arg_axes(k: &Kernel) -> Vec<Vec<Option<AxisId>>> {
             // A `RepeatIndex` is the one computed subscript that *does* name
             // one, and it names `over` rather than the axis it folds: that
             // dimension's extent is what the shader divides by, so it is what a
-            // dispatcher must fill and what the contract must check
-            // (ADR-1 section 5).
+            // dispatcher must fill and what the contract must check.
             let axis = match k.ops[iv.0 as usize] {
                 Op::Index(axis) => axis,
                 Op::RepeatIndex { over, .. } => over,

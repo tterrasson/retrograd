@@ -11,7 +11,7 @@
 //! `packed_float{w}` - a vector type whose alignment is **one element**, so the
 //! eligibility condition stays `nb[0] == elem_bytes` and no base offset has to
 //! be sixteen-byte aligned. A plain `float4` would demand addresses the
-//! dispatcher cannot promise for a view (ADR-2 section 6).
+//! dispatcher cannot promise for a view.
 
 use rir_lower::MemType;
 
@@ -47,8 +47,7 @@ impl MemoryModel for crate::dialect::Metal {
         if width > 1 {
             // The register is `float{width}` whatever the memory type: a half
             // vector is widened on the way in, the same conversion the scalar
-            // path already prints, and every computation downstream stays F32
-            // (ADR-3 section 6).
+            // path already prints, and every computation downstream stays F32.
             let load = format!("*(device const packed_{mem_ty}{width} *)({arg_name} + ({addr}))");
             let load = if ty == MemType::F32 {
                 load
@@ -105,7 +104,7 @@ impl MemoryModel for crate::dialect::Metal {
         // A bounded vector store: whole while the vector fits, one component at
         // a time on the last, partial one. The `for` is a branch on
         // uniform-per-invocation data, not on a barrier, so it costs nothing
-        // the other invocations wait on (ADR-2 section 6).
+        // the other invocations wait on.
         if let Some((base, axis)) = bound {
             let b = p.var(base).to_string();
             let n = p.extent(axis);

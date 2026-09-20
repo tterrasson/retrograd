@@ -818,7 +818,7 @@ fn critic_defaults_and_boundaries_are_validated() {
     assert_eq!(defaults.gae_lambda, 0.95);
     assert_eq!(defaults.value_lr, 1.0e-2);
     assert_eq!(defaults.value_epochs, 8);
-    // O8 is opt-in: the default keeps the feature matrix in F32, so enabling
+    // The F16 feature matrix is opt-in: the default keeps it in F32, so enabling
     // a critic never silently rounds what the value head regresses on.
     assert_eq!(defaults.feature_dtype, FeatureDtype::F32);
     for (spelling, expected) in [

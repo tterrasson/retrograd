@@ -1,5 +1,5 @@
-//! Manifest JSON: the contract shared by generated code and the C++ wrapper
-//! (ADR-4 section 4). Binding order, push-constant layout, and schema version are
+//! Manifest JSON: the contract shared by generated code and the C++ wrapper.
+//! Binding order, push-constant layout, and schema version are
 //! **stable**; changing them must fail the regeneration-diff test.
 //!
 //! What this file holds is the *derivation* - entrypoint, variant id, push
@@ -545,8 +545,7 @@ pub fn build_manifest(k: &LoopKernel, spec: Option<&IntegrationSpec>) -> Manifes
         production: spec.is_some_and(|s| s.production_on(ggml_backend(k))),
         // The parts of the ggml op this kernel does not claim, with the reason
         // for each. Empty means it claims the op entirely - and then a single
-        // contract rejection at a dispatch site contradicts this manifest
-        // (ADR-4 section 6).
+        // contract rejection at a dispatch site contradicts this manifest.
         assumed_domain: spec
             .map(|s| {
                 s.assumed_domain
@@ -597,7 +596,7 @@ pub fn build_manifest(k: &LoopKernel, spec: Option<&IntegrationSpec>) -> Manifes
 
 /// The manifest as the generated file carries it: pretty JSON, one trailing
 /// newline, fields in the declaration order of `rir_core::manifest::Manifest`,
-/// which is the contract (ADR-4 section 4).
+/// which is the contract.
 pub fn emit_manifest(k: &LoopKernel, spec: Option<&IntegrationSpec>) -> String {
     let m = build_manifest(k, spec);
     let mut out = serde_json::to_string_pretty(&m).expect("a manifest is plain data");

@@ -1,4 +1,4 @@
-//! Loop-invariant hoisting on Loop IR (ADR-2 section 7).
+//! Loop-invariant hoisting on Loop IR.
 //!
 //! Vectorization lets one invocation serve four elements. Hoisting addresses
 //! the remaining cost: generated kernels build every address from scratch, at
@@ -152,7 +152,7 @@ pub(crate) fn child_blocks(s: &mut Stmt) -> Vec<&mut Vec<Stmt>> {
         // work in a `ForConst`, and what leaves that loop is the payload's
         // address base - the block times its stride, plus the row and the outer
         // planes. Without this the block/element split would halve the loads and leave
-        // the address algebra behind (ADR-3 section 3).
+        // the address algebra behind.
         Stmt::StageTiles { tiles, body, .. } => {
             let mut v: Vec<&mut Vec<Stmt>> = tiles.iter_mut().map(|t| &mut t.load).collect();
             v.push(body);

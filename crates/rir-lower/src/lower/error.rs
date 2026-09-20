@@ -30,7 +30,7 @@ pub enum LowerError {
     /// A quantized tensor `Read` lacks `Dequant`; the builder prevents this.
     #[error("%{}: quantized read without Dequant",.value.0)]
     UnfusedQuantRead { value: ValueId },
-    /// The format is `NativeIntrinsic` (ADR-3 section 5): RIR owns its
+    /// The format is `NativeIntrinsic`: RIR owns its
     /// contract but not its decoding formula, so there is nothing to expand.
     /// The backend adapter must bind its own primitive instead.
     #[error(
@@ -105,7 +105,7 @@ pub enum LowerError {
     #[error("linear_addr: {why}")]
     LinearAddrUnsupported { why: &'static str },
     /// `ReductionStrategy::TiledStage` on a kernel or a schedule whose shape
-    /// staging cannot express (ADR-2 section 6). Like the width above, a
+    /// staging cannot express. Like the width above, a
     /// strategy the lowering cannot honour is an error rather than a silent
     /// downgrade to the untiled form: the manifest would still publish
     /// `tiled_stage`.
@@ -117,13 +117,13 @@ pub enum LowerError {
     #[error("tiled_stage: read %{} - {why}",.value.0)]
     TilingUnsupportedRead { value: ValueId, why: &'static str },
     /// `ScanStrategy::TiledLanes` on a kernel whose shape the tiled scan cannot
-    /// express (ADR-2 section 5). Same rule as the two above: a strategy
+    /// express. Same rule as the two above: a strategy
     /// the lowering cannot honour is an error, never a silent fall back to the
     /// blocked scan - the manifest would go on publishing `tiled_lanes`.
     #[error("tiled_lanes: {why}")]
     TiledScanUnsupported { why: &'static str },
-    /// A dense argument whose element type has no memory access type
-    /// (ADR-3 section 6). F32 and F16 do; `BF16`, `I32` and the rest are
+    /// A dense argument whose element type has no memory access type.
+    /// F32 and F16 do; `BF16`, `I32` and the rest are
     /// declarable in `rir_core::DType` and are not lowered, so a kernel that
     /// asked for one is an error here rather than an F32 access to bytes that
     /// are not floats.
@@ -144,9 +144,9 @@ pub enum LowerError {
 /// block shape has no expansion yet. And it is not a per-kernel decision - it
 /// depends on the block layout alone, so the kernel registry can ask it before
 /// deciding which variants to generate, instead of discovering the failure at
-/// generation time (ADR-3 section 5).
+/// generation time.
 ///
-/// **Derived, and no format name appears below it** (ADR-3 section 4): the
+/// **Derived, and no format name appears below it**: the
 /// answer to "can RIR read this format" lives in the canonical table, next to
 /// the format. The table carries a `layout` column and this reads it: a row with a description
 /// is lowerable, a row without one is not, and adding a format never touches

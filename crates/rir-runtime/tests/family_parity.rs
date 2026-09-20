@@ -551,7 +551,7 @@ fn every_registered_kernel_on(target: Target) {
             // stopped declaring the coverage this harness exists to prove.
             // Tolerating it would let the witness stay green precisely when a
             // kernel loses its lowering - the tautological-test failure mode
-            // this file exists against (ADR-5 section 8).
+            // this file exists against.
             panic!(
                 "{name}: registered without a {} fallback schedule, and without a \
                  family refusal saying so",

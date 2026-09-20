@@ -842,7 +842,7 @@ async fn a_plan_measures_nothing_unless_it_is_asked_to() {
     assert_eq!(
         probe.measurements(),
         0,
-        "a plan must stay free of device side effects (§5.6)"
+        "a plan must stay free of device side effects"
     );
     assert!(body["plan"]["memory"].get("measured").is_none());
 }

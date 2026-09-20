@@ -1,4 +1,4 @@
-//! The canonical quantized-format table (ADR-3 section 2).
+//! The canonical quantized-format table.
 //!
 //! **This is the only place a format is declared.** The table expands, in this
 //! crate and at compile time, into `QuantType` and its descriptors; `rir-gen`
@@ -58,7 +58,7 @@ pub struct QuantFormat {
     pub data_offset: u32,
     pub shape: BlockShape,
     pub lowering: Lowering,
-    /// The layout lowering expands, when it has one (ADR-3 section 4).
+    /// The layout lowering expands, when it has one.
     ///
     /// A column next to `shape`, never in its place: `shape` is the family the
     /// hand-written oracle branches on, this is the detail the expansion
@@ -336,7 +336,7 @@ quant_table! {
     ),
     // E8M0 exponent byte then E2M1 nibbles - no F16 anywhere, hence align 1.
     //
-    // **Explicitly refused rather than forgotten** (ADR-3 section 5).
+    // **Explicitly refused rather than forgotten**.
     // Its payload is a plain nibble plan and its LUT is already carried, but
     // its *scale* is an E8M0 exponent byte: expanding it means a scalar
     // conversion op in the Loop IR and one arm in each of three emitters,

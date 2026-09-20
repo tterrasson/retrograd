@@ -5,7 +5,7 @@ use crate::loop_ir::*;
 
 use crate::lower::{Analysis, LowerError, Lowerer, lower_writes};
 
-/// Vectorized elementwise lowering (ADR-2 section 6): one invocation
+/// Vectorized elementwise lowering: one invocation
 /// owns `width` consecutive elements of the contiguous axis.
 ///
 /// ```text
@@ -60,7 +60,7 @@ pub(crate) fn lower_vectorized(
 /// componentwise, or that would need a vector predicate, are errors: half a
 /// widened body is worse than none.
 /// What the widening pass made of one value: a scalar, a vector of floats, or
-/// a vector of predicates (ADR-1 section 7).
+/// a vector of predicates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum VecShape {
     F32,
@@ -183,8 +183,8 @@ pub(crate) fn widen(
     base: VarId,
     width: u32,
 ) -> Result<(), LowerError> {
-    // Registers holding the vectorized axis **folded** into some extent
-    // (ADR-1 section 5). An address whose innermost term is one of these
+    // Registers holding the vectorized axis **folded** into some extent.
+    // An address whose innermost term is one of these
     // is widened exactly like one carrying `base` itself, under a claim the
     // registry publishes and a dispatch site evaluates: the fold must be the
     // identity, i.e. the repeated operand must have the same extent on the
@@ -252,8 +252,7 @@ pub(crate) fn widen(
                 // F32 and F16, and nothing else. Both are dense element types
                 // whose `nb[0]` the contract pins to the element size, so
                 // `width` consecutive indices really are consecutive addresses;
-                // a byte view of a quantized block is neither
-                // (ADR-3 section 6).
+                // a byte view of a quantized block is neither.
                 if !matches!(ty, MemType::F32 | MemType::F16) {
                     return Err(LowerError::VectorWidthUnsupported {
                         why: "non-dense read (quantized block) on the vectorized axis",

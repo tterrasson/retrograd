@@ -1,4 +1,4 @@
-//! Integration contract between a RIR kernel and a ggml op (ADR-4 section 3).
+//! Integration contract between a RIR kernel and a ggml op.
 //!
 //! The semantic IR knows nothing about ggml; this metadata is what binds a
 //! kernel to a `GGML_OP_*`, its `src[i]`/`dst` argument mapping, its
@@ -63,8 +63,7 @@ pub enum DomainRestriction {
     Stride = 5,
     QuantBlock = 6,
     IntegerRange = 7,
-    /// The node names a **member of an op family** this kernel does not write
-    /// (ADR-4 section 7).
+    /// The node names a **member of an op family** this kernel does not write.
     ///
     /// It exists because `GGML_OP_UNARY` is not one op: it is twenty-two
     /// functions behind one `ggml_op`, chosen by an integer in `op_params`. A
@@ -100,7 +99,7 @@ impl DomainRestriction {
 }
 
 /// One part of the ggml domain of an op that the RIR kernel knowingly leaves
-/// to the native kernel (ADR-4 section 6).
+/// to the native kernel.
 ///
 /// Declaring it is what turns a fallback from *observed* into *published*.
 /// Without it, a kernel that started refusing on `stride` would look exactly
@@ -142,7 +141,7 @@ pub struct IntegrationSpec {
     pub ggml_op: Option<&'static str>,
     /// The **member** of the op's family this kernel writes, spelled as its ggml
     /// enumerator (`"GGML_UNARY_OP_SILU"`), or `None` for an op that is not a
-    /// family (ADR-4 section 7).
+    /// family.
     ///
     /// Published as a spelling and not as a number, for the reason `ggml_op`
     /// already is: the numeric value belongs to ggml's header, and copying it
@@ -160,14 +159,13 @@ pub struct IntegrationSpec {
     /// The parts of the op's ggml domain this kernel does not claim, each with
     /// the reason it does not. Empty means the kernel claims the op entirely,
     /// and a single contract rejection at a dispatch site then contradicts the
-    /// declaration - which is the point (ADR-4 section 6).
+    /// declaration - which is the point.
     ///
     /// It is a property of the *integration*, not of a backend: the portable
     /// contract is evaluated from the registry row before any device is asked,
     /// so Metal and Vulkan cannot legitimately differ on it.
     pub assumed_domain: Vec<DomainAssumption>,
-    /// Backends whose **native kernel for this op no longer exists in the fork**
-    /// (ADR-5 section 5).
+    /// Backends whose **native kernel for this op no longer exists in the fork**.
     ///
     /// It is the second half of a promotion, and it is a different claim from
     /// `PreferGenerated`: preferring says the generated kernel runs when the
@@ -185,7 +183,7 @@ pub struct IntegrationSpec {
     /// stops asking for a differential it can no longer measure.
     pub retired_native: Vec<GgmlBackend>,
     /// Why the native kernel is **kept** on a pair that has nothing left to
-    /// close (ADR-5 section 5).
+    /// close.
     ///
     /// `assumed_domain` says which part of the op RIR declines; this says why
     /// the native survives when RIR declines *nothing*. The two are the same

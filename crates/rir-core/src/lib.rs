@@ -1,11 +1,11 @@
 //! RIR - a closed-domain, ahead-of-time source-to-source kernel compiler.
 //!
-//! This crate contains the **semantic IR** (ADR-1):
+//! This crate contains the **semantic IR**:
 //! a pure tensor SSA graph with no notion of threads, blocks, shared memory,
 //! or barriers. Lowering to Loop IR lives in `rir-lower`; text emitters live
 //! in `rir-emit`.
 //!
-//! Boundary (ADR-4 section 2): RIR compiles a kernel and its contract. ggml owns the
+//! Boundary: RIR compiles a kernel and its contract. ggml owns the
 //! graph, tensors, and buffer lifetimes. None of these crates is linked into
 //! the runtime binary.
 

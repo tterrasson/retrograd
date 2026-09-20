@@ -1071,7 +1071,7 @@ mod tests {
         assert_eq!(config.vram_budget, BudgetRequest::All);
         assert!(
             config.calibrate_runs(),
-            "a created run measures what it is about to load (§5.6 phase 4)"
+            "a created run measures what it is about to load"
         );
         assert!(config.rewards.is_empty());
         config.validate().unwrap();

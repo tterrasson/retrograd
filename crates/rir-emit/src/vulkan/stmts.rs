@@ -11,7 +11,7 @@
 //! (`index_expr`). std430 has no unaligned `vec4` view either (an aliased one
 //! would need a sixteen-byte address the contract deliberately does not
 //! require), so a width-*w* access is *w* indexed accesses from a common base
-//! index (ADR-2 section 6).
+//! index.
 
 use rir_lower::{MemType, VarKind};
 
@@ -88,7 +88,7 @@ impl MemoryModel for crate::dialect::Vulkan {
         let idx = index_expr(&a, ty.size_bytes());
         // The narrowing conversion, printed only when there is one: GLSL has no
         // implicit `float -> float16_t`, and an F32 store must stay the exact
-        // line it already was (ADR-3 section 6).
+        // line it already was.
         let narrow = |v: String| {
             if ty == MemType::F32 {
                 v
@@ -99,7 +99,7 @@ impl MemoryModel for crate::dialect::Vulkan {
         // A bounded vector store: whole while the vector fits, one component at
         // a time on the last, partial one. The `for` is a branch on
         // uniform-per-invocation data, not on a barrier, so it costs nothing
-        // the other invocations wait on (ADR-2 section 6).
+        // the other invocations wait on.
         if let Some((base, axis)) = bound {
             let b = p.var(base).to_string();
             let n = p.extent(axis);

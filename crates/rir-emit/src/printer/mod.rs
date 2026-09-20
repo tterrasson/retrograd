@@ -59,7 +59,7 @@ impl<'k, D: Dialect> Printer<'k, D> {
     }
 
     /// Width of the vector these operands compute in, or `None` when they are
-    /// all scalar (ADR-1 section 7).
+    /// all scalar.
     ///
     /// Shared, but it does not mean the same thing to the three backends, and
     /// that is a property of the *languages* rather than of this function.

@@ -1,4 +1,4 @@
-//! RIR emitters (ADR-2 section 8).
+//! RIR emitters.
 //!
 //! **Golden rule: emitters make no decisions.** Each emitter prints `Stmt` as
 //! text. Any heuristic here belongs in the schedule or lowering instead. An

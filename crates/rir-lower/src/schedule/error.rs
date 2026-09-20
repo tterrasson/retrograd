@@ -201,8 +201,8 @@ pub fn check_schedule_table(kernel: &Kernel, schedules: &[Schedule]) -> Result<(
     Ok(())
 }
 
-/// ADR-2: a schedule incompatible with `ReductionSemantics` is a
-/// `rir-gen` **compilation error**, not a downstream test failure.
+/// A schedule incompatible with `ReductionSemantics` is a `rir-gen`
+/// **compilation error**, not a downstream test failure.
 ///
 /// `lower` calls this before it reads a single schedule field, and
 /// it starts with `check_shape`: the numeric arguments

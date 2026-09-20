@@ -67,8 +67,7 @@ impl<'k> Lowerer<'k> {
         idx.iter().map(|&iv| self.lower_value(iv)).collect()
     }
 
-    /// Memory access type of a **dense** argument, read off its declared dtype
-    /// (ADR-3 section 6).
+    /// Memory access type of a **dense** argument, read off its declared dtype.
     ///
     /// It is the whole of what F16 costs at this level, and that is the point:
     /// a second element type is a second `MemType` at the memory
@@ -89,7 +88,7 @@ impl<'k> Lowerer<'k> {
 
     /// Unblocked element address: Σ idx[d]·nb[d]. Independent of the element
     /// type, because `nb[]` is in bytes - an F16 argument carries `nb[0] == 2`
-    /// and the same sum addresses it (ADR-3 section 6).
+    /// and the same sum addresses it.
     pub(crate) fn f32_addr(idx_vars: &[VarId]) -> Vec<AddrTerm> {
         idx_vars
             .iter()

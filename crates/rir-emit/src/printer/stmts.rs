@@ -378,7 +378,7 @@ impl<'k, D: Dialect + MemoryModel> Printer<'k, D> {
                         // read, or a whole fused decoder over a segment - so it
                         // cannot be the arm of a ternary, it writes the tile
                         // itself through `StoreTile`, and a segment outside the
-                        // tensor must not run it at all (ADR-3 section 3).
+                        // tensor must not run it at all.
                         //
                         // Zeroing first and letting the loader overwrite was one
                         // shared store too many on every element of every

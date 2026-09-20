@@ -131,8 +131,8 @@ fn l2_norm_back_on_gpu_against_the_oracle() {
     let lk = rir_lower::lower(&kernel, Schedule::vulkan_subgroup()).unwrap();
 
     // `gap` separates `x` planes by a factor > 1: the geometry of a view into a
-    // packed QKV tensor actually sent to this op by the Qwen3.5 graph
-    // (ADR-5 section 3). This is the only case enabled by the three
+    // packed QKV tensor actually sent to this op by the Qwen3.5 graph.
+    // This is the only case enabled by the three
     // outer axes and covered by no repetition.
     for &(n_col, n_row, n_plane, n_batch, gap) in &[
         (1usize, 1usize, 1usize, 1usize, 1usize),
@@ -454,7 +454,7 @@ fn invalid_arguments_are_refused_before_the_dispatch() {
 ///
 /// The loop traverses `sum_rows_quant::variants()` instead of naming `q8_0`, so
 /// a format added to the canonical table is validated on device without
-/// rewriting any test (ADR-3 section 7).
+/// rewriting any test.
 #[test]
 fn sum_rows_quant_on_gpu_against_the_oracle() {
     for format in rir_kernels::sum_rows_quant::variants() {
@@ -475,8 +475,8 @@ fn sum_rows_quant_on_gpu_against_the_oracle() {
             let (n_col, n_row) = (blocks * be, 3usize);
             let stride = blocks * bb;
             let mut seed = 0xbeef_2026u64 ^ ((n_col as u64) << 16) ^ n_row as u64;
-            // The single fixture derived from the description
-            // (ADR-3 section 7). Previous code pinned one F16 scale at
+            // The single fixture derived from the description.
+            // Previous code pinned one F16 scale at
             // offset 0: correct for simple blocks, wrong for super-blocks whose
             // scales are at the end - `q2_K`'s `dmin` is at offset 82, where a
             // random half is inf or NaN once in thirty-two. Both sides then
@@ -780,7 +780,7 @@ fn cumsum_variant_on_gpu_against_the_oracle(variant: &str, schedule: Schedule) {
     }
 }
 
-/// The vectorized elementwise strip (ADR-2 section 6): the shader reads
+/// The vectorized elementwise strip: the shader reads
 /// and writes four elements per invocation; the oracle handles them one by one.
 ///
 /// What only this test decides: the **tail**. A length not divisible by four
@@ -984,7 +984,7 @@ fn blocked_cumsum_on_gpu_against_the_oracle() {
     cumsum_variant_on_gpu_against_the_oracle("blocked", Schedule::vulkan_blocked_scan());
 }
 
-/// The **tiled** scan (`ScanStrategy::TiledLanes`, ADR-2) against
+/// The **tiled** scan (`ScanStrategy::TiledLanes`) against
 /// the oracle on the same shapes as its two predecessors. It adds an interleaved
 /// access plan and a **carry** passed from one tile to the next; shapes not
 /// divisible by tile size therefore matter here, and the list contains three.

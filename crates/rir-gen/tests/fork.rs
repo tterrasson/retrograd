@@ -34,8 +34,7 @@ fn the_fork_copies_match_the_generated_artefacts() {
     // Which artefacts the fork must carry is derived from the schedule and
     // integration tables, not listed here: promoting a second op - or a
     // second *variant* of one op - already means editing those tables, and
-    // a copy this test forgets to check is a copy that can drift silently
-    // (ADR-4 section 8).
+    // a copy this test forgets to check is a copy that can drift silently.
     let artifacts = production_artifacts().unwrap();
     let production = |backend: rir_emit::GgmlBackend| -> Vec<&ProductionArtifact> {
         artifacts.iter().filter(|a| a.backend == backend).collect()
@@ -61,7 +60,7 @@ fn the_fork_copies_match_the_generated_artefacts() {
     // Metal: one generated file, copied whole among the fork's Metal
     // translation units - the same full-file copy as Vulkan's and the
     // registry's, so this check is an equality rather than a substring
-    // search (ADR-4 section 8).
+    // search.
     assert!(
         !production(rir_emit::GgmlBackend::Metal).is_empty(),
         "no production Metal kernel to check"
@@ -83,8 +82,8 @@ fn the_fork_copies_match_the_generated_artefacts() {
         "ggml-metal/CMakeLists.txt no longer builds kernels/{METAL_AGGREGATE}"
     );
 
-    // Vulkan: the artifact list the shader generator expands
-    // (ADR-4 section 8). Same kind of full-file copy as the Metal
+    // Vulkan: the artifact list the shader generator expands.
+    // Same kind of full-file copy as the Metal
     // aggregate, and for the same reason - a list nobody checks is a third
     // place to keep by hand, which is what this phase exists to remove.
     let list_rel = format!("ggml-vulkan/vulkan-shaders/{VULKAN_ARTIFACT_LIST}");
@@ -123,7 +122,7 @@ fn the_fork_copies_match_the_generated_artefacts() {
         "{CUDA_LAUNCHER_LIST} drifted - copy generated/rir/{CUDA_DIR}/{CUDA_LAUNCHER_LIST}"
     );
 
-    // The quantized-format header (ADR-3 section 2). It sits directly
+    // The quantized-format header. It sits directly
     // under ggml/src/ because ggml, ggml-metal.metal and the Vulkan shader
     // generator all include it by that path.
     let quant_h = std::fs::read_to_string(fork.join("ggml-retro-quant.h"))
@@ -191,7 +190,7 @@ fn adding_a_kernel_does_not_reach_the_vendored_units() {
     }
 }
 
-/// The rule of ADR-4, stated where it can
+/// The integration rule, stated where it can
 /// fail: **adding a variant touches no vendored file**.
 ///
 /// Metal holds it with one `#include`, Vulkan through the generated list: one
@@ -230,7 +229,7 @@ fn adding_a_variant_touches_no_vendored_file() {
             !hand_written,
             "vulkan-shaders-gen.cpp names a RIR artifact by hand: the generated \
              list is bypassed and the vendored patch grows again by one line per \
-             variant (ADR-4 §8)\n{line}"
+             variant\n{line}"
         );
     }
     // CUDA's half, which is the same property with a sharper edge:
@@ -376,14 +375,14 @@ fn the_forks_variant_caps_hold_for_the_widest_pair() {
         assert!(
             cap >= widest,
             "{needle} is {cap} in the fork, while {op}/{backend} publishes \
-             {widest}: the first node would abort (ADR-4 §8)"
+             {widest}: the first node would abort"
         );
     }
 }
 
 /// `DomainRestriction`'s discriminants are the `ggml_rir_reject` enum, and
 /// that enum's order is ABI: the mask this side builds is compared against
-/// counters the other side fills in (ADR-4 section 6). A reordering
+/// counters the other side fills in. A reordering
 /// there would keep both sides compiling and silently excuse the wrong
 /// restriction - the one failure mode the whole mechanism exists to remove.
 ///

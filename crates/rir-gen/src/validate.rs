@@ -34,7 +34,7 @@ const CUDA_ADMITTED: &[(&str, rir_emit::BackendPolicy, &str)] = &[
     (
         "GGML_OP_RMS_NORM_BACK",
         rir_emit::BackendPolicy::PreferGenerated,
-        "the other half of the same argument, with one difference the census found and §C5 \
+        "the other half of the same argument, with one difference the census found and \
          answered: the native switches on `ncols`, not on the row count, so the pair is admitted \
          with a CUDA-specific shape rule and a 1 024-lane variant rather than with Metal's rule",
     ),
@@ -58,7 +58,7 @@ const CUDA_ADMITTED: &[(&str, rir_emit::BackendPolicy, &str)] = &[
         "eight shapes out of eight between 0,86 and 0,98 in the same session, and refused all \
          the same: the shape that refuses `ADD` is a broadcast its twin `mul_repeat` serves \
          identically, and `MUL`'s own matrix does not contain one. Promoting here would certify \
-         a path this lane never exercised - the false positive §C4 learned to refuse",
+         a path this lane never exercised, the false positive this list refuses",
     ),
     (
         "GGML_OP_SCALE",
@@ -68,7 +68,7 @@ const CUDA_ADMITTED: &[(&str, rir_emit::BackendPolicy, &str)] = &[
          to amortize - and the flattened dispatch measures 0,92 / 0,89 / 0,99 against it on the \
          three shapes of its matrix (session `wisp-20260815T142310Z`). The ceiling is raised \
          because the measurement raised it; the pair keeps its native kernel for the F16 \
-         restriction it publishes (§11)",
+         restriction it publishes",
     ),
     (
         "GGML_OP_UNARY",
@@ -150,7 +150,7 @@ pub fn validate_tables(
         };
         // A spec and its kernel are declarations joined by name: their arity and
         // parameter order are therefore a property to check, not an indexing
-        // assumption (ADR-4 section 9).
+        // assumption.
         if spec.args.len() != kernel.args().len() {
             return Err(err(
                 kernel.name(),
@@ -194,7 +194,7 @@ pub fn validate_tables(
             ));
         }
         // CPU remains native in this slice: promoting a RIR variant there must
-        // be a visible table change, never a side effect (ADR-5 section 4).
+        // be a visible table change, never a side effect.
         if spec.policy_for(GgmlBackend::Cpu) != BackendPolicy::NativeOnly {
             return Err(err(kernel.name(), "cpu must remain NativeOnly".into()));
         }
@@ -244,8 +244,8 @@ pub fn validate_tables(
 ///    does not exist, as a `GenError::NoEmitter` halfway through emission.
 ///
 /// None of the three broke a test: they made a test tautological, which is the
-/// regression mode ADR-5 names. They are generation errors
-/// now, raised before the first byte is written.
+/// regression mode this check exists for. They are generation errors now,
+/// raised before the first byte is written.
 ///
 /// The input is the **registration**, so each kernel names its family directly.
 /// The remaining coverage failure is a family arm that schedules only the CPU,

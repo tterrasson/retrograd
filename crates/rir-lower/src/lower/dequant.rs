@@ -1,6 +1,6 @@
 //! Fusing `Read` + `Dequant` into Loop IR: block headers, packed bit
 //! fields, sub-block scales, and the segmentation that reads a header once
-//! per block instead of once per element (ADR-3 section 3).
+//! per block instead of once per element.
 
 use rir_core::IrId;
 use rir_core::{ArgId, AxisId, Kernel, Op, ValueId, depends_on_axis};
@@ -10,7 +10,7 @@ use crate::loop_ir::*;
 use crate::lower::{LowerError, Lowerer, can_lower_dequant};
 
 /// What a quantized block shares between its elements, resolved once by
-/// `Lowerer::lower_dequant_header` (ADR-3 section 3).
+/// `Lowerer::lower_dequant_header`.
 ///
 /// A named record rather than a positional `Vec<VarId>`: with five scale
 /// packings the slots stopped being "scale then dmin then maybe two more", and
@@ -31,19 +31,19 @@ impl<'k> Lowerer<'k> {
     /// dequantized tensor.
     ///
     /// **The expansion is driven by the format's `BlockLayout`**, the
-    /// description the canonical table carries beside `BlockShape`
-    /// (ADR-3 section 4). There is one expansion, not one arm per
+    /// description the canonical table carries beside `BlockShape`.
+    /// There is one expansion, not one arm per
     /// format: the index plan says where the bits of element `e` are, the scale
     /// plan says what multiplies them, and the formula says what is subtracted.
     /// A format the table describes no layout for is an explicit error, never
     /// an approximation - `NativeIntrinsicQuant` when RIR deliberately defers to
-    /// the backend primitive (ADR-3 section 5), `UnsupportedQuantShape` when the table
+    /// the backend primitive, `UnsupportedQuantShape` when the table
     /// simply has no description yet.
     ///
     /// Takes the index registers rather than the semantic indices, so the same
     /// decoder serves a direct read and a **staged** one: a tile's coordinates
     /// are registers the emitters' cooperative loop drives, and no `ValueId`
-    /// names them (ADR-3 section 3).
+    /// names them.
     ///
     /// It is split in two halves for a measured reason: everything that
     /// depends on the *block* and not on the element - the address base, the

@@ -12,8 +12,8 @@
 //! within the invocation, so nothing needs clearing first. The result is the
 //! same because the sum traverses `k` in the same direction.
 //!
-//! **A quantized `src0` is the same kernel one table row later**
-//! (ADR-3 section 3). Most observed `OUT_PROD` nodes have a quantized `src0`,
+//! **A quantized `src0` is the same kernel one table row later**.
+//! Most observed `OUT_PROD` nodes have a quantized `src0`,
 //! the frozen LoRA weight. The body below changes by
 //! no character: `KernelBuilder::read` inserts explicit `Dequant` for a
 //! quantized argument, and lowering fuses it into tile staging. What had to be
@@ -45,7 +45,7 @@ pub fn kernel_name(format: Option<QuantType>) -> String {
 }
 
 /// The `src0` dtypes this kernel is generated for: F32, then every member of
-/// the **`out_prod` family** of the canonical table (ADR-3 section 2) whose
+/// the **`out_prod` family** of the canonical table whose
 /// block shape lowering can expand.
 ///
 /// Two filters, and neither is a list of names. `ops.out_prod` is what ggml's
@@ -320,7 +320,7 @@ mod tests {
         }
     }
 
-    /// Tiling (ADR-2 section 6) is a **memory** decision, not arithmetic:
+    /// Tiling is a **memory** decision, not arithmetic:
     /// `k` increases within a tile and tiles increase, so each output sums the
     /// same terms in the same order as sequential. Required equality is thus
     /// **bit-for-bit** - tolerance would hide exactly what this test verifies.
@@ -446,7 +446,7 @@ mod tests {
         ));
     }
 
-    // ---- quantized `src0` (ADR-3 section 3) -------------------------
+    // ---- quantized `src0` -------------------------
 
     /// A quantized `a` tensor and the F32 values it encodes.
     ///
@@ -601,8 +601,8 @@ mod tests {
                 );
             }
         }
-        // Ten standard formats, plus two made nearly free by the LUT table
-        // (ADR-3 section 5). `q6_K` is included because the census
+        // Ten standard formats, plus two made nearly free by the LUT table.
+        // `q6_K` is included because the census
         // counted it at 56 of 736 nodes.
         for standard in [
             "q2_K", "q3_K", "q4_0", "q4_1", "q4_K", "q5_0", "q5_1", "q5_K", "q6_K", "q8_0",

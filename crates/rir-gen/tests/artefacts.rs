@@ -614,7 +614,7 @@ fn the_shared_scan_is_workgroup_wide_and_subgroup_independent() {
 /// What the tiled scan claims over the blocked one is an **access plan**,
 /// and an access plan is not visible in a result: a version that staged its
 /// tile lane-contiguously would compute the same prefixes, pass every
-/// parity test, and buy nothing (ADR-2 section 5). So the two
+/// parity test, and buy nothing. So the two
 /// properties that *are* the strategy are asserted here.
 ///
 /// They are asserted on the **loop nest**, where lowering materializes the
@@ -839,8 +839,7 @@ fn every_manifest_round_trips_through_the_schema() {
             checked += 1;
         }
     }
-    // A silent zero would make the assertion above vacuous - the failure mode
-    // ADR-5 names.
+    // A silent zero would make the assertion above vacuous.
     assert!(checked > 100, "only {checked} manifests seen");
 }
 

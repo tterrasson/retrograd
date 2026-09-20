@@ -1,4 +1,4 @@
-//! AOT C/C++ registry emitter (ADR-4 section 4).
+//! AOT C/C++ registry emitter.
 //!
 //! Emits `rir_registry.h` / `rir_registry.cpp`: POD structures a ggml backend
 //! consumes with no JSON parsing, no allocation and no string comparison in
@@ -111,7 +111,7 @@ pub fn emit_registry(
     //   Each says what *it* does not claim; the op leaves to the native kernel
     //   only what none of them claims. A category one kernel covers therefore
     //   disappears from the op's mask, which is exactly what widening a domain
-    //   is supposed to look like from outside (ADR-4 section 6).
+    //   is supposed to look like from outside.
     cpp.push_str("const rir_op_policy rir_op_policies[] = {\n");
     let mut n_policies = 0usize;
     let mut done: Vec<&str> = Vec::new();
@@ -146,7 +146,7 @@ pub fn emit_registry(
 /// far as every consumer is concerned - the dispatch-site counters, the lane's
 /// "declared but never dispatched" check, telemetry. Asserted here rather than
 /// hoped for, because the symptom is a *green* run that counted fifteen kernels
-/// as one (ADR-4 section 7).
+/// as one.
 fn check_unique_identity(
     variants: &[(&LoopKernel, &IntegrationSpec)],
 ) -> Result<(), RegistryError> {
@@ -154,7 +154,7 @@ fn check_unique_identity(
     // as far as every consumer is concerned - the dispatch-site counters, the
     // lane's "declared but never dispatched" check, telemetry. Asserted here
     // rather than hoped for, because the symptom is a *green* run that counted
-    // fifteen kernels as one (ADR-4 section 7).
+    // fifteen kernels as one.
     {
         let mut seen: Vec<(String, String, u8)> = Vec::new();
         for (k, spec) in variants {
@@ -529,7 +529,7 @@ fn domain_reasons<'a>(
     cpp
 }
 
-/// The chosen native exception (ADR-5 section 5), printed exactly where the
+/// The chosen native exception, printed exactly where the
 /// domain reasons are and for the same reason: it is the same kind of
 /// statement - something RIR does not claim - and a reader of the policy rows
 /// must find both in one place. The difference is that no counter can carry it:
@@ -542,7 +542,7 @@ fn native_exceptions<'a>(
     said: &mut Vec<(&'a str, &'a str)>,
 ) -> Result<String, RegistryError> {
     let mut cpp = String::new();
-    // The chosen native exception (ADR-5 section 5), printed exactly
+    // The chosen native exception, printed exactly
     // where the domain reasons are and for the same reason: it is the same
     // kind of statement - something RIR does not claim - and a reader of the
     // policy rows must find both in one place. The difference is that no
@@ -621,8 +621,8 @@ fn policy_rows(
             if domain != 0 {
                 return Err(RegistryError::new(
                     &subject,
-                    "native kernel retired while the declared domain is not empty - §11 \
-                     permits retaining the native kernel only for a published restriction, \
+                    "native kernel retired while the declared domain is not empty - the \
+                     native kernel is kept only for a published restriction, \
                      so it may be retired only when there are none",
                 ));
             }
@@ -660,7 +660,7 @@ fn policy_rows(
                 format!("{op}/{}", backend.name()),
                 "promoted, no published restriction remains, native kernel retained, and \
                  nothing explains it - either native_retired or a native exception with \
-                 its reason (ADR-5 §4, §5)",
+                 its reason",
             ));
         }
         cpp.push_str(&format!(

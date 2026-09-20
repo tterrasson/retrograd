@@ -10,7 +10,7 @@ use rir_gen::*;
 /// Table rules - one spec per kernel, no orphan spec, matching arity and
 /// parameter order, production with explicit op, native CUDA and CPU - are
 /// enforced by `validate_registry`, which `generate_all` calls before first
-/// emission. (ADR-4 section 9.)
+/// emission.
 #[test]
 fn the_declared_tables_pass_registry_validation() {
     validate_registry().expect("registry tables");
@@ -296,7 +296,7 @@ fn a_schedule_on_a_refused_backend_is_a_generation_error() {
 /// variant is production anywhere, so `cuda_policy_is_locked_to_native`
 /// above has nothing to relax. The CUDA loaders keep decoding, and their
 /// parity is checked against the same bytes by `tests/rir_quant_oracle.rs`
-/// through ggml's CPU decoder (ADR-3 section 3).
+/// through ggml's CPU decoder.
 #[test]
 fn no_quantized_kernel_claims_production() {
     for format in rir_kernels::sum_rows_quant::variants() {
@@ -327,7 +327,7 @@ fn every_schedule_table_is_a_well_formed_variant_table() {
 /// blocked scan ahead at every row length up to 128 rows and behind from 256
 /// on. The tiled scan's `col ≥ 4096` is one tile, and the lane is what put
 /// it there: at `col = 1024` it ties the blocked scan, three quarters of its
-/// lanes being past the end of the row (ADR-2 section 5).
+/// lanes being past the end of the row.
 ///
 /// A silent edit of either number would send a whole shape class to a
 /// lowering measured slower there, and nothing else in the pipeline would
@@ -448,7 +448,7 @@ fn the_rms_norm_back_variants_split_the_shape_space_where_the_lane_says() {
     }
 }
 
-/// The rule of ADR-5, as a property of the
+/// The promotion rule, as a property of the
 /// shipped table rather than of one generation run: **no promoted pair is
 /// retirable, unretired and silent**.
 ///
@@ -484,7 +484,7 @@ fn every_promoted_pair_says_why_its_native_is_still_there() {
             assert!(
                 domain != 0 || retired || excepted,
                 "{op}/{}: promoted, removable, not retired, without a line to \
-                 explain it (ADR-5 §4, §5)",
+                 explain it",
                 backend.name()
             );
             assert!(

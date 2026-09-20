@@ -1,4 +1,4 @@
-//! RIR kernels described once in the DSL (ADR-1 section 2).
+//! RIR kernels described once in the DSL.
 //!
 //! Each file defines one kernel's mathematics, axes, and contract. Schedules
 //! live in `rir-lower` and emitters elsewhere; what lives **here** is the
@@ -35,15 +35,14 @@ use rir_lower::{Family, Schedule};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KernelId {
     L2NormBack,
-    /// One per lowerable quantized format (ADR-3 section 2).
+    /// One per lowerable quantized format.
     SumRowsQuant(QuantType),
     L2NormFwd,
     /// Derived from `L2NormFwd` by transposition (stage D), never handwritten.
     L2NormFwdGrad,
     Cumsum,
     MatMulNaive,
-    /// One per `src0` dtype the compiler can read: `None` is F32
-    /// (ADR-4 section 5).
+    /// One per `src0` dtype the compiler can read: `None` is F32.
     OutProd(Option<QuantType>),
     RmsNormBack,
     RmsNorm,
@@ -57,7 +56,7 @@ pub enum KernelId {
 pub fn ids() -> Vec<KernelId> {
     let mut v = vec![KernelId::L2NormBack];
     // One quantized kernel per lowerable format, straight from the canonical
-    // table (ADR-3 section 2) - adding a format adds its kernel.
+    // table - adding a format adds its kernel.
     v.extend(
         sum_rows_quant::variants()
             .into_iter()
@@ -70,8 +69,7 @@ pub fn ids() -> Vec<KernelId> {
         KernelId::MatMulNaive,
     ]);
     // One `out_prod` per `src0` dtype the compiler can read, straight from the
-    // canonical table - F32 first, then the quantized weights of a LoRA backward
-    // (ADR-4 section 5).
+    // canonical table - F32 first, then the quantized weights of a LoRA backward.
     v.extend(out_prod::variants().into_iter().map(KernelId::OutProd));
     v.extend([
         KernelId::RmsNormBack,
@@ -214,7 +212,7 @@ pub fn all() -> Vec<ValidatedKernel> {
     registry().into_iter().map(|r| r.kernel).collect()
 }
 
-/// The integration table (ADR-4 section 3): one explicit entry per kernel
+/// The integration table: one explicit entry per kernel
 /// of `all()`, **in the same order**, because both are projections of one
 /// registry. `ggml_op: None` marks an oracle-only kernel - the
 /// association is never derived from the kernel's name, because that derivation
@@ -242,7 +240,7 @@ pub fn integration_for(kernel: &str) -> Option<IntegrationSpec> {
 /// This is therefore a restriction of **one kernel of the pair**, not
 /// of the op: `add_repeat`/`mul_repeat` claim `ggml_can_repeat` and this one
 /// does not, and the op's policy row carries only what *none* of its kernels
-/// claims (ADR-1 section 5). Kept declared because it is true of this
+/// claims. Kept declared because it is true of this
 /// kernel, and because the vectorized lowering it protects is the one carrying
 /// the totality of the measured traffic.
 const BROADCAST_BAND: DomainAssumption = DomainAssumption {
@@ -305,7 +303,7 @@ impl KernelId {
     /// in a second table joined by name.
     ///
     /// **`integer_range` is deliberately declared nowhere below**, and that is
-    /// the decision, not an omission (ADR-4 section 6). Generated shaders
+    /// the decision, not an omission. Generated shaders
     /// address bytes in `index_bits = 32`, so a binding whose largest byte
     /// offset exceeds 4 GiB leaves through the portable contract. Widening the
     /// field would cost every push constant of every kernel; *declaring* the
