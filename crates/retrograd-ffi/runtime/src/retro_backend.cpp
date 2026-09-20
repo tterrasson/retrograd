@@ -1630,6 +1630,11 @@ std::string backend_report(const trainer_state & state) {
         }
         out << (writers.empty() ? std::string("none") : join_patterns(writers)) << "\n";
     }
+    // Whether the active device carries this run's own update step. It is the
+    // predicate ensure_opt_context() refuses on, so report it beside the
+    // others.
+    out << "  cap_opt_step_device: "
+        << (state.cap_opt_step_device ? "supported" : "unavailable") << "\n";
     out << "  chunked_cross_entropy: "
         << (state.train_config.chunked_cross_entropy ? "enabled" : "disabled") << "\n";
     // The loss graph this run builds, on its own line because a reader

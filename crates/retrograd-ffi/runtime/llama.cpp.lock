@@ -99,6 +99,17 @@ rir_flat_linear = { status = "retrograd", probe = "ggml_rir_variant_fits_layout"
 # on its side was replaced by a capability declared here.
 packed_seq_capability = { status = "proposable", odds = "medium", probe = "llama_model_supports_packed_seq", why = "declares whether the graph of an architecture accepts a ubatch mixing several sequences; the family is purely additive - the GGML_ASSERT(ubatch.equal_seqs()) in src/models/ stay those of upstream, and the declaration is honoured at a single point, llama_context::packed_seq_supported(), at both entries of packed splitting; upstream has the same need on the server side (deciding on a mixed batch without knowing the architecture), but llama_decode_packed is one more llama.h API and will have to be proposed separately from the predicate" }
 
+# --- families added on 2026-09-20, with the two fork deltas the base-weight
+# and optimizer work needed. Both are carried by commits named `retro(opt)`,
+# which is not a key here: four commits on retrograd/main predate the naming
+# contract the same way (two for optimizer_descriptor, one each for
+# optimizer_state_access, rir and metal). Rewriting fork history to rename them
+# would move every pin, so the divergence is recorded rather than fixed, and
+# --upstream-status does not check the correspondence.
+
+trainable_param_dtype = { status = "proposable", odds = "medium", probe = "", why = "llama_opt_init marks the float types an update kernel can write rather than F32 alone, leaving which of them a given run may mark to the caller's param_filter; the substance is small and generic, but upstream has no training loop with a policy to put there, so it will want the filter contract discussed rather than the diff" }
+optimizer_kernels = { status = "proposable", odds = "low", probe = "ggml_opt_step_gefen", why = "two more ggml_opt_optimizer_type entries and two new ggml ops for a quantized optimizer state, with a CPU and a Metal dispatch; Muon is a graph of ops ggml already has and defends itself, Gefen is a specific algorithm upstream has not asked for and would have to maintain on four backends, so the family has to be split before any of it is presentable. It also moves GGML_OP_COUNT and GGML_OPT_OPTIMIZER_TYPE_COUNT, so the vendored tests/test-opt.cpp - which this build does not compile - will stop compiling on the next merge from upstream" }
+
 rir_pattern_census = { status = "retrograd", probe = "ggml_rir_census_pattern_snapshot", why = "counts the linear op chains seen by the RIR dispatch to guide kernel generation; this is instrumentation of the Retrograd-specific kernel compiler, with no upstream purpose" }
 
 [upstream_bugs]

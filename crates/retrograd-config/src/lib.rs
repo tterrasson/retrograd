@@ -47,6 +47,7 @@ pub use grpo::{
     AdvantageBaseline, DEFAULT_MAX_STALLED_UPDATES, DynamicSampling, GrpoConfig, GrpoJudge,
     GrpoToml, KlSchedule, KlScheduleToml, OverlongPenalty,
 };
+pub use optimizer::{ResolvedOptimizer, build_optimizer};
 pub use ppo::{CriticConfig, CriticToml, PpoConfig, PpoToml};
 pub use reference::ReferenceConfig;
 pub use sft::{SftConfig, SftToml};

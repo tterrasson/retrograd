@@ -9,11 +9,11 @@ Scheduler: TypeAlias = Literal["constant", "linear", "cosine"]
 DatasetFormat: TypeAlias = Literal["auto", "text", "chat_jsonl"]
 LoraDtype: TypeAlias = Literal["f32", "f16"]
 KvDtype: TypeAlias = Literal["f32", "f16"]
-#: The optimizers whose update step this build can create. All four now have
-#: one; what a Python caller cannot yet spell is an optimizer's own knobs, so a
-#: run gets the frozen defaults of whichever it names - and ``gefen`` gets the
-#: ``shared_v`` variant, which is the one a name alone selects.
+#: Optimizer kind. ``muon`` and ``gefen`` take their own knobs from
+#: :attr:`TrainingConfig.optimizer_options`.
 Optimizer: TypeAlias = Literal["adamw", "sgd", "muon", "gefen"]
+#: Gefen slot layout; a checkpoint only restores into a matching variant.
+GefenVariant: TypeAlias = Literal["shared_v", "quantized_m"]
 #: Which parameters carry a gradient. ``lora`` is the absence of :class:`TrainableConfig`,
 #: so it is not selectable here.
 TrainablePolicy: TypeAlias = Literal["full", "partial", "hybrid"]
@@ -161,6 +161,76 @@ DEFAULT_TARGETS = tuple(TARGET_ALIASES)
 
 
 @dataclass(frozen=True, slots=True)
+class MuonOptions:
+    """``[optimizer.muon]``: Muon's own coefficients.
+
+    ``None`` fields keep the declared defaults. Only valid with
+    :attr:`TrainingConfig.optimizer` set to ``muon``.
+    """
+
+    #: EMA coefficient of the momentum the update orthogonalizes.
+    momentum: float | None = None
+    nesterov: bool | None = None
+    #: Newton-Schulz iterations; each adds to the update graph's size.
+    ns_steps: int | None = None
+    #: Added to the Frobenius norm before normalizing.
+    ns_epsilon: float | None = None
+    #: Rate for the parameters Muon declines (embeddings, head, norms, biases,
+    #: LoRA factors), which AdamW updates instead. An absolute rate, not a
+    #: ratio of :attr:`TrainingConfig.learning_rate`.
+    fallback_learning_rate: float | None = None
+
+    def native_kwargs(self) -> dict[str, object]:
+        return {"muon": {key: value for key, value in _fields(self).items()}}
+
+
+@dataclass(frozen=True, slots=True)
+class GefenOptions:
+    """``[optimizer.gefen]``: fixed-block second moments, optionally with a
+    quantized first moment.
+
+    Experimental. Only valid with :attr:`TrainingConfig.optimizer` set to
+    ``gefen``.
+    """
+
+    #: ``shared_v``: F32 moments per block (``4N + 4K``). ``quantized_m``: the
+    #: first moment is one byte per element over a shared 256-entry codebook,
+    #: plus an F32 scale and second moment per block (``N + 8K``).
+    variant: GefenVariant | None = None
+    #: Elements per block; a positive power of two.
+    block_size: int | None = None
+    #: Below this element count a selected parameter falls back to AdamW.
+    min_numel: int | None = None
+    #: Only ``uniform`` exists.
+    codebook: Literal["uniform"] | None = None
+    #: Must be 256; the codebook index is one unsigned byte.
+    codebook_levels: int | None = None
+    #: Only ``fixed`` exists.
+    partition: Literal["fixed"] | None = None
+    beta1: float | None = None
+    #: Per-block second-moment coefficient.
+    beta2: float | None = None
+    eps: float | None = None
+
+    def native_kwargs(self) -> dict[str, object]:
+        return {"gefen": {key: value for key, value in _fields(self).items()}}
+
+
+def _fields(options: MuonOptions | GefenOptions) -> dict[str, object]:
+    """Keys the caller set; ``None`` means the declared default, so drop it."""
+
+    return {
+        name: getattr(options, name)
+        for name in options.__slots__
+        if getattr(options, name) is not None
+    }
+
+
+#: The optimizer each options class configures.
+_OPTIONS_OPTIMIZER: dict[type, str] = {MuonOptions: "muon", GefenOptions: "gefen"}
+
+
+@dataclass(frozen=True, slots=True)
 class TrainingConfig:
     """Runtime and optimizer settings used by a trainer."""
 
@@ -188,6 +258,8 @@ class TrainingConfig:
     #: per-parameter state, and its kernel is F32-only: pair it with
     #: ``LoraConfig(dtype="f32")`` rather than the F16 default.
     optimizer: Optimizer = "adamw"
+    #: The optimizer's own knobs; must match :attr:`optimizer`.
+    optimizer_options: MuonOptions | GefenOptions | None = None
     #: Which base tensors carry a gradient. ``None`` trains a LoRA adapter and
     #: leaves every base weight frozen.
     trainable: TrainableConfig | None = None
@@ -279,6 +351,15 @@ class TrainingConfig:
             raise ValueError("kv_dtype must be f32 or f16")
         if self.optimizer not in ("adamw", "sgd", "muon", "gefen"):
             raise ValueError("optimizer must be adamw, sgd, muon or gefen")
+        if self.optimizer_options is not None:
+            expected = _OPTIONS_OPTIMIZER.get(type(self.optimizer_options))
+            if expected is None:
+                raise ValueError("optimizer_options must be a MuonOptions or a GefenOptions")
+            if expected != self.optimizer:
+                raise ValueError(
+                    f"{type(self.optimizer_options).__name__} configures an optimizer "
+                    f"this run does not use: optimizer = {self.optimizer!r}"
+                )
 
     def native_kwargs(self) -> dict[str, object]:
         return {
@@ -298,6 +379,7 @@ class TrainingConfig:
             "scheduler": self.scheduler,
             "warmup_steps": self.warmup_steps,
             "optimizer": self.optimizer,
+            **({} if self.optimizer_options is None else self.optimizer_options.native_kwargs()),
             **(
                 _lora_trainable_kwargs()
                 if self.trainable is None

@@ -75,9 +75,24 @@ masking. Other extensions use the overlapping next-token text preparation.
 The optional `format=` argument can override detection.
 
 `TrainingConfig.optimizer` selects `"adamw"` (default), `"sgd"`, `"muon"`, or
-`"gefen"`. See
+`"gefen"`. The last two carry their own knobs in
+`TrainingConfig.optimizer_options`:
+
+```python
+from retrograd import GefenOptions, MuonOptions, TrainingConfig
+
+TrainingConfig(optimizer="muon", optimizer_options=MuonOptions(ns_steps=5))
+TrainingConfig(
+    optimizer="gefen",
+    optimizer_options=GefenOptions(variant="quantized_m", block_size=1024),
+)
+```
+
+Every field defaults to `None`, which keeps the declared default. The options
+must match the chosen optimizer: a `MuonOptions` on a `gefen` run is refused.
+See
 [`../docs/reference/configuration.md`](../docs/reference/configuration.md)
-for the per-optimizer hyperparameters.
+for what each key means; the names are the ones the TOML sections use.
 
 ## Full and partial base-weight training
 
@@ -106,6 +121,43 @@ whole model as a standalone GGUF instead. A KL-penalized run that trains base
 weights needs `trainer.attach_reference("model.gguf")` before training, since
 freezing the adapter alone no longer stands in for the reference policy once
 the base weights themselves move.
+
+## Checkpoint and resume
+
+`save_checkpoint` writes the trainable bundle or adapter, the optimizer's
+per-parameter state, the schedule and the RNG, and `load_checkpoint` restores
+it into a fresh trainer:
+
+```python
+metrics = trainer.fit(train)
+trainer.save_checkpoint(
+    "runs/state",
+    train,
+    checkpoint_id=f"step-{metrics.global_step:012d}",
+    algorithm="sft",
+    global_step=metrics.global_step,
+    epoch=1,
+)
+```
+
+```python
+with Trainer("model.gguf", training=same_config, trainable=same_selection) as trainer:
+    train = trainer.prepare_dataset("train.jsonl")
+    state = trainer.load_checkpoint("runs/state", train, algorithm="sft")
+    # continue from state.global_step
+```
+
+The caller supplies the dataset, the stopping point, and the algorithm's
+identity; everything else is read from the live runtime and compared, so a
+checkpoint taken against another run is refused. Put the algorithm's own
+settings in `trajectory_extra`: the binding cannot see them, and changing one
+would continue a different trajectory under this one's name.
+
+`checkpoint_footprint()` reports what one checkpoint costs on disk, split into
+adapter, trainable bundle and optimizer state.
+
+A checkpoint written here is not interchangeable with one the `retrograd` CLI
+writes; the refusal says so.
 
 ## Sharing a GPU
 

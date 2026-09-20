@@ -672,13 +672,20 @@ fn total_elements(set: &TrainableSet) -> u64 {
 }
 
 /// Both variants, against the oracle, at a block size that divides nothing:
-/// every tensor here ends in a partial trailing block, which is the case the
-/// mean and the scale are easiest to get wrong on.
-#[test]
-fn a_gefen_step_is_the_fixed_block_algorithm_it_claims_to_be() {
-    let model = fixture!();
-    let _guard = common::serialize_models();
-
+/// every tensor ends in a partial trailing block.
+///
+/// The oracle is fed the inputs the run itself observed (pre-step weights,
+/// the run's own backward gradient), so the same body checks any backend
+/// without comparing two backends' arithmetic.
+fn assert_gefen_matches_the_oracle(model: &Path, device: Device) {
+    // Per-device bound: the relative error is dominated by a near-zero
+    // weight, and a GPU reduction in a different order lands a small multiple
+    // above the CPU figure. Both stay four orders of magnitude under the
+    // negative control.
+    let tolerance = match device {
+        Device::Cpu => 1.0e-4,
+        _ => 1.0e-3,
+    };
     for variant in [GefenVariant::SharedV, GefenVariant::QuantizedM] {
         // Small enough that every matrix spans many blocks. The selection adds
         // the norms and drops the fallback threshold so Gefen owns them too:
@@ -691,9 +698,10 @@ fn a_gefen_step_is_the_fixed_block_algorithm_it_claims_to_be() {
             block_size,
             min_numel: 1,
         });
-        let mut trainer =
-            Trainer::new(&model, config(kind, mixed_selector())).expect("load trainer");
-        let set = resolved(&model, &mixed_selector());
+        let mut run = config(kind, mixed_selector());
+        run.device = device;
+        let mut trainer = Trainer::new(model, run).expect("load trainer");
+        let set = resolved(model, &mixed_selector());
         trainer.declare_trainable_set(&set).expect("select");
         trainer.prepare_optimizer().expect("build the gefen graph");
 
@@ -789,15 +797,36 @@ fn a_gefen_step_is_the_fixed_block_algorithm_it_claims_to_be() {
             }
         }
         assert!(
-            worst < 1.0e-4,
-            "{variant}: the gefen step is not the oracle's: relative error {worst}"
+            worst < tolerance,
+            "{variant} on {device:?}: the gefen step is not the oracle's: \
+             relative error {worst}"
         );
         assert!(
-            worst_without_block_scaling > 1.0e-3,
-            "{variant}: one global second moment would have passed too: \
-             {worst_without_block_scaling}"
+            worst_without_block_scaling > 1000.0 * tolerance,
+            "{variant} on {device:?}: one global second moment would have passed \
+             too: {worst_without_block_scaling}"
         );
     }
+}
+
+#[test]
+fn a_gefen_step_is_the_fixed_block_algorithm_it_claims_to_be() {
+    let model = fixture!();
+    let _guard = common::serialize_models();
+    assert_gefen_matches_the_oracle(&model, Device::Cpu);
+}
+
+/// The same oracle, on the GPU: the F64 arithmetic is the algorithm oracle,
+/// the inputs are the GPU run's own, not the CPU run's output.
+#[test]
+fn a_gefen_step_on_the_gpu_is_the_same_fixed_block_algorithm() {
+    let model = fixture!();
+    if !retrograd::gpu_runtime_available() {
+        eprintln!("skipping: no GPU runtime to run the step on");
+        return;
+    }
+    let _guard = common::serialize_models();
+    assert_gefen_matches_the_oracle(&model, Device::Gpu);
 }
 
 /// At `B = 1` shared-v keeps one second moment per element, which is AdamW's,
@@ -992,18 +1021,15 @@ fn a_shared_v_payload_does_not_restore_into_a_quantized_m_run() {
     );
 }
 
-/// Gefen's two phases exist on the CPU alone, and a state mutation must never
-/// be answered on a fallback backend: the scheduler would update a copy and
-/// leave the device-resident slot stale. The refusal is at preflight, before
-/// the graph, and it names the backend rather than the optimizer's dtype.
-///
-/// Skipped where there is no GPU to decline it; the CPU half of the same
-/// predicate is every other case in this file.
+/// A state mutation must never be answered on a fallback backend: the
+/// scheduler would update a copy and leave the device-resident slot stale.
+/// The device decides whether it carries the step, at load time; this asserts
+/// that `cap_opt_step_device` and the preflight refusal agree.
 #[test]
-fn a_gefen_run_is_refused_on_a_device_with_no_update_step() {
+fn the_device_decides_whether_a_gefen_run_may_start() {
     let model = fixture!();
     if !retrograd::gpu_runtime_available() {
-        eprintln!("skipping: no GPU runtime to decline the step");
+        eprintln!("skipping: no GPU runtime to ask");
         return;
     }
     let _guard = common::serialize_models();
@@ -1013,16 +1039,37 @@ fn a_gefen_run_is_refused_on_a_device_with_no_update_step() {
     let mut trainer = Trainer::new(&model, run).expect("load trainer");
     let set = resolved(&model, &matrix_selector());
     trainer.declare_trainable_set(&set).expect("select");
-    let error = trainer
-        .prepare_optimizer()
-        .expect_err("no gefen step on this backend");
-    let message = error.to_string();
-    assert!(message.contains("gefen"), "{message}");
-    assert!(message.contains("no update step"), "{message}");
 
-    // Muon is built out of ops every backend carries, so the same device
-    // accepts it: the refusal above is about one optimizer's kernels and not
-    // about training on a device at all.
+    let report = trainer.backend_report().expect("a backend report");
+    let probed = report
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("cap_opt_step_device: "))
+        .expect("the report declares whether the device carries this step")
+        .trim()
+        .to_string();
+
+    match probed.as_str() {
+        "supported" => {
+            trainer
+                .prepare_optimizer()
+                .expect("the device declared the step and must then build it");
+            assert_eq!(train_one_row(&mut trainer), 1);
+            assert!(scores(&mut trainer).iter().all(|value| value.is_finite()));
+        }
+        "unavailable" => {
+            let error = trainer
+                .prepare_optimizer()
+                .expect_err("the device declared no step and must then refuse");
+            let message = error.to_string();
+            assert!(message.contains("gefen"), "{message}");
+            assert!(message.contains("no update step"), "{message}");
+        }
+        other => panic!("cap_opt_step_device is '{other}'"),
+    }
+
+    // Muon is built out of ops every backend carries, so no device declines
+    // it: the case above is about one optimizer's kernels, not about training
+    // on a device at all.
     let mut run = config(OptimizerKind::Muon, matrix_selector());
     run.device = Device::Gpu;
     let mut trainer = Trainer::new(&model, run).expect("load trainer");

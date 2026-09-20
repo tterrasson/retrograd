@@ -14,8 +14,10 @@ from retrograd import (
     AgenticGRPOConfig,
     CommandJudge,
     DistillConfig,
+    GefenOptions,
     GRPOConfig,
     LoraConfig,
+    MuonOptions,
     PPOConfig,
     SamplingConfig,
     TrainingConfig,
@@ -53,7 +55,10 @@ def native():
 
 def test_the_training_keywords_are_the_ones_the_binding_accepts(native) -> None:
     accepted = _keywords(native._Trainer)
+    # A config only carries its own optimizer's section, so take the union.
     sent = set(TrainingConfig().native_kwargs())
+    sent |= set(TrainingConfig(optimizer="muon", optimizer_options=MuonOptions()).native_kwargs())
+    sent |= set(TrainingConfig(optimizer="gefen", optimizer_options=GefenOptions()).native_kwargs())
 
     unreachable = accepted - sent - NOT_EXPOSED
     assert not unreachable, (
@@ -140,3 +145,19 @@ def test_the_agentic_keywords_are_the_ones_fit_agentic_grpo_accepts(native) -> N
         "AgenticGRPOConfig and _Trainer.fit_agentic_grpo disagree: "
         f"only native {sorted(accepted - sent)}, only Python {sorted(sent - accepted)}"
     )
+
+
+def test_the_optimizer_sections_are_the_keys_the_binding_knows(native) -> None:
+    """Every field of the two options classes reaches a key the native section
+    parser accepts, and nothing else does.
+    """
+
+    for options, optimizer in ((MuonOptions, "muon"), (GefenOptions, "gefen")):
+        with pytest.raises(ValueError, match=f"unknown {optimizer} option 'nonesuch'") as error:
+            native._Trainer("missing.gguf", optimizer=optimizer, **{optimizer: {"nonesuch": 1}})
+        known = set(str(error.value).split("known options are ", 1)[1].split(", "))
+        declared = set(options.__dataclass_fields__)
+        assert known == declared, (
+            f"{options.__name__} and the native {optimizer} section disagree: "
+            f"only native {sorted(known - declared)}, only Python {sorted(declared - known)}"
+        )

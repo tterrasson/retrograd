@@ -12,16 +12,17 @@ use pyo3::prelude::*;
 
 use retrograd::config::{
     AdvantageBaseline, CriticConfig, DEFAULT_MAX_STALLED_UPDATES, DistillConfig, DistillMode,
-    GrpoConfig, PpoConfig, PromptOrder,
+    GefenToml, GrpoConfig, MuonToml, OptimizerToml, PpoConfig, PromptOrder, build_optimizer,
 };
 use retrograd::dataset::{self, DataFormat, PreparedDataset};
 use retrograd::training::{self, Progress};
 use retrograd::{
-    CheckpointDtype, DEFAULT_CE_SEQ_CHUNK, DEFAULT_CHECKPOINT_STRIDE, Device, Error, FeatureDtype,
-    GrpoBatchParams, KvDtype, LayerRange, LoraConfig, LrScheduler, OptimizerKind, RewardMode,
-    RewardProtocol, SamplingParams, SharedPrefixFanout, TargetSet, TrainConfig, TrainMetrics,
-    TrainSequence, TrainablePolicy, TrainableRunConfig, TrainableSelector, TrainableSet, Trainer,
-    WeightedBatch, backend_list,
+    CheckpointDtype, CheckpointMetadata, CheckpointProgress, DEFAULT_CE_SEQ_CHUNK,
+    DEFAULT_CHECKPOINT_STRIDE, DatasetRecord, Device, Error, FeatureDtype, GrpoBatchParams,
+    KvDtype, LayerRange, LoraConfig, LrScheduler, OptimizerKind, RewardMode, RewardProtocol,
+    SamplingParams, SharedPrefixFanout, TargetSet, TrainConfig, TrainMetrics, TrainSequence,
+    TrainablePolicy, TrainableRunConfig, TrainableSelector, TrainableSet, Trainer, WeightedBatch,
+    backend_list, checkpoint,
 };
 use retrograd_agent::tools::{McpServerConfig, McpToolProvider, ToolProvider};
 use retrograd_agent::{
@@ -38,6 +39,18 @@ type ProgressTuple = (MetricsTuple, Vec<(String, f32)>);
 type TrainableEntryTuple = (String, String, String, Vec<i64>, u64, u64);
 /// policy, resolved entries, eligible tensors left out with the reason.
 type TrainableSetTuple = (String, Vec<TrainableEntryTuple>, Vec<(String, String)>);
+/// global_step, epoch, cursor, seeds, adapter, trainable bundle, optimizer
+/// graph present at save time, slots restored.
+type ResumeTuple = (
+    u64,
+    u64,
+    u64,
+    Vec<(String, u64)>,
+    Option<String>,
+    Option<String>,
+    bool,
+    usize,
+);
 
 fn metrics_tuple(metrics: TrainMetrics) -> MetricsTuple {
     (
@@ -172,6 +185,219 @@ fn parse_optimizer(value: &str) -> PyResult<OptimizerKind> {
     Ok(kind)
 }
 
+/// One `[optimizer.<name>]` section, as a dict of TOML keys. Unknown keys
+/// are refused rather than ignored.
+struct OptimizerSection<'py> {
+    name: &'static str,
+    dict: Bound<'py, pyo3::types::PyDict>,
+}
+
+impl<'py> OptimizerSection<'py> {
+    fn new(
+        name: &'static str,
+        dict: Bound<'py, pyo3::types::PyDict>,
+        known: &[&str],
+    ) -> PyResult<Self> {
+        for key in dict.keys() {
+            let key: String = key.extract()?;
+            if !known.contains(&key.as_str()) {
+                return Err(PyValueError::new_err(format!(
+                    "unknown {name} option '{key}'; known options are {}",
+                    known.join(", ")
+                )));
+            }
+        }
+        Ok(Self { name, dict })
+    }
+
+    /// `None` and a missing key are the same: the row keeps the declared
+    /// default.
+    fn item(&self, key: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
+        Ok(self.dict.get_item(key)?.filter(|value| !value.is_none()))
+    }
+
+    fn wrong_type(&self, key: &str, expected: &str) -> PyErr {
+        PyValueError::new_err(format!("{}.{key} must be {expected}", self.name))
+    }
+
+    fn get_f32(&self, key: &str) -> PyResult<Option<f32>> {
+        match self.item(key)? {
+            None => Ok(None),
+            Some(value) => value
+                .extract::<f32>()
+                .map(Some)
+                .map_err(|_| self.wrong_type(key, "a number")),
+        }
+    }
+
+    fn get_bool(&self, key: &str) -> PyResult<Option<bool>> {
+        match self.item(key)? {
+            None => Ok(None),
+            Some(value) => value
+                .extract::<bool>()
+                .map(Some)
+                .map_err(|_| self.wrong_type(key, "a bool")),
+        }
+    }
+
+    fn get_u32(&self, key: &str) -> PyResult<Option<u32>> {
+        match self.item(key)? {
+            None => Ok(None),
+            Some(value) => value
+                .extract::<u32>()
+                .map(Some)
+                .map_err(|_| self.wrong_type(key, "a non-negative integer")),
+        }
+    }
+
+    fn get_u64(&self, key: &str) -> PyResult<Option<u64>> {
+        match self.item(key)? {
+            None => Ok(None),
+            Some(value) => value
+                .extract::<u64>()
+                .map(Some)
+                .map_err(|_| self.wrong_type(key, "a non-negative integer")),
+        }
+    }
+
+    fn get_string(&self, key: &str) -> PyResult<Option<String>> {
+        match self.item(key)? {
+            None => Ok(None),
+            Some(value) => value
+                .extract::<String>()
+                .map(Some)
+                .map_err(|_| self.wrong_type(key, "a string")),
+        }
+    }
+}
+
+const MUON_OPTIONS: [&str; 5] = [
+    "momentum",
+    "nesterov",
+    "ns_steps",
+    "ns_epsilon",
+    "fallback_learning_rate",
+];
+
+const GEFEN_OPTIONS: [&str; 9] = [
+    "variant",
+    "block_size",
+    "min_numel",
+    "codebook",
+    "codebook_levels",
+    "partition",
+    "beta1",
+    "beta2",
+    "eps",
+];
+
+/// The chosen optimizer with its layout resolved and the vector its update
+/// reads, built by the same function the TOML frontend calls so both sides
+/// share the same refusals.
+fn resolve_optimizer(
+    optimizer: &str,
+    muon: Option<&Bound<'_, pyo3::types::PyDict>>,
+    gefen: Option<&Bound<'_, pyo3::types::PyDict>>,
+    learning_rate: f32,
+    weight_decay: f32,
+    max_grad_norm: f32,
+) -> PyResult<(OptimizerKind, retrograd::HyperparameterVector)> {
+    let chosen = parse_optimizer(optimizer)?;
+    let muon = match muon {
+        None => None,
+        Some(dict) => {
+            let section = OptimizerSection::new("muon", dict.clone(), &MUON_OPTIONS)?;
+            Some(MuonToml {
+                momentum: section.get_f32("momentum")?,
+                nesterov: section.get_bool("nesterov")?,
+                ns_steps: section.get_u32("ns_steps")?,
+                ns_epsilon: section.get_f32("ns_epsilon")?,
+                fallback_learning_rate: section.get_f32("fallback_learning_rate")?,
+            })
+        }
+    };
+    let gefen = match gefen {
+        None => None,
+        Some(dict) => {
+            let section = OptimizerSection::new("gefen", dict.clone(), &GEFEN_OPTIONS)?;
+            Some(GefenToml {
+                variant: section.get_string("variant")?,
+                block_size: section.get_u64("block_size")?,
+                min_numel: section.get_u64("min_numel")?,
+                codebook: section.get_string("codebook")?,
+                codebook_levels: section.get_u64("codebook_levels")?,
+                partition: section.get_string("partition")?,
+                beta1: section.get_f32("beta1")?,
+                beta2: section.get_f32("beta2")?,
+                eps: section.get_f32("eps")?,
+            })
+        }
+    };
+    let section = OptimizerToml { muon, gefen };
+    let resolved = build_optimizer(
+        Some(&section),
+        chosen,
+        learning_rate,
+        weight_decay,
+        max_grad_norm,
+    )
+    .map_err(python_error)?;
+    Ok((resolved.kind, resolved.hyperparameters))
+}
+
+/// Fingerprint of everything in a Python run that can change the continued
+/// trajectory; a resume compares it. It is its own namespace (not the
+/// document frontend's `trajectory-v1`, which pins the algorithm section that
+/// has no Python equivalent), and the caller's own algorithm settings are
+/// appended as an opaque string.
+fn python_trajectory_signature(config: &TrainConfig, algorithm: &str, extra: &str) -> String {
+    let descriptor = format!(
+        "trajectory-py-v1|n_ctx={}|n_batch={}|n_ubatch={}|n_seq_max={}|\
+         generation_concurrency={}|fast_generation={}|kv_dtype={:?}|\
+         gradient_checkpointing={}|checkpoint_every_n_layers={}|checkpoint_dtype={:?}|\
+         threads={}|epochs={}|lr={:08x}|wd={:08x}|max_grad_norm={:08x}|scheduler={}|\
+         warmup={}|device={:?}|algorithm={algorithm}|extra={extra}",
+        config.n_ctx,
+        config.n_batch,
+        config.n_ubatch,
+        config.n_seq_max,
+        config.generation_concurrency,
+        config.fast_generation_context,
+        config.kv_dtype,
+        config.gradient_checkpointing,
+        config.checkpoint_every_n_layers,
+        config.checkpoint_dtype,
+        config.threads,
+        config.epochs,
+        config.learning_rate.to_bits(),
+        config.weight_decay.to_bits(),
+        config.max_grad_norm.to_bits(),
+        match config.lr_scheduler {
+            LrScheduler::Constant => "constant",
+            LrScheduler::Linear => "linear",
+            LrScheduler::Cosine => "cosine",
+        },
+        config.warmup_steps,
+        config.device,
+    );
+    checkpoint::fingerprint(descriptor.as_bytes())
+}
+
+/// The dataset identity a checkpoint records: over the prepared rows,
+/// so a different tokenization or label mask is a different dataset.
+fn dataset_record(dataset: &PreparedDataset, path: &str) -> DatasetRecord {
+    DatasetRecord {
+        version: checkpoint::FORMAT_VERSION,
+        path: path.to_string(),
+        fingerprint: retrograd::run::dataset_fingerprint(&dataset.tokens, &dataset.labels),
+        examples: dataset.examples as u64,
+        row_width: dataset.n_ctx as u64,
+        format: "prepared".into(),
+        permutation: Vec::new(),
+        cursor: 0,
+    }
+}
+
 /// Parses the base-weight policy and its selection, refusing a selection the
 /// policy would ignore rather than silently dropping it.
 fn parse_trainable(
@@ -285,6 +511,9 @@ impl PyPreparedDataset {
 #[pyclass(name = "_Trainer", unsendable)]
 struct PyTrainer {
     inner: Option<Trainer>,
+    /// The file the trainer was opened on; kept because a resume compares the
+    /// model's fingerprint and size.
+    model_path: std::path::PathBuf,
     training: TrainConfig,
     /// Resolved base set, kept for the `trainable_set` getter. `None` for a LoRA run.
     trainable: Option<TrainableSet>,
@@ -328,6 +557,8 @@ impl PyTrainer {
         scheduler="constant",
         warmup_steps=0,
         optimizer="adamw",
+        muon=None,
+        gefen=None,
         trainable_policy="lora",
         trainable_layers="all",
         trainable_modules=None,
@@ -366,6 +597,8 @@ impl PyTrainer {
         scheduler: &str,
         warmup_steps: u64,
         optimizer: &str,
+        muon: Option<&Bound<'_, pyo3::types::PyDict>>,
+        gefen: Option<&Bound<'_, pyo3::types::PyDict>>,
         trainable_policy: &str,
         trainable_layers: &str,
         trainable_modules: Option<Vec<String>>,
@@ -416,7 +649,14 @@ impl PyTrainer {
             trainable_biases,
             trainable_output_head,
         )?;
-        let chosen_optimizer = parse_optimizer(optimizer)?;
+        let (chosen_optimizer, optimizer_hyperparameters) = resolve_optimizer(
+            optimizer,
+            muon,
+            gefen,
+            learning_rate,
+            weight_decay,
+            max_grad_norm,
+        )?;
         let config = TrainConfig {
             n_ctx,
             n_batch,
@@ -439,11 +679,9 @@ impl PyTrainer {
                 selector,
                 optimizer: chosen_optimizer,
             },
-            // The declared vector of the optimizer named above. A Python caller
-            // has no `[optimizer.<name>]` equivalent yet, so what it gets is
-            // the frozen v1 of whichever optimizer it chose - never a partly
-            // filled vector, and never another optimizer's rows.
-            optimizer_hyperparameters: chosen_optimizer.declared_hyperparameters(),
+            // Built by `resolve_optimizer`: the declared rows, with the
+            // `muon=`/`gefen=` overrides.
+            optimizer_hyperparameters,
             chunked_cross_entropy,
             chunked_ce_tiles,
             chunked_ce_seq_chunk,
@@ -472,7 +710,7 @@ impl PyTrainer {
         } else {
             None
         };
-        let mut inner = Trainer::new(model_path, config.clone()).map_err(python_error)?;
+        let mut inner = Trainer::new(&model_path, config.clone()).map_err(python_error)?;
         let (architecture, trainable) = match resolved {
             Some((architecture, set)) => {
                 inner.declare_trainable_set(&set).map_err(python_error)?;
@@ -482,6 +720,7 @@ impl PyTrainer {
         };
         Ok(Self {
             inner: Some(inner),
+            model_path: std::path::PathBuf::from(model_path),
             training: config,
             trainable,
             architecture,
@@ -595,6 +834,157 @@ impl PyTrainer {
             .trainer()?
             .reference_path()
             .map(|path| path.display().to_string()))
+    }
+
+    /// Adapter, trainable bundle and optimizer state size of one checkpoint.
+    fn checkpoint_footprint(&mut self) -> PyResult<(u64, u64, u64)> {
+        let footprint = self
+            .trainer_mut()?
+            .checkpoint_footprint()
+            .map_err(python_error)?;
+        Ok((
+            footprint.adapter_bytes,
+            footprint.trainable_bytes,
+            footprint.optimizer_state_bytes,
+        ))
+    }
+
+    /// Writes a complete training checkpoint into `directory`.
+    ///
+    /// The caller supplies the dataset, the stopping point and the algorithm;
+    /// everything else is read from the live runtime.
+    #[pyo3(signature = (
+        directory,
+        dataset,
+        *,
+        checkpoint_id,
+        algorithm,
+        global_step,
+        epoch,
+        cursor=0,
+        dataset_path="",
+        trajectory_extra="",
+        phase="train",
+        resume_boundary="epoch",
+        seeds=None
+    ))]
+    #[expect(clippy::too_many_arguments)]
+    fn save_checkpoint(
+        &mut self,
+        directory: String,
+        dataset: &PyPreparedDataset,
+        checkpoint_id: &str,
+        algorithm: &str,
+        global_step: u64,
+        epoch: u64,
+        cursor: u64,
+        dataset_path: &str,
+        trajectory_extra: &str,
+        phase: &str,
+        resume_boundary: &str,
+        seeds: Option<std::collections::BTreeMap<String, u64>>,
+    ) -> PyResult<()> {
+        let metadata = CheckpointMetadata {
+            checkpoint_id: checkpoint_id.to_string(),
+            algorithm: algorithm.to_string(),
+            trajectory_signature: python_trajectory_signature(
+                &self.training,
+                algorithm,
+                trajectory_extra,
+            ),
+            resume_boundary: resume_boundary.to_string(),
+            scheduler_kind: retrograd::run::scheduler_name(self.training.lr_scheduler).to_string(),
+            warmup_steps: self.training.warmup_steps,
+            progress: CheckpointProgress {
+                version: checkpoint::FORMAT_VERSION,
+                epoch,
+                global_step,
+                cursor,
+                algorithm: algorithm.to_string(),
+                phase: phase.to_string(),
+                best_eval: None,
+                stale_evaluations: 0,
+                kl_multiplier: None,
+            },
+            dataset: dataset_record(&dataset.inner, dataset_path),
+            seeds: seeds.unwrap_or_default(),
+            // The Python driver writes its own files beside the checkpoint.
+            artifacts: std::collections::BTreeMap::new(),
+            model_path: self.model_path.clone(),
+        };
+        self.trainer_mut()?
+            .save_checkpoint(&directory, &metadata)
+            .map_err(python_error)
+    }
+
+    /// Restores a checkpoint from `directory`, refusing one that does not
+    /// match this run.
+    ///
+    /// Returns `(global_step, epoch, cursor, seeds, adapter, trainable,
+    /// had_optimizer_graph, restored_optimizer_slots)`.
+    #[pyo3(signature = (
+        directory,
+        dataset,
+        *,
+        algorithm,
+        dataset_path="",
+        trajectory_extra="",
+        total_steps=None
+    ))]
+    fn load_checkpoint(
+        &mut self,
+        directory: String,
+        dataset: &PyPreparedDataset,
+        algorithm: &str,
+        dataset_path: &str,
+        trajectory_extra: &str,
+        total_steps: Option<u64>,
+    ) -> PyResult<ResumeTuple> {
+        let training = self.training.clone();
+        let model_path = self.model_path.clone();
+        let record = dataset_record(&dataset.inner, dataset_path);
+        let trajectory_signature =
+            python_trajectory_signature(&training, algorithm, trajectory_extra);
+        let scheduler_kind = retrograd::run::scheduler_name(training.lr_scheduler).to_string();
+        let model_fingerprint =
+            checkpoint::fingerprint_file_cached(&model_path).map_err(python_error)?;
+        let trainer = self.trainer_mut()?;
+        let hyperparameters = trainer.optimizer_hyperparameters().map_err(python_error)?;
+        // Every field is read from the live runtime, not from caller
+        // arguments.
+        let expected = checkpoint::Compatibility {
+            model_signature: trainer.model_signature().map_err(python_error)?,
+            model_bytes: retrograd::run::model_bytes(&model_path),
+            model_fingerprint,
+            reference_fingerprint: trainer.reference_fingerprint().map_err(python_error)?,
+            algorithm: algorithm.to_string(),
+            trajectory_signature,
+            dataset_fingerprint: record.fingerprint.clone(),
+            scheduler_kind,
+            learning_rate: training.learning_rate,
+            warmup_steps: training.warmup_steps,
+            total_steps,
+            optimizer_kind: hyperparameters.optimizer().to_string(),
+            optimizer_layout_version: hyperparameters.optimizer().layout_version(),
+            optimizer_hyperparameters: hyperparameters.lines(),
+            weight_decay: training.weight_decay,
+            max_grad_norm: training.max_grad_norm,
+            trainable_policy: trainer.trainable_policy().as_str().to_string(),
+            trainable_signature: trainer.trainable_signature().map_err(python_error)?,
+        };
+        let info = trainer
+            .load_checkpoint(&directory, &expected)
+            .map_err(python_error)?;
+        Ok((
+            info.progress.global_step,
+            info.progress.epoch,
+            info.progress.cursor,
+            info.seeds.into_iter().collect(),
+            info.adapter.map(|path| path.display().to_string()),
+            info.trainable.map(|path| path.display().to_string()),
+            info.had_optimizer_graph,
+            info.restored_optimizer_slots,
+        ))
     }
 
     fn prepare_dataset(

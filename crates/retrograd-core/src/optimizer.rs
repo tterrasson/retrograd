@@ -161,9 +161,9 @@ impl OptimizerKind {
     ///
     /// All four have an update step: AdamW's and SGD's kernels, Muon's graph
     /// and Gefen's two-phase pair. What is still refused is a *device* - the
-    /// Gefen phases are written for the CPU alone, and a state mutation
+    /// Gefen phases are written for the CPU and for Metal; a state mutation
     /// answered on a fallback backend would update a copy and leave the real
-    /// slot stale, so the runtime refuses that at preflight rather than here.
+    /// slot stale, so the runtime asks the device at preflight.
     pub fn is_implemented(self) -> bool {
         true
     }

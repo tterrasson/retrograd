@@ -9,12 +9,14 @@ from retrograd import (
     ContainerEnvironment,
     CriticConfig,
     DistillConfig,
+    GefenOptions,
     GRPOConfig,
     HttpEnvironment,
     JudgeContext,
     LocalEnvironment,
     LoraConfig,
     McpServer,
+    MuonOptions,
     PPOConfig,
     RulerJudge,
     SamplingConfig,
@@ -450,3 +452,35 @@ def test_the_lora_defaults_are_not_a_shared_mutable() -> None:
     first = TrainingConfig().native_kwargs()
     first["trainable_modules"].append("attn")
     assert TrainingConfig().native_kwargs()["trainable_modules"] == []
+
+
+def test_an_optimizer_section_only_reaches_the_binding_for_its_own_optimizer() -> None:
+    sent = TrainingConfig(
+        optimizer="muon", optimizer_options=MuonOptions(ns_steps=3, nesterov=False)
+    ).native_kwargs()
+    assert sent["optimizer"] == "muon"
+    # Only the keys the caller set; an explicit `None` is dropped too.
+    assert sent["muon"] == {"ns_steps": 3, "nesterov": False}
+    assert "gefen" not in sent
+
+    sent = TrainingConfig(
+        optimizer="gefen", optimizer_options=GefenOptions(variant="quantized_m")
+    ).native_kwargs()
+    assert sent["gefen"] == {"variant": "quantized_m"}
+    assert "muon" not in sent
+
+    # No options at all crosses no section.
+    assert "muon" not in TrainingConfig(optimizer="muon").native_kwargs()
+
+
+def test_an_optimizer_section_for_another_optimizer_is_refused_in_python() -> None:
+    """The same refusal the TOML frontend performs, made before the model is
+    opened.
+    """
+
+    with pytest.raises(ValueError, match="does not use"):
+        TrainingConfig(optimizer="adamw", optimizer_options=MuonOptions(momentum=0.9))
+    with pytest.raises(ValueError, match="does not use"):
+        TrainingConfig(optimizer="muon", optimizer_options=GefenOptions(block_size=512))
+    with pytest.raises(ValueError, match="MuonOptions or a GefenOptions"):
+        TrainingConfig(optimizer="muon", optimizer_options="muon")  # type: ignore[arg-type]

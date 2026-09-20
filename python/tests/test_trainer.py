@@ -138,6 +138,16 @@ class FakeTrainer:
             config["callback"]((METRICS, [("agent/turns_per_traj_mean", 2.0)]))
         return METRICS
 
+    def checkpoint_footprint(self):
+        return (11, 22, 33)
+
+    def save_checkpoint(self, directory, dataset, **metadata):
+        self.saved_checkpoint = (directory, dataset, metadata)
+
+    def load_checkpoint(self, directory, dataset, **expected):
+        self.loaded_checkpoint = (directory, dataset, expected)
+        return (7, 2, 13, [("shuffle", 42)], None, "bundle.gguf", True, 4)
+
     def describe_lora(self):
         return "lora"
 
@@ -485,3 +495,39 @@ def test_a_policy_and_an_adapter_have_to_agree(policy, kwargs, message: str) -> 
     )
     with pytest.raises(ValueError, match=message):
         trainer(training=TrainingConfig(trainable=selection), **kwargs)
+
+
+def test_a_checkpoint_round_trip_crosses_as_the_keywords_the_binding_names(
+    tmp_path: Path,
+) -> None:
+    model = trainer(training=TrainingConfig(trainable=TrainableConfig(policy="full")))
+    dataset = model.prepare_dataset(tmp_path / "train.jsonl")
+
+    footprint = model.checkpoint_footprint()
+    assert (footprint.adapter_bytes, footprint.trainable_bytes) == (11, 22)
+    assert footprint.n_bytes == 66
+
+    model.save_checkpoint(
+        tmp_path / "state",
+        dataset,
+        checkpoint_id="step-000000000007",
+        algorithm="sft",
+        global_step=7,
+        epoch=2,
+        seeds={"shuffle": 42},
+    )
+    directory, handle, metadata = model._native.saved_checkpoint
+    assert directory == str(tmp_path / "state")
+    assert handle is dataset._handle
+    assert metadata["global_step"] == 7
+    assert metadata["seeds"] == {"shuffle": 42}
+    # Omitted optionals cross as the binding's own defaults.
+    assert metadata["dataset_path"] == ""
+    assert metadata["trajectory_extra"] == ""
+
+    state = model.load_checkpoint(tmp_path / "state", dataset, algorithm="sft")
+    assert (state.global_step, state.epoch, state.cursor) == (7, 2, 13)
+    assert state.seeds == {"shuffle": 42}
+    assert state.adapter is None
+    assert state.trainable == "bundle.gguf"
+    assert state.had_optimizer_graph and state.restored_optimizer_slots == 4

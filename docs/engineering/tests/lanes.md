@@ -179,6 +179,20 @@ reason to reinstall. To get the platform default (Metal on macOS) back, run
 `uv run --reinstall-package retrograd python -c "import retrograd"` from
 `python/`.
 
+`tests/test_pyo3_smoke.py` is the only Python lane that trains: it runs a
+partial base-weight run over the generated `qwen2` fixture, checkpoints it,
+and resumes it in a second trainer, asserting **equality** of the scores
+either side of the restore (a tolerance would pass for a checkpoint that
+restored the weights and dropped the optimizer's moments). It also drives the
+`[optimizer.gefen]` equivalent, `GefenOptions`, far enough for the layout
+version to refuse a `quantized_m` state offered to a `shared_v` run. Every
+case skips itself without the fixture.
+
+`tests/test_native_config_parity.py` keeps the two sides in step: it compares
+the binding's keyword-only signatures with what the dataclasses send, and
+compares the section parser's known keys with `MuonOptions`/`GefenOptions`'
+fields.
+
 Extra `pytest` args can be appended, e.g.
 `scripts/test-fast-python.sh tests/test_trainer.py -k grpo`.
 
@@ -386,6 +400,7 @@ invocations below directly on such a machine.
 | `train_parity` | a full CPU against Metal epoch (train, save, reload) with matching losses |
 | `device_memory` | the optimizer path's measured device budget, for an adapter run and for a base one |
 | `base_training` | its two `device_resident` cases: a base run's model export and trainable bundle, read off the device |
+| `muon_gefen` | its two GPU cases: the Metal Gefen kernels against the F64 oracle, and the agreement between `cap_opt_step_device` and the preflight refusal |
 | `vulkan_backend` | Vulkan registration, isolated ops, model offload, LoRA placement, a minimal training step |
 | `cuda_backend` | CUDA registration, CPU against CUDA op parity, model offload, LoRA placement, the training preflight |
 
@@ -417,7 +432,14 @@ export RETRO_CPU_FIXTURE=tests/fixtures/LFM2.5-230M-Q4_K_M.gguf
 export RETRO_TINY_FIXTURE=tests/fixtures/retrograd-tiny-qwen2-f32.gguf
 cargo test --features metal --test device_memory -- --test-threads=1
 cargo test --features metal --test base_training -- --test-threads=1 device_resident
+cargo test --features metal --test muon_gefen -- --test-threads=1
 ```
+
+`muon_gefen` runs whole on both lanes: its seven CPU cases are the algorithm
+oracles, and the two GPU ones skip themselves without a device. The GPU oracle
+is fed the inputs the GPU run observed, not the CPU run's output. Gefen has no
+CUDA and no Vulkan dispatch: there the same binary asserts the refusal,
+because `cap_opt_step_device` says so.
 
 Vulkan and CUDA, whole binaries. Model-dependent Vulkan cases want
 `RETRO_VULKAN_TEST_MODEL`; CUDA cases default to the in-repo CPU fixture, and

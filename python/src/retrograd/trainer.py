@@ -18,8 +18,10 @@ from .config import (
     TrainingConfig,
 )
 from .models import (
+    CheckpointFootprint,
     Dataset,
     Generation,
+    ResumeState,
     TokenScores,
     TrainableSelection,
     TrainingMetrics,
@@ -215,6 +217,89 @@ class Trainer:
             raise ValueError("context_size must be greater than zero")
         handle = self._translate(self._native.prepare_dataset, os.fspath(source), format, size)
         return Dataset(handle, self._dataset_owner)
+
+    def checkpoint_footprint(self) -> CheckpointFootprint:
+        """What one checkpoint of this run costs on disk, right now.
+
+        The optimizer state is only counted once its graph exists (after the
+        first step); before that the figure is adapter and bundle alone.
+        """
+
+        return CheckpointFootprint.from_native(self._translate(self._native.checkpoint_footprint))
+
+    def save_checkpoint(
+        self,
+        directory: PathLike,
+        dataset: Dataset,
+        *,
+        checkpoint_id: str,
+        algorithm: str,
+        global_step: int,
+        epoch: int,
+        cursor: int = 0,
+        dataset_path: PathLike | None = None,
+        trajectory_extra: str = "",
+        phase: str = "train",
+        resume_boundary: str = "epoch",
+        seeds: Mapping[str, int] | None = None,
+    ) -> Path:
+        """Write a resumable checkpoint into ``directory``.
+
+        The caller supplies the dataset, the stopping point, and the
+        algorithm's identity; the optimizer, scheduler and trainable state
+        are read from the live runtime.
+
+        ``trajectory_extra`` is folded into the resume fingerprint; put the
+        algorithm's own settings in it so changing them refuses the resume.
+        Checkpoints written here are not interchangeable with CLI ones.
+        """
+
+        target = Path(directory)
+        self._translate(
+            self._native.save_checkpoint,
+            os.fspath(target),
+            dataset._handle,
+            checkpoint_id=checkpoint_id,
+            algorithm=algorithm,
+            global_step=global_step,
+            epoch=epoch,
+            cursor=cursor,
+            dataset_path="" if dataset_path is None else os.fspath(Path(dataset_path)),
+            trajectory_extra=trajectory_extra,
+            phase=phase,
+            resume_boundary=resume_boundary,
+            seeds=None if seeds is None else dict(seeds),
+        )
+        return target
+
+    def load_checkpoint(
+        self,
+        directory: PathLike,
+        dataset: Dataset,
+        *,
+        algorithm: str,
+        dataset_path: PathLike | None = None,
+        trajectory_extra: str = "",
+        total_steps: int | None = None,
+    ) -> ResumeState:
+        """Restore a checkpoint into this trainer, refusing one that does not
+        match the run.
+
+        The dataset is compared by its prepared rows, not its path.
+        ``total_steps`` defaults to the schedule's own horizon.
+        """
+
+        return ResumeState.from_native(
+            self._translate(
+                self._native.load_checkpoint,
+                os.fspath(Path(directory)),
+                dataset._handle,
+                algorithm=algorithm,
+                dataset_path="" if dataset_path is None else os.fspath(Path(dataset_path)),
+                trajectory_extra=trajectory_extra,
+                total_steps=total_steps,
+            )
+        )
 
     def fit(
         self,

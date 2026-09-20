@@ -92,6 +92,205 @@ def test_pyo3_resolves_a_base_set_and_round_trips_its_bundle(tmp_path: Path) -> 
         trainer.close()
 
 
+#: Long enough that the byte-fallback tokenizer produces several rows.
+_CONTEXT = 256
+
+_CORPUS = (
+    "The quick brown fox jumps over the lazy dog. "
+    "Pack my box with five dozen liquor jugs. "
+    "How vexingly quick daft zebras jump! "
+    "Sphinx of black quartz, judge my vow. "
+) * 8
+
+
+def _base_trainer(native, model: Path, **overrides: object):
+    """A base-weight run over two `attn_q` matrices."""
+
+    keywords: dict[str, object] = {
+        "n_ctx": _CONTEXT,
+        "n_batch": _CONTEXT,
+        "n_ubatch": 64,
+        "trainable_policy": "partial",
+        "trainable_layers": "last:2",
+        "trainable_modules": ["attn_q"],
+        "shuffle": False,
+    }
+    keywords.update(overrides)
+    return native._Trainer(str(model), **keywords)
+
+
+def test_pyo3_checkpoints_a_base_run_and_resumes_it_exactly(tmp_path: Path) -> None:
+    """Checkpoint a base-weight run and resume it in a second trainer.
+
+    The assertion is equality, not a tolerance: a checkpoint that dropped the
+    moments would still score close, but not exactly.
+    """
+
+    native = pytest.importorskip("retrograd._native")
+    model = _tiny_fixture()
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text(_CORPUS, encoding="utf-8")
+    state = tmp_path / "state"
+
+    trainer = _base_trainer(native, model)
+    try:
+        dataset = trainer.prepare_dataset(str(corpus), "text", _CONTEXT)
+        metrics = trainer.fit_sft(dataset, None, None)
+        global_step = metrics[2]
+        # The optimizer graph exists by now, so its state is part of the cost.
+        adapter_bytes, trainable_bytes, optimizer_bytes = trainer.checkpoint_footprint()
+        assert adapter_bytes == 0, "a partial run publishes no adapter"
+        assert trainable_bytes > 0
+        assert optimizer_bytes > 0, "AdamW keeps two moments per parameter"
+
+        trainer.save_checkpoint(
+            str(state),
+            dataset,
+            checkpoint_id=f"step-{global_step:012d}",
+            algorithm="sft",
+            global_step=global_step,
+            epoch=1,
+            seeds={"shuffle": 42},
+        )
+        expected = trainer.score(trainer.tokenize("hello world"))
+        expected_step = global_step
+    finally:
+        trainer.close()
+
+    resumed = _base_trainer(native, model)
+    try:
+        dataset = resumed.prepare_dataset(str(corpus), "text", _CONTEXT)
+        # Cold, before the restore: must score differently, or the equality
+        # below would hold for a checkpoint that restored nothing.
+        cold = resumed.score(resumed.tokenize("hello world"))
+        info = resumed.load_checkpoint(str(state), dataset, algorithm="sft")
+        (
+            global_step,
+            epoch,
+            _cursor,
+            seeds,
+            adapter,
+            trainable,
+            had_graph,
+            slots,
+        ) = info
+        assert (global_step, epoch) == (expected_step, 1)
+        assert dict(seeds) == {"shuffle": 42}
+        assert adapter is None, "a partial run has no adapter to restore"
+        assert trainable is not None
+        assert had_graph and slots > 0
+
+        assert resumed.score(resumed.tokenize("hello world")) == expected
+        assert cold != expected
+    finally:
+        resumed.close()
+
+
+def test_pyo3_refuses_a_checkpoint_taken_against_another_trajectory(tmp_path: Path) -> None:
+    """A resume compares the run, not only the model."""
+
+    native = pytest.importorskip("retrograd._native")
+    model = _tiny_fixture()
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text(_CORPUS, encoding="utf-8")
+    state = tmp_path / "state"
+
+    trainer = _base_trainer(native, model)
+    try:
+        dataset = trainer.prepare_dataset(str(corpus), "text", _CONTEXT)
+        metrics = trainer.fit_sft(dataset, None, None)
+        global_step = metrics[2]
+        trainer.save_checkpoint(
+            str(state),
+            dataset,
+            checkpoint_id=f"step-{global_step:012d}",
+            algorithm="sft",
+            global_step=global_step,
+            epoch=1,
+        )
+    finally:
+        trainer.close()
+
+    other = _base_trainer(native, model, learning_rate=5.0e-4)
+    try:
+        dataset = other.prepare_dataset(str(corpus), "text", _CONTEXT)
+        with pytest.raises((ValueError, RuntimeError)):
+            other.load_checkpoint(str(state), dataset, algorithm="sft")
+    finally:
+        other.close()
+
+    # The algorithm's own settings ride in `trajectory_extra`.
+    same = _base_trainer(native, model)
+    try:
+        dataset = same.prepare_dataset(str(corpus), "text", _CONTEXT)
+        with pytest.raises((ValueError, RuntimeError)):
+            same.load_checkpoint(
+                str(state), dataset, algorithm="sft", trajectory_extra="group_size=8"
+            )
+    finally:
+        same.close()
+
+
+def test_pyo3_carries_an_optimizer_section_into_the_run(tmp_path: Path) -> None:
+    """A Python caller can choose the gefen variant, and the checkpoint pins
+    it: a `quantized_m` state does not restore into a `shared_v` run.
+    """
+
+    native = pytest.importorskip("retrograd._native")
+    model = _tiny_fixture()
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text(_CORPUS, encoding="utf-8")
+    state = tmp_path / "state"
+    section = {"variant": "quantized_m", "block_size": 512, "min_numel": 1}
+
+    trainer = _base_trainer(native, model, optimizer="gefen", gefen=section)
+    try:
+        dataset = trainer.prepare_dataset(str(corpus), "text", _CONTEXT)
+        metrics = trainer.fit_sft(dataset, None, None)
+        global_step = metrics[2]
+        trainer.save_checkpoint(
+            str(state),
+            dataset,
+            checkpoint_id=f"step-{global_step:012d}",
+            algorithm="sft",
+            global_step=global_step,
+            epoch=1,
+        )
+    finally:
+        trainer.close()
+
+
+    other = _base_trainer(native, model, optimizer="gefen")
+    try:
+        dataset = other.prepare_dataset(str(corpus), "text", _CONTEXT)
+        with pytest.raises((ValueError, RuntimeError)):
+            other.load_checkpoint(str(state), dataset, algorithm="sft")
+    finally:
+        other.close()
+
+    same = _base_trainer(native, model, optimizer="gefen", gefen=section)
+    try:
+        dataset = same.prepare_dataset(str(corpus), "text", _CONTEXT)
+        info = same.load_checkpoint(str(state), dataset, algorithm="sft")
+        assert info[6] and info[7] > 0
+    finally:
+        same.close()
+
+
+def test_pyo3_refuses_a_section_for_an_optimizer_the_run_did_not_choose() -> None:
+    native = pytest.importorskip("retrograd._native")
+    with pytest.raises(ValueError, match="does not use"):
+        native._Trainer("missing.gguf", optimizer="adamw", muon={"momentum": 0.9})
+    with pytest.raises(ValueError, match="power of two"):
+        native._Trainer("missing.gguf", optimizer="gefen", gefen={"block_size": 3})
+    with pytest.raises(ValueError, match="must be 256"):
+        native._Trainer("missing.gguf", optimizer="gefen", gefen={"codebook_levels": 64})
+    with pytest.raises(ValueError, match="must be 'uniform'"):
+        native._Trainer("missing.gguf", optimizer="gefen", gefen={"codebook": "learned"})
+    with pytest.raises(ValueError, match=r"gefen\.block_size must be"):
+        native._Trainer("missing.gguf", optimizer="gefen", gefen={"block_size": "wide"})
+
+
 def test_pyo3_refuses_a_base_run_reference_it_was_never_given() -> None:
     native = pytest.importorskip("retrograd._native")
     trainer = native._Trainer(

@@ -112,6 +112,71 @@ class TrainableSelection:
 
 
 @dataclass(frozen=True, slots=True)
+class CheckpointFootprint:
+    """What one checkpoint costs on disk, split the way the writer splits it."""
+
+    adapter_bytes: int
+    trainable_bytes: int
+    optimizer_state_bytes: int
+
+    @property
+    def n_bytes(self) -> int:
+        return self.adapter_bytes + self.trainable_bytes + self.optimizer_state_bytes
+
+    @classmethod
+    def from_native(cls, value: tuple[Any, Any, Any]) -> CheckpointFootprint:
+        return cls(*value)
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeState:
+    """Where a restored checkpoint left off.
+
+    ``restored_optimizer_slots == 0`` means either an optimizer with no
+    per-parameter state or a checkpoint taken before the first step;
+    ``had_optimizer_graph`` tells the two apart.
+    """
+
+    #: Next optimizer step to execute.
+    global_step: int
+    #: Next epoch (SFT) or update (rollout), zero-based.
+    epoch: int
+    #: Next row cursor inside the dataset pass.
+    cursor: int
+    seeds: Mapping[str, int]
+    #: The adapter GGUF that was loaded, if any.
+    adapter: str | None
+    #: The trainable bundle whose base values were restored. Independent of
+    #: :attr:`adapter`.
+    trainable: str | None
+    had_optimizer_graph: bool
+    restored_optimizer_slots: int
+
+    @classmethod
+    def from_native(cls, value: tuple[Any, ...]) -> ResumeState:
+        (
+            global_step,
+            epoch,
+            cursor,
+            seeds,
+            adapter,
+            trainable,
+            had_optimizer_graph,
+            restored_optimizer_slots,
+        ) = value
+        return cls(
+            global_step,
+            epoch,
+            cursor,
+            dict(seeds),
+            adapter,
+            trainable,
+            had_optimizer_graph,
+            restored_optimizer_slots,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Backend:
     kind: str
     name: str
