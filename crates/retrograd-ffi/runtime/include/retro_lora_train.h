@@ -44,7 +44,17 @@ typedef enum retro_trainable {
 typedef enum retro_optimizer {
     RETRO_OPTIMIZER_ADAMW = 0,
     RETRO_OPTIMIZER_SGD   = 1,
+    RETRO_OPTIMIZER_MUON  = 2,
+    RETRO_OPTIMIZER_GEFEN = 3,
 } retro_optimizer;
+
+// Which fixed-block state a Gefen run keeps. Not a coefficient: it selects a
+// slot table, so it moves the layout version a checkpoint records rather than
+// parameterizing one layout.
+typedef enum retro_gefen_variant {
+    RETRO_GEFEN_SHARED_V    = 0,
+    RETRO_GEFEN_QUANTIZED_M = 1,
+} retro_gefen_variant;
 
 typedef enum retro_checkpoint_dtype {
     // F32 inserts no casts at all, so the recompute stays bit-exact.
@@ -809,6 +819,26 @@ typedef struct retro_train_config {
     // parameter filter. The resolved tensor names themselves arrive separately,
     // through retro_trainer_set_trainable_base().
     int32_t trainable;
+    // Muon, read only when optimizer == RETRO_OPTIMIZER_MUON. The fallback rate
+    // is AdamW's, for the parameters Muon's eligibility rule leaves it; an
+    // orthogonalized update and an AdamW one are not in the same units, so it
+    // is declared rather than taken from learning_rate. The schedule scales
+    // both. Zero selects the declared defaults.
+    float muon_momentum;
+    float muon_ns_epsilon;
+    float muon_fallback_learning_rate;
+    // Newton-Schulz iterations. Structural: it decides how many nodes the
+    // update graph has. Zero selects the frozen v1 count.
+    uint32_t muon_ns_steps;
+    bool muon_nesterov;
+    // Gefen, read only when optimizer == RETRO_OPTIMIZER_GEFEN. One of
+    // retro_gefen_variant; the block size is structural and zero selects the
+    // frozen v1 value.
+    int32_t gefen_variant;
+    uint32_t gefen_block_size;
+    float gefen_beta1;
+    float gefen_beta2;
+    float gefen_eps;
 } retro_train_config;
 
 typedef struct retro_train_metrics {
@@ -1663,6 +1693,24 @@ typedef struct retro_optimizer_state {
     float adamw_beta1;
     float adamw_beta2;
     float adamw_eps;
+    // One of retro_gefen_variant, and meaningless for any other optimizer. The
+    // name "gefen" does not say which slot table was allocated - the two
+    // variants are two layouts - so a caller rebuilding the state table needs
+    // both values or it compares its plan against the wrong one.
+    int32_t gefen_variant;
+    // The chosen optimizer's own coefficients, the same way the AdamW three
+    // above are: reported, not configured, so a checkpoint records the values
+    // that ran rather than the ones a document asked for. Meaningless for an
+    // optimizer that declares none of them.
+    float muon_momentum;
+    float muon_ns_epsilon;
+    float muon_fallback_learning_rate;
+    uint32_t muon_ns_steps;
+    bool muon_nesterov;
+    float gefen_beta1;
+    float gefen_beta2;
+    float gefen_eps;
+    uint32_t gefen_block_size;
 } retro_optimizer_state;
 
 // Reads the optimizer and scheduler scalars. Never fails for a live trainer.

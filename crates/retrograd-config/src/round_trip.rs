@@ -29,8 +29,8 @@
 use std::path::Path;
 
 use retrograd_core::{
-    CheckpointDtype, FeatureDtype, KvDtype, LayerRange, LoraDtype, LrScheduler, OptimizerKind,
-    RewardMode, SharedPrefixFanout, TrainablePolicy, TrainableSelector,
+    CheckpointDtype, FeatureDtype, GefenLayout, GefenVariant, KvDtype, LayerRange, LoraDtype,
+    LrScheduler, OptimizerKind, RewardMode, SharedPrefixFanout, TrainablePolicy, TrainableSelector,
 };
 use retrograd_dataset::DataFormat;
 
@@ -93,6 +93,20 @@ const KEYS: &[&str] = &[
     "observe.directory",
     "observe.every",
     "observe.max_text_chars",
+    "optimizer.gefen.beta1",
+    "optimizer.gefen.beta2",
+    "optimizer.gefen.block_size",
+    "optimizer.gefen.codebook",
+    "optimizer.gefen.codebook_levels",
+    "optimizer.gefen.eps",
+    "optimizer.gefen.min_numel",
+    "optimizer.gefen.partition",
+    "optimizer.gefen.variant",
+    "optimizer.muon.fallback_learning_rate",
+    "optimizer.muon.momentum",
+    "optimizer.muon.nesterov",
+    "optimizer.muon.ns_epsilon",
+    "optimizer.muon.ns_steps",
     "output.kind",
     "output.path",
     "reference.ctx",
@@ -373,6 +387,28 @@ fn exhaustive_document() -> ConfigDocument {
             model: PathBuf::from("original.gguf"),
             ctx: Some(512),
         }),
+        // Both tables, for the key coverage above. No document may carry both
+        // and build, which is why the normalizers drop them.
+        optimizer: Some(OptimizerToml {
+            muon: Some(MuonToml {
+                momentum: Some(0.9),
+                nesterov: Some(false),
+                ns_steps: Some(3),
+                ns_epsilon: Some(1.0e-6),
+                fallback_learning_rate: Some(3.0e-4),
+            }),
+            gefen: Some(GefenToml {
+                variant: Some("quantized_m".to_string()),
+                block_size: Some(512),
+                min_numel: Some(8192),
+                codebook: Some("uniform".to_string()),
+                codebook_levels: Some(256),
+                partition: Some("fixed".to_string()),
+                beta1: Some(0.8),
+                beta2: Some(0.99),
+                eps: Some(1.0e-7),
+            }),
+        }),
     }
 }
 
@@ -386,6 +422,9 @@ fn exhaustive_document() -> ConfigDocument {
 fn lora_normalized(mut document: ConfigDocument) -> ConfigDocument {
     document.trainable = None;
     document.training.trainable = Some("lora".to_string());
+    // Two tables for two optimizers, and the document names one: the pair is
+    // covered by the cross-field tests rather than by every build here.
+    document.optimizer = None;
     document
 }
 
@@ -393,6 +432,7 @@ fn lora_normalized(mut document: ConfigDocument) -> ConfigDocument {
 /// an output kind the policy actually produces.
 fn base_normalized(mut document: ConfigDocument) -> ConfigDocument {
     document.lora = None;
+    document.optimizer = None;
     document.output = Some(OutputToml {
         path: PathBuf::from("out/adapter.gguf"),
         kind: None,
@@ -667,40 +707,191 @@ fn a_lora_run_refuses_a_base_selector_instead_of_ignoring_it() {
     assert!(error.to_string().contains("trains none"), "{error}");
 }
 
-/// An optimizer name the runtime cannot honour is refused rather than accepted
-/// and silently replaced by AdamW.
+/// A name no optimizer answers to is refused rather than accepted and silently
+/// replaced by AdamW.
 #[test]
-fn an_unavailable_optimizer_is_refused_rather_than_substituted() {
+fn an_unknown_optimizer_name_is_refused_rather_than_substituted() {
     let root = Path::new("/tmp/retrograd-round-trip");
-    for name in ["muon", "gefen"] {
-        let mut document = lora_normalized(exhaustive_document());
-        document.training.optimizer = Some(name.to_string());
-        let error = build(document, root).expect_err("neither has an update step here");
-        let message = error.to_string();
-        assert!(message.contains(name), "{message}");
-        assert!(message.contains("checkpoint"), "{message}");
-    }
     let mut document = lora_normalized(exhaustive_document());
     document.training.optimizer = Some("lion".to_string());
     let error = build(document, root).expect_err("an unknown name is refused");
     assert!(error.to_string().contains("must be adamw"), "{error}");
 }
 
-/// The two the runtime can build reach the training configuration, which is
-/// what carries them to `llama_opt_init`. A name that parsed and then arrived
+/// Every name the runtime can build reaches the training configuration, which
+/// is what carries it to `llama_opt_init`. A name that parsed and then arrived
 /// as AdamW would be indistinguishable from a run nobody configured.
 #[test]
 fn a_selectable_optimizer_reaches_the_training_configuration() {
     let root = Path::new("/tmp/retrograd-round-trip");
-    for (name, expected) in [("adamw", OptimizerKind::AdamW), ("sgd", OptimizerKind::Sgd)] {
+    for (name, expected) in [
+        ("adamw", OptimizerKind::AdamW),
+        ("sgd", OptimizerKind::Sgd),
+        ("muon", OptimizerKind::Muon),
+        // "gefen" alone is the variant available first.
+        ("gefen", OptimizerKind::Gefen(GefenLayout::default())),
+    ] {
         let mut document = lora_normalized(exhaustive_document());
         document.training.optimizer = Some(name.to_string());
-        // SGD's update step is F32-only and F16 is the default adapter
-        // storage, so an SGD document has to name the dtype it can write.
+        // Only AdamW's update step writes an F16 parameter, and F16 is the
+        // default adapter storage, so every other document names the dtype it
+        // can write.
         document.lora.as_mut().expect("section").dtype = Some(LoraDtype::F32);
         let config = build(document, root).expect("the optimizer is selectable");
         assert_eq!(config.training.trainable.optimizer, expected);
+        // The recorded vector belongs to the optimizer that was chosen, and
+        // carries the run's three universal scalars.
+        assert_eq!(
+            config.training.optimizer_hyperparameters.optimizer(),
+            expected
+        );
+        assert_eq!(
+            config.training.optimizer_scalar("learning_rate"),
+            config.training.learning_rate
+        );
     }
+}
+
+/// `[optimizer.<name>]` is wired to the optimizer that reads it: the variant
+/// selects a layout, the keys land on declared rows, and a table for an
+/// optimizer the run did not choose is refused rather than ignored.
+#[test]
+fn an_optimizer_section_is_validated_against_the_optimizer_that_reads_it() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    let gefen = |section: GefenToml| {
+        let mut document = lora_normalized(exhaustive_document());
+        document.training.optimizer = Some("gefen".to_string());
+        document.lora.as_mut().expect("section").dtype = Some(LoraDtype::F32);
+        document.optimizer = Some(OptimizerToml {
+            muon: None,
+            gefen: Some(section),
+        });
+        document
+    };
+
+    let config = build(
+        gefen(GefenToml {
+            variant: Some("quantized_m".to_string()),
+            block_size: Some(512),
+            min_numel: Some(8192),
+            beta1: Some(0.8),
+            ..Default::default()
+        }),
+        root,
+    )
+    .expect("a gefen section on a gefen run");
+    assert_eq!(
+        config.training.trainable.optimizer,
+        OptimizerKind::Gefen(GefenLayout {
+            variant: GefenVariant::QuantizedM,
+            block_size: 512,
+            min_numel: 8192,
+        })
+    );
+    // The variant is what moves the layout version, and the slot table with it.
+    assert_eq!(config.training.trainable.optimizer.layout_version(), 2);
+    assert_eq!(
+        config.training.optimizer_scalar("beta1"),
+        0.8,
+        "a declared row did not reach the vector"
+    );
+
+    // Shared-v declares no codebook at all, so a codebook-only key is refused
+    // by the layout rather than by a second copy of the variant rule.
+    let error = build(
+        gefen(GefenToml {
+            codebook_levels: Some(256),
+            ..Default::default()
+        }),
+        root,
+    )
+    .expect_err("shared_v has no codebook");
+    assert!(error.to_string().contains("codebook_levels"), "{error}");
+
+    // A research option is rejected, not accepted and ignored.
+    for (section, needle) in [
+        (
+            GefenToml {
+                codebook: Some("learned".to_string()),
+                ..Default::default()
+            },
+            "codebook",
+        ),
+        (
+            GefenToml {
+                partition: Some("discovered".to_string()),
+                ..Default::default()
+            },
+            "partition",
+        ),
+        (
+            GefenToml {
+                block_size: Some(1000),
+                ..Default::default()
+            },
+            "power of two",
+        ),
+        (
+            GefenToml {
+                variant: Some("shared".to_string()),
+                ..Default::default()
+            },
+            "variant",
+        ),
+    ] {
+        let error = build(gefen(section), root).expect_err("refused");
+        assert!(error.to_string().contains(needle), "{error}");
+    }
+
+    // A table whose optimizer the run did not choose.
+    let mut document = lora_normalized(exhaustive_document());
+    document.optimizer = Some(OptimizerToml {
+        muon: Some(MuonToml::default()),
+        gefen: None,
+    });
+    let error = build(document, root).expect_err("adamw reads no muon keys");
+    assert!(error.to_string().contains("does not use"), "{error}");
+}
+
+/// Muon's keys land on its declared rows, and its fallback rate is its own
+/// value rather than the run's.
+#[test]
+fn muons_section_reaches_its_declared_rows() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    let mut document = lora_normalized(exhaustive_document());
+    document.training.optimizer = Some("muon".to_string());
+    document.lora.as_mut().expect("section").dtype = Some(LoraDtype::F32);
+    document.optimizer = Some(OptimizerToml {
+        muon: Some(MuonToml {
+            momentum: Some(0.9),
+            nesterov: Some(false),
+            ns_steps: Some(3),
+            ns_epsilon: Some(1.0e-6),
+            fallback_learning_rate: Some(3.0e-4),
+        }),
+        gefen: None,
+    });
+    let config = build(document, root).expect("a muon section on a muon run");
+    assert_eq!(config.training.optimizer_scalar("momentum"), 0.9);
+    assert!(!config.training.optimizer_toggle("nesterov", true));
+    assert_eq!(config.training.optimizer_structural("ns_steps"), 3);
+    assert_eq!(
+        config.training.optimizer_scalar("fallback_learning_rate"),
+        3.0e-4
+    );
+
+    let mut document = lora_normalized(exhaustive_document());
+    document.training.optimizer = Some("muon".to_string());
+    document.lora.as_mut().expect("section").dtype = Some(LoraDtype::F32);
+    document.optimizer = Some(OptimizerToml {
+        muon: Some(MuonToml {
+            ns_steps: Some(0),
+            ..Default::default()
+        }),
+        gefen: None,
+    });
+    let error = build(document, root).expect_err("zero iterations is not an iteration count");
+    assert!(error.to_string().contains("ns_steps"), "{error}");
 }
 
 /// The pair a user reaches by writing one line: the default adapter dtype is

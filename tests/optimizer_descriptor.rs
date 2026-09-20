@@ -3,8 +3,8 @@
 //! initializers belong to an optimizer that has no update step here yet.
 
 use retrograd::{
-    OptimizerKind, SlotDefinition, SlotDtype, SlotInit, SlotShape, TensorDtype, TensorRole,
-    TrainableEntry, slot_initial_bytes,
+    GefenLayout, GefenVariant, OptimizerKind, SlotDefinition, SlotDtype, SlotInit, SlotShape,
+    TensorDtype, TensorRole, TrainableEntry, slot_initial_bytes,
 };
 
 fn entry(name: &str, ne: [i64; 4]) -> TrainableEntry {
@@ -45,14 +45,18 @@ fn every_declared_slot_is_initialized_the_way_its_definition_says() {
         OptimizerKind::AdamW,
         OptimizerKind::Sgd,
         OptimizerKind::Muon,
-        OptimizerKind::Gefen,
+        OptimizerKind::Gefen(GefenLayout::default()),
+        OptimizerKind::Gefen(GefenLayout {
+            variant: GefenVariant::QuantizedM,
+            ..GefenLayout::default()
+        }),
     ] {
-        let scopes: [&[SlotDefinition]; 2] = [
+        let scopes = [
             optimizer.slot_definitions(),
             optimizer.shared_slot_definitions(),
         ];
         for slots in scopes {
-            for slot in slots {
+            for slot in &slots {
                 let planned = slot.resolve(&parameter);
                 let bytes = slot_initial_bytes(slot, planned.n_elements)
                     .unwrap_or_else(|error| panic!("{optimizer}/{}: {error}", slot.name));

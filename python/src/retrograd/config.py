@@ -9,10 +9,11 @@ Scheduler: TypeAlias = Literal["constant", "linear", "cosine"]
 DatasetFormat: TypeAlias = Literal["auto", "text", "chat_jsonl"]
 LoraDtype: TypeAlias = Literal["f32", "f16"]
 KvDtype: TypeAlias = Literal["f32", "f16"]
-#: The optimizers whose update step this build can create. ``muon`` and
-#: ``gefen`` parse in the TOML schema and are refused by the runtime, so they
-#: are deliberately absent here rather than accepted and substituted.
-Optimizer: TypeAlias = Literal["adamw", "sgd"]
+#: The optimizers whose update step this build can create. All four now have
+#: one; what a Python caller cannot yet spell is an optimizer's own knobs, so a
+#: run gets the frozen defaults of whichever it names - and ``gefen`` gets the
+#: ``shared_v`` variant, which is the one a name alone selects.
+Optimizer: TypeAlias = Literal["adamw", "sgd", "muon", "gefen"]
 #: Which parameters carry a gradient. ``lora`` is the absence of :class:`TrainableConfig`,
 #: so it is not selectable here.
 TrainablePolicy: TypeAlias = Literal["full", "partial", "hybrid"]
@@ -276,8 +277,8 @@ class TrainingConfig:
             raise ValueError("device must be auto, cpu, or gpu")
         if self.kv_dtype not in ("f32", "f16"):
             raise ValueError("kv_dtype must be f32 or f16")
-        if self.optimizer not in ("adamw", "sgd"):
-            raise ValueError("optimizer must be adamw or sgd")
+        if self.optimizer not in ("adamw", "sgd", "muon", "gefen"):
+            raise ValueError("optimizer must be adamw, sgd, muon or gefen")
 
     def native_kwargs(self) -> dict[str, object]:
         return {

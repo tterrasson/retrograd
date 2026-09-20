@@ -166,7 +166,7 @@ fn parse_optimizer(value: &str) -> PyResult<OptimizerKind> {
     let kind = OptimizerKind::parse(value).map_err(python_error)?;
     if !kind.is_implemented() {
         return Err(PyValueError::new_err(format!(
-            "optimizer '{kind}' is not available in this build; use adamw or sgd"
+            "optimizer '{kind}' is not available in this build"
         )));
     }
     Ok(kind)
@@ -416,6 +416,7 @@ impl PyTrainer {
             trainable_biases,
             trainable_output_head,
         )?;
+        let chosen_optimizer = parse_optimizer(optimizer)?;
         let config = TrainConfig {
             n_ctx,
             n_batch,
@@ -436,8 +437,13 @@ impl PyTrainer {
             trainable: TrainableRunConfig {
                 policy,
                 selector,
-                optimizer: parse_optimizer(optimizer)?,
+                optimizer: chosen_optimizer,
             },
+            // The declared vector of the optimizer named above. A Python caller
+            // has no `[optimizer.<name>]` equivalent yet, so what it gets is
+            // the frozen v1 of whichever optimizer it chose - never a partly
+            // filled vector, and never another optimizer's rows.
+            optimizer_hyperparameters: chosen_optimizer.declared_hyperparameters(),
             chunked_cross_entropy,
             chunked_ce_tiles,
             chunked_ce_seq_chunk,

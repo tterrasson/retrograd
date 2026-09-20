@@ -364,6 +364,16 @@ pub struct TrainConfig {
     /// The selector stays Rust-side - it is resolved against the model's
     /// inventory before the runtime is told anything.
     pub trainable: TrainableRunConfig,
+    /// The chosen optimizer's own coefficients, at the values this run reads
+    /// them: its declared vector with whatever `[optimizer.<name>]` set.
+    ///
+    /// Beside `trainable.optimizer` rather than inside it because the vector
+    /// belongs to an optimizer and the three universal scalars above are the
+    /// run's - `learning_rate`, `weight_decay` and `max_grad_norm` are mirrored
+    /// into it when the document is built, so the runtime reads one answer.
+    /// [`TrainConfig::optimizer_hyperparameter`] is how a caller asks for a row
+    /// without asserting the vector belongs to the optimizer it expects.
+    pub optimizer_hyperparameters: crate::optimizer::HyperparameterVector,
 }
 
 impl Default for TrainConfig {
@@ -400,11 +410,67 @@ impl Default for TrainConfig {
             shuffle_seed: 42,
             max_gpu_duty_cycle: None,
             trainable: TrainableRunConfig::default(),
+            optimizer_hyperparameters: crate::optimizer::OptimizerKind::default()
+                .declared_hyperparameters(),
         }
     }
 }
 
 impl TrainConfig {
+    /// One declared row of the chosen optimizer's vector, or `None` when this
+    /// optimizer does not declare it or the vector belongs to another one.
+    ///
+    /// The guard matters: a caller that changed `trainable.optimizer` without
+    /// rebuilding the vector would otherwise read AdamW's `beta1` as Gefen's.
+    pub fn optimizer_hyperparameter(
+        &self,
+        name: &str,
+    ) -> Option<crate::optimizer::HyperparameterValue> {
+        if self.optimizer_hyperparameters.optimizer() != self.trainable.optimizer {
+            return None;
+        }
+        self.optimizer_hyperparameters.get(name)
+    }
+
+    /// The same row as a scalar, or the optimizer's declared default.
+    pub fn optimizer_scalar(&self, name: &str) -> f32 {
+        match self.optimizer_hyperparameter(name) {
+            Some(crate::optimizer::HyperparameterValue::Scalar(value)) => value,
+            _ => self
+                .trainable
+                .optimizer
+                .hyperparameters()
+                .iter()
+                .find_map(|declared| match (declared.name, declared.default) {
+                    (found, crate::optimizer::HyperparameterValue::Scalar(value))
+                        if found == name =>
+                    {
+                        Some(value)
+                    }
+                    _ => None,
+                })
+                .unwrap_or(0.0),
+        }
+    }
+
+    /// The same row as a structural integer, saturated into `u32` for the wire.
+    pub fn optimizer_structural(&self, name: &str) -> u32 {
+        match self.optimizer_hyperparameter(name) {
+            Some(crate::optimizer::HyperparameterValue::Structural(value)) => {
+                u32::try_from(value).unwrap_or(u32::MAX)
+            }
+            _ => 0,
+        }
+    }
+
+    /// The same row as a toggle, or `default` when it is absent.
+    pub fn optimizer_toggle(&self, name: &str, default: bool) -> bool {
+        match self.optimizer_hyperparameter(name) {
+            Some(crate::optimizer::HyperparameterValue::Toggle(value)) => value,
+            _ => default,
+        }
+    }
+
     /// Micro-batches accumulated before one optimizer step - the configuration
     /// spells this as `training.gradient_accumulation`, the runtime stores the
     /// product it implies. Zero-safe so it can be used inside diagnostics.

@@ -98,15 +98,15 @@ and the planner budgets the vocabulary buffer the dense path allocates.
 | Key | Default | Description |
 | --- | ---: | --- |
 | `trainable` | `lora` | Which family of parameters this run trains: `lora`, `full`, `partial`, or `hybrid`. |
-| `optimizer` | `adamw` | `adamw` or `sgd`. `muon` and `gefen` parse and are rejected: this build has no update step for them, and accepting the name would record an optimizer the run never used. `sgd`'s update kernel is F32-only, so it is rejected beside the default F16 adapter. |
+| `optimizer` | `adamw` | `adamw`, `sgd`, `muon` or `gefen`. Each has its own knobs under `[optimizer.<name>]`. Only AdamW's update kernel writes an F16 parameter, so every other name is rejected beside the default F16 adapter. Gefen's update is written for the CPU alone and is refused at preflight on a GPU device, because its state mutations must not be answered on a fallback backend. |
 | `ctx` | `128` | Trained context window in tokens. |
 | `micro_batch` | `32` | Physical forward/backward width and primary activation-memory control. |
 | `gradient_accumulation` | `1` for SFT; derived for rollout | Micro-batches per optimizer step. Its product with `micro_batch` must divide `ctx`. Rollout algorithms default to `ctx / micro_batch`. |
 | `shared_prefix_fanout` | `auto` | GRPO physical fanout for completions sharing a prompt: `auto`, `off`, `max`, or an integer of at least `2`. |
 | `threads` | `0` | CPU worker threads; `0` selects automatically. `RETRO_THREADS` overrides it. |
 | `epochs` | `1` | SFT passes. PPO and GRPO use their own epoch counters. |
-| `lr` | `0.0001` | AdamW learning rate. |
-| `weight_decay` | `0.0` | AdamW weight decay. |
+| `lr` | `0.0001` | Base learning rate of the chosen optimizer. |
+| `weight_decay` | `0.0` | Decoupled weight decay, applied to the old weights. |
 | `max_grad_norm` | `1.0` | Global L2 gradient clipping threshold. |
 | `lr_scheduler` | `constant` | `constant`, `linear`, or `cosine`. |
 | `warmup_steps` | `0` | Learning-rate warmup steps. |
@@ -122,6 +122,47 @@ and the planner budgets the vocabulary buffer the dense path allocates.
 | `checkpoint_dtype` | `f32` | Retained activation precision: `f32`, `f16`, or `bf16`. Non-F32 values require gradient checkpointing. |
 | `require_gpu_resident` | `false` | Fail preflight if a training-graph operation would fall back to CPU. |
 | `max_gpu_duty_cycle` | `1.0` | Upper bound on the fraction of wall time the trainer waits on GPU work it submitted, so another workload gets regular compute windows. Finite, in `(0, 1]`. Releases compute, not VRAM. Accepted but inactive on a CPU device. |
+
+### `[optimizer.muon]`
+
+Present only when `training.optimizer = "muon"`. Muon orthogonalizes the
+momentum of eligible **hidden base matrices** - tensors with exactly two
+non-trivial logical dimensions, excluding embeddings, the output head, norms
+and biases by role. Everything else, including LoRA factors, is updated by
+AdamW at `fallback_learning_rate`. Eligibility is fixed policy and has no key.
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `momentum` | `0.95` | EMA coefficient of the first moment, in `[0, 1]`. |
+| `nesterov` | `true` | Use the updated momentum in the direction. |
+| `ns_steps` | `5` | Newton-Schulz iterations; at least `1`. Structural: it decides the size of the update graph. |
+| `ns_epsilon` | `1e-7` | Added to the Frobenius norm before normalizing. |
+| `fallback_learning_rate` | `0.001` | Rate for the parameters Muon declines. Its own value, not a ratio of `training.lr`: an orthogonalized update and an AdamW one are not in the same units. The schedule scales both. |
+
+Muon keeps one F32 momentum per eligible parameter (`4N`) and AdamW's pair for
+the rest. Its weights are F32 only.
+
+### `[optimizer.gefen]`
+
+Present only when `training.optimizer = "gefen"`. Fixed-block second moments,
+with an optional quantized first moment. Experimental: `variant` selects a slot
+layout, so a checkpoint written under one is not readable as the other.
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `variant` | `shared_v` | `shared_v` keeps an F32 first moment and one F32 second moment per block (`4N + 4K`). `quantized_m` stores the first moment as one unsigned byte per element against a shared 256-entry codebook, with an F32 scale and second moment per block (`N + 8K`). |
+| `block_size` | `1024` | Elements per block; a positive power of two. A partial trailing block still costs a row. |
+| `min_numel` | `4096` | Below this element count a selected parameter falls back to AdamW, and its fallback state is part of the reported total. |
+| `codebook` | `uniform` | Only `uniform` exists. A learned codebook needs a pinned algorithm and checkpointed learning state, so it is rejected rather than accepted and ignored. |
+| `codebook_levels` | `256` | `quantized_m` only, and exactly `256`: the index is one unsigned byte. |
+| `partition` | `fixed` | Only `fixed` exists, for the same reason as `codebook`. |
+| `beta1` | `0.9` | First-moment coefficient. |
+| `beta2` | `0.999` | Per-block second-moment coefficient. |
+| `eps` | `1e-8` | Epsilon in the update denominator. |
+
+At `block_size = 1`, `shared_v` keeps AdamW's own second moment, which is the
+cheapest available correctness anchor. Gefen's weights are F32 only, and its
+two update phases exist on the CPU alone.
 
 The optimizer window is `micro_batch × gradient_accumulation`. Lower
 `micro_batch` when memory is constrained. It is a geometry setting, not a

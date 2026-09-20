@@ -159,7 +159,14 @@ struct trainer_state {
     // not about ggml. Indexed by the RETRO_OPTIMIZER_* wire value; a new
     // optimizer widens this array in the same change that adds its
     // enumerator.
-    bool cap_opt_step_f16[2] = {};
+    bool cap_opt_step_f16[4] = {};
+    // Whether the active device can run the run's own update step at all, on
+    // an F32 parameter. AdamW and SGD are everywhere; a Gefen step is two ops
+    // this build has written for the CPU alone, and a mutation must never be
+    // answered by a fallback backend - the state the fallback updates is a
+    // copy, and the real slot would stay stale. Refused at preflight, which is
+    // why the probe is here and not inside the step.
+    bool cap_opt_step_device = true;
     // Micro-batch the training context was actually built with. Equal to the
     // requested n_ubatch unless the load-time finiteness probe escalated it.
     uint32_t effective_ubatch = 0;
@@ -520,6 +527,9 @@ bool declared_base_dtypes_are_admitted(const trainer_state & state);
 // The optimizer that owns one parameter: the declared assignment, falling
 // back to the run's own optimizer. `userdata` is the `trainer_state *`.
 ggml_opt_optimizer_type opt_param_optimizer(const ggml_tensor * tensor, void * userdata);
+// The one place retro_optimizer and ggml_opt_optimizer_type are translated.
+ggml_opt_optimizer_type ggml_optimizer_of(int32_t optimizer);
+int32_t retro_optimizer_of(ggml_opt_optimizer_type optimizer);
 // Every name in the declared assignment is a marked parameter.
 bool assert_assignment_covers_marked_set(const trainer_state & state);
 // The optimizer's parameter filter: the resolved base set, by name. LoRA
@@ -556,6 +566,7 @@ int preflight_summary_impl(retro_trainer * trainer, retro_preflight_summary * ou
 // scales the rate. Answerable before the optimizer graph exists, so a cold
 // trainer reports the values its first step will read.
 ggml_opt_optimizer_params configured_optimizer_params(const trainer_state & state);
+ggml_opt_optimizer_layout configured_optimizer_layout(const trainer_state & state);
 ggml_opt_optimizer_params scheduled_optimizer_params(void * userdata);
 int train_tokens_impl(
         retro_trainer * trainer,

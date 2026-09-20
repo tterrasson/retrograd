@@ -34,18 +34,88 @@ impl Trainer {
     /// The declared layout filled in from the live runtime, never from the
     /// document: a configuration spells only part of the vector, the rest is
     /// ggml's own. Recorded in the checkpoint and compared on resume.
+    /// The optimizer the runtime is running, at the layout this run declared.
+    ///
+    /// The wire carries the optimizer and, for Gefen, the variant - which is
+    /// what decides *which* slot table. The rest of a layout (the block size,
+    /// the fallback threshold) decides the table's shapes and who owns what,
+    /// and it is the configuration's: the threshold never crosses at all,
+    /// because its answer crosses as the assignment instead. So the run's own
+    /// value is used whenever the two name the same optimizer under the same
+    /// variant, and the live one whenever they do not - which is the
+    /// disagreement `check_live` is there to report.
+    fn live_optimizer_kind(&self, state: &ffi::RetroOptimizerState) -> Result<OptimizerKind> {
+        let live = OptimizerKind::from_ffi(state.optimizer, state.gefen_variant)?;
+        match (live, self.chosen_optimizer()) {
+            (OptimizerKind::Gefen(reported), OptimizerKind::Gefen(declared)) => {
+                if reported.variant == declared.variant {
+                    Ok(OptimizerKind::Gefen(declared))
+                } else {
+                    // `live` only carries the variant the wire reports, filled
+                    // out with `GefenLayout::default()` - not this run's real
+                    // block_size/min_numel. Returning it here would make the
+                    // caller's slot-size math compare against a layout neither
+                    // side is actually running, surfacing as an opaque
+                    // byte-size mismatch instead of this direct diagnosis.
+                    Err(Error::runtime(format!(
+                        "the runtime is running Gefen variant {}, but this run declared \
+                         variant {}",
+                        reported.variant, declared.variant
+                    )))
+                }
+            }
+            _ => Ok(live),
+        }
+    }
+
     pub fn optimizer_hyperparameters(&mut self) -> Result<HyperparameterVector> {
         let state = self.optimizer_state()?;
-        let kind = OptimizerKind::from_ffi(state.optimizer)?;
+        let kind = self.live_optimizer_kind(&state)?;
         let mut vector = kind.declared_hyperparameters();
         vector.set_scalar("learning_rate", state.learning_rate)?;
         vector.set_scalar("weight_decay", state.weight_decay)?;
         vector.set_scalar("max_grad_norm", state.max_grad_norm)?;
-        // The C structure only publishes AdamW's own coefficients.
-        if kind == OptimizerKind::AdamW {
-            vector.set_scalar("beta1", state.adamw_beta1)?;
-            vector.set_scalar("beta2", state.adamw_beta2)?;
-            vector.set_scalar("eps", state.adamw_eps)?;
+        // Each optimizer's own rows, from the same live state as the three
+        // above. A row the layout does not declare is never set: the vector
+        // refuses it, and that refusal is the check that this match and the
+        // declaration agree.
+        match kind {
+            OptimizerKind::AdamW => {
+                vector.set_scalar("beta1", state.adamw_beta1)?;
+                vector.set_scalar("beta2", state.adamw_beta2)?;
+                vector.set_scalar("eps", state.adamw_eps)?;
+            }
+            OptimizerKind::Sgd => {}
+            OptimizerKind::Muon => {
+                vector.set_scalar("momentum", state.muon_momentum)?;
+                vector.set_scalar("ns_epsilon", state.muon_ns_epsilon)?;
+                vector.set_scalar("fallback_learning_rate", state.muon_fallback_learning_rate)?;
+                vector.set(
+                    "ns_steps",
+                    retrograd_core::HyperparameterValue::Structural(state.muon_ns_steps.into()),
+                )?;
+                vector.set(
+                    "nesterov",
+                    retrograd_core::HyperparameterValue::Toggle(state.muon_nesterov),
+                )?;
+            }
+            OptimizerKind::Gefen(layout) => {
+                vector.set_scalar("beta1", state.gefen_beta1)?;
+                vector.set_scalar("beta2", state.gefen_beta2)?;
+                vector.set_scalar("eps", state.gefen_eps)?;
+                vector.set(
+                    "block_size",
+                    retrograd_core::HyperparameterValue::Structural(state.gefen_block_size.into()),
+                )?;
+                // The threshold is the configuration's, for the reason
+                // `live_optimizer_kind` gives.
+                vector.set(
+                    "min_numel",
+                    retrograd_core::HyperparameterValue::Structural(
+                        i64::try_from(layout.min_numel).unwrap_or(i64::MAX),
+                    ),
+                )?;
+            }
         }
         Ok(vector)
     }
@@ -287,7 +357,8 @@ impl Trainer {
         state_dir: &Path,
         optimizer: &checkpoint::Optimizer,
     ) -> Result<()> {
-        let kind = OptimizerKind::from_ffi(self.optimizer_state()?.optimizer)?;
+        let live_state = self.optimizer_state()?;
+        let kind = self.live_optimizer_kind(&live_state)?;
         let marked = self.marked_trainable_set()?;
         let plan = self.optimizer_plan(kind, &marked);
         optimizer.check_assignment(&assignment_of(&plan))?;
@@ -477,7 +548,7 @@ impl Trainer {
         } else {
             TrainableSet::default()
         };
-        let optimizer_kind = OptimizerKind::from_ffi(optimizer_state.optimizer)?;
+        let optimizer_kind = self.live_optimizer_kind(&optimizer_state)?;
         // Filled in from the same live state as the scalars above, so the
         // record and the resume comparison read one answer.
         let hyperparameters = self.optimizer_hyperparameters()?;

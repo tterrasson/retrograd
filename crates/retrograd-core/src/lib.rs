@@ -41,9 +41,10 @@ pub use hex::hex_lower;
 pub use json_pointer::{PointerPath, escape_json_pointer};
 pub use optimizer::{
     GEFEN_CODEBOOK_LEVELS, GEFEN_DEFAULT_BLOCK_SIZE, GEFEN_DEFAULT_MIN_NUMEL,
-    GEFEN_ZERO_BLOCK_INDEX, HyperparameterBound, HyperparameterDefinition, HyperparameterValue,
-    HyperparameterVector, OptimizerDescriptor, OptimizerKind, OptimizerPlan, PlannedParameter,
-    PlannedSlot, SharedSlot, SlotDefinition, SlotDtype, SlotInit, SlotShape,
+    GEFEN_ZERO_BLOCK_INDEX, GefenLayout, GefenVariant, HyperparameterBound,
+    HyperparameterDefinition, HyperparameterValue, HyperparameterVector, OptimizerDescriptor,
+    OptimizerKind, OptimizerPlan, PlannedParameter, PlannedSlot, SharedSlot, SlotDefinition,
+    SlotDtype, SlotInit, SlotShape,
 };
 /// The catalogue schema, declared in `rir-core` and re-exported for the
 /// applicative side that reads it.

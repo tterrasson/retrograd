@@ -229,7 +229,9 @@ quantizer, not the decoder.
 
 Fetches and checksum-verifies the CPU GGUF fixture, then runs CLI,
 capabilities, PPO/GRPO, checkpoint/resume, `engine_contracts`,
-`kv_projection_gradients`, the CPU-only LoRA/generation/parity tests, and
+`kv_projection_gradients`, `muon_gefen` (Muon and fixed-block Gefen against
+independent F64 oracles, on the generated fixture), the CPU-only
+LoRA/generation/parity tests, and
 `retrograd-server`'s `tests/e2e_cpu.rs`. The root test binaries are built with
 `--no-default-features --features agent` (the `-p retrograd-server` ones need
 nothing: that package is CPU-only by default), and every run sets

@@ -18,6 +18,7 @@ mod common;
 mod distill;
 mod document;
 mod grpo;
+mod optimizer;
 mod ppo;
 mod reference;
 mod sft;
@@ -38,9 +39,9 @@ pub use distill::{
     DEFAULT_DISTILL_WEIGHT_CLIP, DistillConfig, DistillMode, DistillToml, OfflineDistillConfig,
 };
 pub use document::{
-    CheckpointToml, ConfigDocument, EvaluationToml, LoraToml, MetricsToml, ModelOverride,
-    ModelToml, ObserveToml, OutputToml, ReferenceToml, RunToml, SamplingToml,
-    SharedPrefixFanoutToml, TrainableToml, TrainingToml,
+    CheckpointToml, ConfigDocument, EvaluationToml, GefenToml, LoraToml, MetricsToml,
+    ModelOverride, ModelToml, MuonToml, ObserveToml, OptimizerToml, OutputToml, ReferenceToml,
+    RunToml, SamplingToml, SharedPrefixFanoutToml, TrainableToml, TrainingToml,
 };
 pub use grpo::{
     AdvantageBaseline, DEFAULT_MAX_STALLED_UPDATES, DynamicSampling, GrpoConfig, GrpoJudge,

@@ -293,14 +293,66 @@ bool seed_epoch_shuffle(ggml_opt_context_t opt, uint64_t seed, uint32_t epoch) {
 
 } // namespace
 
+// One declared rate per optimizer, all of them the run's unless the optimizer
+// keeps its own units. The Rust side always sends a fully resolved value here
+// (the caller's declared value or the optimizer's own default), never a bare
+// "unset" marker, so every field below is assigned unconditionally. Fields
+// bounded away from zero (ns_epsilon, fallback_learning_rate, eps) still use a
+// zero check as a defensive no-op, but momentum/beta1/beta2 are bounded to
+// [0, 1] inclusive, so a caller-declared 0.0 is a legal value and must not be
+// mistaken for "declared nothing".
 ggml_opt_optimizer_params configured_optimizer_params(const trainer_state & state) {
     ggml_opt_optimizer_params params = ggml_opt_get_default_optimizer_params(nullptr);
-    params.max_grad_norm = state.train_config.max_grad_norm;
-    params.adamw.alpha = state.train_config.learning_rate;
-    params.adamw.wd = state.train_config.weight_decay;
-    params.sgd.alpha = state.train_config.learning_rate;
-    params.sgd.wd = state.train_config.weight_decay;
+    const retro_train_config & config = state.train_config;
+    params.max_grad_norm = config.max_grad_norm;
+    params.adamw.alpha = config.learning_rate;
+    params.adamw.wd = config.weight_decay;
+    params.sgd.alpha = config.learning_rate;
+    params.sgd.wd = config.weight_decay;
+
+    params.muon.alpha = config.learning_rate;
+    params.muon.wd = config.weight_decay;
+    if (config.optimizer == RETRO_OPTIMIZER_MUON) {
+        params.muon.momentum = config.muon_momentum;
+    }
+    if (config.muon_ns_epsilon > 0.0f) {
+        params.muon.ns_epsilon = config.muon_ns_epsilon;
+    }
+    // The parameters Muon's eligibility rule declines are AdamW's, and they are
+    // not priced at Muon's rate: a Muon run overrides the AdamW rate with its
+    // own declared fallback rather than sharing learning_rate.
+    if (config.optimizer == RETRO_OPTIMIZER_MUON && config.muon_fallback_learning_rate > 0.0f) {
+        params.adamw.alpha = config.muon_fallback_learning_rate;
+    }
+
+    params.gefen.alpha = config.learning_rate;
+    params.gefen.wd = config.weight_decay;
+    if (config.optimizer == RETRO_OPTIMIZER_GEFEN) {
+        params.gefen.beta1 = config.gefen_beta1;
+        params.gefen.beta2 = config.gefen_beta2;
+    }
+    if (config.gefen_eps > 0.0f) {
+        params.gefen.eps = config.gefen_eps;
+    }
     return params;
+}
+
+// The structural half: what the allocator and the update graph read, fixed for
+// the life of the optimizer context.
+ggml_opt_optimizer_layout configured_optimizer_layout(const trainer_state & state) {
+    ggml_opt_optimizer_layout layout = ggml_opt_default_optimizer_layout();
+    const retro_train_config & config = state.train_config;
+    if (config.muon_ns_steps > 0) {
+        layout.muon.ns_steps = static_cast<int32_t>(config.muon_ns_steps);
+    }
+    layout.muon.nesterov = config.muon_nesterov;
+    layout.gefen.variant = config.gefen_variant == RETRO_GEFEN_QUANTIZED_M
+            ? GGML_OPT_GEFEN_VARIANT_QUANTIZED_M
+            : GGML_OPT_GEFEN_VARIANT_SHARED_V;
+    if (config.gefen_block_size > 0) {
+        layout.gefen.block_size = static_cast<int64_t>(config.gefen_block_size);
+    }
+    return layout;
 }
 
 ggml_opt_optimizer_params scheduled_optimizer_params(void * userdata) {
@@ -326,8 +378,13 @@ ggml_opt_optimizer_params scheduled_optimizer_params(void * userdata) {
         }
     }
     state->last_learning_rate = state->train_config.learning_rate * factor;
-    params.adamw.alpha = state->last_learning_rate;
+    // One schedule, applied to every declared base rate. A mixed run's fallback
+    // rate is scaled by the same factor as the rate it falls back from, so the
+    // ratio the document declared is the ratio every step sees.
+    params.adamw.alpha = state->optimizer_params.adamw.alpha * factor;
     params.sgd.alpha = state->last_learning_rate;
+    params.muon.alpha = state->optimizer_params.muon.alpha * factor;
+    params.gefen.alpha = state->optimizer_params.gefen.alpha * factor;
     return params;
 }
 
@@ -360,15 +417,25 @@ bool ensure_opt_context(trainer_state & state) {
         return false;
     }
 
+    // A step whose mutations the active device cannot run must not be built:
+    // the scheduler would answer it on a fallback backend, update a copy of the
+    // state and leave the real slot stale. Refused here, before the graph.
+    if (!state.cap_opt_step_device) {
+        set_error(std::string("optimizer ")
+                + ggml_opt_optimizer_name(ggml_optimizer_of(state.train_config.optimizer))
+                + " has no update step on the active backend ("
+                + state.backend_registry
+                + "); its state mutations cannot fall back to the CPU without leaving "
+                  "the device-resident state stale");
+        return false;
+    }
+
     state.optimizer_params = configured_optimizer_params(state);
 
     // The optimizer the document asked for, not the one this function used to
     // hard-code. Validated at trainer creation, so anything else here would be
     // a value validate_train_config let through.
-    const ggml_opt_optimizer_type optimizer_type =
-            state.train_config.optimizer == RETRO_OPTIMIZER_SGD
-                    ? GGML_OPT_OPTIMIZER_TYPE_SGD
-                    : GGML_OPT_OPTIMIZER_TYPE_ADAMW;
+    const ggml_opt_optimizer_type optimizer_type = ggml_optimizer_of(state.train_config.optimizer);
 
     llama_opt_params params {
         /*n_ctx_train     =*/ state.train_config.n_ctx,
@@ -388,6 +455,7 @@ bool ensure_opt_context(trainer_state & state) {
         /*gradient_checkpointing    =*/ state.train_config.gradient_checkpointing,
         /*checkpoint_every_n_layers =*/ state.train_config.checkpoint_every_n_layers,
         /*checkpoint_type =*/ checkpoint_ggml_type(state.train_config.checkpoint_dtype),
+        /*optimizer_layout =*/ configured_optimizer_layout(state),
     };
     llama_opt_init(state.ctx.get(), state.model.get(), params);
     // Recorded before the checks below, not after: llama_opt_init asserts that

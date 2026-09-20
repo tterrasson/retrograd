@@ -61,7 +61,28 @@ pub struct RetroTrainConfig {
     pub optimizer: i32,
     pub shuffle_seed: u64,
     pub trainable: i32,
+    /// Muon, read only when `optimizer` names it. Zero in any of these selects
+    /// the runtime's frozen v1 default, so a caller that fills none of them
+    /// gets the declared layout rather than zeros.
+    pub muon_momentum: c_float,
+    pub muon_ns_epsilon: c_float,
+    pub muon_fallback_learning_rate: c_float,
+    pub muon_ns_steps: u32,
+    pub muon_nesterov: bool,
+    /// Gefen, read only when `optimizer` names it. `gefen_variant` is one of
+    /// `RETRO_GEFEN_*`.
+    pub gefen_variant: i32,
+    pub gefen_block_size: u32,
+    pub gefen_beta1: c_float,
+    pub gefen_beta2: c_float,
+    pub gefen_eps: c_float,
 }
+
+/// Which fixed-block state a Gefen run keeps, mirroring `retro_gefen_variant`.
+/// It selects a slot table rather than scaling an update, so it moves the
+/// layout version a checkpoint records.
+pub const RETRO_GEFEN_SHARED_V: i32 = 0;
+pub const RETRO_GEFEN_QUANTIZED_M: i32 = 1;
 
 /// Implementation choice for [`retro_probe_op_run_ex`].
 pub const RETRO_KERNEL_IMPL_AUTO: i32 = 0;
@@ -566,6 +587,21 @@ pub struct RetroOptimizerState {
     pub adamw_beta1: c_float,
     pub adamw_beta2: c_float,
     pub adamw_eps: c_float,
+    /// One of `RETRO_GEFEN_*`, and meaningless for any other optimizer. The
+    /// name alone does not say which slot table was allocated, so the variant
+    /// travels beside it.
+    pub gefen_variant: i32,
+    /// The chosen optimizer's own coefficients, reported the same way the
+    /// AdamW three are: a checkpoint records the values that ran.
+    pub muon_momentum: c_float,
+    pub muon_ns_epsilon: c_float,
+    pub muon_fallback_learning_rate: c_float,
+    pub muon_ns_steps: u32,
+    pub muon_nesterov: bool,
+    pub gefen_beta1: c_float,
+    pub gefen_beta2: c_float,
+    pub gefen_eps: c_float,
+    pub gefen_block_size: u32,
 }
 
 #[repr(C)]
@@ -1560,7 +1596,7 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroLoraConfig, target_patterns), 16);
         assert_eq!(offset_of!(RetroLoraConfig, dtype), 32);
 
-        assert_eq!(size_of::<RetroTrainConfig>(), 128);
+        assert_eq!(size_of::<RetroTrainConfig>(), 168);
         assert_eq!(align_of::<RetroTrainConfig>(), 8);
         assert_eq!(offset_of!(RetroTrainConfig, generation_concurrency), 16);
         assert_eq!(offset_of!(RetroTrainConfig, kv_dtype), 24);
@@ -1593,6 +1629,15 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroTrainConfig, optimizer), 108);
         assert_eq!(offset_of!(RetroTrainConfig, shuffle_seed), 112);
         assert_eq!(offset_of!(RetroTrainConfig, trainable), 120);
+        // The optimizer-specific tail. `trainable` left four bytes of padding
+        // at 124, which is where the first Muon float lands, so the block below
+        // costs what it holds and nothing for alignment until `muon_nesterov`,
+        // whose three trailing bytes the next i32 would have forced anyway.
+        assert_eq!(offset_of!(RetroTrainConfig, muon_momentum), 124);
+        assert_eq!(offset_of!(RetroTrainConfig, muon_ns_steps), 136);
+        assert_eq!(offset_of!(RetroTrainConfig, muon_nesterov), 140);
+        assert_eq!(offset_of!(RetroTrainConfig, gefen_variant), 144);
+        assert_eq!(offset_of!(RetroTrainConfig, gefen_eps), 160);
 
         assert_eq!(size_of::<RetroScoringStats>(), 48);
         assert_eq!(align_of::<RetroScoringStats>(), 8);
@@ -1699,7 +1744,14 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroOptimizerState, last_learning_rate), 48);
         assert_eq!(offset_of!(RetroOptimizerState, adamw_beta1), 52);
         assert_eq!(offset_of!(RetroOptimizerState, adamw_eps), 60);
-        assert_eq!(size_of::<RetroOptimizerState>(), 64);
+        // The variant opens a new 8-byte tail slot, and the per-optimizer
+        // coefficients fill it and four more.
+        assert_eq!(offset_of!(RetroOptimizerState, gefen_variant), 64);
+        assert_eq!(offset_of!(RetroOptimizerState, muon_momentum), 68);
+        assert_eq!(offset_of!(RetroOptimizerState, muon_nesterov), 84);
+        assert_eq!(offset_of!(RetroOptimizerState, gefen_beta1), 88);
+        assert_eq!(offset_of!(RetroOptimizerState, gefen_block_size), 100);
+        assert_eq!(size_of::<RetroOptimizerState>(), 104);
     }
 
     /// `retro_read_tensor_inventory` on its error paths only, for the same
@@ -2233,6 +2285,16 @@ mod contract_tests {
             optimizer: 0,
             shuffle_seed: 42,
             trainable: 0,
+            muon_momentum: 0.0,
+            muon_ns_epsilon: 0.0,
+            muon_fallback_learning_rate: 0.0,
+            muon_ns_steps: 0,
+            muon_nesterov: true,
+            gefen_variant: RETRO_GEFEN_SHARED_V,
+            gefen_block_size: 0,
+            gefen_beta1: 0.0,
+            gefen_beta2: 0.0,
+            gefen_eps: 0.0,
         };
         unsafe {
             assert!(retro_trainer_new(path.as_ptr(), &invalid).is_null());

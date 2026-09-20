@@ -76,6 +76,62 @@ pub struct ConfigDocument {
     /// serves every objective that declares a KL term.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<ReferenceToml>,
+    /// `[optimizer.<name>]`: the chosen optimizer's own knobs. A table for an
+    /// optimizer the run did not choose is refused at build time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimizer: Option<OptimizerToml>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OptimizerToml {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub muon: Option<MuonToml>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gefen: Option<GefenToml>,
+}
+
+/// `[optimizer.muon]`.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MuonToml {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub momentum: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nesterov: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ns_steps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ns_epsilon: Option<f32>,
+    /// The rate the parameters Muon declines are updated at: its own value,
+    /// not a ratio of `training.lr`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_learning_rate: Option<f32>,
+}
+
+/// `[optimizer.gefen]`. `variant` selects a slot table, so it moves the
+/// layout version rather than appearing as a declared hyperparameter.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GefenToml {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_numel: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codebook: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codebook_levels: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beta1: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beta2: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eps: Option<f32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

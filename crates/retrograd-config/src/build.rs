@@ -24,6 +24,7 @@ use crate::document::{
     OutputToml, SharedPrefixFanoutToml, TrainableToml, TrainingToml,
 };
 use crate::grpo::build_grpo;
+use crate::optimizer::build_optimizer;
 use crate::ppo::build_ppo;
 use crate::reference::build_reference;
 use crate::sft::build_sft;
@@ -95,6 +96,17 @@ pub fn build_with(
         file.run.verbose,
     )?;
     training.trainable = build_trainable(&file.training, file.trainable.as_ref())?;
+    // Resolve the [optimizer.<name>] section against the named optimizer:
+    // the vector's rows are what that choice declares.
+    let resolved_optimizer = build_optimizer(
+        file.optimizer.as_ref(),
+        training.trainable.optimizer,
+        training.learning_rate,
+        training.weight_decay,
+        training.max_grad_norm,
+    )?;
+    training.trainable.optimizer = resolved_optimizer.kind;
+    training.optimizer_hyperparameters = resolved_optimizer.hyperparameters;
     let policy = training.trainable.policy;
     let lora = build_lora(policy, file.lora.as_ref())?;
     let output = build_output(policy, file.output.as_ref(), root)?;
@@ -116,7 +128,8 @@ pub fn build_with(
         reference: reference_toml,
         ..
     } = file;
-    // `trainable` was consumed above; the destructuring drops the DTO.
+    // `trainable` and `optimizer` were consumed above; the destructuring
+    // drops the DTOs.
 
     let algorithm = match algorithm_name.as_str() {
         "sft" => {
@@ -380,12 +393,13 @@ fn build_trainable(
         Some(value) => OptimizerKind::parse(value)?,
         None => OptimizerKind::default(),
     };
+    // Kept for the next optimizer, which will be declared before its kernel
+    // exists: accepting the name would record an optimizer the run never used.
     if !optimizer.is_implemented() {
         return Err(Error::config(format!(
             "training.optimizer = '{optimizer}' is not available in this build: \
-             only adamw and sgd have an update step here. \
-             Accepting the name and running AdamW would write a checkpoint that \
-             records an optimizer the run never used"
+             it has no update step here, and accepting the name would write a \
+             checkpoint that records an optimizer the run never used"
         )));
     }
 

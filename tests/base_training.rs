@@ -25,9 +25,9 @@ use std::path::{Path, PathBuf};
 
 use retrograd::checkpoint::{self, Checkpoint};
 use retrograd::{
-    CheckpointMetadata, Device, LoraConfig, LoraDtype, OptimizerKind, TargetSet, TensorDtype,
-    TrainConfig, TrainableEntry, TrainablePolicy, TrainableRunConfig, TrainableSelector,
-    TrainableSet, Trainer, resolve_base, tensor_inventory,
+    CheckpointMetadata, Device, GefenLayout, GefenVariant, LoraConfig, LoraDtype, OptimizerKind,
+    TargetSet, TensorDtype, TrainConfig, TrainableEntry, TrainablePolicy, TrainableRunConfig,
+    TrainableSelector, TrainableSet, Trainer, resolve_base, tensor_inventory,
 };
 
 const TEXT: &str = concat!(
@@ -64,6 +64,9 @@ fn base_config_on(
             },
             optimizer,
         },
+        // The declared vector of whichever optimizer the case names, which is
+        // what a built document would carry.
+        optimizer_hyperparameters: optimizer.declared_hyperparameters(),
         ..TrainConfig::default()
     }
 }
@@ -582,15 +585,33 @@ fn sgd_refuses_an_adapter_its_update_step_cannot_write() {
     assert!(retry.to_string().contains("F32-only"), "{retry}");
 }
 
+/// Every declared optimizer now has an update step, so the refusal that used
+/// to greet Muon and Gefen before the model was opened is gone: what remains is
+/// the model error, and the *device* refusal, which cannot be answered without
+/// one. A name this build cannot honour would still be refused by `parse`.
 #[test]
-fn unsupported_optimizers_are_refused_before_loading_a_model() {
-    for optimizer in [OptimizerKind::Muon, OptimizerKind::Gefen] {
+fn every_declared_optimizer_reaches_the_model_load() {
+    for optimizer in [
+        OptimizerKind::AdamW,
+        OptimizerKind::Sgd,
+        OptimizerKind::Muon,
+        OptimizerKind::Gefen(GefenLayout::default()),
+        OptimizerKind::Gefen(GefenLayout {
+            variant: GefenVariant::QuantizedM,
+            ..GefenLayout::default()
+        }),
+    ] {
+        assert!(optimizer.is_implemented(), "{optimizer}");
         let result = Trainer::new(
             "missing-model.gguf",
             base_config(TrainablePolicy::Lora, optimizer),
         );
-        let error = result.err().expect("unsupported optimizer must be refused");
-        assert!(error.to_string().contains("not available"), "{error}");
+        let error = result.err().expect("a missing model is still a failure");
+        let message = error.to_string();
+        assert!(
+            !message.contains("not available"),
+            "{optimizer} was refused for itself rather than for the model: {message}"
+        );
     }
 }
 
@@ -2090,12 +2111,20 @@ fn an_assignment_row_that_names_no_trained_parameter_is_refused() {
         .prepare_optimizer()
         .expect_err("the row names a tensor this run does not train");
     assert!(error.to_string().contains("attn_q"), "{error}");
+    drop(trainer);
 
-    // An optimizer with no update step in this build is refused.
-    let error = trainer
+    // Every declared optimizer now has an update step, so a row naming one is
+    // a row the allocator can honour; the refusal above is about the
+    // *parameter*, which is the only thing an assignment can get wrong.
+    let mut trainer = Trainer::new(
+        &model,
+        base_config(TrainablePolicy::Partial, OptimizerKind::AdamW),
+    )
+    .expect("load trainer");
+    trainer.declare_trainable_set(&set).expect("select");
+    trainer
         .set_optimizer_assignment(&[(set.entries[0].name.clone(), OptimizerKind::Muon)])
-        .expect_err("muon has no update step here");
-    assert!(error.to_string().contains("not available"), "{error}");
+        .expect("a muon row is one the allocator can honour");
 }
 
 /// The dtype refusal follows the owner of each parameter: the run is AdamW,

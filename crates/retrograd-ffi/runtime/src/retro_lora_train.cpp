@@ -218,7 +218,7 @@ extern "C" int retro_trainer_set_optimizer_assignment(
                 return -1;
             }
             const int32_t optimizer = optimizers[i];
-            if (optimizer != RETRO_OPTIMIZER_ADAMW && optimizer != RETRO_OPTIMIZER_SGD) {
+            if (optimizer < RETRO_OPTIMIZER_ADAMW || optimizer > RETRO_OPTIMIZER_GEFEN) {
                 retro::set_error(
                         std::string("parameter '") + name + "' is assigned optimizer "
                         + std::to_string(optimizer)

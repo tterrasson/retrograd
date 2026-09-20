@@ -5,9 +5,13 @@ impl Trainer {
     /// adapter is created yet; call [`Trainer::create_lora`] or
     /// [`Trainer::load_lora`] before the first optimizer step.
     pub fn new(model_path: impl AsRef<Path>, config: TrainConfig) -> Result<Self> {
+        // Quiet today: every declared optimizer has an update step. It stays
+        // because the next one will be declared before its kernel exists, and
+        // a *device* that cannot run the chosen step is a different refusal,
+        // raised by the runtime once it knows which device it got.
         if !config.trainable.optimizer.is_implemented() {
             return Err(Error::invalid(format!(
-                "optimizer {} is not available in this build; use adamw or sgd",
+                "optimizer {} is not available in this build",
                 config.trainable.optimizer
             )));
         }
@@ -21,6 +25,7 @@ impl Trainer {
             trainable_policy: config.trainable.policy,
             declared_trainable: None,
             declared_assignment: Vec::new(),
+            chosen_optimizer: config.trainable.optimizer,
             reference: None,
             reference_path: None,
         });
@@ -92,18 +97,33 @@ impl Trainer {
     /// would it cost" before a model is open. This is where the answer is
     /// handed over, and the runtime validates it against the model it actually
     /// loaded: a name no tensor carries is an error rather than a silently
-    /// smaller update.
+    /// smaller update. Its base names also reach the runtime's parameter
+    /// filter, and the set itself is kept for the checkpoint signature, which
+    /// a resume needs before the optimizer graph exists.
     ///
     /// Must be called before the first training step or
     /// [`Trainer::prepare_optimizer`], and only on a trainer whose
     /// [`TrainConfig`] names a base-weight policy.
-    /// Declares the resolved trainable set: its base names reach the runtime's
-    /// parameter filter, and the set itself is kept for the checkpoint
-    /// signature, which a resume needs before the optimizer graph exists.
+    ///
+    /// For an optimizer with an eligibility rule (a fallback optimizer) and no
+    /// assignment already declared, this also derives and installs the
+    /// optimizer's own plan for `set` - so a parameter the chosen optimizer
+    /// cannot write at all is refused here, before it is refused deep inside
+    /// the first optimizer step.
     pub fn declare_trainable_set(&mut self, set: &retrograd_core::TrainableSet) -> Result<()> {
         let names: Vec<String> = set.base_entries().map(|entry| entry.name.clone()).collect();
         self.set_trainable_base(&names)?;
         self.declared_trainable = Some(set.clone());
+        // An optimizer with an eligibility rule owns only part of the set, and
+        // the runtime's own default is "every marked parameter on the run's
+        // optimizer". Declaring the plan's answer here is what keeps the
+        // allocated table the declared one; a caller that wants another
+        // assignment overrides it afterwards, as the mixed-optimizer runs do.
+        if self.declared_assignment.is_empty() && self.chosen_optimizer.fallback().is_some() {
+            let plan = self.chosen_optimizer.plan(set);
+            let assignment = Self::assignment_from_plan(&plan)?;
+            self.set_optimizer_assignment(&assignment)?;
+        }
         Ok(())
     }
 

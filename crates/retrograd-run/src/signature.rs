@@ -355,7 +355,7 @@ mod tests {
     #[test]
     fn reference_context_changes_the_trajectory_but_its_path_does_not() {
         let root = temp_path("reference-signature");
-        let mut config = config::load(&write_sft_config(&root)).unwrap();
+        let mut config = config::load(write_sft_config(&root)).unwrap();
         config.reference = Some(retrograd_config::ReferenceConfig {
             model: root.join("anchor.gguf"),
             n_ctx: None,

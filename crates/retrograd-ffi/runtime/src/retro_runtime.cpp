@@ -118,6 +118,19 @@ retro_train_config default_train_config() {
     config.shuffle_seed = 42;
     config.optimizer = RETRO_OPTIMIZER_ADAMW;
     config.trainable = RETRO_TRAINABLE_LORA;
+    // Zero means "the frozen default" for every optimizer-specific field, so a
+    // caller that fills none of them gets the declared v1 of whichever
+    // optimizer it names.
+    config.muon_momentum = 0.0f;
+    config.muon_ns_epsilon = 0.0f;
+    config.muon_fallback_learning_rate = 0.0f;
+    config.muon_ns_steps = 0;
+    config.muon_nesterov = true;
+    config.gefen_variant = RETRO_GEFEN_SHARED_V;
+    config.gefen_block_size = 0;
+    config.gefen_beta1 = 0.0f;
+    config.gefen_beta2 = 0.0f;
+    config.gefen_eps = 0.0f;
     return config;
 }
 
@@ -211,9 +224,47 @@ bool validate_train_config(const retro_train_config & config) {
         set_error("checkpoint_dtype must be f32, f16, or bf16");
         return false;
     }
-    if (config.optimizer != RETRO_OPTIMIZER_ADAMW && config.optimizer != RETRO_OPTIMIZER_SGD) {
-        set_error("optimizer must be adamw or sgd");
+    if (config.optimizer < RETRO_OPTIMIZER_ADAMW || config.optimizer > RETRO_OPTIMIZER_GEFEN) {
+        set_error("optimizer must be adamw, sgd, muon or gefen");
         return false;
+    }
+    if (config.optimizer == RETRO_OPTIMIZER_MUON) {
+        if (config.muon_momentum < 0.0f || config.muon_momentum > 1.0f) {
+            set_error("muon_momentum must be between zero and one");
+            return false;
+        }
+        if (config.muon_ns_epsilon < 0.0f || !std::isfinite(config.muon_ns_epsilon)) {
+            set_error("muon_ns_epsilon must be finite and not negative");
+            return false;
+        }
+        if (config.muon_fallback_learning_rate < 0.0f
+                || !std::isfinite(config.muon_fallback_learning_rate)) {
+            set_error("muon_fallback_learning_rate must be finite and not negative");
+            return false;
+        }
+    }
+    if (config.optimizer == RETRO_OPTIMIZER_GEFEN) {
+        if (config.gefen_variant != RETRO_GEFEN_SHARED_V
+                && config.gefen_variant != RETRO_GEFEN_QUANTIZED_M) {
+            set_error("gefen_variant must be shared_v or quantized_m");
+            return false;
+        }
+        // A power of two, because the block index is a shift and the tail block
+        // is the only partial one a kernel has to reason about.
+        if (config.gefen_block_size != 0
+                && (config.gefen_block_size & (config.gefen_block_size - 1)) != 0) {
+            set_error("gefen_block_size must be a positive power of two");
+            return false;
+        }
+        if (config.gefen_beta1 < 0.0f || config.gefen_beta1 > 1.0f
+                || config.gefen_beta2 < 0.0f || config.gefen_beta2 > 1.0f) {
+            set_error("gefen betas must be between zero and one");
+            return false;
+        }
+        if (config.gefen_eps < 0.0f || !std::isfinite(config.gefen_eps)) {
+            set_error("gefen_eps must be finite and not negative");
+            return false;
+        }
     }
     if (config.trainable < RETRO_TRAINABLE_LORA || config.trainable > RETRO_TRAINABLE_HYBRID) {
         set_error("trainable must be lora, full, partial, or hybrid");

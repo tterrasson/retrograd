@@ -342,6 +342,9 @@ pub(super) fn draft_document(
             // The drafts are LoRA runs, whose anchor is their own frozen base
             // weights; a separate one is declared in the document, if at all.
             reference: None,
+            // The drafts name no optimizer, so they configure none: the
+            // default's own coefficients are the ones the run reads.
+            optimizer: None,
         },
         rollout,
     ))

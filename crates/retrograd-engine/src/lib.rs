@@ -84,6 +84,16 @@ fn train_config_to_ffi(config: &TrainConfig) -> Result<ffi::RetroTrainConfig> {
     } else {
         config.generation_concurrency
     };
+    let gefen_layout = config.trainable.optimizer.gefen_layout();
+    // AdamW declares `beta1`, `beta2` and `eps` too, and they are not Gefen's:
+    // the wire fields are read only under Gefen, so they are sent only then.
+    let gefen_beta = |name: &str| {
+        if gefen_layout.is_some() {
+            config.optimizer_scalar(name)
+        } else {
+            0.0
+        }
+    };
     Ok(ffi::RetroTrainConfig {
         n_ctx: config.n_ctx,
         n_batch: config.n_batch,
@@ -119,6 +129,26 @@ fn train_config_to_ffi(config: &TrainConfig) -> Result<ffi::RetroTrainConfig> {
         optimizer: config.trainable.optimizer.as_ffi()?,
         shuffle_seed: config.shuffle_seed,
         trainable: config.trainable.policy.as_ffi(),
+        // One declared row per wire field. The runtime treats zero as "the
+        // frozen default", and a row the chosen optimizer does not declare
+        // reads as zero here, so a Gefen run sends no Muon coefficients and
+        // an AdamW run sends neither optimizer's.
+        muon_momentum: config.optimizer_scalar("momentum"),
+        muon_ns_epsilon: config.optimizer_scalar("ns_epsilon"),
+        muon_fallback_learning_rate: config.optimizer_scalar("fallback_learning_rate"),
+        muon_ns_steps: config.optimizer_structural("ns_steps"),
+        muon_nesterov: config.optimizer_toggle("nesterov", true),
+        // Structural, so it comes from the layout the optimizer value carries
+        // rather than from the coefficient vector.
+        gefen_variant: gefen_layout
+            .map(|layout| layout.variant.as_ffi())
+            .unwrap_or(0),
+        gefen_block_size: gefen_layout
+            .map(|layout| u32::try_from(layout.block_size).unwrap_or(u32::MAX))
+            .unwrap_or(0),
+        gefen_beta1: gefen_beta("beta1"),
+        gefen_beta2: gefen_beta("beta2"),
+        gefen_eps: gefen_beta("eps"),
     })
 }
 
@@ -579,6 +609,12 @@ pub struct Trainer {
     /// Which optimizer owns each marked parameter, when an assignment was
     /// declared; empty for a single-optimizer run.
     declared_assignment: Vec<(String, retrograd_core::OptimizerKind)>,
+    /// The optimizer this run's [`TrainConfig`] named. Kept because an
+    /// optimizer with an eligibility rule owns only part of a set, and the
+    /// runtime puts every marked parameter on the run's optimizer unless an
+    /// assignment says otherwise - so the plan and the live table would
+    /// describe two different runs with nobody asking for it.
+    chosen_optimizer: retrograd_core::OptimizerKind,
     /// The frozen model this run's reference term scores against, when one was
     /// attached. `generate_base` and `score_reference_tokens` fall back to
     /// this model with its adapter disabled when it is absent. Boxed to keep
@@ -603,6 +639,11 @@ impl Trainer {
     /// The declared per-parameter assignment; empty for a single-optimizer run.
     pub fn declared_optimizer_assignment(&self) -> &[(String, retrograd_core::OptimizerKind)] {
         &self.declared_assignment
+    }
+
+    /// The optimizer this run's configuration named.
+    pub fn chosen_optimizer(&self) -> retrograd_core::OptimizerKind {
+        self.chosen_optimizer
     }
 
     /// The declared state table for this run: the optimizer's own policy
@@ -915,6 +956,7 @@ mod tests {
                 },
                 optimizer: OptimizerKind::Sgd,
             },
+            optimizer_hyperparameters: OptimizerKind::Sgd.declared_hyperparameters(),
         };
         let ffi = train_config_to_ffi(&config).unwrap();
         assert_eq!(ffi.n_ctx, 256);
@@ -949,6 +991,51 @@ mod tests {
         assert_eq!(ffi.shuffle_seed, 1234);
         assert_eq!(ffi.optimizer, 1);
         assert_eq!(ffi.trainable, 2);
+        // SGD declares none of the optimizer-specific rows, and a row nobody
+        // declares crosses as zero rather than as another optimizer's default.
+        assert_eq!(ffi.muon_momentum, 0.0);
+        assert_eq!(ffi.muon_ns_steps, 0);
+        assert_eq!(ffi.gefen_block_size, 0);
+        assert_eq!(ffi.gefen_beta1, 0.0);
+
+        // Muon's own rows do cross, and its fallback rate is its own value.
+        let muon = TrainConfig {
+            trainable: retrograd_core::TrainableRunConfig {
+                optimizer: OptimizerKind::Muon,
+                ..Default::default()
+            },
+            optimizer_hyperparameters: OptimizerKind::Muon.declared_hyperparameters(),
+            ..TrainConfig::default()
+        };
+        let ffi = train_config_to_ffi(&muon).unwrap();
+        assert_eq!(ffi.optimizer, 2);
+        assert_eq!(ffi.muon_momentum, 0.95);
+        assert_eq!(ffi.muon_ns_steps, 5);
+        assert!(ffi.muon_nesterov);
+        assert_eq!(ffi.muon_fallback_learning_rate, 1.0e-3);
+        // AdamW declares `beta1` as well, and it is not Gefen's: the Gefen
+        // fields stay zero unless the run is one.
+        assert_eq!(ffi.gefen_beta1, 0.0);
+
+        let gefen_kind = OptimizerKind::Gefen(retrograd_core::GefenLayout {
+            variant: retrograd_core::GefenVariant::QuantizedM,
+            ..Default::default()
+        });
+        let gefen = TrainConfig {
+            trainable: retrograd_core::TrainableRunConfig {
+                optimizer: gefen_kind,
+                ..Default::default()
+            },
+            optimizer_hyperparameters: gefen_kind.declared_hyperparameters(),
+            ..TrainConfig::default()
+        };
+        let ffi = train_config_to_ffi(&gefen).unwrap();
+        assert_eq!(ffi.optimizer, 3);
+        assert_eq!(ffi.gefen_variant, 1);
+        assert_eq!(ffi.gefen_block_size, 1024);
+        assert_eq!(ffi.gefen_beta1, 0.9);
+        assert_eq!(ffi.gefen_beta2, 0.999);
+        assert_eq!(ffi.muon_momentum, 0.0);
         assert!(
             TrainConfig::default().shuffle_dataset,
             "the shuffle is on unless a configuration turns it off"

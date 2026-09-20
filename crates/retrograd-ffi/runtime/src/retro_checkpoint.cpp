@@ -222,6 +222,19 @@ extern "C" int retro_trainer_optimizer_state(
         out_state->adamw_beta1 = params.adamw.beta1;
         out_state->adamw_beta2 = params.adamw.beta2;
         out_state->adamw_eps = params.adamw.eps;
+        const ggml_opt_optimizer_layout layout = retro::configured_optimizer_layout(*state);
+        out_state->gefen_variant = static_cast<int32_t>(layout.gefen.variant);
+        out_state->muon_momentum = params.muon.momentum;
+        out_state->muon_ns_epsilon = params.muon.ns_epsilon;
+        // The rate the parameters Muon declines are updated at, which is
+        // AdamW's own alpha in a Muon run.
+        out_state->muon_fallback_learning_rate = params.adamw.alpha;
+        out_state->muon_ns_steps = static_cast<uint32_t>(layout.muon.ns_steps);
+        out_state->muon_nesterov = layout.muon.nesterov;
+        out_state->gefen_beta1 = params.gefen.beta1;
+        out_state->gefen_beta2 = params.gefen.beta2;
+        out_state->gefen_eps = params.gefen.eps;
+        out_state->gefen_block_size = static_cast<uint32_t>(layout.gefen.block_size);
         return 0;
     });
 }

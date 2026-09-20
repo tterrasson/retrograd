@@ -374,7 +374,30 @@ static const char * optimizer_name(int32_t optimizer) {
     switch (optimizer) {
         case RETRO_OPTIMIZER_SGD:   return "sgd";
         case RETRO_OPTIMIZER_ADAMW: return "adamw";
+        case RETRO_OPTIMIZER_MUON:  return "muon";
+        case RETRO_OPTIMIZER_GEFEN: return "gefen";
         default:                    return "unknown";
+    }
+}
+
+// retro_optimizer and ggml_opt_optimizer_type are one enumeration written
+// twice, and these two functions are the only place that is relied upon: a
+// value outside the table is the run's default rather than a cast.
+ggml_opt_optimizer_type ggml_optimizer_of(int32_t optimizer) {
+    switch (optimizer) {
+        case RETRO_OPTIMIZER_SGD:   return GGML_OPT_OPTIMIZER_TYPE_SGD;
+        case RETRO_OPTIMIZER_MUON:  return GGML_OPT_OPTIMIZER_TYPE_MUON;
+        case RETRO_OPTIMIZER_GEFEN: return GGML_OPT_OPTIMIZER_TYPE_GEFEN;
+        default:                    return GGML_OPT_OPTIMIZER_TYPE_ADAMW;
+    }
+}
+
+int32_t retro_optimizer_of(ggml_opt_optimizer_type optimizer) {
+    switch (optimizer) {
+        case GGML_OPT_OPTIMIZER_TYPE_SGD:   return RETRO_OPTIMIZER_SGD;
+        case GGML_OPT_OPTIMIZER_TYPE_MUON:  return RETRO_OPTIMIZER_MUON;
+        case GGML_OPT_OPTIMIZER_TYPE_GEFEN: return RETRO_OPTIMIZER_GEFEN;
+        default:                            return RETRO_OPTIMIZER_ADAMW;
     }
 }
 
@@ -386,6 +409,11 @@ bool optimizer_supports_dtype(const trainer_state & state, int32_t optimizer, gg
     // and never asks the device.
     switch (optimizer) {
         case RETRO_OPTIMIZER_SGD:
+        // Muon and Gefen both write F32 weights only: a quantized first moment
+        // and a stochastically rounded writeback are two approximations, and
+        // they are measured one at a time.
+        case RETRO_OPTIMIZER_MUON:
+        case RETRO_OPTIMIZER_GEFEN:
             return type == GGML_TYPE_F32;
         case RETRO_OPTIMIZER_ADAMW:
             if (type == GGML_TYPE_F32) {
@@ -411,9 +439,7 @@ ggml_opt_optimizer_type opt_param_optimizer(const ggml_tensor * tensor, void * u
             }
         }
     }
-    return optimizer == RETRO_OPTIMIZER_SGD
-            ? GGML_OPT_OPTIMIZER_TYPE_SGD
-            : GGML_OPT_OPTIMIZER_TYPE_ADAMW;
+    return ggml_optimizer_of(optimizer);
 }
 
 // Every marked parameter, adapter factors first and base tensors after, with
@@ -422,10 +448,8 @@ static void for_each_marked(
         const trainer_state & state,
         const std::function<void(const ggml_tensor *, int32_t)> & visit) {
     auto owner_of = [&](const ggml_tensor * tensor) {
-        return opt_param_optimizer(tensor, const_cast<trainer_state *>(&state))
-                        == GGML_OPT_OPTIMIZER_TYPE_SGD
-                ? RETRO_OPTIMIZER_SGD
-                : RETRO_OPTIMIZER_ADAMW;
+        return retro_optimizer_of(
+                opt_param_optimizer(tensor, const_cast<trainer_state *>(&state)));
     };
     auto offer = [&](const ggml_tensor * tensor) {
         if (is_param_tensor(tensor)) {
@@ -521,10 +545,8 @@ bool declared_base_dtypes_are_admitted(const trainer_state & state) {
         if (!tensor) {
             continue;  // resolved against the same file; the marked-set check owns this
         }
-        const int32_t optimizer = opt_param_optimizer(tensor, const_cast<trainer_state *>(&state))
-                        == GGML_OPT_OPTIMIZER_TYPE_SGD
-                ? RETRO_OPTIMIZER_SGD
-                : RETRO_OPTIMIZER_ADAMW;
+        const int32_t optimizer = retro_optimizer_of(
+                opt_param_optimizer(tensor, const_cast<trainer_state *>(&state)));
         // Mirrors BASE_DTYPE_TABLE in retrograd-core: kernel support alone
         // does not admit an unvalidated backend. LoRA keeps its own policy in
         // optimizer_supports_marked_dtypes.

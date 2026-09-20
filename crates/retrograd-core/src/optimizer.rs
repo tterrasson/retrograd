@@ -34,10 +34,98 @@ pub enum OptimizerKind {
     /// different states, and a resume must not confuse them.
     Sgd,
     /// Orthogonalized momentum on eligible hidden base matrices, AdamW
-    /// everywhere else. Not implemented yet.
+    /// everywhere else.
     Muon,
-    /// Fixed-block, uniform-codebook Gefen. Not implemented yet.
-    Gefen,
+    /// Fixed-block Gefen, under the layout the run declared. The variant is
+    /// part of the value because it selects a slot table rather than scaling
+    /// an update: two runs that differ only in it keep different state.
+    Gefen(GefenLayout),
+}
+
+/// Which fixed-block state a Gefen run keeps.
+///
+/// Not a hyperparameter: it does not parameterize a layout, it selects one, so
+/// it moves [`OptimizerKind::layout_version`] instead of appearing in the
+/// declared vector.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GefenVariant {
+    /// An F32 first moment per element and an F32 second moment per block:
+    /// `4N + 4K`, which is approximately half of AdamW rather than exactly
+    /// half. Available first, and not a fine-tuning recommendation on arrival.
+    #[default]
+    SharedV,
+    /// A byte-indexed first moment against a shared uniform codebook, with an
+    /// F32 scale and second moment per block: `N + 8K`.
+    QuantizedM,
+}
+
+impl GefenVariant {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SharedV => "shared_v",
+            Self::QuantizedM => "quantized_m",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "shared_v" | "shared-v" => Ok(Self::SharedV),
+            "quantized_m" | "quantized-m" => Ok(Self::QuantizedM),
+            other => Err(Error::config(format!(
+                "optimizer.gefen.variant must be shared_v or quantized_m; got '{other}'"
+            ))),
+        }
+    }
+
+    /// The integer `retro_train_config.gefen_variant` carries.
+    pub fn as_ffi(self) -> i32 {
+        match self {
+            Self::SharedV => 0,
+            Self::QuantizedM => 1,
+        }
+    }
+
+    pub fn from_ffi(value: i32) -> Result<Self> {
+        match value {
+            0 => Ok(Self::SharedV),
+            1 => Ok(Self::QuantizedM),
+            other => Err(Error::runtime(format!(
+                "the runtime reported gefen variant {other}, which this build does not know"
+            ))),
+        }
+    }
+}
+
+impl fmt::Display for GefenVariant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Gefen's structural parameters: the ones that decide a slot's shape or which
+/// parameters the optimizer owns, rather than scaling an update.
+///
+/// Carried by the optimizer value itself because the slot table is a function
+/// of them: a plan built from one layout and a runtime allocated under another
+/// disagree by construction, which is what [`OptimizerPlan::check_live`] is
+/// there to catch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GefenLayout {
+    pub variant: GefenVariant,
+    /// Elements per quantization block, the divisor of `ceil(N / B)`.
+    pub block_size: u64,
+    /// Below this element count a selected parameter falls back to AdamW.
+    pub min_numel: u64,
+}
+
+impl Default for GefenLayout {
+    fn default() -> Self {
+        Self {
+            variant: GefenVariant::default(),
+            block_size: GEFEN_DEFAULT_BLOCK_SIZE,
+            min_numel: GEFEN_DEFAULT_MIN_NUMEL,
+        }
+    }
 }
 
 impl OptimizerKind {
@@ -46,7 +134,7 @@ impl OptimizerKind {
             Self::AdamW => "adamw",
             Self::Sgd => "sgd",
             Self::Muon => "muon",
-            Self::Gefen => "gefen",
+            Self::Gefen(_) => "gefen",
         }
     }
 
@@ -55,7 +143,9 @@ impl OptimizerKind {
             "adamw" | "adam_w" => Ok(Self::AdamW),
             "sgd" => Ok(Self::Sgd),
             "muon" => Ok(Self::Muon),
-            "gefen" => Ok(Self::Gefen),
+            // The variant is a separate key: shared_v is what a document that
+            // names only "gefen" gets, and it is the one available first.
+            "gefen" => Ok(Self::Gefen(GefenLayout::default())),
             other => Err(Error::config(format!(
                 "training.optimizer must be adamw, sgd, muon or gefen; got '{other}'"
             ))),
@@ -69,11 +159,13 @@ impl OptimizerKind {
     /// a trajectory nobody asked for, and a checkpoint that records the wrong
     /// optimizer.
     ///
-    /// Muon and Gefen have no kernels here at all; AdamW and SGD are the two
-    /// the update step can build, and the choice reaches it through
-    /// [`Self::as_ffi`].
+    /// All four have an update step: AdamW's and SGD's kernels, Muon's graph
+    /// and Gefen's two-phase pair. What is still refused is a *device* - the
+    /// Gefen phases are written for the CPU alone, and a state mutation
+    /// answered on a fallback backend would update a copy and leave the real
+    /// slot stale, so the runtime refuses that at preflight rather than here.
     pub fn is_implemented(self) -> bool {
-        matches!(self, Self::AdamW | Self::Sgd)
+        true
     }
 
     /// The integer the C `retro_train_config.optimizer` carries, and with it
@@ -85,19 +177,27 @@ impl OptimizerKind {
         match self {
             Self::AdamW => Ok(0),
             Self::Sgd => Ok(1),
-            Self::Muon | Self::Gefen => Err(Error::invalid(format!(
-                "optimizer {self} is not available in this build; use adamw or sgd"
-            ))),
+            Self::Muon => Ok(2),
+            Self::Gefen(_) => Ok(3),
         }
     }
 
     /// Reads back what a runtime or a checkpoint recorded. An unknown value is
     /// an error rather than a default: "the optimizer this run used" is not a
     /// field that may be guessed.
-    pub fn from_ffi(value: i32) -> Result<Self> {
+    /// `gefen` is read together with its variant, because the name alone does
+    /// not say which slot table the runtime allocated - and building a plan
+    /// against the other one would compare two different layouts row by row.
+    /// The value is ignored for every other optimizer.
+    pub fn from_ffi(value: i32, gefen_variant: i32) -> Result<Self> {
         match value {
             0 => Ok(Self::AdamW),
             1 => Ok(Self::Sgd),
+            2 => Ok(Self::Muon),
+            3 => Ok(Self::Gefen(GefenLayout {
+                variant: GefenVariant::from_ffi(gefen_variant)?,
+                ..GefenLayout::default()
+            })),
             other => Err(Error::runtime(format!(
                 "the runtime reported optimizer {other}, which this build does not know"
             ))),
@@ -109,11 +209,16 @@ impl OptimizerKind {
     /// checkpoint and compared on resume, because the name alone does not pin
     /// what a slot payload means.
     ///
-    /// All layouts are `1` today. The first fork is the pending Gefen `variant`
-    /// key, which should move this number rather than the optimizer name.
+    /// Gefen's two variants are the one fork: they are two slot tables under
+    /// one name, so the variant moves this number and a `quantized_m` payload
+    /// cannot be restored into a `shared_v` run by accident.
     pub fn layout_version(self) -> u32 {
         match self {
-            Self::AdamW | Self::Sgd | Self::Muon | Self::Gefen => 1,
+            Self::AdamW | Self::Sgd | Self::Muon => 1,
+            Self::Gefen(layout) => match layout.variant {
+                GefenVariant::SharedV => 1,
+                GefenVariant::QuantizedM => 2,
+            },
         }
     }
 
@@ -129,7 +234,13 @@ impl OptimizerKind {
             Self::AdamW => &ADAMW_HYPERPARAMETERS,
             Self::Sgd => &SGD_HYPERPARAMETERS,
             Self::Muon => &MUON_HYPERPARAMETERS,
-            Self::Gefen => &GEFEN_HYPERPARAMETERS,
+            // A first moment nothing quantizes has no codebook to size, so
+            // shared-v does not declare the key: an option one variant ignores
+            // is refused rather than accepted and dropped.
+            Self::Gefen(layout) => match layout.variant {
+                GefenVariant::SharedV => &GEFEN_SHARED_V_HYPERPARAMETERS,
+                GefenVariant::QuantizedM => &GEFEN_QUANTIZED_M_HYPERPARAMETERS,
+            },
         }
     }
 
@@ -159,6 +270,16 @@ impl OptimizerKind {
         }
     }
 
+    /// The Gefen layout this choice declares, for a caller that has to spell
+    /// the structural values on the wire. `None` for every other optimizer,
+    /// which is what "these keys belong to one section" means at the type.
+    pub fn gefen_layout(self) -> Option<GefenLayout> {
+        match self {
+            Self::Gefen(layout) => Some(layout),
+            _ => None,
+        }
+    }
+
     /// The persistent per-parameter slots this optimizer keeps, in the order the
     /// state API enumerates them.
     ///
@@ -169,9 +290,9 @@ impl OptimizerKind {
     ///
     /// Gefen's rows are declared with their block shape and byte widths even
     /// though nothing can allocate them yet.
-    pub fn slot_definitions(self) -> &'static [SlotDefinition] {
+    pub fn slot_definitions(self) -> Vec<SlotDefinition> {
         match self {
-            Self::AdamW => &[
+            Self::AdamW => vec![
                 SlotDefinition {
                     name: "m",
                     dtype: SlotDtype::F32,
@@ -185,42 +306,60 @@ impl OptimizerKind {
                     init: SlotInit::Zero,
                 },
             ],
-            Self::Sgd => &[],
-            Self::Muon => &[SlotDefinition {
+            Self::Sgd => Vec::new(),
+            // The Newton-Schulz workspace is graph scratch and not state: it
+            // survives no step, so it is not a slot.
+            Self::Muon => vec![SlotDefinition {
                 name: "momentum",
                 dtype: SlotDtype::F32,
                 shape: SlotShape::Parameter,
                 init: SlotInit::Zero,
             }],
-            Self::Gefen => &[
-                SlotDefinition {
-                    name: "indices",
-                    dtype: SlotDtype::I8,
-                    shape: SlotShape::Parameter,
-                    // The codebook has no exact zero, so an empty state is a
-                    // zero scale and a canonical index.
-                    init: SlotInit::Code(GEFEN_ZERO_BLOCK_INDEX),
-                },
-                SlotDefinition {
-                    name: "scales",
-                    dtype: SlotDtype::F32,
-                    shape: SlotShape::Blocks(GEFEN_DEFAULT_BLOCK_SIZE),
-                    init: SlotInit::Zero,
-                },
-                SlotDefinition {
-                    name: "second_moments",
-                    dtype: SlotDtype::F32,
-                    shape: SlotShape::Blocks(GEFEN_DEFAULT_BLOCK_SIZE),
-                    init: SlotInit::Zero,
-                },
-            ],
+            Self::Gefen(layout) => match layout.variant {
+                GefenVariant::SharedV => vec![
+                    SlotDefinition {
+                        name: "m",
+                        dtype: SlotDtype::F32,
+                        shape: SlotShape::Parameter,
+                        init: SlotInit::Zero,
+                    },
+                    SlotDefinition {
+                        name: "v",
+                        dtype: SlotDtype::F32,
+                        shape: SlotShape::Blocks(layout.block_size),
+                        init: SlotInit::Zero,
+                    },
+                ],
+                GefenVariant::QuantizedM => vec![
+                    SlotDefinition {
+                        name: "indices",
+                        dtype: SlotDtype::I8,
+                        shape: SlotShape::Parameter,
+                        // The codebook has no exact zero, so an empty state is a
+                        // zero scale and a canonical index.
+                        init: SlotInit::Code(GEFEN_ZERO_BLOCK_INDEX),
+                    },
+                    SlotDefinition {
+                        name: "scales",
+                        dtype: SlotDtype::F32,
+                        shape: SlotShape::Blocks(layout.block_size),
+                        init: SlotInit::Zero,
+                    },
+                    SlotDefinition {
+                        name: "second_moments",
+                        dtype: SlotDtype::F32,
+                        shape: SlotShape::Blocks(layout.block_size),
+                        init: SlotInit::Zero,
+                    },
+                ],
+            },
         }
     }
 
     /// Slot names alone, for a caller that compares a table without allocating one.
     pub fn slot_names(self) -> Vec<&'static str> {
         self.slot_definitions()
-            .iter()
+            .into_iter()
             .map(|slot| slot.name)
             .collect()
     }
@@ -229,15 +368,20 @@ impl OptimizerKind {
     ///
     /// Empty for everything this build can run; the scope exists in the
     /// checkpoint at length zero.
-    pub fn shared_slot_definitions(self) -> &'static [SlotDefinition] {
+    pub fn shared_slot_definitions(self) -> Vec<SlotDefinition> {
         match self {
-            Self::AdamW | Self::Sgd | Self::Muon => &[],
-            Self::Gefen => &[SlotDefinition {
-                name: "codebook",
-                dtype: SlotDtype::F32,
-                shape: SlotShape::Fixed(GEFEN_CODEBOOK_LEVELS),
-                init: SlotInit::UniformCodebook,
-            }],
+            Self::AdamW | Self::Sgd | Self::Muon => Vec::new(),
+            // Only the quantized variant has anything to look up; shared-v's
+            // first moment is the value itself.
+            Self::Gefen(layout) => match layout.variant {
+                GefenVariant::SharedV => Vec::new(),
+                GefenVariant::QuantizedM => vec![SlotDefinition {
+                    name: "codebook",
+                    dtype: SlotDtype::F32,
+                    shape: SlotShape::Fixed(GEFEN_CODEBOOK_LEVELS),
+                    init: SlotInit::UniformCodebook,
+                }],
+            },
         }
     }
 
@@ -253,8 +397,9 @@ impl OptimizerKind {
     pub fn supports_dtype(self, dtype: &TensorDtype) -> bool {
         match self {
             Self::AdamW => matches!(dtype, TensorDtype::F32 | TensorDtype::F16),
-            // F32 first; an F16 writeback is separate work.
-            Self::Sgd | Self::Muon | Self::Gefen => matches!(dtype, TensorDtype::F32),
+            // F32 first; an F16 writeback has to preserve the intended
+            // rounding and is separate work.
+            Self::Sgd | Self::Muon | Self::Gefen(_) => matches!(dtype, TensorDtype::F32),
         }
     }
 
@@ -268,7 +413,7 @@ impl OptimizerKind {
     pub fn fallback(self) -> Option<Self> {
         match self {
             Self::AdamW | Self::Sgd => None,
-            Self::Muon | Self::Gefen => Some(Self::AdamW),
+            Self::Muon | Self::Gefen(_) => Some(Self::AdamW),
         }
     }
 
@@ -299,9 +444,18 @@ impl OptimizerKind {
             Self::AdamW => n_elements.saturating_mul(8),
             Self::Sgd => 0,
             Self::Muon => n_elements.saturating_mul(4),
-            // Unreachable while `is_implemented` gates the choice; the fallback
-            // is AdamW's because that is what an ineligible tensor gets.
-            Self::Gefen => n_elements.saturating_mul(8),
+            // Per block, and the trailing partial block still costs a row:
+            // `4N + 4K` under shared-v, `N + 8K` under quantized-m. The shared
+            // codebook is counted once per owner by the plan, not here.
+            Self::Gefen(layout) => {
+                let blocks = n_elements.div_ceil(layout.block_size.max(1));
+                match layout.variant {
+                    GefenVariant::SharedV => n_elements
+                        .saturating_mul(4)
+                        .saturating_add(blocks.saturating_mul(4)),
+                    GefenVariant::QuantizedM => n_elements.saturating_add(blocks.saturating_mul(8)),
+                }
+            }
         }
     }
 
@@ -359,7 +513,9 @@ impl OptimizerKind {
                     && entry.ne[2] <= 1
                     && entry.ne[3] <= 1
             }
-            Self::Gefen => entry.n_elements >= GEFEN_DEFAULT_MIN_NUMEL,
+            // Below the threshold the per-block state costs more than the
+            // dense pair it replaces, and the fallback is counted in the total.
+            Self::Gefen(layout) => entry.n_elements >= layout.min_numel,
         }
     }
 
@@ -401,7 +557,7 @@ impl OptimizerKind {
                 .map(|owner| {
                     owner
                         .slot_definitions()
-                        .iter()
+                        .into_iter()
                         .map(|slot| slot.resolve(entry))
                         .collect()
                 })
@@ -426,7 +582,7 @@ impl OptimizerKind {
             .flat_map(|owner| {
                 owner
                     .shared_slot_definitions()
-                    .iter()
+                    .into_iter()
                     .map(|slot| SharedSlot {
                         owner: *owner,
                         slot: slot.name,
@@ -434,6 +590,7 @@ impl OptimizerKind {
                         n_elements: slot.shared_elements(),
                         n_bytes: slot.shared_elements().saturating_mul(slot.dtype.bytes()),
                     })
+                    .collect::<Vec<_>>()
             })
             .collect();
         OptimizerPlan {
@@ -446,14 +603,14 @@ impl OptimizerKind {
 
 /// The declarative description of one optimizer, assembled from the tables
 /// above rather than stored: one definition, one reader.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OptimizerDescriptor {
     /// The name a document writes and a checkpoint records.
     pub id: &'static str,
     /// The slot layout version, see [`OptimizerKind::layout_version`].
     pub layout_version: u32,
-    pub slots: &'static [SlotDefinition],
-    pub shared_slots: &'static [SlotDefinition],
+    pub slots: Vec<SlotDefinition>,
+    pub shared_slots: Vec<SlotDefinition>,
     pub hyperparameters: &'static [HyperparameterDefinition],
 }
 
@@ -1052,9 +1209,11 @@ const MUON_HYPERPARAMETERS: [HyperparameterDefinition; 8] = [
     ),
 ];
 
-/// Gefen. `block_size` and `codebook_levels` describe shapes, so they are
-/// integers; `block_size` is additionally a power of two.
-const GEFEN_HYPERPARAMETERS: [HyperparameterDefinition; 9] = [
+/// Gefen's shared rows. `block_size` and `min_numel` describe shapes and
+/// thresholds, so they are integers; `block_size` is additionally a power of
+/// two. `variant` is deliberately absent: it selects a layout rather than
+/// parameterizing one, and [`OptimizerKind::layout_version`] is where it lands.
+const GEFEN_SHARED_V_HYPERPARAMETERS: [HyperparameterDefinition; 8] = [
     HyperparameterDefinition::new(
         "learning_rate",
         HyperparameterValue::Scalar(1.0e-3),
@@ -1086,11 +1245,6 @@ const GEFEN_HYPERPARAMETERS: [HyperparameterDefinition; 9] = [
         HyperparameterBound::AtLeast(1),
     ),
     HyperparameterDefinition::new(
-        "codebook_levels",
-        HyperparameterValue::Structural(GEFEN_CODEBOOK_LEVELS as i64),
-        HyperparameterBound::AtLeast(2),
-    ),
-    HyperparameterDefinition::new(
         "weight_decay",
         HyperparameterValue::Scalar(0.0),
         HyperparameterBound::NonNegative,
@@ -1100,6 +1254,24 @@ const GEFEN_HYPERPARAMETERS: [HyperparameterDefinition; 9] = [
         HyperparameterValue::Scalar(1.0),
         HyperparameterBound::Positive,
     ),
+];
+
+/// The quantized variant's rows: shared-v's, plus the codebook width, which is
+/// the one key that describes state only this variant keeps.
+const GEFEN_QUANTIZED_M_HYPERPARAMETERS: [HyperparameterDefinition; 9] = [
+    GEFEN_SHARED_V_HYPERPARAMETERS[0],
+    GEFEN_SHARED_V_HYPERPARAMETERS[1],
+    GEFEN_SHARED_V_HYPERPARAMETERS[2],
+    GEFEN_SHARED_V_HYPERPARAMETERS[3],
+    GEFEN_SHARED_V_HYPERPARAMETERS[4],
+    GEFEN_SHARED_V_HYPERPARAMETERS[5],
+    HyperparameterDefinition::new(
+        "codebook_levels",
+        HyperparameterValue::Structural(GEFEN_CODEBOOK_LEVELS as i64),
+        HyperparameterBound::AtLeast(2),
+    ),
+    GEFEN_SHARED_V_HYPERPARAMETERS[6],
+    GEFEN_SHARED_V_HYPERPARAMETERS[7],
 ];
 
 /// Default `min_numel` below which a Gefen-selected parameter falls back to
@@ -1145,27 +1317,36 @@ mod tests {
     }
 
     #[test]
-    fn the_two_with_an_update_step_are_selectable_and_the_others_are_not() {
-        assert!(OptimizerKind::AdamW.is_implemented());
-        assert!(OptimizerKind::Sgd.is_implemented());
-        // No kernel, no descriptor: accepting either would be a checkpoint
-        // that records an optimizer the run never ran.
-        assert!(!OptimizerKind::Muon.is_implemented());
-        assert!(!OptimizerKind::Gefen.is_implemented());
+    fn every_declared_optimizer_has_an_update_step() {
+        for kind in ALL {
+            assert!(kind.is_implemented(), "{kind}");
+        }
         assert_eq!(OptimizerKind::default(), OptimizerKind::AdamW);
     }
 
     #[test]
     fn the_wire_value_round_trips_for_what_the_runtime_can_build() {
-        for kind in [OptimizerKind::AdamW, OptimizerKind::Sgd] {
+        for kind in ALL {
+            let variant = kind
+                .gefen_layout()
+                .map(|layout| layout.variant.as_ffi())
+                .unwrap_or(0);
             assert_eq!(
-                OptimizerKind::from_ffi(kind.as_ffi().unwrap()).unwrap(),
+                OptimizerKind::from_ffi(kind.as_ffi().unwrap(), variant).unwrap(),
                 kind
             );
         }
-        assert!(OptimizerKind::Muon.as_ffi().is_err());
-        assert!(OptimizerKind::Gefen.as_ffi().is_err());
-        assert!(OptimizerKind::from_ffi(7).is_err());
+        // The name alone does not say which slot table was allocated, so the
+        // variant travels beside it rather than being guessed.
+        assert_eq!(
+            OptimizerKind::from_ffi(3, 1).unwrap(),
+            OptimizerKind::Gefen(GefenLayout {
+                variant: GefenVariant::QuantizedM,
+                ..GefenLayout::default()
+            })
+        );
+        assert!(OptimizerKind::from_ffi(3, 9).is_err());
+        assert!(OptimizerKind::from_ffi(7, 0).is_err());
     }
 
     /// The planner has no resolved entry to hand `state_bytes`, so it goes
@@ -1308,7 +1489,7 @@ mod tests {
             entry("blk.0.attn_q.weight", TensorRole::Base, [64, 64, 1, 1]),
             entry("blk.1.attn_q.weight", TensorRole::Base, [64, 64, 1, 1]),
         ]);
-        let plan = OptimizerKind::Gefen.plan(&two);
+        let plan = quantized_m().plan(&two);
         // One codebook per owner, not per parameter.
         assert_eq!(plan.shared_rows().len(), 1);
         let live = |rows: &[(&str, &str, u64)]| -> Vec<(String, String, u64)> {
@@ -1353,7 +1534,7 @@ mod tests {
             entry("blk.0.attn_q.weight", TensorRole::Base, [64, 64, 1, 1]),
             entry("blk.0.attn_norm.weight", TensorRole::Base, [64, 1, 1, 1]),
         ]);
-        let plan = OptimizerKind::Gefen.plan(&mixed);
+        let plan = quantized_m().plan(&mixed);
         let owners: Vec<&str> = plan
             .parameters
             .iter()
@@ -1420,7 +1601,7 @@ mod tests {
             TensorRole::Base,
             [64, 64, 1, 1],
         )]);
-        let plan = OptimizerKind::Gefen.plan(&one);
+        let plan = quantized_m().plan(&one);
         let rows: Vec<(&str, u64)> = plan
             .slot_rows()
             .iter()
@@ -1444,7 +1625,7 @@ mod tests {
             TensorRole::Base,
             [4097, 1, 1, 1],
         )]);
-        let plan = OptimizerKind::Gefen.plan(&odd);
+        let plan = quantized_m().plan(&odd);
         assert_eq!(plan.slot_rows()[1].1.n_elements, 5);
     }
 
@@ -1493,14 +1674,35 @@ mod tests {
     fn a_rank_16_lora_factor_is_above_the_gefen_fallback_threshold() {
         // The plan's own correction: 16 x 1024 is 16384, not "below 4096".
         let factor = entry("a.lora_a", TensorRole::LoraA, [1024, 16, 1, 1]);
-        assert!(OptimizerKind::Gefen.is_eligible(&factor));
+        assert!(shared_v().is_eligible(&factor));
     }
 
-    const ALL: [OptimizerKind; 4] = [
+    /// Gefen under each of its two variants, spelled once.
+    fn shared_v() -> OptimizerKind {
+        OptimizerKind::Gefen(GefenLayout::default())
+    }
+
+    fn quantized_m() -> OptimizerKind {
+        OptimizerKind::Gefen(GefenLayout {
+            variant: GefenVariant::QuantizedM,
+            ..GefenLayout::default()
+        })
+    }
+
+    const ALL: [OptimizerKind; 5] = [
         OptimizerKind::AdamW,
         OptimizerKind::Sgd,
         OptimizerKind::Muon,
-        OptimizerKind::Gefen,
+        OptimizerKind::Gefen(GefenLayout {
+            variant: GefenVariant::SharedV,
+            block_size: GEFEN_DEFAULT_BLOCK_SIZE,
+            min_numel: GEFEN_DEFAULT_MIN_NUMEL,
+        }),
+        OptimizerKind::Gefen(GefenLayout {
+            variant: GefenVariant::QuantizedM,
+            block_size: GEFEN_DEFAULT_BLOCK_SIZE,
+            min_numel: GEFEN_DEFAULT_MIN_NUMEL,
+        }),
     ];
 
     /// Every layout declares the three scalars a run configures, so the
@@ -1528,9 +1730,20 @@ mod tests {
             assert_eq!(descriptor.slots, kind.slot_definitions());
             assert_eq!(descriptor.shared_slots, kind.shared_slot_definitions());
             assert_eq!(descriptor.hyperparameters, kind.hyperparameters());
-            // One layout each, so far. The first fork is Gefen's `variant`.
-            assert_eq!(descriptor.layout_version, 1);
+            // One layout each except Gefen's two, which is the whole point of
+            // the variant: the same name over two slot tables.
+            let expected = match kind.gefen_layout().map(|layout| layout.variant) {
+                Some(GefenVariant::QuantizedM) => 2,
+                _ => 1,
+            };
+            assert_eq!(descriptor.layout_version, expected, "{kind}");
         }
+        // And the two Gefen descriptors differ in more than their version.
+        assert_ne!(
+            shared_v().descriptor().slots,
+            quantized_m().descriptor().slots
+        );
+        assert!(shared_v().descriptor().shared_slots.is_empty());
     }
 
     #[test]
@@ -1542,7 +1755,7 @@ mod tests {
         assert!(adamw.set_scalar("learning_rate", f32::NAN).is_err());
         assert!(adamw.set_scalar("weight_decay", 0.0).is_ok());
 
-        let mut gefen = OptimizerKind::Gefen.declared_hyperparameters();
+        let mut gefen = quantized_m().declared_hyperparameters();
         assert!(
             gefen
                 .set("block_size", HyperparameterValue::Structural(1000))
@@ -1567,7 +1780,7 @@ mod tests {
         let refused = sgd.set_scalar("beta1", 0.9).expect_err("sgd has no beta1");
         assert!(refused.to_string().contains("beta1"), "{refused}");
         // A value of the wrong shape is refused too.
-        let mut gefen = OptimizerKind::Gefen.declared_hyperparameters();
+        let mut gefen = quantized_m().declared_hyperparameters();
         let refused = gefen
             .set("block_size", HyperparameterValue::Scalar(1024.0))
             .expect_err("a structural knob is not a float");
@@ -1631,10 +1844,16 @@ mod tests {
             OptimizerKind::AdamW,
             OptimizerKind::Sgd,
             OptimizerKind::Muon,
-            OptimizerKind::Gefen,
+            shared_v(),
         ] {
             assert_eq!(OptimizerKind::parse(kind.as_str()).unwrap(), kind);
         }
+        // "gefen" alone is the variant available first; the other is a key.
+        assert_eq!(OptimizerKind::parse("gefen").unwrap(), shared_v());
+        for variant in [GefenVariant::SharedV, GefenVariant::QuantizedM] {
+            assert_eq!(GefenVariant::parse(variant.as_str()).unwrap(), variant);
+        }
+        assert!(GefenVariant::parse("learned").is_err());
         assert!(OptimizerKind::parse("lion").is_err());
     }
 }

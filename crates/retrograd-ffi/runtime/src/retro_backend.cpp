@@ -284,7 +284,7 @@ const char * quantized_backward_path(
         return "cpu";
     }
     ggml_init_params params {
-        /*.mem_size   =*/ ggml_tensor_overhead() * 8,
+        /*.mem_size   =*/ ggml_tensor_overhead() * 16,
         /*.mem_buffer =*/ nullptr,
         /*.no_alloc   =*/ true,
     };
@@ -375,17 +375,26 @@ bool supports_device_logprob_gather(ggml_backend_dev_t device) {
 // Whether `device` can run `optimizer`'s update step on a parameter of `type`.
 // Asking ggml rather than reading a name keeps the answer true when a kernel
 // is added or a device changes. `nullptr` is the CPU device; it is looked up
-// rather than assumed supported.
+// rather than assumed supported. `gefen_variant`/`gefen_block_size` are read
+// only for RETRO_OPTIMIZER_GEFEN, and must match the run's real layout: the
+// two variants build structurally different ops (quantized_m adds a
+// byte-indexed moment, scales and a codebook that shared_v has none of), so
+// probing the wrong one answers a different question than the one being asked.
 bool supports_opt_step_dtype(
-        ggml_backend_dev_t device, int32_t optimizer, ggml_type type) {
+        ggml_backend_dev_t device, int32_t optimizer, ggml_type type,
+        int gefen_variant = GGML_OPT_GEFEN_VARIANT_SHARED_V,
+        int gefen_block_size = GGML_OPT_GEFEN_BLOCK_SIZE) {
     if (!device) {
         device = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
     }
     if (!device) {
         return false;
     }
+    // Up to 9 tensors under quantized_m (w, g, moment, v, scales, codebook,
+    // pars, stats, step); rounded up with margin rather than counted exactly
+    // per branch.
     ggml_init_params params {
-        /*.mem_size   =*/ ggml_tensor_overhead() * 8,
+        /*.mem_size   =*/ ggml_tensor_overhead() * 12,
         /*.mem_buffer =*/ nullptr,
         /*.no_alloc   =*/ true,
     };
@@ -416,6 +425,45 @@ bool supports_opt_step_dtype(
             }
             step = ggml_opt_step_sgd(ctx.get(), w, g, pars);
         } break;
+        case RETRO_OPTIMIZER_MUON:
+            // Muon's step is built out of ordinary graph ops, so there is no
+            // one node to ask about: every op it uses is one every backend
+            // already carries, and the only dtype question is the writeback.
+            return type == GGML_TYPE_F32;
+        case RETRO_OPTIMIZER_GEFEN: {
+            // Both phases, because a device that runs the pure one and not the
+            // mutating one would be scheduled as a split and update a copy.
+            const bool quantized_m = gefen_variant == GGML_OPT_GEFEN_VARIANT_QUANTIZED_M;
+            const int64_t n_probe_elements = 32 * 2;
+            const int64_t n_blocks = std::max<int64_t>(
+                    1, (n_probe_elements + gefen_block_size - 1) / gefen_block_size);
+            ggml_tensor * moment = ggml_new_tensor_2d(
+                    ctx.get(), quantized_m ? GGML_TYPE_I8 : GGML_TYPE_F32, 32, 2);
+            ggml_tensor * v = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, n_blocks);
+            ggml_tensor * scales = quantized_m
+                    ? ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, n_blocks) : nullptr;
+            ggml_tensor * codebook = quantized_m
+                    ? ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, GGML_OPT_GEFEN_CODEBOOK_LEVELS)
+                    : nullptr;
+            ggml_tensor * pars = ggml_new_tensor_1d(
+                    ctx.get(), GGML_TYPE_F32,
+                    ggml_opt_optimizer_n_params(GGML_OPT_OPTIMIZER_TYPE_GEFEN) + 1);
+            if (!g || !moment || !v || !pars || type != GGML_TYPE_F32) {
+                return false;
+            }
+            if (quantized_m && (!scales || !codebook)) {
+                return false;
+            }
+            ggml_tensor * stats = ggml_opt_step_gefen_stats(
+                    ctx.get(), g, moment, scales, v, codebook, pars,
+                    gefen_variant, gefen_block_size);
+            step = ggml_opt_step_gefen(
+                    ctx.get(), w, g, moment, scales, v, stats, codebook, pars,
+                    gefen_variant, gefen_block_size);
+            return step && stats
+                    && ggml_backend_dev_supports_op(device, stats)
+                    && ggml_backend_dev_supports_op(device, step);
+        }
         case RETRO_OPTIMIZER_ADAMW: {
             ggml_tensor * m = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 32, 2);
             ggml_tensor * v = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 32, 2);
@@ -937,6 +985,23 @@ bool load_model_and_context(trainer_state & state) {
             supports_opt_step_dtype(step_device, RETRO_OPTIMIZER_ADAMW, GGML_TYPE_F16);
     state.cap_opt_step_f16[RETRO_OPTIMIZER_SGD] =
             supports_opt_step_dtype(step_device, RETRO_OPTIMIZER_SGD, GGML_TYPE_F16);
+    state.cap_opt_step_f16[RETRO_OPTIMIZER_MUON] =
+            supports_opt_step_dtype(step_device, RETRO_OPTIMIZER_MUON, GGML_TYPE_F16);
+    state.cap_opt_step_f16[RETRO_OPTIMIZER_GEFEN] =
+            supports_opt_step_dtype(step_device, RETRO_OPTIMIZER_GEFEN, GGML_TYPE_F16);
+    // The run's own step on the dtype it will actually write, and for Gefen,
+    // the variant/block_size it will actually run: probing the frozen v1
+    // defaults instead would report a capability the run's real layout may not
+    // have.
+    const int resolved_gefen_variant = state.train_config.gefen_variant == RETRO_GEFEN_QUANTIZED_M
+            ? GGML_OPT_GEFEN_VARIANT_QUANTIZED_M
+            : GGML_OPT_GEFEN_VARIANT_SHARED_V;
+    const int resolved_gefen_block_size = state.train_config.gefen_block_size > 0
+            ? static_cast<int>(state.train_config.gefen_block_size)
+            : GGML_OPT_GEFEN_BLOCK_SIZE;
+    state.cap_opt_step_device = supports_opt_step_dtype(
+            step_device, state.train_config.optimizer, GGML_TYPE_F32,
+            resolved_gefen_variant, resolved_gefen_block_size);
     state.cap_fused_sparse_ce = use_gpu
             && supports_fused_sparse_ce(gpu_device, *model, state.train_config, fa_probe_tokens);
     ctx_params.flash_attn_type = differentiable_flash_attn
@@ -1261,7 +1326,8 @@ retro_memory_report memory_totals(const trainer_state & state) {
         }
         const auto owner = opt_param_optimizer(tensor, const_cast<trainer_state *>(&state));
         int64_t count = 0;
-        const auto * slots = ggml_opt_optimizer_slots(owner, &count);
+        const ggml_opt_optimizer_layout layout = configured_optimizer_layout(state);
+        const auto * slots = ggml_opt_optimizer_slots(owner, &layout, &count);
         uint64_t bytes = 0;
         for (int64_t i = 0; i < count; ++i) {
             bytes += static_cast<uint64_t>(ggml_opt_slot_n_elements(&slots[i], ggml_nelements(tensor)))
@@ -1533,7 +1599,7 @@ std::string backend_report(const trainer_state & state) {
     out << "  trainable_policy: " << trainable_policy_name(state.train_config.trainable) << "\n";
     out << "  trainable_base_tensors: " << state.trainable_base.size() << "\n";
     out << "  optimizer: "
-        << (state.train_config.optimizer == RETRO_OPTIMIZER_SGD ? "sgd" : "adamw") << "\n";
+        << ggml_opt_optimizer_name(ggml_optimizer_of(state.train_config.optimizer)) << "\n";
     if (state.gpu_active) {
         ggml_backend_dev_t dev = first_gpu_device();
         const char * desc = dev ? ggml_backend_dev_description(dev) : nullptr;
