@@ -21,6 +21,7 @@ from .models import (
     Dataset,
     Generation,
     TokenScores,
+    TrainableSelection,
     TrainingMetrics,
     TrainingProgress,
     TrainSequence,
@@ -67,8 +68,20 @@ class Trainer:
     ) -> None:
         if lora is not None and adapter is not None:
             raise ValueError("lora and adapter are mutually exclusive")
-        self._native_module = _native_module or load_native()
         config = training or TrainingConfig()
+        policy = config.trainable.policy if config.trainable is not None else "lora"
+        has_adapter = lora is not None or adapter is not None
+        if policy in ("full", "partial") and has_adapter:
+            raise ValueError(
+                f"TrainingConfig.trainable policy '{policy}' trains base tensors and no "
+                "adapter: drop lora/adapter, or use 'hybrid' to train both"
+            )
+        if policy == "hybrid" and not has_adapter:
+            raise ValueError(
+                "TrainingConfig.trainable policy 'hybrid' trains an adapter beside the "
+                "base tensors: pass lora or adapter"
+            )
+        self._native_module = _native_module or load_native()
         native_kwargs = config.native_kwargs()
         # Resolve an unset shuffle seed before constructing the native trainer;
         # it inherits the LoRA seed when an adapter is being trained.
@@ -129,6 +142,61 @@ class Trainer:
         destination = Path(path)
         self._translate(self._native.save_lora, os.fspath(destination))
         return destination
+
+    @property
+    def trainable_set(self) -> TrainableSelection | None:
+        """The base tensors this run resolved, or ``None`` for a LoRA run."""
+
+        value = self._translate(lambda: self._native.trainable_set)
+        return None if value is None else TrainableSelection.from_native(value)
+
+    def save_trainable(self, path: PathLike) -> Path:
+        """Write the trained base tensors, by absolute value, as a GGUF bundle.
+
+        A bundle is not an adapter: a hybrid run's adapter is saved beside it
+        with :meth:`save_adapter`.
+        """
+
+        destination = Path(path)
+        self._translate(self._native.save_trainable, os.fspath(destination))
+        return destination
+
+    def load_trainable(self, path: PathLike) -> Trainer:
+        """Restore base tensor values from such a bundle onto the live model."""
+
+        self._translate(self._native.load_trainable, os.fspath(path))
+        return self
+
+    def save_model(self, path: PathLike) -> Path:
+        """Write the whole model out as a standalone GGUF, trained weights included.
+
+        The result needs neither the source model nor a bundle. Refused when
+        no base tensor changes, when an adapter is carried, or when the
+        architecture's export is not covered.
+        """
+
+        destination = Path(path)
+        self._translate(self._native.save_model, os.fspath(destination))
+        return destination
+
+    def attach_reference(self, path: PathLike, *, context_size: int | None = None) -> Trainer:
+        """Load the frozen model this run's reference term scores against.
+
+        Held forward-only, so it costs its weights plus its KV cache. Its
+        tokenizer must agree with this model's and its scores must be
+        log-probabilities; both are checked here, not at the first token.
+
+        Required by a base-weight run: without an anchor the reference falls
+        back to this model with its adapter disabled, which is only equivalent
+        while the base weights are frozen.
+        """
+
+        self._translate(self._native.attach_reference, os.fspath(path), n_ctx=context_size)
+        return self
+
+    @property
+    def reference_path(self) -> str | None:
+        return self._translate(lambda: self._native.reference_path)
 
     def prepare_dataset(
         self,

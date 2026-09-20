@@ -21,6 +21,7 @@ from retrograd import (
     SandboxLimits,
     SandboxPool,
     Scenario,
+    TrainableConfig,
     TrainingConfig,
     TrainSequence,
     WeightedBatch,
@@ -59,6 +60,34 @@ def test_lora_aliases_are_expanded_for_native_runtime() -> None:
         (lambda: SamplingConfig(top_p=1.1), "top_p"),
         (lambda: LoraConfig(rank=0), "rank"),
         (lambda: LoraConfig(dtype="bf16"), "dtype"),
+        (lambda: TrainableConfig(policy="lora"), "absence of TrainableConfig"),
+        (lambda: TrainableConfig(policy="everything"), "policy must be"),
+        (lambda: TrainableConfig(norms=True), "takes no selectors"),
+        (lambda: TrainableConfig(layers="last:2"), "takes no selectors"),
+        (lambda: TrainableConfig(policy="partial"), "selects nothing"),
+        (lambda: TrainableConfig(policy="partial", layers="last:0"), "greater than zero"),
+        (lambda: TrainableConfig(policy="partial", norms=True, layers="4..2"), "inclusive"),
+        (lambda: TrainableConfig(policy="partial", norms=True, layers="most"), "layers must be"),
+        (lambda: TrainableConfig(policy="partial", norms=True, layers="1..abc"), "not a number"),
+        (
+            lambda: TrainableConfig(policy="partial", norms=True, layers="1..4294967296"),
+            "larger than a block index",
+        ),
+        (
+            lambda: TrainableConfig(policy="partial", norms=True, layers="last:9" + "9" * 20),
+            "larger than a block index",
+        ),
+        # These pass `str.isdigit` but not the runtime's `u32` parser.
+        (lambda: TrainableConfig(policy="partial", norms=True, layers="٣..4"), "not a number"),
+        (lambda: TrainableConfig(policy="partial", norms=True, layers="²..4"), "not a number"),
+        (
+            lambda: TrainableConfig(policy="hybrid", modules=("attn",)),
+            "norms and biases beside the adapter",
+        ),
+        (
+            lambda: TrainableConfig(policy="hybrid", norms=True, output_head=True),
+            "norms and biases beside the adapter",
+        ),
     ],
 )
 def test_configs_fail_early(config, message: str) -> None:
@@ -111,6 +140,12 @@ def test_configs_coerce_sequences_paths_and_preserve_native_options(tmp_path: Pa
         "scheduler": "cosine",
         "warmup_steps": 0,
         "optimizer": "adamw",
+        "trainable_policy": "lora",
+        "trainable_layers": "all",
+        "trainable_modules": [],
+        "trainable_norms": False,
+        "trainable_biases": False,
+        "trainable_output_head": False,
         "chunked_cross_entropy": True,
         "chunked_ce_tiles": 8,
         "chunked_ce_seq_chunk": 512,
@@ -393,3 +428,25 @@ def test_distill_refuses_an_unusable_weight_clip() -> None:
     for clip in (0.0, -1.0, float("inf")):
         with pytest.raises(ValueError):
             DistillConfig("teacher.gguf", "prompts.jsonl", weight_clip=clip)
+
+
+def test_a_trainable_policy_reaches_the_binding_as_its_own_keywords() -> None:
+    selection = TrainableConfig(policy="partial", layers="last:2", modules=["attn", "ffn_up"])
+    sent = TrainingConfig(trainable=selection).native_kwargs()
+    assert sent["trainable_policy"] == "partial"
+    assert sent["trainable_layers"] == "last:2"
+    assert sent["trainable_modules"] == ["attn", "ffn_up"]
+    assert sent["trainable_norms"] is False
+    assert TrainingConfig().native_kwargs()["trainable_policy"] == "lora"
+
+
+@pytest.mark.parametrize("layers", ["all", "last:2", "last:+2", "00..02", "0..4294967295"])
+def test_the_layer_grammar_is_the_one_the_runtime_parses(layers: str) -> None:
+    # Both sides must accept the same strings for this check to mean anything.
+    assert TrainableConfig(policy="partial", norms=True, layers=layers).layers == layers
+
+
+def test_the_lora_defaults_are_not_a_shared_mutable() -> None:
+    first = TrainingConfig().native_kwargs()
+    first["trainable_modules"].append("attn")
+    assert TrainingConfig().native_kwargs()["trainable_modules"] == []

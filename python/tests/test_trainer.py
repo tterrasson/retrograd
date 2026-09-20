@@ -14,6 +14,7 @@ from retrograd import (
     RetrogradError,
     SamplingConfig,
     Scenario,
+    TrainableConfig,
     Trainer,
     TrainingConfig,
     TrainSequence,
@@ -43,6 +44,27 @@ class FakeTrainer:
         self.hidden_size = 2
         self.created_lora = None
         self.saved_to = None
+        self.saved_bundle = None
+        self.saved_model = None
+        self.reference_path = None
+        self.trainable_set = (
+            ("full", [("blk.0.attn_q.weight", "base", "F32", [4, 4, 1, 1], 16, 64)], [])
+            if config["trainable_policy"] != "lora"
+            else None
+        )
+
+    def save_trainable(self, path: str) -> None:
+        self.saved_bundle = path
+
+    def load_trainable(self, path: str) -> None:
+        self.loaded_bundle = path
+
+    def save_model(self, path: str) -> None:
+        self.saved_model = path
+
+    def attach_reference(self, path: str, n_ctx: int | None) -> None:
+        self.reference_path = path
+        self.reference_ctx = n_ctx
 
     def create_lora(self, **config) -> None:
         self.created_lora = config
@@ -409,3 +431,57 @@ def test_native_runtime_errors_are_exposed_as_public_error() -> None:
     model._native.preflight = fail
     with pytest.raises(RetrogradError, match="boom"):
         model.preflight()
+
+
+def test_a_base_policy_reaches_the_binding_and_reports_its_resolved_set() -> None:
+    model = trainer(training=TrainingConfig(trainable=TrainableConfig(policy="full")))
+
+    assert model._native.config["trainable_policy"] == "full"
+    selection = model.trainable_set
+    assert selection is not None
+    assert selection.policy == "full"
+    assert selection.tensors[0].name == "blk.0.attn_q.weight"
+    assert selection.tensors[0].shape == (4, 4, 1, 1)
+    assert selection.n_parameters == 16
+    assert selection.n_bytes == 64
+    assert trainer(lora=LoraConfig()).trainable_set is None
+
+
+def test_the_bundle_and_the_model_export_have_their_own_paths(tmp_path: Path) -> None:
+    model = trainer(training=TrainingConfig(trainable=TrainableConfig(policy="full")))
+
+    assert model.save_trainable(tmp_path / "bundle.gguf") == tmp_path / "bundle.gguf"
+    assert model._native.saved_bundle == str(tmp_path / "bundle.gguf")
+    model.load_trainable(tmp_path / "bundle.gguf")
+    assert model._native.loaded_bundle == str(tmp_path / "bundle.gguf")
+    assert model.save_model(tmp_path / "model.gguf") == tmp_path / "model.gguf"
+    assert model._native.saved_model == str(tmp_path / "model.gguf")
+
+
+def test_an_anchor_is_attached_with_its_own_context_width(tmp_path: Path) -> None:
+    model = trainer(training=TrainingConfig(trainable=TrainableConfig(policy="full")))
+    model.attach_reference(tmp_path / "anchor.gguf", context_size=512)
+
+    assert model._native.reference_path == str(tmp_path / "anchor.gguf")
+    assert model._native.reference_ctx == 512
+    assert model.reference_path == str(tmp_path / "anchor.gguf")
+    model.attach_reference(tmp_path / "anchor.gguf")
+    assert model._native.reference_ctx is None
+
+
+@pytest.mark.parametrize(
+    ("policy", "kwargs", "message"),
+    [
+        ("full", {"lora": LoraConfig()}, "trains base tensors and no adapter"),
+        ("partial", {"adapter": "a.gguf"}, "trains base tensors and no adapter"),
+        ("hybrid", {}, "trains an adapter beside the base tensors"),
+    ],
+)
+def test_a_policy_and_an_adapter_have_to_agree(policy, kwargs, message: str) -> None:
+    selection = (
+        TrainableConfig(policy=policy)
+        if policy == "full"
+        else TrainableConfig(policy=policy, norms=True)
+    )
+    with pytest.raises(ValueError, match=message):
+        trainer(training=TrainingConfig(trainable=selection), **kwargs)

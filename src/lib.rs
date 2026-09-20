@@ -20,7 +20,8 @@ pub use retrograd_core::{
     TrainConfig, TrainMetrics, TrainableEntry, TrainablePolicy, TrainableRunConfig,
     TrainableSelector, TrainableSet, WeightedBatch, architecture_capability,
     architecture_exports_model, base_dtype_admits, base_dtype_backends, base_dtype_capability,
-    base_dtype_is_tabled, checkpoint_stride_for, resolve_base, tensor_family,
+    base_dtype_is_tabled, checkpoint_stride_for, model_export_architectures, resolve_base,
+    tensor_family,
 };
 pub use retrograd_engine::{
     DutyCycleStats, FusedCeProbeInputs, FusedCeProbeShape, OptimizerMemory, ProbeInputs,

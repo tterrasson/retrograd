@@ -18,9 +18,10 @@ use retrograd::dataset::{self, DataFormat, PreparedDataset};
 use retrograd::training::{self, Progress};
 use retrograd::{
     CheckpointDtype, DEFAULT_CE_SEQ_CHUNK, DEFAULT_CHECKPOINT_STRIDE, Device, Error, FeatureDtype,
-    GrpoBatchParams, KvDtype, LoraConfig, LrScheduler, OptimizerKind, RewardMode, RewardProtocol,
-    SamplingParams, SharedPrefixFanout, TargetSet, TrainConfig, TrainMetrics, TrainSequence,
-    TrainableRunConfig, Trainer, WeightedBatch, backend_list,
+    GrpoBatchParams, KvDtype, LayerRange, LoraConfig, LrScheduler, OptimizerKind, RewardMode,
+    RewardProtocol, SamplingParams, SharedPrefixFanout, TargetSet, TrainConfig, TrainMetrics,
+    TrainSequence, TrainablePolicy, TrainableRunConfig, TrainableSelector, TrainableSet, Trainer,
+    WeightedBatch, backend_list,
 };
 use retrograd_agent::tools::{McpServerConfig, McpToolProvider, ToolProvider};
 use retrograd_agent::{
@@ -33,6 +34,10 @@ create_exception!(_native, RetrogradNativeError, PyRuntimeError);
 
 type MetricsTuple = (u32, bool, u64, f32, f32, f32, f32);
 type ProgressTuple = (MetricsTuple, Vec<(String, f32)>);
+/// name, role, dtype, ggml dimensions, elements, stored bytes.
+type TrainableEntryTuple = (String, String, String, Vec<i64>, u64, u64);
+/// policy, resolved entries, eligible tensors left out with the reason.
+type TrainableSetTuple = (String, Vec<TrainableEntryTuple>, Vec<(String, String)>);
 
 fn metrics_tuple(metrics: TrainMetrics) -> MetricsTuple {
     (
@@ -167,6 +172,72 @@ fn parse_optimizer(value: &str) -> PyResult<OptimizerKind> {
     Ok(kind)
 }
 
+/// Parses the base-weight policy and its selection, refusing a selection the
+/// policy would ignore rather than silently dropping it.
+fn parse_trainable(
+    policy: &str,
+    layers: &str,
+    modules: Vec<String>,
+    norms: bool,
+    biases: bool,
+    output_head: bool,
+) -> PyResult<(TrainablePolicy, TrainableSelector)> {
+    let policy = TrainablePolicy::parse(policy).map_err(python_error)?;
+    let selector = TrainableSelector {
+        layers: LayerRange::parse(layers).map_err(python_error)?,
+        modules,
+        norms,
+        biases,
+        output_head,
+    };
+    let selects = !selector.is_empty() || selector.layers != LayerRange::All;
+    match policy {
+        TrainablePolicy::Lora if selects => Err(PyValueError::new_err(
+            "trainable_policy = 'lora' trains no base tensor: drop the trainable_* \
+             selectors, or ask for 'partial' or 'hybrid'",
+        )),
+        TrainablePolicy::Full if selects => Err(PyValueError::new_err(
+            "trainable_policy = 'full' trains every supported eligible tensor and takes \
+             no selectors: use 'partial' to narrow it",
+        )),
+        TrainablePolicy::Lora | TrainablePolicy::Full => Ok((policy, TrainableSelector::default())),
+        TrainablePolicy::Partial | TrainablePolicy::Hybrid if selector.is_empty() => {
+            Err(PyValueError::new_err(format!(
+                "trainable_policy = '{policy}' selects nothing: set at least one of \
+                 trainable_modules, trainable_norms, trainable_biases or \
+                 trainable_output_head"
+            )))
+        }
+        TrainablePolicy::Hybrid if !selector.modules.is_empty() || selector.output_head => {
+            Err(PyValueError::new_err(
+                "trainable_policy = 'hybrid' permits only base norms and biases beside the \
+                 adapter: trainable_modules and trainable_output_head are not supported \
+                 with it",
+            ))
+        }
+        TrainablePolicy::Partial | TrainablePolicy::Hybrid => Ok((policy, selector)),
+    }
+}
+
+/// Whether a standalone model GGUF may be written for `architecture`.
+///
+/// `None` is the LoRA case: no inventory was read and the runtime refuses the
+/// export for its own reason.
+fn check_model_export(architecture: Option<&str>) -> std::result::Result<(), String> {
+    let Some(architecture) = architecture else {
+        return Ok(());
+    };
+    if retrograd::architecture_exports_model(architecture) {
+        return Ok(());
+    }
+    let known: Vec<&str> = retrograd::model_export_architectures().collect();
+    Err(format!(
+        "a standalone model export is not available for architecture '{architecture}': \
+         it is covered for [{}] today. Save the trainable bundle instead",
+        known.join(", ")
+    ))
+}
+
 fn parse_format(value: &str) -> PyResult<DataFormat> {
     match value {
         "text" => Ok(DataFormat::Text),
@@ -215,6 +286,10 @@ impl PyPreparedDataset {
 struct PyTrainer {
     inner: Option<Trainer>,
     training: TrainConfig,
+    /// Resolved base set, kept for the `trainable_set` getter. `None` for a LoRA run.
+    trainable: Option<TrainableSet>,
+    /// Model architecture, read from the same inventory. Used to check standalone export coverage.
+    architecture: Option<String>,
 }
 
 impl PyTrainer {
@@ -253,6 +328,12 @@ impl PyTrainer {
         scheduler="constant",
         warmup_steps=0,
         optimizer="adamw",
+        trainable_policy="lora",
+        trainable_layers="all",
+        trainable_modules=None,
+        trainable_norms=false,
+        trainable_biases=false,
+        trainable_output_head=false,
         chunked_cross_entropy=true,
         chunked_ce_tiles=8,
         chunked_ce_seq_chunk=DEFAULT_CE_SEQ_CHUNK,
@@ -285,6 +366,12 @@ impl PyTrainer {
         scheduler: &str,
         warmup_steps: u64,
         optimizer: &str,
+        trainable_policy: &str,
+        trainable_layers: &str,
+        trainable_modules: Option<Vec<String>>,
+        trainable_norms: bool,
+        trainable_biases: bool,
+        trainable_output_head: bool,
         chunked_cross_entropy: bool,
         chunked_ce_tiles: u32,
         chunked_ce_seq_chunk: u32,
@@ -321,6 +408,14 @@ impl PyTrainer {
                 "max_gpu_duty_cycle must be finite and in (0, 1]",
             ));
         }
+        let (policy, selector) = parse_trainable(
+            trainable_policy,
+            trainable_layers,
+            trainable_modules.unwrap_or_default(),
+            trainable_norms,
+            trainable_biases,
+            trainable_output_head,
+        )?;
         let config = TrainConfig {
             n_ctx,
             n_batch,
@@ -339,8 +434,9 @@ impl PyTrainer {
             lr_scheduler: parse_scheduler(scheduler)?,
             warmup_steps,
             trainable: TrainableRunConfig {
+                policy,
+                selector,
                 optimizer: parse_optimizer(optimizer)?,
-                ..TrainableRunConfig::default()
             },
             chunked_cross_entropy,
             chunked_ce_tiles,
@@ -359,10 +455,30 @@ impl PyTrainer {
         };
         // Validate the same batch and context geometry enforced by the TOML API.
         config.validate_geometry().map_err(python_error)?;
-        let inner = Trainer::new(model_path, config.clone()).map_err(python_error)?;
+        // Resolve which base tensors this run trains against the model's tensor
+        // table and declare the set before any graph is built.
+        let resolved = if policy.trains_base_weights() {
+            let inventory =
+                retrograd::tensor_inventory(&model_path, config.device).map_err(python_error)?;
+            let set = retrograd::resolve_base(&inventory, policy, &config.trainable.selector)
+                .map_err(python_error)?;
+            Some((inventory.architecture, set))
+        } else {
+            None
+        };
+        let mut inner = Trainer::new(model_path, config.clone()).map_err(python_error)?;
+        let (architecture, trainable) = match resolved {
+            Some((architecture, set)) => {
+                inner.declare_trainable_set(&set).map_err(python_error)?;
+                (Some(architecture), Some(set))
+            }
+            None => (None, None),
+        };
         Ok(Self {
             inner: Some(inner),
             training: config,
+            trainable,
+            architecture,
         })
     }
 
@@ -406,6 +522,73 @@ impl PyTrainer {
         self.trainer_mut()?
             .save_lora(adapter_path)
             .map_err(python_error)
+    }
+
+    /// What the base-weight policy resolved to, or `None` for a LoRA run.
+    #[getter]
+    fn trainable_set(&self) -> Option<TrainableSetTuple> {
+        let set = self.trainable.as_ref()?;
+        let entries = set
+            .entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.name.clone(),
+                    entry.role.as_str().to_string(),
+                    entry.dtype.name().to_string(),
+                    entry.ne.to_vec(),
+                    entry.n_elements,
+                    entry.n_bytes,
+                )
+            })
+            .collect();
+        let exclusions = set
+            .exclusions
+            .iter()
+            .map(|exclusion| (exclusion.name.clone(), exclusion.reason.to_string()))
+            .collect();
+        Some((set.policy.to_string(), entries, exclusions))
+    }
+
+    /// Writes the trained base tensors, by absolute value, as a GGUF bundle.
+    fn save_trainable(&mut self, bundle_path: String) -> PyResult<()> {
+        self.trainer_mut()?
+            .save_trainable(bundle_path)
+            .map_err(python_error)
+    }
+
+    /// Restores base tensor values from such a bundle onto the live model.
+    fn load_trainable(&mut self, bundle_path: String) -> PyResult<()> {
+        self.trainer_mut()?
+            .load_trainable(bundle_path)
+            .map_err(python_error)
+    }
+
+    /// Writes the whole model out as a standalone GGUF, trained weights included.
+    fn save_model(&mut self, model_path: String) -> PyResult<()> {
+        // Check export coverage before the file is opened rather than half written.
+        check_model_export(self.architecture.as_deref()).map_err(PyValueError::new_err)?;
+        self.trainer_mut()?
+            .save_model(model_path)
+            .map_err(python_error)
+    }
+
+    /// Loads the frozen model this run's reference term scores against.
+    /// `n_ctx` overrides the training width for the anchor alone.
+    #[pyo3(signature = (reference_path, *, n_ctx=None))]
+    fn attach_reference(&mut self, reference_path: String, n_ctx: Option<u32>) -> PyResult<()> {
+        let training = self.training.clone();
+        self.trainer_mut()?
+            .attach_reference(reference_path, &training, n_ctx)
+            .map_err(python_error)
+    }
+
+    #[getter]
+    fn reference_path(&self) -> PyResult<Option<String>> {
+        Ok(self
+            .trainer()?
+            .reference_path()
+            .map(|path| path.display().to_string()))
     }
 
     fn prepare_dataset(
@@ -1203,4 +1386,55 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module.py().get_type::<RetrogradNativeError>(),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // No fixture reaches this branch, so it is exercised here.
+    #[test]
+    fn a_model_export_is_refused_for_an_architecture_no_row_covers() {
+        let message = check_model_export(Some("gpt2")).expect_err("gpt2 has no row");
+        assert!(message.contains("'gpt2'"), "{message}");
+        assert!(
+            message.contains("qwen2"),
+            "the refusal names what is covered"
+        );
+        // Being listed is not enough: the row must grant the export.
+        assert!(check_model_export(Some("llama")).is_err());
+        assert!(check_model_export(Some("qwen2")).is_ok());
+        assert!(check_model_export(None).is_ok());
+    }
+
+    #[test]
+    fn a_selection_the_policy_would_ignore_is_refused_on_both_sides() {
+        assert!(parse_trainable("lora", "all", vec![], false, false, false).is_ok());
+        assert!(parse_trainable("lora", "all", vec![], true, false, false).is_err());
+        assert!(parse_trainable("lora", "last:2", vec![], false, false, false).is_err());
+        assert!(parse_trainable("full", "all", vec![], false, false, false).is_ok());
+        assert!(parse_trainable("full", "all", vec![], false, true, false).is_err());
+        assert!(parse_trainable("partial", "all", vec![], false, false, false).is_err());
+        assert!(
+            parse_trainable("partial", "all", vec!["attn".into()], false, false, false).is_ok()
+        );
+        // Hybrid takes norms and biases beside the adapter, and nothing else.
+        assert!(parse_trainable("hybrid", "all", vec![], true, true, false).is_ok());
+        assert!(parse_trainable("hybrid", "all", vec!["attn".into()], true, false, false).is_err());
+        assert!(parse_trainable("hybrid", "all", vec![], true, false, true).is_err());
+    }
+
+    // The frontend must accept exactly the strings the runtime's parser accepts.
+    #[test]
+    fn a_layer_range_accepts_here_what_the_runtime_accepts() {
+        let range = |layers: &str| {
+            parse_trainable("partial", layers, vec!["attn".into()], false, false, false)
+        };
+        assert!(range("1..abc").is_err());
+        assert!(range("1..4294967296").is_err());
+        assert!(range("last:99999999999999999999").is_err());
+        assert!(range("00..02").is_ok());
+        assert!(range("last:+2").is_ok());
+        assert!(range("0..4294967295").is_ok());
+    }
 }

@@ -13,6 +13,136 @@ KvDtype: TypeAlias = Literal["f32", "f16"]
 #: ``gefen`` parse in the TOML schema and are refused by the runtime, so they
 #: are deliberately absent here rather than accepted and substituted.
 Optimizer: TypeAlias = Literal["adamw", "sgd"]
+#: Which parameters carry a gradient. ``lora`` is the absence of :class:`TrainableConfig`,
+#: so it is not selectable here.
+TrainablePolicy: TypeAlias = Literal["full", "partial", "hybrid"]
+
+
+#: Largest block index the runtime's ``u32`` parser can hold.
+_MAX_BLOCK_INDEX = 2**32 - 1
+
+
+def _parse_block_index(text: str, what: str) -> int:
+    """Read a block index the way the runtime's ``u32`` parser does:
+    leading zeros and ``+`` are accepted, anything else is refused here
+    rather than surfacing as a native error.
+    """
+
+    digits = text[1:] if text.startswith("+") else text
+    if not digits or not all("0" <= character <= "9" for character in digits):
+        raise ValueError(f"layers {what} is not a number: {text!r}")
+    value = int(digits)
+    if value > _MAX_BLOCK_INDEX:
+        raise ValueError(f"layers {what} is larger than a block index can be: {text!r}")
+    return value
+
+
+def _selects_every_layer(value: str) -> bool:
+    """Whether this range is the whole model. ``"all"`` is the only spelling the
+    runtime reads case-insensitively, so it is the only one read that way here."""
+
+    return value.strip().lower() == "all"
+
+
+def _validate_layer_range(value: str) -> None:
+    """Check ``"all"``, ``"last:<count>"`` or ``"<first>..<last>"``."""
+
+    text = value.strip()
+    if _selects_every_layer(text):
+        return
+    if text.startswith("last:"):
+        count = _parse_block_index(text[len("last:") :].strip(), "count")
+        if count == 0:
+            raise ValueError("layers 'last:<count>' requires a count greater than zero")
+        return
+    first, separator, last = text.partition("..")
+    if not separator:
+        raise ValueError("layers must be 'all', 'last:<count>', or '<first>..<last>'")
+    if _parse_block_index(first.strip(), "lower bound") > _parse_block_index(
+        last.strip(), "upper bound"
+    ):
+        raise ValueError(
+            "layers '<first>..<last>' is inclusive on both ends, so the lower bound "
+            "must not exceed the upper one"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TrainableConfig:
+    """Which base tensors a run trains, and how it selects them.
+
+    Leaving :attr:`TrainingConfig.trainable` unset is the LoRA policy, which is
+    why ``"lora"`` is not one of these policies. ``full`` takes no selectors;
+    ``partial`` and ``hybrid`` require at least one, and a selector the policy
+    would ignore is refused rather than dropped.
+    """
+
+    policy: TrainablePolicy = "full"
+    #: ``"all"``, ``"last:<count>"``, or ``"<first>..<last>"`` - inclusive on
+    #: both ends, as it reads.
+    layers: str = "all"
+    #: Module aliases (``attn``, ``ffn``), stems (``attn_q``, ``ffn_up``), or
+    #: explicit tensor patterns. Never norms: those follow :attr:`norms`.
+    modules: tuple[str, ...] = ()
+    #: Every normalization in the selected blocks, plus the model-wide ones,
+    #: which sit in no block and so do not follow the layer range.
+    norms: bool = False
+    #: Every ``.bias`` inside the selected blocks, as its own family.
+    biases: bool = False
+    #: The vocabulary projection, independent of the layer range. Refused when
+    #: the model ties it to the input embedding.
+    output_head: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "modules", tuple(self.modules))
+        if self.policy == "lora":
+            raise ValueError(
+                "policy 'lora' is the absence of TrainableConfig: leave "
+                "TrainingConfig.trainable unset to train an adapter alone"
+            )
+        if self.policy not in ("full", "partial", "hybrid"):
+            raise ValueError("policy must be full, partial, or hybrid")
+        _validate_layer_range(self.layers)
+        selects = bool(self.modules) or self.norms or self.biases or self.output_head
+        if self.policy == "full":
+            if selects or not _selects_every_layer(self.layers):
+                raise ValueError(
+                    "policy 'full' trains every supported eligible tensor and takes no "
+                    "selectors: use 'partial' to narrow it"
+                )
+        elif not selects:
+            raise ValueError(
+                f"policy '{self.policy}' selects nothing: set at least one of modules, "
+                "norms, biases, or output_head"
+            )
+        if self.policy == "hybrid" and (self.modules or self.output_head):
+            raise ValueError(
+                "policy 'hybrid' permits only base norms and biases beside the adapter: "
+                "modules and output_head are not supported with it"
+            )
+
+    def native_kwargs(self) -> dict[str, object]:
+        return {
+            "trainable_policy": self.policy,
+            "trainable_layers": self.layers,
+            "trainable_modules": list(self.modules),
+            "trainable_norms": self.norms,
+            "trainable_biases": self.biases,
+            "trainable_output_head": self.output_head,
+        }
+
+
+def _lora_trainable_kwargs() -> dict[str, object]:
+    # Built per call: the value carries a list that must not be shared.
+    return {
+        "trainable_policy": "lora",
+        "trainable_layers": "all",
+        "trainable_modules": [],
+        "trainable_norms": False,
+        "trainable_biases": False,
+        "trainable_output_head": False,
+    }
+
 
 TARGET_ALIASES = {
     "q": "blk.*.attn_q.weight",
@@ -57,6 +187,9 @@ class TrainingConfig:
     #: per-parameter state, and its kernel is F32-only: pair it with
     #: ``LoraConfig(dtype="f32")`` rather than the F16 default.
     optimizer: Optimizer = "adamw"
+    #: Which base tensors carry a gradient. ``None`` trains a LoRA adapter and
+    #: leaves every base weight frozen.
+    trainable: TrainableConfig | None = None
     #: Stream vocabulary logits in tiles instead of materializing
     #: ``[n_vocab, n_tokens]``.
     chunked_cross_entropy: bool = True
@@ -164,6 +297,11 @@ class TrainingConfig:
             "scheduler": self.scheduler,
             "warmup_steps": self.warmup_steps,
             "optimizer": self.optimizer,
+            **(
+                _lora_trainable_kwargs()
+                if self.trainable is None
+                else self.trainable.native_kwargs()
+            ),
             "chunked_cross_entropy": self.chunked_cross_entropy,
             "chunked_ce_tiles": self.chunked_ce_tiles,
             "chunked_ce_seq_chunk": self.chunked_ce_seq_chunk,

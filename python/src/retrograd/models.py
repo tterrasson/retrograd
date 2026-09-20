@@ -55,6 +55,63 @@ class TokenScores:
 
 
 @dataclass(frozen=True, slots=True)
+class TrainableTensor:
+    """One resolved trainable tensor, as the model file declares it."""
+
+    name: str
+    #: ``lora_a``, ``lora_b``, or ``base``.
+    role: str
+    dtype: str
+    #: ggml dimension order, ``shape[0]`` fastest-varying.
+    shape: tuple[int, ...]
+    n_elements: int
+    n_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class TrainableExclusion:
+    """An eligible tensor the policy did not take, and why."""
+
+    name: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class TrainableSelection:
+    """What a base-weight policy resolved to, against one model.
+
+    The exclusions list what the policy did not take, which a caller cannot
+    otherwise infer: ``full`` means every supported eligible tensor.
+    """
+
+    policy: str
+    tensors: tuple[TrainableTensor, ...]
+    exclusions: tuple[TrainableExclusion, ...]
+
+    @property
+    def n_parameters(self) -> int:
+        return sum(tensor.n_elements for tensor in self.tensors)
+
+    @property
+    def n_bytes(self) -> int:
+        """Bytes the trainable parameters occupy as stored."""
+
+        return sum(tensor.n_bytes for tensor in self.tensors)
+
+    @classmethod
+    def from_native(cls, value: tuple[Any, Any, Any]) -> TrainableSelection:
+        policy, tensors, exclusions = value
+        return cls(
+            policy,
+            tuple(
+                TrainableTensor(name, role, dtype, tuple(shape), n_elements, n_bytes)
+                for name, role, dtype, shape, n_elements, n_bytes in tensors
+            ),
+            tuple(TrainableExclusion(name, reason) for name, reason in exclusions),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Backend:
     kind: str
     name: str

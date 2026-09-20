@@ -536,6 +536,8 @@ impl Trainer {
                     shape: entry.ne,
                     n_elements: entry.n_elements,
                     n_bytes: entry.n_bytes,
+                    // No aliases here: these entries come from the marked set,
+                    // and no-aliasing is the resolver's guarantee, not this writer's.
                     aliases: Vec::new(),
                 })
                 .collect(),

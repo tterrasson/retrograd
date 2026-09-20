@@ -209,7 +209,7 @@ impl Trainer {
         if self.trains_base_weights() {
             return Err(Error::invalid(
                 "a fixed reference requires a separate frozen model when training base \
-                 weights: this run declares no [reference] model",
+                 weights: no anchor is attached to this run",
             ));
         }
         self.set_lora_enabled(false)?;

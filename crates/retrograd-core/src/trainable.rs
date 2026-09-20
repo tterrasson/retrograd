@@ -291,6 +291,19 @@ impl fmt::Display for TrainablePolicy {
     }
 }
 
+/// Parses a block index exactly as `u32::from_str` reads one, telling apart a
+/// non-numeric string from a value that overflows the block-index type.
+fn parse_block_index(text: &str) -> std::result::Result<u32, &'static str> {
+    text.parse::<u32>().map_err(|_| {
+        let digits = text.strip_prefix('+').unwrap_or(text);
+        if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            "larger than a block index can be"
+        } else {
+            "not a number"
+        }
+    })
+}
+
 /// Which transformer blocks a partial selection covers.
 ///
 /// `blk.{12,13}.*` is explanatory notation and not a supported wildcard: a range
@@ -314,8 +327,8 @@ impl LayerRange {
             return Ok(Self::All);
         }
         if let Some(count) = value.strip_prefix("last:") {
-            let count: u32 = count.trim().parse().map_err(|_| {
-                Error::config(format!("trainable.layers: '{value}' is not 'last:<count>'"))
+            let count = parse_block_index(count.trim()).map_err(|why| {
+                Error::config(format!("trainable.layers: '{value}': the count is {why}"))
             })?;
             if count == 0 {
                 return Err(Error::config(
@@ -326,9 +339,9 @@ impl LayerRange {
         }
         if let Some((first, last)) = value.split_once("..") {
             let parse = |part: &str, which: &str| -> Result<u32> {
-                part.trim().parse().map_err(|_| {
+                parse_block_index(part.trim()).map_err(|why| {
                     Error::config(format!(
-                        "trainable.layers: '{value}' has a non-numeric {which} bound"
+                        "trainable.layers: '{value}': the {which} bound is {why}"
                     ))
                 })
             };
@@ -1646,6 +1659,30 @@ mod tests {
         assert!(LayerRange::parse("15..12").is_err());
         assert!(LayerRange::parse("last:0").is_err());
         assert!(LayerRange::parse("blk.{12,13}.*").is_err());
+    }
+
+    #[test]
+    fn a_bound_says_whether_it_was_unreadable_or_merely_too_large() {
+        let refusal = |value: &str| LayerRange::parse(value).unwrap_err().to_string();
+        assert!(refusal("1..abc").contains("the upper bound is not a number"));
+        assert!(refusal("abc..1").contains("the lower bound is not a number"));
+        assert!(refusal("last:x").contains("the count is not a number"));
+        // Overflow is a different failure than a non-numeric string.
+        assert!(refusal("1..4294967296").contains("larger than a block index can be"));
+        assert!(refusal("last:99999999999999999999").contains("larger than a block index"));
+        // Accepts exactly what `u32::from_str` accepts: leading zeros and a leading sign.
+        assert_eq!(
+            LayerRange::parse("00..02").unwrap(),
+            LayerRange::Inclusive { first: 0, last: 2 }
+        );
+        assert_eq!(LayerRange::parse("last:+2").unwrap(), LayerRange::Last(2));
+        assert_eq!(
+            LayerRange::parse("0..4294967295").unwrap(),
+            LayerRange::Inclusive {
+                first: 0,
+                last: 4294967295
+            }
+        );
     }
 
     #[test]
