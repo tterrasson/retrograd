@@ -4,3 +4,4 @@ filename = "LFM2.5-230M-Q4_K_M.gguf"
 url = "https://huggingface.co/unsloth/LFM2.5-230M-GGUF/resolve/main/LFM2.5-230M-Q4_K_M.gguf"
 size_bytes = 153406656
 sha256 = "02e773bbba1c58f9f4fe98ae02bedbaa2a788d953d123de12021e5e205cc5041"
+override_env = "RETRO_CPU_FIXTURE"

@@ -1,0 +1,36 @@
+# The second CPU fixture: tiny, F32 throughout, and untied.
+#
+# It answers what the Q4_K_M download in CPU_FIXTURE.toml cannot be asked. That
+# model ties `output.weight` to `token_embd.weight`, so no selection it can
+# resolve ever contains the projection head, and every one of its matrix
+# weights is quantized, so no F32 base tensor larger than a norm exists in it.
+#
+# This one is generated rather than downloaded: the bytes are a function of
+# `scripts/gen-tiny-fixture.py` alone, which is why there is no URL and why the
+# digest below is a record of what that script produces rather than of what a
+# third party publishes. Regenerating after editing the generator means
+# updating `sha256` and `size_bytes` in the same commit.
+#
+# Architecture `qwen2`, 4 blocks, n_embd 64, n_ff 128, 4 heads over 2 KV heads,
+# vocabulary 260 (three specials, 256 byte-fallback tokens, one ordinary
+# piece). Every tensor is F32:
+#
+#   token_embd.weight               [64, 260]
+#   blk.{0..3}.attn_norm.weight     [64]
+#   blk.{0..3}.attn_q.weight        [64, 64]    .bias [64]
+#   blk.{0..3}.attn_k.weight        [64, 32]    .bias [32]
+#   blk.{0..3}.attn_v.weight        [64, 32]    .bias [32]
+#   blk.{0..3}.attn_output.weight   [64, 64]
+#   blk.{0..3}.ffn_norm.weight      [64]
+#   blk.{0..3}.ffn_gate.weight      [64, 128]
+#   blk.{0..3}.ffn_up.weight        [64, 128]
+#   blk.{0..3}.ffn_down.weight      [128, 64]
+#   output_norm.weight              [64]
+#   output.weight                   [64, 260]   .bias [260]
+#
+# `output.weight` is a tensor of its own, never an alias of the embedding.
+filename = "retrograd-tiny-qwen2-f32.gguf"
+generator = "scripts/gen-tiny-fixture.py"
+override_env = "RETRO_TINY_FIXTURE"
+size_bytes = 737952
+sha256 = "0d32bef36974cb174dfd61ade6755e6ee2a2284dac43bcb21a9ba021014955a1"

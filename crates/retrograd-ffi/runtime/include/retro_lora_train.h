@@ -1111,6 +1111,20 @@ int retro_trainer_set_trainable_base(
     const char * const * names,
     size_t n_names);
 
+// Declares which optimizer owns each marked parameter, by canonical name.
+// A parameter no row names is owned by the run's own optimizer, so an empty
+// table is the single-optimizer run.
+//
+// The names are copied; `optimizers[i]` must be one of retro_optimizer that
+// this build can build a step for. Call before the optimizer context exists;
+// a row naming a parameter this run does not train is refused once the marked
+// set is known.
+int retro_trainer_set_optimizer_assignment(
+    retro_trainer * trainer,
+    const char * const * names,
+    const int32_t * optimizers,
+    size_t n_rows);
+
 // Tokenizes `text` with the model vocabulary (BOS/special tokens added and
 // parsed). On success writes up to n_tokens_max ids and sets *out_n_tokens to
 // the count. If the buffer is too small, sets *out_n_tokens to the required
@@ -1622,18 +1636,13 @@ int retro_trainer_save_model(
 typedef struct retro_optimizer_state {
     // AdamW bias-correction counter (ggml starts it at 1).
     int64_t iter;
-    // Whether this optimizer keeps per-parameter state *and* has allocated it.
+    // Whether this optimizer has allocated state slots.
     // False for a cold optimizer and false for SGD, which keeps none.
-    //
-    // Named for AdamW's momenta because that is what it meant when the field
-    // was added, and kept because the name is published: the slot enumeration
-    // below is what describes the state, and this is the one-bit summary a
-    // caller reads before deciding whether to walk it.
-    bool has_momenta;
+    bool has_persistent_state;
     // Whether the optimizer graph exists, i.e. whether
     // retro_trainer_prepare_optimizer() or a training step has run.
     //
-    // Distinct from has_momenta because "initialized with zero slots" and
+    // Distinct from has_persistent_state because "initialized with zero slots" and
     // "not initialized" are different states: an SGD run has no slots and
     // still has an iteration counter, a schedule and an RNG state, and a
     // resume that read the empty slot list as a cold optimizer would restart
@@ -1755,6 +1764,27 @@ int retro_trainer_parameter_gradient_read(
 // shared slot is allocated once per owner rather than once per parameter.
 #define RETRO_SLOT_SCOPE_PARAMETER 0
 #define RETRO_SLOT_SCOPE_SHARED    1
+
+// Slot initializers, mirroring the optimizer descriptor's declaration.
+#define RETRO_SLOT_INIT_ZERO             0
+#define RETRO_SLOT_INIT_CODE             1
+#define RETRO_SLOT_INIT_UNIFORM_CODEBOOK 2
+
+// Slot storage; a byte index is no weight's dtype.
+#define RETRO_SLOT_DTYPE_F32 0
+#define RETRO_SLOT_DTYPE_I8  1
+
+// The bytes a slot of `n_elements` holds before the first update: the same
+// function the runtime fills a live slot with, reachable without a model.
+// `out_bytes` must be exactly `n_elements` elements of the slot's dtype;
+// anything else is an error, not a partial fill.
+int retro_optimizer_slot_initial_bytes(
+    int32_t dtype,
+    int32_t init,
+    uint8_t code,
+    uint64_t n_elements,
+    void * out_bytes,
+    size_t n_bytes);
 
 typedef struct retro_optimizer_slot {
     // Trainable tensor name for a parameter slot, optimizer-declared owner for

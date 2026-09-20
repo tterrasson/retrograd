@@ -348,6 +348,7 @@ bool ensure_opt_context(trainer_state & state) {
     }
     if (state.opt_created) {
         return assert_marked_set_is_resolved(state)
+                && assert_assignment_covers_marked_set(state)
                 && optimizer_supports_marked_dtypes(state);
     }
 
@@ -368,6 +369,9 @@ bool ensure_opt_context(trainer_state & state) {
         /*get_opt_pars    =*/ scheduled_optimizer_params,
         /*get_opt_pars_ud =*/ &state,
         /*optimizer_type  =*/ optimizer_type,
+        // The allocator reads the declared assignment per parameter.
+        /*param_optimizer    =*/ opt_param_optimizer,
+        /*param_optimizer_ud =*/ &state,
         /*fused_sparse_ce =*/ fused_loss_enabled(state),
         /*n_ce_tiles      =*/ (int32_t) (state.train_config.chunked_ce_tiles > 0
                 ? state.train_config.chunked_ce_tiles : 1),
@@ -386,6 +390,10 @@ bool ensure_opt_context(trainer_state & state) {
     // successful selection, so the marked set is compared with the resolved one
     // here rather than assumed to follow from the filter.
     if (!assert_marked_set_is_resolved(state)) {
+        return false;
+    }
+    // Every assignment row must name a marked parameter.
+    if (!assert_assignment_covers_marked_set(state)) {
         return false;
     }
     // Between the graph build and the first step: the update kernels abort on a

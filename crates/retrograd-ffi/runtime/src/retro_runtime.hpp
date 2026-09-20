@@ -93,6 +93,9 @@ struct trainer_state {
     // than an empty selection.
     std::vector<std::string> trainable_base;
     bool trainable_base_set = false;
+    // Which optimizer owns each marked parameter, by canonical name. Empty
+    // means the run's own optimizer owns everything.
+    std::vector<std::pair<std::string, int32_t>> optimizer_assignment;
     // loaded adapter validated and its tensors flagged as optimizer params
     bool lora_promoted = false;
     // llama_opt_init ran (it must run exactly once per context)
@@ -497,6 +500,13 @@ bool assert_marked_set_is_resolved(const trainer_state & state);
 // parameter's dtype. The kernels abort on anything they do not carry, so this
 // has to run between the graph build and the first step.
 bool optimizer_supports_marked_dtypes(const trainer_state & state);
+// Whether one optimizer's update kernel can write a parameter of this type.
+bool optimizer_supports_dtype(int32_t optimizer, ggml_type type);
+// The optimizer that owns one parameter: the declared assignment, falling
+// back to the run's own optimizer. `userdata` is the `trainer_state *`.
+ggml_opt_optimizer_type opt_param_optimizer(const ggml_tensor * tensor, void * userdata);
+// Every name in the declared assignment is a marked parameter.
+bool assert_assignment_covers_marked_set(const trainer_state & state);
 // The optimizer's parameter filter: the resolved base set, by name. LoRA
 // factors are not routed through it - they are flagged directly when the
 // adapter is created or promoted - so a LoRA run's filter admits nothing.

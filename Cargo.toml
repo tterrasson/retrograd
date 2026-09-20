@@ -189,6 +189,10 @@ retrograd-agent = { workspace = true, optional = true, features = ["http-env"] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"], optional = true }
 
 [dev-dependencies]
+# The cost model, for the two integration tests that compare a measured run
+# with the budget that was written for it. The library re-exports no planner:
+# `src/lib.rs` is a facade over the runtime, and the planner sits above it.
+retrograd-plan.workspace = true
 # tests/rir_quant_oracle.rs holds ggml `to_float` → the RIR dequantization
 # oracle → its Loop IR expansion end to end, on the same bytes, with no device
 # and no schedule beyond the CPU serial one. Only the tests link RIR: neither

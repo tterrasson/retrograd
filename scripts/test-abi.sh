@@ -39,10 +39,12 @@ timed_step compile:ffi-lib cargo test ${ffi_args[@]+"${ffi_args[@]}"} --no-run -
 timed_step compile:root-tests cargo test "${root_args[@]}" --no-run \
   --test backend_devices --test metal_ops --test weighted_ce \
   --test gated_delta_net_chunked --test flash_attn_back --test out_prod_quant \
-  --test engine_contracts --test rir_probe --test rir_quant_oracle
+  --test engine_contracts --test optimizer_descriptor --test rir_probe --test rir_quant_oracle
 
 timed_step run:ffi-lib cargo test ${ffi_args[@]+"${ffi_args[@]}"} --lib -p retrograd-ffi
 timed_step run:backend_devices cargo test "${root_args[@]}" --test backend_devices
+# Slot initializers against their declarations. No model and no graph.
+timed_step run:optimizer_descriptor cargo test "${root_args[@]}" --test optimizer_descriptor
 timed_step run:metal_ops cargo test "${root_args[@]}" --test metal_ops
 timed_step run:weighted_ce cargo test "${root_args[@]}" --test weighted_ce
 # CPU only, no model: the two implementations of GATED_DELTA_NET_BACK against

@@ -20,6 +20,7 @@ impl Trainer {
             raw,
             trainable_policy: config.trainable.policy,
             declared_trainable: None,
+            declared_assignment: Vec::new(),
         });
         test_timing("model_load", started);
         let trainer = result?;
@@ -121,6 +122,65 @@ impl Trainer {
         })?;
         self.declared_trainable = None;
         Ok(())
+    }
+
+    /// Declares which optimizer owns each marked parameter. Empty for a
+    /// single-optimizer run: the optimizer the [`TrainConfig`] names owns
+    /// everything.
+    ///
+    /// Must be called before [`Trainer::prepare_optimizer`]. A row naming a
+    /// parameter this run does not train is refused once the marked set
+    /// exists.
+    pub fn set_optimizer_assignment(
+        &mut self,
+        assignment: &[(String, retrograd_core::OptimizerKind)],
+    ) -> Result<()> {
+        let owned = assignment
+            .iter()
+            .map(|(name, _)| CString::new(name.as_str()))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(nul_error)?;
+        let pointers: Vec<*const c_char> = owned.iter().map(|name| name.as_ptr()).collect();
+        let optimizers = assignment
+            .iter()
+            .map(|(_, optimizer)| optimizer.as_ffi())
+            .collect::<Result<Vec<i32>>>()?;
+        // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
+        self.check(unsafe {
+            ffi::retro_trainer_set_optimizer_assignment(
+                self.raw.as_ptr(),
+                pointers.as_ptr(),
+                optimizers.as_ptr(),
+                pointers.len(),
+            )
+        })?;
+        self.declared_assignment = assignment.to_vec();
+        Ok(())
+    }
+
+    /// The assignment an [`OptimizerPlan`](retrograd_core::OptimizerPlan)
+    /// declares, ready for [`Trainer::set_optimizer_assignment`]. A parameter
+    /// the plan leaves unwritable is refused.
+    pub fn assignment_from_plan(
+        plan: &retrograd_core::OptimizerPlan,
+    ) -> Result<Vec<(String, retrograd_core::OptimizerKind)>> {
+        let unwritable = plan.unwritable();
+        if !unwritable.is_empty() {
+            return Err(Error::invalid(format!(
+                "no optimizer in this run can write {} parameter(s): [{}]",
+                unwritable.len(),
+                unwritable.join(", ")
+            )));
+        }
+        Ok(plan
+            .parameters
+            .iter()
+            .filter_map(|parameter| {
+                parameter
+                    .optimizer
+                    .map(|optimizer| (parameter.name.clone(), optimizer))
+            })
+            .collect())
     }
 
     /// Bounds the fraction of wall time this trainer spends waiting on GPU work

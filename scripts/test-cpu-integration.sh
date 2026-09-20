@@ -12,6 +12,7 @@ source "$repo_root/scripts/lib-step-timing.sh"
 "$repo_root/scripts/fetch-cpu-fixture.sh"
 
 export RETRO_CPU_FIXTURE="${RETRO_CPU_FIXTURE:-$repo_root/tests/fixtures/LFM2.5-230M-Q4_K_M.gguf}"
+export RETRO_TINY_FIXTURE="${RETRO_TINY_FIXTURE:-$repo_root/tests/fixtures/retrograd-tiny-qwen2-f32.gguf}"
 export RETRO_REQUIRE_CPU_FIXTURE=1
 export RETRO_RUNTIME_LOCK_PATH="${RETRO_RUNTIME_LOCK_PATH:-${TMPDIR:-/tmp}/retrograd-runtime.lock}"
 export RETRO_THREADS="${RETRO_TEST_CPU_THREADS:-4}"

@@ -1,8 +1,9 @@
 //! Shared helpers for the targeted Metal/CPU integration tests.
 //!
-//! Model-dependent CPU tests use one declared GGUF fixture. The fixture is
-//! fetched and checksum-verified by `scripts/fetch-cpu-fixture.sh`; developers
-//! may override its location with `RETRO_CPU_FIXTURE`.
+//! Model-dependent CPU tests use the declared GGUF fixtures, each materialized
+//! and checksum-verified by `scripts/fetch-cpu-fixture.sh` (downloaded or
+//! generated, depending on its manifest). Override a fixture's location with
+//! the variable its manifest names (`RETRO_CPU_FIXTURE`, `RETRO_TINY_FIXTURE`).
 //!
 //! Not every test binary uses every helper, so silence dead-code warnings.
 #![allow(dead_code)]
@@ -18,6 +19,9 @@ use std::{
 
 /// Repository-relative location of the CPU integration fixture.
 pub const CPU_FIXTURE: &str = "tests/fixtures/LFM2.5-230M-Q4_K_M.gguf";
+
+/// The generated CPU fixture: F32 throughout, with an untied projection head.
+pub const TINY_FIXTURE: &str = "tests/fixtures/retrograd-tiny-qwen2-f32.gguf";
 
 /// Repository-relative default location for the Vulkan integration model.
 /// Nothing ships at this path - `RETRO_VULKAN_TEST_MODEL` is how a developer
@@ -46,6 +50,29 @@ pub fn model_path_if_available() -> Option<PathBuf> {
     } else if std::env::var_os("RETRO_REQUIRE_CPU_FIXTURE").is_some() {
         panic!(
             "CPU integration fixture missing at {}; run scripts/fetch-cpu-fixture.sh",
+            path.display()
+        );
+    } else {
+        None
+    }
+}
+
+/// Resolves the tiny fixture path, honouring an explicit test override.
+pub fn tiny_model_path() -> PathBuf {
+    std::env::var("RETRO_TINY_FIXTURE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(TINY_FIXTURE))
+}
+
+/// Returns the tiny fixture when available. It is generated, not downloaded,
+/// so `RETRO_REQUIRE_CPU_FIXTURE=1` covers it too.
+pub fn tiny_model_path_if_available() -> Option<PathBuf> {
+    let path = tiny_model_path();
+    if path.exists() {
+        Some(path)
+    } else if std::env::var_os("RETRO_REQUIRE_CPU_FIXTURE").is_some() {
+        panic!(
+            "tiny CPU fixture missing at {}; run scripts/fetch-cpu-fixture.sh",
             path.display()
         );
     } else {

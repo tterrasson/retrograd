@@ -384,9 +384,19 @@ impl OptimizerKind {
     /// resolved set alone, to be compared against the table the runtime
     /// allocates after `llama_opt_init`.
     pub fn plan(self, set: &TrainableSet) -> OptimizerPlan {
+        self.plan_with(set, |entry| self.assign(entry))
+    }
+
+    /// The same table, but with the owner of each parameter given explicitly
+    /// instead of derived from this optimizer's own policy.
+    pub fn plan_with(
+        self,
+        set: &TrainableSet,
+        owner_of: impl Fn(&TrainableEntry) -> Option<Self>,
+    ) -> OptimizerPlan {
         let mut parameters = Vec::with_capacity(set.entries.len());
         for entry in &set.entries {
-            let owner = self.assign(entry);
+            let owner = owner_of(entry);
             let slots = owner
                 .map(|owner| {
                     owner

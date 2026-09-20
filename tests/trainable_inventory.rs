@@ -7,9 +7,9 @@
 //! how llama.cpp spells a tensor fails here rather than silently selecting an
 //! empty set.
 //!
-//! The fixture is a Q4_K_M quantization, which is the interesting case: full
-//! training must refuse it, and a norms-only partial selection must still
-//! resolve - "validate the selected tensors, not the dominant dtype".
+//! The download fixture is a Q4_K_M quantization: full training must refuse
+//! it, and a norms-only partial selection must still resolve. The generated
+//! fixture is its complement: F32 and untied.
 
 mod common;
 
@@ -20,8 +20,32 @@ use retrograd::{
 
 fn inventory() -> Option<retrograd::TensorInventory> {
     let model = common::model_path_if_available()?;
+    read_inventory(&model)
+}
+
+fn tiny_inventory() -> Option<retrograd::TensorInventory> {
+    let model = common::tiny_model_path_if_available()?;
+    read_inventory(&model)
+}
+
+fn read_inventory(model: &std::path::Path) -> Option<retrograd::TensorInventory> {
     let _guard = common::serialize_models();
     Some(tensor_inventory(model, Device::Cpu).expect("read the fixture's tensor inventory"))
+}
+
+macro_rules! tiny_inventory {
+    () => {
+        match tiny_inventory() {
+            Some(inventory) => inventory,
+            None => {
+                eprintln!(
+                    "skipping: no generated fixture at {}",
+                    common::tiny_model_path().display()
+                );
+                return;
+            }
+        }
+    };
 }
 
 macro_rules! fixture_inventory {
@@ -188,12 +212,10 @@ fn a_selection_never_issues_two_updates_against_one_allocation() {
     );
 }
 
-/// The capability row checked against the file it claims to describe: every
-/// fixture tensor, minus the ones frozen for every model, must be a family
-/// the row names. Otherwise the table silently freezes real parameters.
-#[test]
-fn the_fixtures_architecture_row_covers_every_parameter_it_carries() {
-    let inventory = fixture_inventory!();
+/// The capability row checked against the file: every tensor, minus the ones
+/// frozen for every model, must be a family the row names. Otherwise the
+/// table silently freezes real parameters.
+fn assert_row_covers(inventory: &retrograd::TensorInventory) {
     let row = retrograd::architecture_capability(&inventory.architecture)
         .unwrap_or_else(|| panic!("no capability row for '{}'", inventory.architecture));
 
@@ -214,4 +236,78 @@ fn the_fixtures_architecture_row_covers_every_parameter_it_carries() {
             retrograd::tensor_family(&tensor.name),
         );
     }
+}
+
+#[test]
+fn the_fixtures_architecture_row_covers_every_parameter_it_carries() {
+    let inventory = fixture_inventory!();
+    assert_row_covers(&inventory);
+}
+
+#[test]
+fn the_generated_fixtures_architecture_row_covers_every_parameter_it_carries() {
+    let inventory = tiny_inventory!();
+    assert_row_covers(&inventory);
+}
+
+/// The properties the generated fixture must hold, asserted rather than
+/// assumed by the runs that depend on them.
+#[test]
+fn the_generated_fixture_is_f32_throughout_and_does_not_tie_its_head() {
+    let inventory = tiny_inventory!();
+    assert_eq!(inventory.architecture, "qwen2");
+    assert!(
+        !inventory.tied_embeddings,
+        "the generated fixture ties its head"
+    );
+
+    let head = inventory
+        .get(retrograd::OUTPUT_HEAD)
+        .expect("an untied projection head");
+    let bias = inventory
+        .get(retrograd::OUTPUT_HEAD_BIAS)
+        .expect("the head's bias, so the head is two parameters");
+    let embedding = inventory
+        .get("token_embd.weight")
+        .expect("every model has an input embedding");
+    assert_ne!(
+        head.storage_id, embedding.storage_id,
+        "the head and the embedding share one allocation"
+    );
+    for tensor in &inventory.tensors {
+        assert_eq!(tensor.dtype, TensorDtype::F32, "{}", tensor.name);
+    }
+    assert_eq!(head.dtype, TensorDtype::F32);
+    assert_eq!(bias.dtype, TensorDtype::F32);
+}
+
+/// `full` derives its own set, run against the generated fixture's inventory.
+#[test]
+fn full_training_derives_a_set_from_the_generated_fixtures_row() {
+    let inventory = tiny_inventory!();
+    let set = resolve_base(
+        &inventory,
+        TrainablePolicy::Full,
+        &TrainableSelector::default(),
+    )
+    .expect("an F32 model of an architecture with a row derives a full set");
+
+    assert!(!set.is_empty());
+    let names: Vec<&str> = set
+        .base_entries()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    for frozen in retrograd::ALWAYS_FROZEN {
+        assert!(
+            !names.contains(&frozen),
+            "'{frozen}' was derived as trainable"
+        );
+    }
+    // The untied head is in it: on a tied model the head is frozen by
+    // storage identity.
+    assert!(names.contains(&retrograd::OUTPUT_HEAD));
+    assert!(names.contains(&retrograd::OUTPUT_HEAD_BIAS));
+    assert!(set.trains_loss_head());
+    // qwen2 carries biases on the projections.
+    assert!(names.iter().any(|name| name.ends_with("attn_q.bias")));
 }

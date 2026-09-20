@@ -576,6 +576,9 @@ pub struct Trainer {
     /// deciding whether to restore at all - while the marked set only exists
     /// after. Rule 6 is what makes the two interchangeable once both do.
     declared_trainable: Option<retrograd_core::TrainableSet>,
+    /// Which optimizer owns each marked parameter, when an assignment was
+    /// declared; empty for a single-optimizer run.
+    declared_assignment: Vec<(String, retrograd_core::OptimizerKind)>,
 }
 
 impl Trainer {
@@ -587,6 +590,30 @@ impl Trainer {
     /// The resolved set this run declared, if any.
     pub fn declared_trainable_set(&self) -> Option<&retrograd_core::TrainableSet> {
         self.declared_trainable.as_ref()
+    }
+
+    /// The declared per-parameter assignment; empty for a single-optimizer run.
+    pub fn declared_optimizer_assignment(&self) -> &[(String, retrograd_core::OptimizerKind)] {
+        &self.declared_assignment
+    }
+
+    /// The declared state table for this run: the optimizer's own policy
+    /// unless an assignment was declared, in which case it is that assignment.
+    pub(crate) fn optimizer_plan(
+        &self,
+        kind: retrograd_core::OptimizerKind,
+        set: &retrograd_core::TrainableSet,
+    ) -> retrograd_core::OptimizerPlan {
+        if self.declared_assignment.is_empty() {
+            return kind.plan(set);
+        }
+        kind.plan_with(set, |entry| {
+            self.declared_assignment
+                .iter()
+                .find(|(name, _)| *name == entry.name)
+                .map(|(_, optimizer)| *optimizer)
+                .or_else(|| kind.assign(entry))
+        })
     }
 
     fn trains_base_weights(&self) -> bool {

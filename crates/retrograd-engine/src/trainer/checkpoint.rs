@@ -184,8 +184,10 @@ impl Trainer {
     }
 
     /// The slot table of the live optimizer, in file order, with the byte
-    /// offsets a checkpoint addresses its payload by.
-    fn state_slots(&mut self) -> Result<Vec<checkpoint::StateSlot>> {
+    /// offsets a checkpoint addresses its payload by. Public so a declared
+    /// plan can be compared against the live table without writing a
+    /// checkpoint.
+    pub fn state_slots(&mut self) -> Result<Vec<checkpoint::StateSlot>> {
         let mut parameter_slots = 0_usize;
         let mut shared_slots = 0_usize;
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
@@ -286,7 +288,8 @@ impl Trainer {
         optimizer: &checkpoint::Optimizer,
     ) -> Result<()> {
         let kind = OptimizerKind::from_ffi(self.optimizer_state()?.optimizer)?;
-        let plan = kind.plan(&self.marked_trainable_set()?);
+        let marked = self.marked_trainable_set()?;
+        let plan = self.optimizer_plan(kind, &marked);
         optimizer.check_assignment(&assignment_of(&plan))?;
         let live = self.state_slots()?;
         if live.len() != optimizer.slots.len() {
@@ -480,7 +483,7 @@ impl Trainer {
         let hyperparameters = self.optimizer_hyperparameters()?;
         // The declared state table, built before the live one is read, so the
         // two can be compared.
-        let plan = optimizer_kind.plan(&marked);
+        let plan = self.optimizer_plan(optimizer_kind, &marked);
         let unwritable = plan.unwritable();
         if !unwritable.is_empty() {
             return Err(Error::invalid(format!(
@@ -673,7 +676,7 @@ impl Trainer {
         }
         let state = ffi::RetroOptimizerState {
             iter: record.optimizer.iter,
-            has_momenta: !record.optimizer.slots.is_empty(),
+            has_persistent_state: !record.optimizer.slots.is_empty(),
             graph_ready: record.optimizer.graph_ready,
             optimizer,
             learning_rate: record.optimizer.learning_rate,

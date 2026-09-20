@@ -8,6 +8,7 @@
 #include "retro_runtime.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <sstream>
 #include <vector>
 
@@ -35,41 +36,52 @@ struct slot_ref {
     ggml_tensor * tensor;
 };
 
-// The per-parameter slots of the live optimizer, in enumeration order:
+// The per-parameter slots the live optimizer allocated, in allocation order:
 // a parameter's slots together, parameters in the order the optimizer holds
 // them. AdamW contributes "m" and "v" per parameter; SGD contributes nothing.
-//
-// Reading the table through ggml's momenta accessors is the only shape
-// available today, and it is deliberately the only place that assumes it: the
-// FFI above and the checkpoint above that see slots and never a pair.
+// Read off the allocated table, so a mixed run contributes two optimizers'
+// slots to one enumeration without assuming a layout.
 std::vector<slot_ref> parameter_slots(trainer_state & state) {
     std::vector<slot_ref> slots;
     ggml_opt_context_t opt = opt_context(state);
     if (!opt) {
         return slots;
     }
-    const int64_t count = ggml_opt_momenta_count(opt);
-    slots.reserve(static_cast<size_t>(count) * 2);
+    const int64_t count = ggml_opt_slot_count(opt);
+    slots.reserve(static_cast<size_t>(count));
     for (int64_t i = 0; i < count; ++i) {
-        const char * name = ggml_opt_momenta_name(opt, i);
-        ggml_tensor * m = ggml_opt_momenta_m(opt, i);
-        ggml_tensor * v = ggml_opt_momenta_v(opt, i);
-        if (!name || !m || !v) {
+        const char * owner = ggml_opt_slot_owner(opt, i);
+        const char * name = ggml_opt_slot_name(opt, i);
+        ggml_tensor * tensor = ggml_opt_slot_tensor(opt, i);
+        if (!owner || !name || !tensor) {
             continue;
         }
-        slots.push_back(slot_ref { name, "m", m });
-        slots.push_back(slot_ref { name, "v", v });
+        slots.push_back(slot_ref { owner, name, tensor });
     }
     return slots;
 }
 
-// State an optimizer keeps once rather than once per parameter - a codebook,
-// a shared second moment. Neither AdamW nor SGD has any, so the table is empty
-// and the enumeration exists to be enumerable: a checkpoint that round-trips
-// an empty shared scope is a checkpoint that will round-trip a full one.
+// Slots an optimizer keeps once rather than once per parameter (a codebook,
+// a shared second moment). The owner is the optimizer's own name, which keeps
+// a mixed run's shared rows distinguishable.
 std::vector<slot_ref> shared_slots(trainer_state & state) {
-    (void) state;
-    return {};
+    std::vector<slot_ref> slots;
+    ggml_opt_context_t opt = opt_context(state);
+    if (!opt) {
+        return slots;
+    }
+    const int64_t count = ggml_opt_shared_slot_count(opt);
+    slots.reserve(static_cast<size_t>(count));
+    for (int64_t i = 0; i < count; ++i) {
+        const char * owner = ggml_opt_shared_slot_owner(opt, i);
+        const char * name = ggml_opt_shared_slot_name(opt, i);
+        ggml_tensor * tensor = ggml_opt_shared_slot_tensor(opt, i);
+        if (!owner || !name || !tensor) {
+            continue;
+        }
+        slots.push_back(slot_ref { owner, name, tensor });
+    }
+    return slots;
 }
 
 bool slot_table(trainer_state & state, int32_t scope, std::vector<slot_ref> & out) {
@@ -190,7 +202,7 @@ extern "C" int retro_trainer_optimizer_state(
         ggml_opt_context_t opt = retro::opt_context(*state);
         *out_state = retro_optimizer_state {};
         out_state->iter = opt ? ggml_opt_iter(opt) : 1;
-        out_state->has_momenta = opt && ggml_opt_momenta_count(opt) > 0;
+        out_state->has_persistent_state = opt && ggml_opt_slot_count(opt) > 0;
         out_state->graph_ready = opt != nullptr;
         // Before the graph exists there is no context to ask, so the answer is
         // the configured optimizer rather than a default that would record
@@ -231,7 +243,7 @@ extern "C" int retro_trainer_restore_optimizer_state(
             return -1;
         }
         // An optimizer the run cannot build is refused rather than resumed onto
-        // a different trajectory: the momenta of an AdamW checkpoint mean
+        // a different trajectory: the moments of an AdamW checkpoint mean
         // nothing to an SGD step, and an SGD checkpoint resumed under AdamW
         // would start with cold moments and a warm iteration counter.
         if (saved->graph_ready && saved->optimizer != state->train_config.optimizer) {
@@ -241,7 +253,7 @@ extern "C" int retro_trainer_restore_optimizer_state(
             return -1;
         }
         // The iteration counter belongs to the graph. Restoring it into a cold
-        // optimizer would corrupt the first bias correction - but "no momenta"
+        // optimizer would corrupt the first bias correction - but "no slot"
         // is not "no graph": an optimizer with zero slots still counts steps.
         if (saved->graph_ready) {
             ggml_opt_context_t opt = retro::opt_context(*state);
@@ -251,9 +263,9 @@ extern "C" int retro_trainer_restore_optimizer_state(
                         "exists; call retro_trainer_prepare_optimizer first");
                 return -1;
             }
-            if (saved->has_momenta && ggml_opt_momenta_count(opt) == 0) {
+            if (saved->has_persistent_state && ggml_opt_slot_count(opt) == 0) {
                 retro::set_error(
-                        "the checkpoint carries momenta but this optimizer keeps none");
+                        "the checkpoint carries optimizer state but this optimizer keeps none");
                 return -1;
             }
             ggml_opt_set_iter(opt, saved->iter);
@@ -460,6 +472,61 @@ extern "C" int retro_trainer_parameter_gradient_read(
         }
         if (n_bytes != 0) {
             ggml_backend_tensor_get(grad, out_bytes, offset, n_bytes);
+        }
+        return 0;
+    });
+}
+
+extern "C" int retro_optimizer_slot_initial_bytes(
+        int32_t dtype,
+        int32_t init,
+        uint8_t code,
+        uint64_t n_elements,
+        void * out_bytes,
+        size_t n_bytes) {
+    return retro::boundary([&]() -> int {
+        ggml_type type;
+        switch (dtype) {
+            case RETRO_SLOT_DTYPE_F32: type = GGML_TYPE_F32; break;
+            case RETRO_SLOT_DTYPE_I8:  type = GGML_TYPE_I8;  break;
+            default:
+                retro::set_error("optimizer slot dtype must be f32 or i8");
+                return -1;
+        }
+        ggml_opt_slot_init initializer;
+        switch (init) {
+            case RETRO_SLOT_INIT_ZERO: initializer = GGML_OPT_SLOT_INIT_ZERO; break;
+            case RETRO_SLOT_INIT_CODE: initializer = GGML_OPT_SLOT_INIT_CODE; break;
+            case RETRO_SLOT_INIT_UNIFORM_CODEBOOK:
+                initializer = GGML_OPT_SLOT_INIT_UNIFORM_CODEBOOK;
+                break;
+            default:
+                retro::set_error("optimizer slot initializer is not one this build declares");
+                return -1;
+        }
+        if (n_bytes != 0 && !out_bytes) {
+            retro::set_error("out_bytes is required");
+            return -1;
+        }
+        if (n_elements > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+            retro::set_error("optimizer slot element count exceeds the runtime limit");
+            return -1;
+        }
+        // The shape is the caller's; this entry only tests the initializer.
+        const ggml_opt_slot_def def {
+            /*.name    =*/ "probe",
+            /*.type    =*/ type,
+            /*.shape   =*/ GGML_OPT_SLOT_SHAPE_FIXED,
+            /*.n_block =*/ static_cast<int64_t>(n_elements),
+            /*.init    =*/ initializer,
+            /*.code    =*/ code,
+        };
+        if (!ggml_opt_slot_initial_bytes(
+                    &def, static_cast<int64_t>(n_elements), out_bytes, n_bytes)) {
+            retro::set_error(
+                    "the buffer is not exactly this slot's size, or its dtype cannot hold "
+                    "the declared initializer");
+            return -1;
         }
         return 0;
     });

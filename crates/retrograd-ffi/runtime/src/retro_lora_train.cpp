@@ -187,6 +187,61 @@ extern "C" int retro_trainer_create_lora(
     });
 }
 
+extern "C" int retro_trainer_set_optimizer_assignment(
+        retro_trainer * trainer,
+        const char * const * names,
+        const int32_t * optimizers,
+        size_t n_rows) {
+    return retro::boundary([&]() -> int {
+        retro::trainer_state * state = retro::checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        if (n_rows != 0 && (!names || !optimizers)) {
+            retro::set_error("names and optimizers are required when n_rows is non-zero");
+            return -1;
+        }
+        if (state->opt_created) {
+            retro::set_error(
+                    "cannot change the optimizer assignment after optimizer initialization");
+            return -1;
+        }
+
+        // Validated into a local first, so a rejected call leaves the
+        // previous assignment intact.
+        std::vector<std::pair<std::string, int32_t>> resolved;
+        resolved.reserve(n_rows);
+        for (size_t i = 0; i < n_rows; ++i) {
+            const char * name = names[i];
+            if (retro::is_blank(name)) {
+                retro::set_error("assigned parameter names must not be empty");
+                return -1;
+            }
+            const int32_t optimizer = optimizers[i];
+            if (optimizer != RETRO_OPTIMIZER_ADAMW && optimizer != RETRO_OPTIMIZER_SGD) {
+                retro::set_error(
+                        std::string("parameter '") + name + "' is assigned optimizer "
+                        + std::to_string(optimizer)
+                        + ", which this build cannot build an update step for");
+                return -1;
+            }
+            const auto duplicate = std::find_if(
+                    resolved.begin(),
+                    resolved.end(),
+                    [&](const std::pair<std::string, int32_t> & row) { return row.first == name; });
+            if (duplicate != resolved.end()) {
+                retro::set_error(
+                        std::string("duplicate optimizer assignment for '") + name + "'");
+                return -1;
+            }
+            resolved.emplace_back(name, optimizer);
+        }
+        state->optimizer_assignment = std::move(resolved);
+        state->invalidate_report_caches();
+        return 0;
+    });
+}
+
 extern "C" int retro_trainer_set_trainable_base(
         retro_trainer * trainer,
         const char * const * names,

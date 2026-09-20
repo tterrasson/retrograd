@@ -99,6 +99,10 @@ const DENSE_BLOCK: [&str; 12] = [
 
 const LLAMA_BLOCK: [&str; 12] = DENSE_BLOCK;
 
+/// Qwen2 is dense, with biases on the attention projections. The bias shares
+/// its weight's family, so the block list is the dense one unchanged.
+const QWEN2_BLOCK: [&str; 12] = DENSE_BLOCK;
+
 /// LFM2 adds a short-convolution to the dense block. Its kernel is
 /// `blk.<N>.shortconv.conv.weight`, a family with a dot in it, which is why
 /// the family rule strips a suffix rather than splitting on the first
@@ -127,16 +131,21 @@ const DENSE_GLOBAL: [&str; 3] = ["output_norm", "output", "token_embd_norm"];
 
 /// The architectures `full` can derive a set for.
 ///
-/// `lfm2` is the CPU fixture, checked against a real file by
-/// `tests/trainable_inventory.rs`; `llama` follows llama.cpp naming. Neither
-/// row claims a trained model, only a list of parameters; the dtype rule
-/// decides which a given file can carry.
+/// `lfm2` and `qwen2` are the CPU fixtures, each checked against a real file
+/// by `tests/trainable_inventory.rs`; `llama` follows llama.cpp naming. A row
+/// lists parameters; the dtype rule decides what a given file can carry.
 pub const CAPABILITY_TABLE: &[ArchitectureCapability] = &[
     ArchitectureCapability {
         architecture: "llama",
         block_families: &LLAMA_BLOCK,
         global_families: &DENSE_GLOBAL,
         exports_model: false, // no fixture of this architecture runs here
+    },
+    ArchitectureCapability {
+        architecture: "qwen2",
+        block_families: &QWEN2_BLOCK,
+        global_families: &DENSE_GLOBAL,
+        exports_model: true,
     },
     ArchitectureCapability {
         architecture: "lfm2",
@@ -272,11 +281,12 @@ mod tests {
     #[test]
     fn a_model_export_is_available_only_where_a_row_grants_it() {
         assert!(architecture_exports_model("lfm2"));
+        assert!(architecture_exports_model("qwen2"));
         assert!(!architecture_exports_model("llama"));
         assert!(!architecture_exports_model("an-architecture-with-no-row"));
 
         let granted: Vec<&str> = model_export_architectures().collect();
-        assert_eq!(granted, vec!["lfm2"]);
+        assert_eq!(granted, vec!["qwen2", "lfm2"]);
         assert!(
             granted
                 .iter()

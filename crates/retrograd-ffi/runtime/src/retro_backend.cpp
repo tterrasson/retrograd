@@ -1172,8 +1172,27 @@ retro_memory_report memory_totals(const trainer_state & state) {
     // carry a gradient and optimizer state; only the first adds parameter bytes.
     size_t trainable_elements = static_cast<size_t>(count_lora_parameters(state));
     const size_t adapter_elements = trainable_elements;
-    const size_t state_bytes_per_element = state.train_config.optimizer == RETRO_OPTIMIZER_SGD
-            ? sizeof(float) : 3 * sizeof(float);
+    auto optimizer_bytes = [&](const ggml_tensor * tensor) -> uint64_t {
+        if (!tensor) {
+            return 0;
+        }
+        const auto owner = opt_param_optimizer(tensor, const_cast<trainer_state *>(&state));
+        int64_t count = 0;
+        const auto * slots = ggml_opt_optimizer_slots(owner, &count);
+        uint64_t bytes = 0;
+        for (int64_t i = 0; i < count; ++i) {
+            bytes += static_cast<uint64_t>(ggml_opt_slot_n_elements(&slots[i], ggml_nelements(tensor)))
+                    * ggml_type_size(slots[i].type);
+        }
+        return bytes;
+    };
+    uint64_t adapter_state_bytes = 0;
+    if (state.adapter) {
+        for (const auto & item : state.adapter->ab_map) {
+            adapter_state_bytes += optimizer_bytes(item.second.a) + optimizer_bytes(item.second.b);
+        }
+    }
+    report.optimizer_state_bytes = adapter_state_bytes;
     uint64_t base_host_training_bytes = 0;
     uint64_t base_device_training_bytes = 0;
     report.trainable_parameter_bytes = count_lora_parameter_bytes(state);
@@ -1193,18 +1212,15 @@ retro_memory_report memory_totals(const trainer_state & state) {
         report.trainable_parameter_bytes += ggml_nbytes(found->second);
         const bool on_host = found->second->buffer && ggml_backend_buft_is_host(
                 ggml_backend_buffer_get_type(found->second->buffer));
+        const uint64_t state_bytes = optimizer_bytes(found->second);
+        report.optimizer_state_bytes += state_bytes;
         (on_host ? base_host_training_bytes : base_device_training_bytes) +=
-                static_cast<uint64_t>(ggml_nelements(found->second)) * state_bytes_per_element;
+                static_cast<uint64_t>(ggml_nelements(found->second)) * sizeof(float) + state_bytes;
         if (!base_sample) {
             base_sample = found->second;
         }
     }
     report.trainable_gradient_bytes  = trainable_elements * sizeof(float);
-    // Two F32 tensors per parameter for AdamW, none for SGD. Reporting AdamW's
-    // figure for an SGD run would be a budget nobody pays.
-    report.optimizer_state_bytes = state.train_config.optimizer == RETRO_OPTIMIZER_SGD
-            ? 0
-            : trainable_elements * 2 * sizeof(float);
     // Whether `trainable_parameter_bytes` may be added on top of the model's
     // weights or is a slice of them. Neither answer is right for a hybrid set,
     // so the rollup below adds the adapter half explicitly instead of reading
@@ -1249,7 +1265,7 @@ retro_memory_report memory_totals(const trainer_state & state) {
     // comment in retro_lora_train.h: base tensors are a slice of the weights
     // and must never be added to them, adapter factors sit on top.
     const uint64_t adapter_total_bytes = adapter_parameter_bytes
-            + adapter_elements * state_bytes_per_element;
+            + adapter_elements * sizeof(float) + adapter_state_bytes;
 
     // Roll the memory-breakdown-visible allocations up into a device vs host
     // split so the report says which budget each part draws on. The optimizer

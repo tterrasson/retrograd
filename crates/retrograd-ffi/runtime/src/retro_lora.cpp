@@ -1,5 +1,6 @@
 #include "retro_runtime.hpp"
 
+#include <functional>
 #include <map>
 #include <random>
 #include <set>
@@ -368,45 +369,127 @@ std::string describe_lora(const trainer_state & state) {
     return out.str();
 }
 
-bool optimizer_supports_marked_dtypes(const trainer_state & state) {
-    // The update step is a kernel, and a kernel has a dtype table. AdamW's
-    // carries F32 and F16 on every backend the project ships; SGD's carries
-    // F32 alone, and meets anything else with GGML_ABORT rather than an error.
-    // An F16 adapter is the normal case - it is the default storage - so this
-    // is not a corner: "optimizer = sgd" on a default LoRA run would abort the
-    // process in the middle of the first step.
-    if (state.train_config.optimizer != RETRO_OPTIMIZER_SGD) {
-        return true;
+// The name a refusal spells, from the wire value the config carries.
+static const char * optimizer_name(int32_t optimizer) {
+    switch (optimizer) {
+        case RETRO_OPTIMIZER_SGD:   return "sgd";
+        case RETRO_OPTIMIZER_ADAMW: return "adamw";
+        default:                    return "unknown";
     }
-    std::vector<std::string> unsupported;
-    auto check = [&](const ggml_tensor * tensor) {
-        if (is_param_tensor(tensor) && tensor->type != GGML_TYPE_F32) {
-            unsupported.push_back(
-                    std::string(tensor->name) + " (" + ggml_type_name(tensor->type) + ")");
+}
+
+bool optimizer_supports_dtype(int32_t optimizer, ggml_type type) {
+    // A kernel has a dtype table: AdamW's carries F32 and F16, SGD's F32
+    // alone, and an unsupported type meets GGML_ABORT rather than an error.
+    switch (optimizer) {
+        case RETRO_OPTIMIZER_SGD:
+            return type == GGML_TYPE_F32;
+        case RETRO_OPTIMIZER_ADAMW:
+            return type == GGML_TYPE_F32 || type == GGML_TYPE_F16;
+        default:
+            return false;
+    }
+}
+
+ggml_opt_optimizer_type opt_param_optimizer(const ggml_tensor * tensor, void * userdata) {
+    const trainer_state * state = static_cast<const trainer_state *>(userdata);
+    int32_t optimizer = state ? state->train_config.optimizer : RETRO_OPTIMIZER_ADAMW;
+    if (state && tensor) {
+        // The table is at most one row per marked parameter and usually empty.
+        for (const auto & row : state->optimizer_assignment) {
+            if (row.first == tensor->name) {
+                optimizer = row.second;
+                break;
+            }
+        }
+    }
+    return optimizer == RETRO_OPTIMIZER_SGD
+            ? GGML_OPT_OPTIMIZER_TYPE_SGD
+            : GGML_OPT_OPTIMIZER_TYPE_ADAMW;
+}
+
+// Every marked parameter, adapter factors first and base tensors after, with
+// the optimizer that owns each.
+static void for_each_marked(
+        const trainer_state & state,
+        const std::function<void(const ggml_tensor *, int32_t)> & visit) {
+    auto owner_of = [&](const ggml_tensor * tensor) {
+        return opt_param_optimizer(tensor, const_cast<trainer_state *>(&state))
+                        == GGML_OPT_OPTIMIZER_TYPE_SGD
+                ? RETRO_OPTIMIZER_SGD
+                : RETRO_OPTIMIZER_ADAMW;
+    };
+    auto offer = [&](const ggml_tensor * tensor) {
+        if (is_param_tensor(tensor)) {
+            visit(tensor, owner_of(tensor));
         }
     };
     if (state.adapter) {
         for (const auto & item : state.adapter->ab_map) {
-            check(item.second.a);
-            check(item.second.b);
+            offer(item.second.a);
+            offer(item.second.b);
         }
     }
     for (const auto & item : state.model->tensors_by_name) {
-        check(item.second);
+        offer(item.second);
     }
+}
+
+bool optimizer_supports_marked_dtypes(const trainer_state & state) {
+    // Asked per parameter, against the table of the optimizer that owns it.
+    // An F16 adapter is the normal case, since it is the default storage: an
+    // SGD-owned F16 parameter would abort in the middle of the first step.
+    std::vector<std::string> unsupported;
+    std::vector<std::string> offenders;
+    for_each_marked(state, [&](const ggml_tensor * tensor, int32_t optimizer) {
+        if (optimizer_supports_dtype(optimizer, tensor->type)) {
+            return;
+        }
+        unsupported.push_back(std::string(tensor->name) + " (" + ggml_type_name(tensor->type)
+                + ", " + optimizer_name(optimizer) + ")");
+        if (std::find(offenders.begin(), offenders.end(), optimizer_name(optimizer))
+                == offenders.end()) {
+            offenders.push_back(optimizer_name(optimizer));
+        }
+    });
     if (unsupported.empty()) {
         return true;
     }
     std::sort(unsupported.begin(), unsupported.end());
+    const size_t total = unsupported.size();
     if (unsupported.size() > 6) {
         const size_t rest = unsupported.size() - 6;
         unsupported.resize(6);
         unsupported.push_back("and " + std::to_string(rest) + " more");
     }
-    set_error("the sgd update step is F32-only, and this run marks "
-              + std::to_string(unsupported.size()) + " parameter(s) it cannot write: ["
+    set_error("the " + join_patterns(offenders) + " update step is F32-only, and this run marks "
+              + std::to_string(total) + " parameter(s) it cannot write: ["
               + join_patterns(unsupported)
               + "]. Store the adapter as F32 (lora.dtype = \"f32\") or use adamw");
+    return false;
+}
+
+bool assert_assignment_covers_marked_set(const trainer_state & state) {
+    if (state.optimizer_assignment.empty()) {
+        return true;
+    }
+    std::vector<std::string> marked;
+    for_each_marked(state, [&](const ggml_tensor * tensor, int32_t) {
+        marked.emplace_back(tensor->name);
+    });
+    std::vector<std::string> unmatched;
+    for (const auto & row : state.optimizer_assignment) {
+        if (std::find(marked.begin(), marked.end(), row.first) == marked.end()) {
+            unmatched.push_back(row.first);
+        }
+    }
+    if (unmatched.empty()) {
+        return true;
+    }
+    std::sort(unmatched.begin(), unmatched.end());
+    set_error("the optimizer assignment names " + std::to_string(unmatched.size())
+              + " parameter(s) this run does not train: [" + join_patterns(unmatched)
+              + "]");
     return false;
 }
 

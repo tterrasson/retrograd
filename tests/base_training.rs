@@ -13,9 +13,10 @@
 //!   keeps no per-parameter state at all, and "keeps none" must not be read by
 //!   a resume as "was never initialized".
 //!
-//! The fixture is Q4_K_M, so only its F32 norms are eligible - which is the
-//! selection §2 of the contract exists for: validate the selected tensors, not
-//! the model's dominant dtype.
+//! The download fixture is Q4_K_M, so only its F32 norms are eligible:
+//! selections are validated against the selected tensors, not the model's
+//! dominant dtype. It also ties its vocabulary projection, so the cases that
+//! need the head run against the generated F32 fixture instead.
 
 mod common;
 
@@ -125,6 +126,68 @@ macro_rules! fixture {
             }
         }
     };
+}
+
+/// The generated F32 fixture: untied head, F32 throughout.
+macro_rules! tiny_fixture {
+    () => {
+        match common::tiny_model_path_if_available() {
+            Some(model) => model,
+            None => {
+                eprintln!("skipping: generated fixture not available");
+                return;
+            }
+        }
+    };
+}
+
+/// Exactly one training row, and therefore exactly one optimizer step.
+///
+/// One row is `n_ctx + 1` tokens: one context plus the label shift.
+/// `train_once` feeds a whole text instead, which on this fixture's
+/// byte-fallback vocabulary is eighteen steps, while the arithmetic cases
+/// below compare against a cold optimizer's first update.
+fn train_one_row(trainer: &mut Trainer, n_tokens: usize) -> u64 {
+    let mut tokens = trainer.tokenize_text(&TEXT.repeat(8)).expect("tokenize");
+    assert!(
+        tokens.len() >= n_tokens,
+        "a byte-fallback vocabulary produced only {} tokens",
+        tokens.len()
+    );
+    tokens.truncate(n_tokens);
+    trainer
+        .train_tokens(&tokens)
+        .expect("training run")
+        .global_step
+}
+
+/// One training row of the generated fixture, whose effective context is its
+/// declared `n_ctx_train`.
+const TINY_ONE_ROW_TOKENS: usize = 257;
+
+/// A run that selects the projection head, and nothing else.
+fn head_config(chunked: bool) -> TrainConfig {
+    let mut config = base_config(TrainablePolicy::Partial, OptimizerKind::AdamW);
+    config.trainable.selector = TrainableSelector {
+        output_head: true,
+        ..Default::default()
+    };
+    config.chunked_cross_entropy = chunked;
+    config
+}
+
+/// The head set of the generated fixture, resolved the way a run resolves it.
+fn resolved_head_set(model: &Path) -> TrainableSet {
+    let inventory = tensor_inventory(model, Device::Cpu).expect("read the tensor inventory");
+    resolve_base(
+        &inventory,
+        TrainablePolicy::Partial,
+        &TrainableSelector {
+            output_head: true,
+            ..Default::default()
+        },
+    )
+    .expect("an untied head resolves")
 }
 
 #[test]
@@ -1321,4 +1384,607 @@ fn an_adamw_step_is_the_arithmetic_it_claims_to_be() {
         without_normalization > TOLERANCE,
         "the normalization changes nothing, so this passes for an SGD step"
     );
+}
+
+/// The dense loss path, executed. The fused backward asserts on a projection
+/// that needs a gradient, inside the graph build: building the optimizer graph
+/// is the gate, and the arithmetic below proves the head actually got a
+/// gradient.
+#[test]
+fn a_run_that_trains_the_head_takes_the_dense_loss_path_and_moves_both_its_tensors() {
+    let model = tiny_fixture!();
+    let _guard = common::serialize_models();
+    let set = resolved_head_set(&model);
+    let selected = names(&set.entries);
+    assert!(
+        selected.contains(&retrograd::OUTPUT_HEAD.to_string())
+            && selected.contains(&retrograd::OUTPUT_HEAD_BIAS.to_string()),
+        "rule 3 selects the head's weight and its bias together: {selected:?}"
+    );
+
+    // The option is on and loses to the selection; both reports say so.
+    let mut trainer = Trainer::new(&model, head_config(true)).expect("load trainer");
+    trainer
+        .declare_trainable_set(&set)
+        .expect("declare the head");
+    let backend = trainer.backend_report().expect("backend report");
+    assert!(
+        backend.contains("chunked_cross_entropy: enabled"),
+        "{backend}"
+    );
+    assert!(backend.contains("loss_path: dense"), "{backend}");
+    assert!(
+        backend.contains("loss_path_status: dense_fallback"),
+        "{backend}"
+    );
+    let preflight = trainer.train_preflight().expect("preflight the base graph");
+    assert!(preflight.contains("loss_path: dense"), "{preflight}");
+
+    // The abort this case exists to rule out happens here, in the build.
+    trainer
+        .prepare_optimizer()
+        .expect("the dense backward differentiates the head");
+
+    let marked = trainer
+        .marked_trainable_set()
+        .expect("the marked parameters");
+    let index_of = |name: &str| {
+        marked
+            .entries
+            .iter()
+            .position(|entry| entry.name == name)
+            .unwrap_or_else(|| panic!("'{name}' is not marked"))
+    };
+    let head = index_of(retrograd::OUTPUT_HEAD);
+    let bias = index_of(retrograd::OUTPUT_HEAD_BIAS);
+    let sizes: Vec<u64> = marked.entries.iter().map(|entry| entry.n_bytes).collect();
+    let before: Vec<Vec<f32>> = [head, bias]
+        .iter()
+        .map(|index| parameter_values(&mut trainer, *index, sizes[*index]))
+        .collect();
+
+    train_once(&mut trainer);
+
+    let after: Vec<Vec<f32>> = [head, bias]
+        .iter()
+        .map(|index| parameter_values(&mut trainer, *index, sizes[*index]))
+        .collect();
+    let gradients: Vec<Vec<f32>> = [head, bias]
+        .iter()
+        .map(|index| parameter_gradient(&mut trainer, *index))
+        .collect();
+
+    // Both halves move: a run where only one moved would mean the selection
+    // and the graph disagree about what the head is.
+    for (position, name) in [retrograd::OUTPUT_HEAD, retrograd::OUTPUT_HEAD_BIAS]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(
+            deviation(&before[position], &after[position]) > 0.0,
+            "'{name}' did not move"
+        );
+        assert!(
+            gradients[position].iter().any(|value| *value != 0.0),
+            "'{name}' has an all-zero gradient, so the update was a no-op the \
+             comparison above cannot distinguish from a fused-path run"
+        );
+        assert!(
+            gradients[position].iter().all(|value| value.is_finite()),
+            "'{name}' has a non-finite gradient"
+        );
+    }
+}
+
+/// The same selection with `chunked_cross_entropy` off: the same graph, and a
+/// report that does not claim a fallback nothing fell back from.
+#[test]
+fn the_head_selection_decides_the_loss_path_whatever_the_option_says() {
+    let model = tiny_fixture!();
+    let _guard = common::serialize_models();
+    let set = resolved_head_set(&model);
+
+    let mut trainer = Trainer::new(&model, head_config(false)).expect("load trainer");
+    trainer
+        .declare_trainable_set(&set)
+        .expect("declare the head");
+    let backend = trainer.backend_report().expect("backend report");
+    assert!(
+        backend.contains("chunked_cross_entropy: disabled"),
+        "{backend}"
+    );
+    assert!(backend.contains("loss_path: dense"), "{backend}");
+    assert!(
+        !backend.contains("loss_path_status:"),
+        "nothing fell back, so nothing should say so:\n{backend}"
+    );
+    trainer.prepare_optimizer().expect("build the dense graph");
+}
+
+/// A document that trains the head is priced against the dense buffer, not
+/// the tiled one, asserted against the arithmetic rather than the fused
+/// figure alone.
+#[test]
+fn the_planner_prices_the_dense_logits_buffer_for_a_head_training_document() {
+    let model = tiny_fixture!();
+    let _guard = common::serialize_models();
+    let info = retrograd::model_info(&model, Device::Cpu).expect("model info");
+    let head = resolved_head_set(&model);
+    let norms = resolved_norm_set(&model, TrainablePolicy::Partial);
+    assert!(head.trains_loss_head() && !norms.trains_loss_head());
+
+    let config = head_config(true);
+    let workload = retrograd_plan::cost::Workload {
+        kind: retrograd_plan::cost::WorkloadKind::Sft,
+        examples: 1,
+        co_resident_bytes: 0,
+    };
+    let estimate = |set: &TrainableSet| {
+        retrograd_plan::cost::estimate(
+            &info,
+            &config,
+            retrograd_plan::cost::Trainable::base(set),
+            &workload,
+            retrograd_plan::cost::Calibration::default(),
+        )
+    };
+
+    // `[n_ubatch, n_vocab]` reserved outputs, plus the dense logits and their
+    // gradient: the whole vocabulary, materialized.
+    let n_ubatch = u64::from(config.n_ubatch.max(1));
+    let n_vocab = info.n_vocab as u64;
+    let dense = 3 * n_ubatch * n_vocab * 4;
+    assert_eq!(estimate(&head).logits_bytes, dense);
+    // ... and the same document, differing only in whether its selection
+    // reaches the head, is priced against the tiled buffer.
+    assert!(
+        estimate(&norms).logits_bytes < dense,
+        "the option is priced for a selection that does not train the head"
+    );
+}
+
+/// The published base-only export, reloaded into a fresh trainer.
+#[test]
+fn a_published_base_bundle_reloads_into_a_trainer_that_never_saw_the_run() {
+    let model = fixture!();
+    let _guard = common::serialize_models();
+    let root = scratch("partial-export");
+    let set = resolved_norm_set(&model, TrainablePolicy::Partial);
+    let config = base_config(TrainablePolicy::Partial, OptimizerKind::AdamW);
+
+    let mut trainer = Trainer::new(&model, config.clone()).expect("load trainer");
+    trainer
+        .declare_trainable_set(&set)
+        .expect("select the fixture's norms");
+    let cold = scores(&mut trainer);
+    train_once(&mut trainer);
+    let trained = scores(&mut trainer);
+    assert!(
+        deviation(&cold, &trained) > 0.0,
+        "the run has to move the model for the reload to mean anything"
+    );
+
+    let bundle = root.join("result.gguf");
+    trainer.save_trainable(&bundle).expect("write the bundle");
+    drop(trainer);
+    assert!(bundle.is_file());
+    // No adapter beside it: this run has none.
+    assert!(!retrograd::run::trainable_adapter_sibling(&bundle).exists());
+
+    let mut reloaded = Trainer::new(&model, config).expect("load a fresh trainer");
+    reloaded
+        .declare_trainable_set(&set)
+        .expect("the same selection");
+    assert!(
+        deviation(&cold, &scores(&mut reloaded)) == 0.0,
+        "a fresh trainer already differs from the cold run"
+    );
+    reloaded.load_trainable(&bundle).expect("load the bundle");
+    assert_eq!(
+        deviation(&trained, &scores(&mut reloaded)),
+        0.0,
+        "the published bundle is not the run it came from"
+    );
+}
+
+/// The model export on the generated fixture: what the `qwen2` row's
+/// `exports_model = true` claims.
+#[test]
+fn a_model_export_of_the_generated_fixture_is_the_run_it_came_from() {
+    let model = tiny_fixture!();
+    let _guard = common::serialize_models();
+    let root = scratch("tiny-model-export");
+    let set = resolved_norm_set(&model, TrainablePolicy::Partial);
+    let config = base_config(TrainablePolicy::Partial, OptimizerKind::AdamW);
+
+    let inventory = tensor_inventory(&model, Device::Cpu).expect("inventory");
+    assert!(
+        retrograd::architecture_exports_model(&inventory.architecture),
+        "the row for '{}' does not grant a model export",
+        inventory.architecture
+    );
+
+    let mut trainer = Trainer::new(&model, config.clone()).expect("load trainer");
+    trainer
+        .declare_trainable_set(&set)
+        .expect("select the fixture's norms");
+    let cold = scores(&mut trainer);
+    train_once(&mut trainer);
+    let trained = scores(&mut trainer);
+    assert!(deviation(&cold, &trained) > 0.0);
+
+    let exported = root.join("trained-model.gguf");
+    trainer.save_model(&exported).expect("write the model");
+    drop(trainer);
+    assert!(exported.is_file());
+
+    let reloaded_set = resolved_norm_set(&exported, TrainablePolicy::Partial);
+    assert_eq!(names(&reloaded_set.entries), names(&set.entries));
+    let mut reloaded = Trainer::new(&exported, config.clone()).expect("load the exported model");
+    reloaded
+        .declare_trainable_set(&reloaded_set)
+        .expect("the same selection");
+    assert_eq!(deviation(&trained, &scores(&mut reloaded)), 0.0);
+    drop(reloaded);
+
+    let mut source = Trainer::new(&model, config).expect("load the fixture again");
+    source
+        .declare_trainable_set(&set)
+        .expect("the same selection");
+    assert_eq!(deviation(&cold, &scores(&mut source)), 0.0);
+}
+
+/// Two optimizers in one run, on a cold first step where both closed forms
+/// are exact: AdamW's is `w * (1 - lr * wd) - lr * g / (|g| + eps)`, SGD's is
+/// `w * (1 - lr * wd) - lr * g`. Each parameter has to *fail* the other
+/// optimizer's, or the case would pass for a run that used one optimizer
+/// twice.
+#[test]
+fn two_optimizers_side_by_side_each_keep_their_own_state_and_arithmetic() {
+    let model = tiny_fixture!();
+    let _guard = common::serialize_models();
+
+    let mut config = base_config(TrainablePolicy::Partial, OptimizerKind::AdamW);
+    config.weight_decay = 0.1;
+    config.max_grad_norm = 1.0e9;
+    let set = resolved_norm_set(&model, TrainablePolicy::Partial);
+    assert!(set.entries.len() >= 4, "the fixture carries several norms");
+
+    // Every other norm to SGD.
+    let assignment: Vec<(String, OptimizerKind)> = set
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let optimizer = if index % 2 == 0 {
+                OptimizerKind::Sgd
+            } else {
+                OptimizerKind::AdamW
+            };
+            (entry.name.clone(), optimizer)
+        })
+        .collect();
+
+    let mut trainer = Trainer::new(&model, config).expect("load trainer");
+    trainer
+        .declare_trainable_set(&set)
+        .expect("select the fixture's norms");
+    trainer
+        .set_optimizer_assignment(&assignment)
+        .expect("two implemented optimizers can coexist");
+    trainer
+        .prepare_optimizer()
+        .expect("the marked set is the resolved set");
+
+    let marked = trainer
+        .marked_trainable_set()
+        .expect("the marked parameters");
+    let owner_of = |name: &str| {
+        assignment
+            .iter()
+            .find(|(assigned, _)| assigned == name)
+            .map(|(_, optimizer)| *optimizer)
+            .expect("every marked parameter was assigned")
+    };
+
+    let sizes: Vec<u64> = marked.entries.iter().map(|entry| entry.n_bytes).collect();
+    let before: Vec<Vec<f32>> = (0..sizes.len())
+        .map(|index| parameter_values(&mut trainer, index, sizes[index]))
+        .collect();
+
+    let step = train_one_row(&mut trainer, TINY_ONE_ROW_TOKENS);
+    assert_eq!(step, 1, "the arithmetic below is the first step's");
+
+    let after: Vec<Vec<f32>> = (0..sizes.len())
+        .map(|index| parameter_values(&mut trainer, index, sizes[index]))
+        .collect();
+    let gradients: Vec<Vec<f32>> = (0..sizes.len())
+        .map(|index| parameter_gradient(&mut trainer, index))
+        .collect();
+    let norm = gradients
+        .iter()
+        .flatten()
+        .map(|value| f64::from(*value) * f64::from(*value))
+        .sum::<f64>()
+        .sqrt();
+    assert!(norm > 0.0 && norm < 1.0e9, "gradient norm {norm}");
+
+    let knobs = trainer
+        .optimizer_hyperparameters()
+        .expect("the values the update read");
+    let scalar = |name: &str| match knobs.get(name) {
+        Some(retrograd::HyperparameterValue::Scalar(value)) => value,
+        other => panic!("{name} is {other:?}"),
+    };
+    let alpha = scalar("learning_rate");
+    let decay = scalar("weight_decay");
+    let eps = scalar("eps");
+    let keep = 1.0_f32 - alpha * decay;
+
+    // The live slot table: two rows per AdamW-owned parameter, none for the
+    // SGD-owned ones.
+    let slots = trainer.state_slots().expect("the live slot table");
+    assert_eq!(
+        trainer
+            .memory_report()
+            .expect("memory report")
+            .optimizer_state_bytes,
+        slots.iter().map(|slot| slot.n_bytes).sum::<u64>(),
+        "the memory report must price each parameter's actual owner"
+    );
+    for entry in &marked.entries {
+        let owned: Vec<&str> = slots
+            .iter()
+            .filter(|slot| {
+                slot.scope == checkpoint::SlotScope::Parameter && slot.owner == entry.name
+            })
+            .map(|slot| slot.slot.as_str())
+            .collect();
+        match owner_of(&entry.name) {
+            OptimizerKind::AdamW => assert_eq!(owned, ["m", "v"], "{}", entry.name),
+            OptimizerKind::Sgd => assert!(owned.is_empty(), "{}: {owned:?}", entry.name),
+            other => panic!("{other} was not assigned"),
+        }
+    }
+
+    const TOLERANCE: f32 = 1.0e-5;
+    let mut checked = [0_usize; 2];
+    for (index, entry) in marked.entries.iter().enumerate() {
+        let mut own = 0.0_f32;
+        let mut other = 0.0_f32;
+        for ((w0, w1), g) in before[index]
+            .iter()
+            .zip(&after[index])
+            .zip(&gradients[index])
+        {
+            let error =
+                |expected: f32| (expected - w1).abs() / expected.abs().max(w1.abs()).max(1.0e-6);
+            let adamw = error(w0 * keep - alpha * g / (g.abs() + eps));
+            let sgd = error(w0 * keep - alpha * g);
+            let (mine, theirs) = match owner_of(&entry.name) {
+                OptimizerKind::AdamW => (adamw, sgd),
+                _ => (sgd, adamw),
+            };
+            own = own.max(mine);
+            other = other.max(theirs);
+        }
+        assert!(
+            own < TOLERANCE,
+            "'{}' did not take its own optimizer's step: worst relative error {own}",
+            entry.name
+        );
+        assert!(
+            other > TOLERANCE,
+            "'{}' is indistinguishable from the other optimizer's step, so the \
+             comparison proves nothing",
+            entry.name
+        );
+        checked[usize::from(owner_of(&entry.name) == OptimizerKind::Sgd)] += 1;
+    }
+    assert!(
+        checked[0] > 0 && checked[1] > 0,
+        "the run has to carry both optimizers: {checked:?}"
+    );
+}
+
+#[test]
+fn mixed_adapter_memory_follows_assignment_before_and_after_preparation() {
+    let model = tiny_fixture!();
+    let _guard = common::serialize_models();
+    for default in [OptimizerKind::AdamW, OptimizerKind::Sgd] {
+        let mut config = base_config(TrainablePolicy::Lora, default);
+        config.trainable.selector = TrainableSelector::default();
+        let mut trainer = Trainer::new(&model, config).expect("load trainer");
+        let mut lora = f32_lora();
+        lora.targets = TargetSet::Patterns(vec!["blk.0.attn_q.weight".to_string()]);
+        trainer.create_lora(&lora).expect("create adapter");
+        let original = trainer.memory_report().expect("initial memory");
+        let override_kind = if default == OptimizerKind::AdamW {
+            OptimizerKind::Sgd
+        } else {
+            OptimizerKind::AdamW
+        };
+        trainer
+            .set_optimizer_assignment(&[("blk.0.attn_q.weight.lora_a".into(), override_kind)])
+            .expect("override one factor");
+        let declared = trainer.memory_report().expect("declared memory");
+        trainer
+            .prepare_optimizer()
+            .expect("prepare mixed optimizer");
+        let slots = trainer.state_slots().expect("live slots");
+        let expected = slots.iter().map(|slot| slot.n_bytes).sum::<u64>();
+        assert!(expected > 0);
+        assert_eq!(declared.optimizer_state_bytes, expected);
+        assert_eq!(
+            trainer
+                .memory_report()
+                .expect("prepared memory")
+                .optimizer_state_bytes,
+            expected
+        );
+        assert_eq!(
+            i128::from(declared.host_bytes) - i128::from(original.host_bytes),
+            i128::from(expected) - i128::from(original.optimizer_state_bytes),
+            "the CPU host budget must track the changed slots"
+        );
+    }
+}
+
+/// The mixed run's checkpoint, restored under the same assignment.
+#[test]
+fn a_mixed_run_checkpoints_both_owners_and_resumes_under_the_same_assignment() {
+    let model = tiny_fixture!();
+    let _guard = common::serialize_models();
+    let root = scratch("mixed-optimizers");
+    let set = resolved_norm_set(&model, TrainablePolicy::Partial);
+    let config = base_config(TrainablePolicy::Partial, OptimizerKind::AdamW);
+
+    let assignment: Vec<(String, OptimizerKind)> = set
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let optimizer = if index % 2 == 0 {
+                OptimizerKind::Sgd
+            } else {
+                OptimizerKind::AdamW
+            };
+            (entry.name.clone(), optimizer)
+        })
+        .collect();
+
+    let mut trainer = Trainer::new(&model, config.clone()).expect("load trainer");
+    trainer.declare_trainable_set(&set).expect("select");
+    trainer
+        .set_optimizer_assignment(&assignment)
+        .expect("declare the assignment");
+    let step = train_once(&mut trainer);
+    let state = root.join("mixed.state");
+    trainer
+        .save_checkpoint(&state, &metadata(&model, step))
+        .expect("save a mixed checkpoint");
+    let saved = scores(&mut trainer);
+    drop(trainer);
+
+    let record = Checkpoint::read(&state).expect("read the mixed checkpoint");
+    let owners: Vec<&str> = record
+        .optimizer
+        .assignment
+        .iter()
+        .map(|row| row.optimizer.as_str())
+        .collect();
+    assert!(
+        owners.contains(&"adamw") && owners.contains(&"sgd"),
+        "{owners:?}"
+    );
+    assert!(
+        record
+            .optimizer
+            .assignment
+            .iter()
+            .all(|row| row.layout_version == 1),
+        "each row carries its own owner's layout, and both are 1 today"
+    );
+    // The state bytes are the AdamW half's alone.
+    let adamw_rows = record
+        .optimizer
+        .assignment
+        .iter()
+        .filter(|row| row.optimizer == "adamw")
+        .count();
+    let slot_owners: Vec<&str> = record
+        .optimizer
+        .slots_in(checkpoint::SlotScope::Parameter)
+        .map(|slot| slot.owner.as_str())
+        .collect();
+    assert_eq!(slot_owners.len(), adamw_rows * 2);
+
+    let mut resumed = Trainer::new(&model, config.clone()).expect("load a fresh trainer");
+    resumed
+        .declare_trainable_set(&set)
+        .expect("the same selection");
+    resumed
+        .set_optimizer_assignment(&assignment)
+        .expect("the same assignment");
+    let expected = compatibility_for(&mut resumed, &model, "adamw");
+    resumed
+        .load_checkpoint(&state, &expected)
+        .expect("restore a mixed checkpoint");
+    assert_eq!(deviation(&saved, &scores(&mut resumed)), 0.0);
+    drop(resumed);
+
+    // A different assignment is a different trajectory.
+    let mut single = Trainer::new(&model, config).expect("load a third trainer");
+    single
+        .declare_trainable_set(&set)
+        .expect("the same selection");
+    let expected = compatibility_for(&mut single, &model, "adamw");
+    let error = single
+        .load_checkpoint(&state, &expected)
+        .expect_err("an all-AdamW run cannot resume a mixed one");
+    assert!(error.to_string().contains("assignment"), "{error}");
+}
+
+/// An assignment row naming a parameter this run does not train is refused
+/// once the marked set exists.
+#[test]
+fn an_assignment_row_that_names_no_trained_parameter_is_refused() {
+    let model = tiny_fixture!();
+    let _guard = common::serialize_models();
+    let set = resolved_norm_set(&model, TrainablePolicy::Partial);
+
+    let mut trainer = Trainer::new(
+        &model,
+        base_config(TrainablePolicy::Partial, OptimizerKind::AdamW),
+    )
+    .expect("load trainer");
+    trainer.declare_trainable_set(&set).expect("select");
+    trainer
+        .set_optimizer_assignment(&[("blk.0.attn_q.weight".to_string(), OptimizerKind::Sgd)])
+        .expect("the row is validated against the marked set, which does not exist yet");
+    let error = trainer
+        .prepare_optimizer()
+        .expect_err("the row names a tensor this run does not train");
+    assert!(error.to_string().contains("attn_q"), "{error}");
+
+    // An optimizer with no update step in this build is refused.
+    let error = trainer
+        .set_optimizer_assignment(&[(set.entries[0].name.clone(), OptimizerKind::Muon)])
+        .expect_err("muon has no update step here");
+    assert!(error.to_string().contains("not available"), "{error}");
+}
+
+/// The dtype refusal follows the owner of each parameter: the run is AdamW,
+/// but the refusal comes from the parameter assigned to SGD.
+#[test]
+fn the_dtype_refusal_follows_the_owner_of_each_parameter() {
+    let model = tiny_fixture!();
+    let _guard = common::serialize_models();
+    let mut config = base_config(TrainablePolicy::Lora, OptimizerKind::AdamW);
+    config.trainable.selector = TrainableSelector::default();
+
+    let mut trainer = Trainer::new(&model, config).expect("load trainer");
+    let mut f16 = f32_lora();
+    f16.dtype = LoraDtype::F16;
+    f16.targets = TargetSet::Patterns(vec!["blk.0.attn_q.weight".to_string()]);
+    trainer.create_lora(&f16).expect("create an f16 adapter");
+    // Unassigned, the whole run is AdamW's and F16 is writable.
+    trainer
+        .prepare_optimizer()
+        .expect("adamw writes an f16 adapter");
+    drop(trainer);
+
+    let mut config = base_config(TrainablePolicy::Lora, OptimizerKind::AdamW);
+    config.trainable.selector = TrainableSelector::default();
+    let mut trainer = Trainer::new(&model, config).expect("load trainer");
+    trainer.create_lora(&f16).expect("create an f16 adapter");
+    trainer
+        .set_optimizer_assignment(&[("blk.0.attn_q.weight.lora_a".to_string(), OptimizerKind::Sgd)])
+        .expect("declare one factor onto sgd");
+    let error = trainer
+        .prepare_optimizer()
+        .expect_err("the sgd kernel carries no F16 path");
+    let message = error.to_string();
+    assert!(message.contains("sgd"), "{message}");
+    assert!(message.contains("F32-only"), "{message}");
 }

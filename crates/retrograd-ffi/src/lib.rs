@@ -549,9 +549,10 @@ impl Default for RetroOptimizerSlot {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RetroOptimizerState {
     pub iter: i64,
-    pub has_momenta: bool,
-    /// Whether the optimizer graph exists. Separate from `has_momenta`, which
-    /// is false both for a cold optimizer and for one that keeps no state.
+    pub has_persistent_state: bool,
+    /// Whether the optimizer graph exists. Separate from
+    /// `has_persistent_state`, which is false both for a cold optimizer and
+    /// for one that keeps no state.
     pub graph_ready: bool,
     pub optimizer: i32,
     pub learning_rate: c_float,
@@ -616,6 +617,22 @@ unsafe extern "C" {
         trainer: *mut RetroTrainer,
         names: *const *const c_char,
         n_names: usize,
+    ) -> c_int;
+
+    pub fn retro_optimizer_slot_initial_bytes(
+        dtype: i32,
+        init: i32,
+        code: u8,
+        n_elements: u64,
+        out_bytes: *mut c_void,
+        n_bytes: usize,
+    ) -> c_int;
+
+    pub fn retro_trainer_set_optimizer_assignment(
+        trainer: *mut RetroTrainer,
+        names: *const *const c_char,
+        optimizers: *const i32,
+        n_rows: usize,
     ) -> c_int;
 
     pub fn retro_trainer_tokenize_text(
@@ -1672,11 +1689,11 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroOptimizerSlot, n_elements), 288);
         assert_eq!(offset_of!(RetroOptimizerSlot, n_bytes), 296);
 
-        // `graph_ready` sits in the padding beside `has_momenta` and the three
+        // `graph_ready` sits in the padding beside `has_persistent_state` and the three
         // AdamW coefficients are a tail addition, so nothing before them moved:
         // `optimizer` at 12 pins that, and the size catches a header resized on
         // one side.
-        assert_eq!(offset_of!(RetroOptimizerState, has_momenta), 8);
+        assert_eq!(offset_of!(RetroOptimizerState, has_persistent_state), 8);
         assert_eq!(offset_of!(RetroOptimizerState, graph_ready), 9);
         assert_eq!(offset_of!(RetroOptimizerState, optimizer), 12);
         assert_eq!(offset_of!(RetroOptimizerState, last_learning_rate), 48);

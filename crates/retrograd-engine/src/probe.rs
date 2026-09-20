@@ -527,3 +527,51 @@ pub fn transfer_probe(bytes: usize, iterations: u32) -> Result<TransferRates> {
         device_buffer_is_host: rates.device_buffer_is_host,
     })
 }
+
+/// The bytes one slot holds before the first update, from the runtime's own
+/// initializer. No model and no allocation: the initializer can be compared
+/// against its declaration without running a graph build.
+///
+/// `n_elements` is the slot resolved against its parameter, via
+/// [`retrograd_core::SlotDefinition::resolve`].
+pub fn slot_initial_bytes(
+    slot: &retrograd_core::SlotDefinition,
+    n_elements: u64,
+) -> Result<Vec<u8>> {
+    let dtype = match slot.dtype {
+        retrograd_core::SlotDtype::F32 => 0,
+        retrograd_core::SlotDtype::I8 => 1,
+    };
+    let (init, code) = match slot.init {
+        retrograd_core::SlotInit::Zero => (0, 0),
+        retrograd_core::SlotInit::Code(code) => (1, code),
+        retrograd_core::SlotInit::UniformCodebook => (2, 0),
+    };
+    // A slot whose byte count does not fit is an error, not a clamped
+    // allocation the host aborts on.
+    let n_bytes = n_elements
+        .checked_mul(slot.dtype.bytes())
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .ok_or_else(|| Error::overflow("a slot larger than this host can address"))?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(n_bytes)
+        .map_err(|_| Error::invalid("a slot larger than this host can allocate"))?;
+    bytes.resize(n_bytes, 0_u8);
+    // SAFETY: `bytes` is exactly `n_bytes` long and borrowed for this
+    // synchronous call only.
+    let code = unsafe {
+        ffi::retro_optimizer_slot_initial_bytes(
+            dtype,
+            init,
+            code,
+            n_elements,
+            bytes.as_mut_ptr().cast(),
+            n_bytes,
+        )
+    };
+    if code != 0 {
+        return Err(runtime_error());
+    }
+    Ok(bytes)
+}
