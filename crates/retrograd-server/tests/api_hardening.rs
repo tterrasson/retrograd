@@ -360,7 +360,7 @@ fn the_reference_model_is_held_to_the_path_roots() {
     let source = format!(
         "[run]\nalgorithm='grpo'\n[model]\npath='{}'\n[output]\npath='{}'\n[lora]\n\
          [grpo]\nprompts='{}'\nreward_command=['true']\nupdates=1\nprompts_per_update=1\ngroup_size=2\n\
-         grpo_epochs=1\nkl_coefficient=0.1\n\
+         grpo_epochs=1\nclip_range_low=0.2\nclip_range_high=0.28\nkl_coefficient=0.1\n\
          [grpo.sampling]\ntemperature=1.0\ntop_p=1.0\nmax_new_tokens=8\nseed=1\n\
          [reference]\nmodel='{}'\n",
         fixture.path("model.gguf"),
