@@ -1,0 +1,43 @@
+# The third CPU fixture: the tiny model again, with its matrices stored as F16.
+#
+# It exists for one question the other two cannot be asked: whether base
+# training admits a precision below F32, and what that costs. The Q4_K_M
+# download has no F16 tensor at all, and the F32 fixture is the control this
+# one is compared against - not a different model, the *same* model. The
+# generator snaps every weight to the F16 grid before storing it, in both
+# variants, so the two files differ in storage precision and in nothing else.
+# A gradient that differs between a run of this file and a run of
+# `TINY_FIXTURE.toml` therefore differs because of precision.
+#
+# Architecture `qwen2`, same geometry as the F32 fixture: 4 blocks, n_embd 64,
+# n_ff 128, 4 heads over 2 KV heads, vocabulary 260. Matrices are F16, vectors
+# stay F32 - that is what a real F16 GGUF looks like, llama.cpp expects F32
+# norms, and it also makes the fixture the mixed case, where one run marks
+# both precisions at once:
+#
+#   token_embd.weight               [64, 260]   F16   (frozen for every policy)
+#   blk.{0..3}.attn_norm.weight     [64]        F32
+#   blk.{0..3}.attn_q.weight        [64, 64]    F16   .bias [64]  F32
+#   blk.{0..3}.attn_k.weight        [64, 32]    F16   .bias [32]  F32
+#   blk.{0..3}.attn_v.weight        [64, 32]    F16   .bias [32]  F32
+#   blk.{0..3}.attn_output.weight   [64, 64]    F16
+#   blk.{0..3}.ffn_norm.weight      [64]        F32
+#   blk.{0..3}.ffn_gate.weight      [64, 128]   F16
+#   blk.{0..3}.ffn_up.weight        [64, 128]   F16
+#   blk.{0..3}.ffn_down.weight      [128, 64]   F16
+#   output_norm.weight              [64]        F32
+#   output.weight                   [64, 260]   F16   .bias [260] F32
+#
+# Which of those an actual run may mark is not a property of this file: it is
+# the (dtype, optimizer, backend) row in retrograd-core's BASE_DTYPE_TABLE, and
+# the live device is asked again before the first update.
+#
+# Regenerating after editing the generator means updating `sha256` and
+# `size_bytes` here *and* in TINY_FIXTURE.toml, in the same commit: one
+# generator writes both, and a pair that drifts apart stops being a control.
+filename = "retrograd-tiny-qwen2-f16.gguf"
+generator = "scripts/gen-tiny-fixture.py"
+generator_args = "--dtype f16"
+override_env = "RETRO_TINY_F16_FIXTURE"
+size_bytes = 376480
+sha256 = "f2abf21a1f4ffd7fe6cf433d2186027f3be9b7469c8cd0e3f8fa50dced4cf052"

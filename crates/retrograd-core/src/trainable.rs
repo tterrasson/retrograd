@@ -87,13 +87,15 @@ impl TensorDtype {
         }
     }
 
-    /// Whether a base tensor of this dtype may be marked trainable **today**.
+    /// Whether a base tensor of this dtype may be marked trainable by *some*
+    /// optimizer on *some* backend.
     ///
-    /// F32 only. F16 base training is gated on measured parity *and* long-run
-    /// stability per backend, not on the existence of an F16 AdamW kernel;
-    /// BF16 is separate work across loading, backward and update kernels.
+    /// Only the screen the resolver can apply: it holds no optimizer and no
+    /// device, so the row's optimizer and backend columns are checked again
+    /// downstream against the declared optimizer and the live device.
+    /// BF16 has no row.
     pub fn is_trainable_base(&self) -> bool {
-        matches!(self, Self::F32)
+        matches!(self, Self::F32) || crate::base_dtype::base_dtype_is_tabled(self)
     }
 }
 
@@ -1021,12 +1023,19 @@ fn unsupported_dtype_error(policy: &str, unsupported: &[(&str, &TensorDtype)]) -
     } else {
         String::new()
     };
+    let mut admitted: Vec<&str> = vec!["F32"];
+    admitted.extend(
+        crate::base_dtype::BASE_DTYPE_TABLE
+            .iter()
+            .map(|row| row.dtype),
+    );
+    admitted.dedup();
     Error::config(format!(
         "trainable = '{policy}' selects {} tensor(s) whose dtype base training does not \
-         support yet: {}{tail}. Base training is F32-only today; quantized weights are \
-         out of scope",
+         support yet: {}{tail}. Base training admits {}; quantized weights are out of scope",
         unsupported.len(),
         listed.join(", "),
+        admitted.join(", "),
     ))
 }
 

@@ -372,6 +372,72 @@ bool supports_device_logprob_gather(ggml_backend_dev_t device) {
             && ggml_backend_dev_supports_op(device, gathered);
 }
 
+// Whether `device` can run `optimizer`'s update step on a parameter of `type`.
+// Asking ggml rather than reading a name keeps the answer true when a kernel
+// is added or a device changes. `nullptr` is the CPU device; it is looked up
+// rather than assumed supported.
+bool supports_opt_step_dtype(
+        ggml_backend_dev_t device, int32_t optimizer, ggml_type type) {
+    if (!device) {
+        device = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    }
+    if (!device) {
+        return false;
+    }
+    ggml_init_params params {
+        /*.mem_size   =*/ ggml_tensor_overhead() * 8,
+        /*.mem_buffer =*/ nullptr,
+        /*.no_alloc   =*/ true,
+    };
+    std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx(ggml_init(params), &ggml_free);
+    if (!ctx) {
+        return false;
+    }
+    // A non-degenerate shape: per-row or per-simdgroup kernels refuse degenerate
+    // shapes for reasons unrelated to the dtype.
+    ggml_tensor * w = ggml_new_tensor_2d(ctx.get(), type, 32, 2);
+    if (!w) {
+        return false;
+    }
+    // ggml_opt_step_* assert on a parameter without the flag. No_alloc is set
+    // above, so nothing is allocated.
+    ggml_set_param(w);
+    ggml_tensor * g = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 32, 2);
+    ggml_tensor * step = nullptr;
+    switch (optimizer) {
+        case RETRO_OPTIMIZER_SGD: {
+            ggml_tensor * pars = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 2);
+            if (!g || !pars) {
+                return false;
+            }
+            // The kernel is F32-only; anything else would abort in its CPU path.
+            if (type != GGML_TYPE_F32) {
+                return false;
+            }
+            step = ggml_opt_step_sgd(ctx.get(), w, g, pars);
+        } break;
+        case RETRO_OPTIMIZER_ADAMW: {
+            ggml_tensor * m = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 32, 2);
+            ggml_tensor * v = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 32, 2);
+            // The declared parameters plus the gradient-clipping scale that
+            // ggml_opt_build appends for AdamW; the step asserts on the total.
+            ggml_tensor * pars = ggml_new_tensor_1d(
+                    ctx.get(), GGML_TYPE_F32,
+                    ggml_opt_optimizer_n_params(GGML_OPT_OPTIMIZER_TYPE_ADAMW) + 1);
+            if (!g || !m || !v || !pars) {
+                return false;
+            }
+            if (type != GGML_TYPE_F32 && type != GGML_TYPE_F16) {
+                return false;  // ggml_opt_step_adamw asserts on anything else
+            }
+            step = ggml_opt_step_adamw(ctx.get(), w, g, m, v, pars);
+        } break;
+        default:
+            return false;
+    }
+    return step && ggml_backend_dev_supports_op(device, step);
+}
+
 // Diagnostic: scan each computed node for non-finite values and log the first
 // offender. Enabled with RETRO_CUDA_NAN_SCAN; used to localize a NaN to a
 // specific graph op. Only F32 nodes are downloaded and scanned.
@@ -765,6 +831,15 @@ bool load_model_and_context(trainer_state & state) {
     state.n_gpu_layers = use_gpu ? 999 : 0;
     const char * backend_name = use_gpu ? device_name(gpu_device) : nullptr;
     state.backend_name = backend_name ? backend_name : "CPU";
+    // The registry behind the device, which per-backend claims key on. A GPU
+    // device with no registry name keeps the device name.
+    ggml_backend_reg_t active_reg = use_gpu && gpu_device
+            ? ggml_backend_dev_backend_reg(gpu_device)
+            : nullptr;
+    const char * registry_name = active_reg ? ggml_backend_reg_name(active_reg) : nullptr;
+    state.backend_registry = use_gpu
+            ? (registry_name && registry_name[0] ? registry_name : state.backend_name)
+            : "CPU";
 
     llama_model_params model_params = llama_model_default_params();
     // Upstream replaced the use_mmap/use_mlock booleans with llama_load_mode.
@@ -854,6 +929,14 @@ bool load_model_and_context(trainer_state & state) {
     state.cap_flash_attn_back = differentiable_flash_attn;
     state.cap_device_sampling = use_gpu && supports_device_sampling(gpu_device);
     state.cap_device_logprobs = use_gpu && supports_device_logprob_gather(gpu_device);
+    // Probed for every optimizer, not only the one this run asked for: a mixed
+    // assignment can hand a parameter to either, and the report describes the
+    // device rather than the run.
+    ggml_backend_dev_t step_device = use_gpu ? gpu_device : nullptr;
+    state.cap_opt_step_f16[RETRO_OPTIMIZER_ADAMW] =
+            supports_opt_step_dtype(step_device, RETRO_OPTIMIZER_ADAMW, GGML_TYPE_F16);
+    state.cap_opt_step_f16[RETRO_OPTIMIZER_SGD] =
+            supports_opt_step_dtype(step_device, RETRO_OPTIMIZER_SGD, GGML_TYPE_F16);
     state.cap_fused_sparse_ce = use_gpu
             && supports_fused_sparse_ce(gpu_device, *model, state.train_config, fa_probe_tokens);
     ctx_params.flash_attn_type = differentiable_flash_attn
@@ -1445,6 +1528,7 @@ std::string backend_report(const trainer_state & state) {
     out << "  requested_device: " << device_kind_name(state.requested_device) << "\n";
     out << "  gpu_active: " << (state.gpu_active ? "true" : "false") << "\n";
     out << "  backend: " << state.backend_name << "\n";
+    out << "  backend_registry: " << state.backend_registry << "\n";
     out << "  weight_storage: " << state.weight_storage << "\n";
     out << "  trainable_policy: " << trainable_policy_name(state.train_config.trainable) << "\n";
     out << "  trainable_base_tensors: " << state.trainable_base.size() << "\n";
@@ -1467,6 +1551,19 @@ std::string backend_report(const trainer_state & state) {
     // warning about what enabling it would cost, not a description of this run.
     out << "  cap_fused_sparse_ce: "
         << (state.cap_fused_sparse_ce ? "supported" : "unavailable") << "\n";
+    // Which optimizers this device can run an F16 update step for; empty means
+    // F32 base weights only.
+    out << "  cap_opt_step_f16: ";
+    {
+        std::vector<std::string> writers;
+        if (state.cap_opt_step_f16[RETRO_OPTIMIZER_ADAMW]) {
+            writers.emplace_back("adamw");
+        }
+        if (state.cap_opt_step_f16[RETRO_OPTIMIZER_SGD]) {
+            writers.emplace_back("sgd");
+        }
+        out << (writers.empty() ? std::string("none") : join_patterns(writers)) << "\n";
+    }
     out << "  chunked_cross_entropy: "
         << (state.train_config.chunked_cross_entropy ? "enabled" : "disabled") << "\n";
     // The loss graph this run builds, on its own line because a reader

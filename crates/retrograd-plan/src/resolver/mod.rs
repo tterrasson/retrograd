@@ -18,8 +18,8 @@ use retrograd_config::{
     TrainingToml, build as build_run_config,
 };
 use retrograd_core::{
-    ExecutionProfile, LrScheduler, ModelInfo, PreflightReport, RewardProtocol,
-    SharedPrefixFanout, TargetSet, TrainConfig, saturating_dim, saturating_dim_product,
+    ExecutionProfile, LrScheduler, ModelInfo, PreflightReport, RewardProtocol, SharedPrefixFanout,
+    TargetSet, TrainConfig, saturating_dim, saturating_dim_product,
 };
 use retrograd_dataset::DataFormat;
 use serde::Serialize;

@@ -352,6 +352,14 @@ bool ensure_opt_context(trainer_state & state) {
                 && optimizer_supports_marked_dtypes(state);
     }
 
+    // llama_set_param only marks the float types an update kernel can carry,
+    // so a base tensor this (optimizer, backend) pair declines is never
+    // marked, and the rule-6 comparison below would report it as a resolution
+    // failure instead of a dtype refusal.
+    if (!declared_base_dtypes_are_admitted(state)) {
+        return false;
+    }
+
     state.optimizer_params = configured_optimizer_params(state);
 
     // The optimizer the document asked for, not the one this function used to

@@ -167,7 +167,8 @@ fn targets_expand_aliases() {
 /// `['auto']` hands the choice back to the runtime.
 #[test]
 fn omitted_targets_default_to_every_projection() {
-    let base = "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n";
+    let base =
+        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n";
     let default_file = write_config(&format!("{base}[sft]\ndata='data.txt'\n"));
     assert_eq!(
         load(&default_file).unwrap().lora.unwrap().config.targets,
@@ -233,8 +234,9 @@ fn resolves_paths_from_the_config_directory() {
 /// directory the way a written one is.
 #[test]
 fn the_model_override_stands_in_for_a_missing_model_section() {
-    let file =
-        write_config("[run]\nalgorithm='sft'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\n");
+    let file = write_config(
+        "[run]\nalgorithm='sft'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\n",
+    );
     let error = load(&file).unwrap_err().to_string();
     assert!(error.contains("[model].path is missing"), "{error}");
 
@@ -361,7 +363,9 @@ fn resume_from_resolves_and_excludes_a_cold_adapter_load() {
     let base = "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[sft]\ndata='train.txt'\n";
     let checkpoint = "[checkpoint]\ndirectory='ckpt'\nmode='steps'\nevery_steps=2\nresume_from='ckpt/step-000000000010.state'\n";
 
-    let file = write_config(&format!("{base}[output]\npath='out.gguf'\n[lora]\n{checkpoint}"));
+    let file = write_config(&format!(
+        "{base}[output]\npath='out.gguf'\n[lora]\n{checkpoint}"
+    ));
     let loaded = load(&file).unwrap();
     assert_eq!(
         loaded.checkpoint.unwrap().resume_from,

@@ -8,6 +8,7 @@
 //! catalogue schema is declared in `rir-core` and only re-exported here, since
 //! the RIR chain never depends on this crate.
 
+mod base_dtype;
 mod capability;
 mod dims;
 mod error;
@@ -20,6 +21,10 @@ mod types;
 #[macro_use]
 mod wire_enum;
 
+pub use base_dtype::{
+    BASE_DTYPE_TABLE, BaseDtypeCapability, base_dtype_admits, base_dtype_backends,
+    base_dtype_capability, base_dtype_is_tabled,
+};
 pub use capability::{
     ArchitectureCapability, CAPABILITY_TABLE, architecture_capability, architecture_exports_model,
     model_export_architectures, tensor_family,

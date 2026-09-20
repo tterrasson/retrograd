@@ -569,7 +569,10 @@ mod tests {
             ..config.clone()
         };
         assert_eq!(retained_checkpoints(&on_demand, 100), 0);
-        assert!(!directory.exists(), "the schedule is read, never written to");
+        assert!(
+            !directory.exists(),
+            "the schedule is read, never written to"
+        );
     }
 
     #[test]

@@ -1319,10 +1319,7 @@ mod tests {
         let codebook_bytes = GEFEN_CODEBOOK_LEVELS * 4;
         plan.check_live_shared(&live(&[("gefen", "codebook", codebook_bytes)]))
             .unwrap();
-        let error = plan
-            .check_live_shared(&[])
-            .unwrap_err()
-            .to_string();
+        let error = plan.check_live_shared(&[]).unwrap_err().to_string();
         assert!(error.contains("did not allocate"), "{error}");
         let error = plan
             .check_live_shared(&live(&[

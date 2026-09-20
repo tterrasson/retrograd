@@ -133,6 +133,10 @@ struct trainer_state {
     int32_t n_gpu_layers = 0;
     uint32_t effective_threads = 0;
     std::string backend_name = "CPU";
+    // The ggml registry the active device belongs to ("CPU", "MTL", "CUDA",
+    // "Vulkan"), as ggml_backend_reg_name spells it. `backend_name` above is a
+    // device diagnostic; per-backend claims key on this one.
+    std::string backend_registry = "CPU";
     // How the weights were actually loaded: "mapped" (read-only, shared with
     // the page cache) or "owned" (copied into writable buffers). A base-weight
     // policy forces the second, and this is where a report can say so - the
@@ -149,6 +153,13 @@ struct trainer_state {
     // Whether the behavior scorer can gather log p(target) inside the decode
     // graph instead of pulling an n_vocab logits row per scored position.
     bool cap_device_logprobs = false;
+    // Whether the active device can run each optimizer's update step on an
+    // F16 parameter. Probed with ggml_backend_dev_supports_op at load time,
+    // because "AdamW writes F16" is a statement about one backend's kernel and
+    // not about ggml. Indexed by the RETRO_OPTIMIZER_* wire value; a new
+    // optimizer widens this array in the same change that adds its
+    // enumerator.
+    bool cap_opt_step_f16[2] = {};
     // Micro-batch the training context was actually built with. Equal to the
     // requested n_ubatch unless the load-time finiteness probe escalated it.
     uint32_t effective_ubatch = 0;
@@ -501,7 +512,11 @@ bool assert_marked_set_is_resolved(const trainer_state & state);
 // has to run between the graph build and the first step.
 bool optimizer_supports_marked_dtypes(const trainer_state & state);
 // Whether one optimizer's update kernel can write a parameter of this type.
-bool optimizer_supports_dtype(int32_t optimizer, ggml_type type);
+bool optimizer_supports_dtype(const trainer_state & state, int32_t optimizer, ggml_type type);
+// The same admission over the declared base set, before llama_opt_init marks
+// anything: a dtype the mark step skips would otherwise surface as rule 6's
+// "declared but not marked".
+bool declared_base_dtypes_are_admitted(const trainer_state & state);
 // The optimizer that owns one parameter: the declared assignment, falling
 // back to the run's own optimizer. `userdata` is the `trainer_state *`.
 ggml_opt_optimizer_type opt_param_optimizer(const ggml_tensor * tensor, void * userdata);

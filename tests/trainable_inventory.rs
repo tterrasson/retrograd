@@ -109,7 +109,9 @@ fn full_training_refuses_a_quantized_fixture_by_name() {
     .expect_err("a Q4_K_M model has no full-training path");
     assert!(error.is_user_error(), "{error}");
     let message = error.to_string();
-    assert!(message.contains("F32-only"), "{message}");
+    // The refusal names what base training *does* admit, from the table
+    // rather than from a sentence: the list grows with the rows.
+    assert!(message.contains("admits F32, F16"), "{message}");
     // The refusal quotes the tensors, not just a count: a user has to be able
     // to see *which* family is out of reach.
     assert!(message.contains("blk."), "{message}");

@@ -378,14 +378,22 @@ static const char * optimizer_name(int32_t optimizer) {
     }
 }
 
-bool optimizer_supports_dtype(int32_t optimizer, ggml_type type) {
-    // A kernel has a dtype table: AdamW's carries F32 and F16, SGD's F32
-    // alone, and an unsupported type meets GGML_ABORT rather than an error.
+bool optimizer_supports_dtype(const trainer_state & state, int32_t optimizer, ggml_type type) {
+    // The dtype alone says nothing: the kernel has a dtype table (AdamW
+    // carries F32 and F16, SGD F32 alone, and an unsupported type meets
+    // GGML_ABORT rather than an error), and each backend reimplements the
+    // kernel, so the same pair can be refused by the device. F32 is the floor
+    // and never asks the device.
     switch (optimizer) {
         case RETRO_OPTIMIZER_SGD:
             return type == GGML_TYPE_F32;
         case RETRO_OPTIMIZER_ADAMW:
-            return type == GGML_TYPE_F32 || type == GGML_TYPE_F16;
+            if (type == GGML_TYPE_F32) {
+                return true;
+            }
+            // The load-time probe knows whether this device's AdamW step takes
+            // an F16 parameter, and stays right when a kernel is added.
+            return type == GGML_TYPE_F16 && state.cap_opt_step_f16[RETRO_OPTIMIZER_ADAMW];
         default:
             return false;
     }
@@ -441,9 +449,20 @@ bool optimizer_supports_marked_dtypes(const trainer_state & state) {
     // SGD-owned F16 parameter would abort in the middle of the first step.
     std::vector<std::string> unsupported;
     std::vector<std::string> offenders;
+    // Whether at least one refusal is the backend declining a dtype its
+    // optimizer's kernel table does carry; that gets its own message.
+    bool backend_refused = false;
+    std::vector<std::string> refused_dtypes;
     for_each_marked(state, [&](const ggml_tensor * tensor, int32_t optimizer) {
-        if (optimizer_supports_dtype(optimizer, tensor->type)) {
+        if (optimizer_supports_dtype(state, optimizer, tensor->type)) {
             return;
+        }
+        if (optimizer == RETRO_OPTIMIZER_ADAMW && tensor->type == GGML_TYPE_F16) {
+            backend_refused = true;
+            if (std::find(refused_dtypes.begin(), refused_dtypes.end(),
+                        ggml_type_name(tensor->type)) == refused_dtypes.end()) {
+                refused_dtypes.emplace_back(ggml_type_name(tensor->type));
+            }
         }
         unsupported.push_back(std::string(tensor->name) + " (" + ggml_type_name(tensor->type)
                 + ", " + optimizer_name(optimizer) + ")");
@@ -462,10 +481,82 @@ bool optimizer_supports_marked_dtypes(const trainer_state & state) {
         unsupported.resize(6);
         unsupported.push_back("and " + std::to_string(rest) + " more");
     }
-    set_error("the " + join_patterns(offenders) + " update step is F32-only, and this run marks "
-              + std::to_string(total) + " parameter(s) it cannot write: ["
-              + join_patterns(unsupported)
-              + "]. Store the adapter as F32 (lora.dtype = \"f32\") or use adamw");
+    // Two different refusals: a kernel that cannot write the dtype (fix the
+    // optimizer or the storage) and a device that declines it (fix the
+    // backend). Saying "F32-only" in the second case would send the reader to
+    // fix the wrong thing.
+    set_error(backend_refused
+            ? "the " + join_patterns(offenders) + " update step does not write "
+                      + join_patterns(refused_dtypes) + " on " + state.backend_registry
+                      + ", and this run marks " + std::to_string(total)
+                      + " parameter(s) it cannot write: [" + join_patterns(unsupported)
+                      + "]. Train these tensors in F32, or run on a backend whose "
+                        "update step carries the precision"
+            : "the " + join_patterns(offenders) + " update step is F32-only, and this run marks "
+                      + std::to_string(total) + " parameter(s) it cannot write: ["
+                      + join_patterns(unsupported)
+                      + "]. Store the adapter as F32 (lora.dtype = \"f32\") or use adamw");
+    return false;
+}
+
+// The same admission over the declared base set, before llama_opt_init.
+// A dtype llama_set_param does not admit is never marked, so the marked-set
+// check above would never see it and rule 6 would report it as "declared but
+// not marked". This check names the tensor, its dtype, its owner and the
+// backend, which is the message that says what to change.
+bool declared_base_dtypes_are_admitted(const trainer_state & state) {
+    if (!trains_base_weights(state) || state.trainable_base.empty()) {
+        return true;
+    }
+    std::vector<std::string> unsupported;
+    std::vector<std::string> offenders;
+    for (const std::string & name : state.trainable_base) {
+        const ggml_tensor * tensor = nullptr;
+        for (const auto & item : state.model->tensors_by_name) {
+            if (item.first == name) {
+                tensor = item.second;
+                break;
+            }
+        }
+        if (!tensor) {
+            continue;  // resolved against the same file; the marked-set check owns this
+        }
+        const int32_t optimizer = opt_param_optimizer(tensor, const_cast<trainer_state *>(&state))
+                        == GGML_OPT_OPTIMIZER_TYPE_SGD
+                ? RETRO_OPTIMIZER_SGD
+                : RETRO_OPTIMIZER_ADAMW;
+        // Mirrors BASE_DTYPE_TABLE in retrograd-core: kernel support alone
+        // does not admit an unvalidated backend. LoRA keeps its own policy in
+        // optimizer_supports_marked_dtypes.
+        const bool admitted = tensor->type == GGML_TYPE_F32
+                || (tensor->type == GGML_TYPE_F16
+                    && optimizer == RETRO_OPTIMIZER_ADAMW
+                    && state.backend_registry == "CPU");
+        if (admitted && optimizer_supports_dtype(state, optimizer, tensor->type)) {
+            continue;
+        }
+        unsupported.push_back(name + " (" + ggml_type_name(tensor->type) + ", "
+                + optimizer_name(optimizer) + ")");
+        if (std::find(offenders.begin(), offenders.end(), optimizer_name(optimizer))
+                == offenders.end()) {
+            offenders.push_back(optimizer_name(optimizer));
+        }
+    }
+    if (unsupported.empty()) {
+        return true;
+    }
+    std::sort(unsupported.begin(), unsupported.end());
+    const size_t total = unsupported.size();
+    if (unsupported.size() > 6) {
+        const size_t rest = unsupported.size() - 6;
+        unsupported.resize(6);
+        unsupported.push_back("and " + std::to_string(rest) + " more");
+    }
+    set_error("the declared trainable set carries " + std::to_string(total)
+            + " base tensor(s) not admitted for " + join_patterns(offenders) + " on "
+            + state.backend_registry + ": [" + join_patterns(unsupported)
+            + "]. F16 base training requires adamw on CPU; use F32 for other backends "
+              "or optimizers");
     return false;
 }
 

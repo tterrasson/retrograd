@@ -6,8 +6,8 @@
 #   scripts/fetch-cpu-fixture.sh TINY_FIXTURE     # one of them
 #
 # A manifest declares either a `url` (fetched with curl) or a `generator`
-# (a repository-relative script, run with the destination as its only
-# argument). Both are verified by digest.
+# (a repository-relative script, run with the optional `generator_args`
+# followed by the destination). Both are verified by digest.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -27,10 +27,11 @@ fetch_one() (
     exit 2
   fi
 
-  local filename url generator override_env destination expected_size expected_sha stamp
+  local filename url generator generator_args override_env destination expected_size expected_sha stamp
   filename="$(field "$manifest" filename)"
   url="$(field "$manifest" url)"
   generator="$(field "$manifest" generator)"
+  generator_args="$(field "$manifest" generator_args)"
   override_env="$(field "$manifest" override_env)"
   expected_size="$(number "$manifest" size_bytes)"
   expected_sha="$(field "$manifest" sha256)"
@@ -71,7 +72,10 @@ fetch_one() (
   local temporary="${destination}.partial.$$"
   trap 'rm -f "$temporary"' EXIT
   if [[ -n "$generator" ]]; then
-    "$repo_root/$generator" "$temporary"
+    # Unquoted on purpose: `generator_args` is a word list ("--dtype f16")
+    # owned by this repository's manifests, not a path.
+    # shellcheck disable=SC2086
+    "$repo_root/$generator" $generator_args "$temporary"
   else
     curl --fail --location --retry 3 --output "$temporary" "$url"
   fi

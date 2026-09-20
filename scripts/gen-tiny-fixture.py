@@ -1,17 +1,27 @@
 #!/usr/bin/env python3
-"""Generate the tiny deterministic F32 fixture used by the CPU lanes.
+"""Generate the tiny deterministic fixtures used by the CPU lanes.
 
 The other CPU fixture is a 230M Q4_K_M download: quantized, and it ties its
 vocabulary projection to the input embedding. This file produces the
-complementary model: every tensor F32, ``output.weight`` a tensor of its own,
-and ``output.bias`` present.
+complementary model: ``output.weight`` a tensor of its own, ``output.bias``
+present, and no quantized tensor anywhere.
+
+It writes that model at two storage precisions holding the *same numbers*:
+every weight is generated, then snapped to the F16 grid in both variants. The
+F32 file stores the snapped values widened back to F32; the F16 file stores
+them verbatim. The only difference between the two files is the precision the
+weights are stored at, so a gradient that differs between runs differs because
+of precision and for no other reason.
+
+Norms and biases stay F32 in both: they are one-dimensional, llama.cpp expects
+F32 there, and a real F16 GGUF keeps them F32 too.
 
 The bytes depend on this file alone: the GGUF is written here rather than
 through ``gguf-py``, and the weights come from an explicit xorshift rather
-than a library PRNG, so the digest in ``tests/fixtures/TINY_FIXTURE.toml``
-never drifts with a dependency.
+than a library PRNG, so the digests in ``tests/fixtures/TINY_FIXTURE.toml``
+and ``tests/fixtures/TINY_F16_FIXTURE.toml`` never drift with a dependency.
 
-Usage: scripts/gen-tiny-fixture.py <destination.gguf>
+Usage: scripts/gen-tiny-fixture.py [--dtype f32|f16] <destination.gguf>
 """
 
 from __future__ import annotations
@@ -39,6 +49,11 @@ ALIGNMENT = 32
 GGUF_MAGIC = 0x46554747
 GGUF_VERSION = 3
 GGML_TYPE_F32 = 0
+GGML_TYPE_F16 = 1
+
+# llama.cpp's general.file_type for the two variants.
+FILE_TYPE_ALL_F32 = 0
+FILE_TYPE_MOSTLY_F16 = 1
 
 # GGUF metadata value types.
 T_UINT32 = 4
@@ -75,9 +90,23 @@ class Xorshift:
         return (bits / float(1 << 24)) * 2.0 - 1.0
 
 
-def weights(count: int, seed: int, scale: float, offset: float = 0.0) -> bytes:
+def snap_to_f16(value: float) -> float:
+    """`value` rounded to the nearest F16 and widened back to F32.
+
+    Applied to every weight in both variants so the two files hold the same
+    numbers.
+    """
+    return struct.unpack("<e", struct.pack("<e", value))[0]
+
+
+def weights(count: int, seed: int, scale: float, offset: float = 0.0) -> list[float]:
     rng = Xorshift(seed)
-    return struct.pack(f"<{count}f", *(offset + scale * rng.unit() for _ in range(count)))
+    return [snap_to_f16(offset + scale * rng.unit()) for _ in range(count)]
+
+
+def pack(values: list[float], ggml_type: int) -> bytes:
+    fmt = "e" if ggml_type == GGML_TYPE_F16 else "f"
+    return struct.pack(f"<{len(values)}{fmt}", *values)
 
 
 def vocabulary() -> tuple[list[str], list[int]]:
@@ -97,11 +126,14 @@ def vocabulary() -> tuple[list[str], list[int]]:
     return tokens, types
 
 
-def tensors() -> list[tuple[str, list[int], bytes]]:
-    """Name, ggml `ne` (fastest dimension first), and F32 bytes."""
+def tensors(matrix_type: int) -> list[tuple[str, list[int], int, bytes]]:
+    """Name, ggml `ne` (fastest dimension first), ggml type, and bytes.
+
+    `matrix_type` is the storage of the matrices; vectors stay F32.
+    """
     tokens, _ = vocabulary()
     n_vocab = len(tokens)
-    out: list[tuple[str, list[int], bytes]] = []
+    out: list[tuple[str, list[int], int, bytes]] = []
     seed = 0x9E3779B97F4A7C15
 
     def add(name: str, ne: list[int], scale: float, offset: float = 0.0) -> None:
@@ -109,7 +141,8 @@ def tensors() -> list[tuple[str, list[int], bytes]]:
         count = 1
         for dim in ne:
             count *= dim
-        out.append((name, ne, weights(count, seed, scale, offset)))
+        ggml_type = matrix_type if len(ne) > 1 else GGML_TYPE_F32
+        out.append((name, ne, ggml_type, pack(weights(count, seed, scale, offset), ggml_type)))
         seed = (seed * 6364136223846793005 + 1442695040888963407) & 0xFFFFFFFFFFFFFFFF
 
     add("token_embd.weight", [N_EMBD, n_vocab], 0.08)
@@ -161,12 +194,12 @@ def numeric_array(value_type: int, values: list) -> bytes:
     return struct.pack(f"<IQ{len(values)}{formats[value_type]}", value_type, len(values), *values)
 
 
-def metadata() -> list[tuple[str, int, bytes]]:
+def metadata(file_type: int) -> list[tuple[str, int, bytes]]:
     tokens, types = vocabulary()
     return [
         ("general.architecture", T_STRING, encode_string(ARCHITECTURE)),
         ("general.name", T_STRING, encode_string(MODEL_NAME)),
-        ("general.file_type", T_UINT32, scalar(T_UINT32, 0)),
+        ("general.file_type", T_UINT32, scalar(T_UINT32, file_type)),
         (f"{ARCHITECTURE}.block_count", T_UINT32, scalar(T_UINT32, N_LAYER)),
         (f"{ARCHITECTURE}.context_length", T_UINT32, scalar(T_UINT32, N_CTX_TRAIN)),
         (f"{ARCHITECTURE}.embedding_length", T_UINT32, scalar(T_UINT32, N_EMBD)),
@@ -210,21 +243,21 @@ def encode_string(value: str) -> bytes:
     return struct.pack("<Q", len(encoded)) + encoded
 
 
-def build() -> bytes:
-    table = tensors()
+def build(matrix_type: int) -> bytes:
+    table = tensors(matrix_type)
     header = bytearray()
-    kvs = metadata()
+    kvs = metadata(FILE_TYPE_MOSTLY_F16 if matrix_type == GGML_TYPE_F16 else FILE_TYPE_ALL_F32)
     header += struct.pack("<IIQQ", GGUF_MAGIC, GGUF_VERSION, len(table), len(kvs))
     for key, value_type, payload in kvs:
         write_kv(header, key, value_type, payload)
 
     offset = 0
-    for name, ne, payload in table:
+    for name, ne, ggml_type, payload in table:
         write_string(header, name)
         header += struct.pack("<I", len(ne))
         for dim in ne:
             header += struct.pack("<Q", dim)
-        header += struct.pack("<I", GGML_TYPE_F32)
+        header += struct.pack("<I", ggml_type)
         header += struct.pack("<Q", offset)
         offset += (len(payload) + ALIGNMENT - 1) // ALIGNMENT * ALIGNMENT
 
@@ -232,19 +265,28 @@ def build() -> bytes:
     header += b"\0" * padding
 
     body = bytearray()
-    for _, _, payload in table:
+    for _, _, _, payload in table:
         body += payload
         body += b"\0" * ((-len(payload)) % ALIGNMENT)
     return bytes(header) + bytes(body)
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
+    matrix_type = GGML_TYPE_F32
+    argv = argv[1:]
+    if len(argv) >= 2 and argv[0] == "--dtype":
+        choice = argv[1].lower()
+        if choice not in ("f32", "f16"):
+            print(__doc__, file=sys.stderr)
+            return 2
+        matrix_type = GGML_TYPE_F16 if choice == "f16" else GGML_TYPE_F32
+        argv = argv[2:]
+    if len(argv) != 1:
         print(__doc__, file=sys.stderr)
         return 2
-    destination = Path(argv[1])
+    destination = Path(argv[0])
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(build())
+    destination.write_bytes(build(matrix_type))
     return 0
 
 

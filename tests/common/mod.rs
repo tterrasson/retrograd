@@ -23,6 +23,10 @@ pub const CPU_FIXTURE: &str = "tests/fixtures/LFM2.5-230M-Q4_K_M.gguf";
 /// The generated CPU fixture: F32 throughout, with an untied projection head.
 pub const TINY_FIXTURE: &str = "tests/fixtures/retrograd-tiny-qwen2-f32.gguf";
 
+/// The same generated model with its matrices stored as F16. Same numbers,
+/// different storage precision, so runs of the two are comparable.
+pub const TINY_F16_FIXTURE: &str = "tests/fixtures/retrograd-tiny-qwen2-f16.gguf";
+
 /// Repository-relative default location for the Vulkan integration model.
 /// Nothing ships at this path - `RETRO_VULKAN_TEST_MODEL` is how a developer
 /// points at wherever they keep it, and the `_if_available` accessors skip
@@ -73,6 +77,29 @@ pub fn tiny_model_path_if_available() -> Option<PathBuf> {
     } else if std::env::var_os("RETRO_REQUIRE_CPU_FIXTURE").is_some() {
         panic!(
             "tiny CPU fixture missing at {}; run scripts/fetch-cpu-fixture.sh",
+            path.display()
+        );
+    } else {
+        None
+    }
+}
+
+/// Resolves the F16 tiny fixture, honouring an explicit test override.
+pub fn tiny_f16_model_path() -> PathBuf {
+    std::env::var("RETRO_TINY_F16_FIXTURE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(TINY_F16_FIXTURE))
+}
+
+/// Returns the F16 tiny fixture when available, required by the dedicated CPU
+/// lane like its F32 twin.
+pub fn tiny_f16_model_path_if_available() -> Option<PathBuf> {
+    let path = tiny_f16_model_path();
+    if path.exists() {
+        Some(path)
+    } else if std::env::var_os("RETRO_REQUIRE_CPU_FIXTURE").is_some() {
+        panic!(
+            "F16 tiny CPU fixture missing at {}; run scripts/fetch-cpu-fixture.sh",
             path.display()
         );
     } else {

@@ -122,8 +122,7 @@ pub async fn plan_recipe(
     let mut recipe = recipe.clone();
     // `[output].path` is where a run names its result; when neither the recipe
     // nor the params name one, the server substitutes a managed path.
-    let managed_adapter =
-        recipe.output.is_none() && params.pointer("/output/path").is_none();
+    let managed_adapter = recipe.output.is_none() && params.pointer("/output/path").is_none();
     for pointer in [
         "/model/path",
         "/sft/data",

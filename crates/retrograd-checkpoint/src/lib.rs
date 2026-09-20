@@ -2126,10 +2126,15 @@ mod tests {
             },
             retained: 0,
         };
-        let error = budget.check(&dir, "cannot write this checkpoint").unwrap_err();
+        let error = budget
+            .check(&dir, "cannot write this checkpoint")
+            .unwrap_err();
         let message = error.to_string();
         assert!(matches!(error, Error::Checkpoint(_)), "{message}");
-        assert!(message.contains("cannot write this checkpoint"), "{message}");
+        assert!(
+            message.contains("cannot write this checkpoint"),
+            "{message}"
+        );
         assert!(message.contains("of which 0 fit"), "{message}");
         // Widening the cadence is not a fix; the message says so.
         assert!(message.contains("cadence"), "{message}");

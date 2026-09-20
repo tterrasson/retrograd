@@ -13,6 +13,7 @@ source "$repo_root/scripts/lib-step-timing.sh"
 
 export RETRO_CPU_FIXTURE="${RETRO_CPU_FIXTURE:-$repo_root/tests/fixtures/LFM2.5-230M-Q4_K_M.gguf}"
 export RETRO_TINY_FIXTURE="${RETRO_TINY_FIXTURE:-$repo_root/tests/fixtures/retrograd-tiny-qwen2-f32.gguf}"
+export RETRO_TINY_F16_FIXTURE="${RETRO_TINY_F16_FIXTURE:-$repo_root/tests/fixtures/retrograd-tiny-qwen2-f16.gguf}"
 export RETRO_REQUIRE_CPU_FIXTURE=1
 export RETRO_RUNTIME_LOCK_PATH="${RETRO_RUNTIME_LOCK_PATH:-${TMPDIR:-/tmp}/retrograd-runtime.lock}"
 export RETRO_THREADS="${RETRO_TEST_CPU_THREADS:-4}"
@@ -34,6 +35,7 @@ if [[ "${RETRO_PROFILE_TESTS:-0}" == "1" ]]; then
     --test capabilities \
     --test trainable_inventory \
     --test base_training \
+    --test f16_base_training \
     --test ppo_runtime \
     --test grpo_runtime \
     --test distill_runtime \
@@ -69,6 +71,7 @@ timed_step run:capabilities-suite cargo test --no-default-features --features ag
   --test recurrent_families \
   --test trainable_inventory \
   --test base_training \
+  --test f16_base_training \
   -- --test-threads=1
 
 # CPU-only slices of mixed CPU/GPU binaries, merged into a single cargo start.

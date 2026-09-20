@@ -29,8 +29,13 @@
 #   output.weight                   [64, 260]   .bias [260]
 #
 # `output.weight` is a tensor of its own, never an alias of the embedding.
+#
+# Every weight is snapped to the F16 grid before it is stored, so this file and
+# `TINY_F16_FIXTURE.toml` hold the *same numbers* at two storage precisions.
+# That is what makes the F16 parity lane a measurement of precision rather than
+# of two unrelated draws; see the generator's own docstring.
 filename = "retrograd-tiny-qwen2-f32.gguf"
 generator = "scripts/gen-tiny-fixture.py"
 override_env = "RETRO_TINY_FIXTURE"
 size_bytes = 737952
-sha256 = "0d32bef36974cb174dfd61ade6755e6ee2a2284dac43bcb21a9ba021014955a1"
+sha256 = "218570a8f7793864c8c1b4a6eb6d132c5ecff9e2432b8c0b41270a6901971f07"
