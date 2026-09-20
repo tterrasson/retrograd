@@ -1,9 +1,6 @@
 //! Complete training checkpoints: save the optimizer state next to a pure LoRA
-//! GGUF and restore it into a fresh trainer.
-//!
-//! Exact numerical continuity is not reached yet; see
-//! `exact_numerical_continuity_after_a_resume` for the reproducer and what has
-//! been ruled out.
+//! GGUF and restore it into a fresh trainer, and continue the run from there
+//! without a numerical seam - see `exact_numerical_continuity_after_a_resume`.
 
 mod common;
 
@@ -355,20 +352,11 @@ fn a_checkpoint_gguf_holds_only_lora_tensors_and_loads_as_a_cold_adapter() {
 /// a resumed run has to track the uninterrupted reference more closely than the
 /// same reload with a cold optimizer does.
 ///
-/// This is deliberately a *relative* assertion. Exact numerical continuity,
-/// `N` steps, save, resume, `N` steps == `2N` uninterrupted steps, is not
-/// reached yet. See
-/// `exact_numerical_continuity_after_a_resume` below for the reproducer and
-/// what is known about the gap.
-///
-/// Currently even this relative form fails on the CPU fixture (warm resume
-/// lands *farther* from the reference than a cold-optimizer resume), which is
-/// consistent with the `lora_a`-weights divergence documented on
-/// `exact_numerical_continuity_after_a_resume`: whatever perturbs `a` after a
-/// resume outweighs the benefit of the restored momenta. Left as a documented
-/// reproducer alongside it rather than silently loosened.
+/// This is deliberately a *relative* assertion; the absolute one is
+/// `exact_numerical_continuity_after_a_resume` below. Both failed until the
+/// gradient accumulators stopped carrying every earlier step's gradients into
+/// the next one, which the restored trainer had no way to reproduce.
 #[test]
-#[ignore = "the resume gap outweighs the restored optimizer state; see exact_numerical_continuity_after_a_resume"]
 fn restoring_the_optimizer_state_tracks_the_uninterrupted_run_more_closely() {
     let Some(model) = common::model_path_if_available() else {
         eprintln!("skipping: test model not available");
@@ -417,23 +405,22 @@ fn restoring_the_optimizer_state_tracks_the_uninterrupted_run_more_closely() {
     );
 }
 
-/// `N` steps, save, resume, `N` steps must match `2N`
-/// uninterrupted steps. It does not yet, so this is a documented reproducer
-/// rather than a green test.
+/// `N` steps, save, resume, `N` steps must match `2N` uninterrupted steps.
 ///
-/// What is already ruled out, measured on this fixture:
-///   * the momenta, `iter` and the RNG round-trip verbatim (asserted above);
-///   * the adapter GGUF round-trip is exact - an untrained adapter reloaded
-///     from disk produces a *bit-identical* first gradient;
-///   * the momenta are not zeroed between the restore and the optimizer step.
+/// What used to break it was not in the checkpoint at all: `ggml_opt_alloc`
+/// cleared the gradient accumulators through the *previous* evaluation's
+/// graph, which the dynamic-graph path drops at the end of every
+/// `ggml_opt_eval`. The clear therefore ran on a null graph and never
+/// happened, so each optimizer step of an uninterrupted run consumed the sum
+/// of its own gradients and of every window before it. A resumed trainer
+/// starts from empty accumulators - live state no checkpoint carries - and so
+/// took a different first step while agreeing on every value that was saved.
 ///
-/// What is observed: after the resumed step, `lora_a`'s momenta match the
-/// uninterrupted run exactly while `lora_b`'s do not, and the implied `lora_b`
-/// gradients differ by a non-constant factor. Since `∂L/∂b` depends on `a` and
-/// `∂L/∂a` does not, the divergence points at the `a` weights rather than at
-/// the optimizer state.
+/// The bit-for-bit form of the same statement, on base weights and the
+/// generated fixture, is
+/// `an_interrupted_run_lands_bit_for_bit_where_an_uninterrupted_one_does` in
+/// `tests/f16_base_training.rs`.
 #[test]
-#[ignore = "exact continuity is not reached yet; see the doc comment"]
 fn exact_numerical_continuity_after_a_resume() {
     let Some(model) = common::model_path_if_available() else {
         return;

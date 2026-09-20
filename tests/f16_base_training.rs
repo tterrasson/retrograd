@@ -12,8 +12,9 @@
 //!   run kept finite and bounded over all of them.
 //! - **Resume**: an F16 AdamW step rounds stochastically from a stream seeded
 //!   by the optimizer's iteration counter, which the checkpoint already holds.
-//!   The case checks restored weights, iteration and forward loss; exact
-//!   continuation of the updates is outside this check.
+//!   One case checks restored weights, iteration and forward loss; a second
+//!   one checks the whole of it, on the F32 fixture - an interrupted `n + m`
+//!   step run landing bit-for-bit where an uninterrupted one does.
 
 mod common;
 
@@ -991,4 +992,111 @@ fn an_f16_checkpoint_restores_weights_iteration_and_forward_loss() {
     // No new checkpoint field was needed for any of this; the format version
     // is unchanged.
     assert_eq!(record.manifest.format_version, checkpoint::FORMAT_VERSION);
+}
+
+/// An interrupted run and an uninterrupted one land on the same weights, to
+/// the bit: `n` steps, checkpoint, fresh trainer, `m` steps must equal `n + m`
+/// steps in one process.
+///
+/// The case the resume test above deliberately stops short of, and the one the
+/// `partial` case in `tests/base_training.rs` cannot see because it compares
+/// scores after zero further steps. What it caught: the gradient accumulators
+/// are live state no checkpoint holds, and `ggml_opt_alloc` was failing to
+/// clear them between accumulation windows, so an uninterrupted run fed every
+/// step the sum of every window before it while a restored one started from
+/// zero. The two agreed on the restored weights and on the next forward loss -
+/// only the update after them differed, which is why nothing shorter than this
+/// saw it.
+///
+/// On the F32 fixture: the finding is about what the optimizer carries between
+/// steps, not about storage precision, and F32 removes stochastic rounding
+/// from the comparison.
+#[test]
+fn an_interrupted_run_lands_bit_for_bit_where_an_uninterrupted_one_does() {
+    let model = f32_fixture!();
+    let _guard = common::serialize_models();
+    let root = scratch("continuity");
+    let set = resolved_set(&model);
+
+    // Both halves are longer than one step: with `n_batch / n_ubatch` micro
+    // batches per step, a single step on each side would accumulate one window
+    // and never compare a second one against what the first left behind.
+    const BEFORE: u32 = 3;
+    const AFTER: u32 = 3;
+
+    let row = |trainer: &mut Trainer| -> Vec<i32> {
+        let mut tokens = trainer.tokenize_text(&TEXT.repeat(8)).expect("tokenize");
+        tokens.truncate(ONE_ROW_TOKENS);
+        tokens
+    };
+    let weights = |trainer: &mut Trainer| -> Vec<Vec<u8>> {
+        let marked = trainer.marked_trainable_set().expect("the marked set");
+        marked
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| parameter_bytes(trainer, index, entry.n_bytes))
+            .collect()
+    };
+
+    // The reference: every step in one process.
+    let mut straight = Trainer::new(&model, config(OptimizerKind::AdamW)).expect("load trainer");
+    straight
+        .declare_trainable_set(&set)
+        .expect("the selected projections");
+    let tokens = row(&mut straight);
+    for _ in 0..BEFORE + AFTER {
+        straight.train_tokens(&tokens).expect("a training step");
+    }
+    let reference = weights(&mut straight);
+    drop(straight);
+
+    // The same run, interrupted after `BEFORE`.
+    let mut first = Trainer::new(&model, config(OptimizerKind::AdamW)).expect("load trainer");
+    first
+        .declare_trainable_set(&set)
+        .expect("the same selection");
+    let mut step = 0;
+    for _ in 0..BEFORE {
+        step = first
+            .train_tokens(&tokens)
+            .expect("a training step")
+            .global_step;
+    }
+    let state = root.join("interrupted.state");
+    first
+        .save_checkpoint(&state, &metadata(&model, step))
+        .expect("checkpoint the interrupted run");
+    drop(first);
+
+    let mut resumed = Trainer::new(&model, config(OptimizerKind::AdamW)).expect("load trainer");
+    resumed
+        .declare_trainable_set(&set)
+        .expect("the same selection");
+    let expected = compatibility_for(&mut resumed, &model);
+    resumed
+        .load_checkpoint(&state, &expected)
+        .expect("restore the checkpoint");
+    for _ in 0..AFTER {
+        resumed.train_tokens(&tokens).expect("a training step");
+    }
+    let continued = weights(&mut resumed);
+
+    let marked = resumed.marked_trainable_set().expect("the marked set");
+    assert_eq!(continued.len(), reference.len());
+    for (index, entry) in marked.entries.iter().enumerate() {
+        let differing = reference[index]
+            .iter()
+            .zip(&continued[index])
+            .filter(|(left, right)| left != right)
+            .count();
+        assert_eq!(
+            differing,
+            0,
+            "{} differs in {differing} of {} bytes between the interrupted run \
+             and the uninterrupted one",
+            entry.name,
+            reference[index].len()
+        );
+    }
 }
