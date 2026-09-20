@@ -54,6 +54,7 @@ add_library(retro_lora_train STATIC
     ${LLAMA_CPP_DIR}/common/parsers/gpt-oss.cpp
     ${LLAMA_CPP_DIR}/common/parsers/kimi-k2.cpp
     ${LLAMA_CPP_DIR}/common/parsers/kimi-k3.cpp
+    ${LLAMA_CPP_DIR}/common/parsers/ling3.cpp
     ${LLAMA_CPP_DIR}/common/parsers/lfm2.cpp
     ${LLAMA_CPP_DIR}/common/parsers/minicpm5.cpp
     ${LLAMA_CPP_DIR}/common/parsers/minimax-m3.cpp

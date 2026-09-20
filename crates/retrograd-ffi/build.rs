@@ -152,6 +152,7 @@ fn main() {
         "parsers/gpt-oss.cpp",
         "parsers/kimi-k2.cpp",
         "parsers/kimi-k3.cpp",
+        "parsers/ling3.cpp",
         "parsers/lfm2.cpp",
         "parsers/minicpm5.cpp",
         "parsers/minimax-m3.cpp",
