@@ -18,19 +18,22 @@ GGUF base model is loaded as is, with no conversion step, and `ggml` autograd
 trains it in memory. By default only a LoRA adapter trains, exported as a
 standalone GGUF that a stock `llama.cpp` loads with `--lora`; setting
 `training.trainable` to `full`, `partial`, or `hybrid` trains base weight
-tensors instead of, or alongside, the adapter.
+tensors instead of, or alongside, the adapter. A single TOML configuration
+describes the whole run: data, algorithm, schedule, output, with resumable
+checkpoints and per-step metrics.
 
 - **Algorithms**: SFT, PPO, GRPO, distillation from a teacher model, and
-  multi-turn agentic GRPO.
+  multi-turn agentic GRPO with MCP tools and container-backed rollouts.
 - **Training policies**: LoRA (default), full, partial, or hybrid base-weight
   training.
 - **Optimizers**: AdamW (default), SGD, Muon, and Gefen.
 - **Devices**: CPU everywhere, and GPU through Metal (macOS), Vulkan, or CUDA.
-- **Quantizations**: the base model can be F16 or quantized - Q4_0/Q4_1,
-  Q5_0/Q5_1, Q8_0, the K-quants (Q2_K to Q6_K), the i-quants (IQ2_XXS to
-  IQ4_XS), and MXFP4, on every backend. The lowest-bit formats (Q1_0, Q2_0,
-  IQ1_S, IQ1_M) and NVFP4 train on CPU, CUDA, and Vulkan, not on Metal.
-- **Interfaces**: the CLI, the `retrograd` Rust crate, and Python bindings.
+- **Quantizations**: the base model can be F16 or quantized (Q4_0 through
+  Q8_0, the K-quants, the i-quants, MXFP4) on every backend; the lowest-bit
+  formats train on CPU, CUDA, and Vulkan, not on Metal. See the
+  [support matrix](https://tterrasson.github.io/retrograd/engineering/SUPPORT) for the full list.
+- **Interfaces**: the CLI, the `retrograd-server` HTTP control plane, the
+  `retrograd` Rust crate, and Python bindings.
 
 ---
 
@@ -108,6 +111,11 @@ retrograd train run.toml                         # --resume continues a stopped 
 retrograd bench run.toml --adapter adapter.gguf  # base against adapter, same examples
 retrograd chat run.toml --compare                # base and adapter, turn by turn
 ```
+
+Agentic configurations add `judge eval`, `tools list`, and `scenarios
+generate` for the reward, tool, and rollout sides of an agentic run, and
+`distill-teacher` to precompute a teacher's top-k distribution.
+`retrograd-server` exposes plans, runs, events, and inference over HTTP.
 
 Every command and flag is in the [CLI reference](https://tterrasson.github.io/retrograd/reference/cli), and
 every configuration key in the

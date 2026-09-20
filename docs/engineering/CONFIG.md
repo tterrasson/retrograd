@@ -218,8 +218,9 @@ last three reads its own hyperparameter table under `[optimizer.<name>]`
 (refused unless selected). Only AdamW's update kernel writes an F16
 parameter, so every other name is refused beside the default F16 adapter
 dtype; set `lora.dtype = "f32"` or train base weights instead. Gefen's
-update phases are written for the CPU alone and are refused at preflight on a
-GPU device, because its state mutations must not be answered on a fallback
+update phases are written for the CPU and for Metal; the run probes the live
+device for its own two nodes and is refused at preflight where they are
+missing, because its state mutations must not be answered on a fallback
 backend.
 
 `sgd` keeps no persistent state (`0` bytes/param) but still has a step

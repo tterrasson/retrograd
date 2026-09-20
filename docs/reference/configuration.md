@@ -98,7 +98,7 @@ and the planner budgets the vocabulary buffer the dense path allocates.
 | Key | Default | Description |
 | --- | ---: | --- |
 | `trainable` | `lora` | Which family of parameters this run trains: `lora`, `full`, `partial`, or `hybrid`. |
-| `optimizer` | `adamw` | `adamw`, `sgd`, `muon` or `gefen`. Each has its own knobs under `[optimizer.<name>]`. Only AdamW's update kernel writes an F16 parameter, so every other name is rejected beside the default F16 adapter. Gefen's update is written for the CPU alone and is refused at preflight on a GPU device, because its state mutations must not be answered on a fallback backend. |
+| `optimizer` | `adamw` | `adamw`, `sgd`, `muon` or `gefen`. Each has its own knobs under `[optimizer.<name>]`. Only AdamW's update kernel writes an F16 parameter, so every other name is rejected beside the default F16 adapter. Gefen's update has a CPU and a Metal implementation; the run asks the live device about its own two nodes and is refused at preflight where they are missing, because its state mutations must not be answered on a fallback backend. `cap_opt_step_device` in the backend report is that answer. |
 | `ctx` | `128` | Trained context window in tokens. |
 | `micro_batch` | `32` | Physical forward/backward width and primary activation-memory control. |
 | `gradient_accumulation` | `1` for SFT; derived for rollout | Micro-batches per optimizer step. Its product with `micro_batch` must divide `ctx`. Rollout algorithms default to `ctx / micro_batch`. |
@@ -162,7 +162,8 @@ layout, so a checkpoint written under one is not readable as the other.
 
 At `block_size = 1`, `shared_v` keeps AdamW's own second moment, which is the
 cheapest available correctness anchor. Gefen's weights are F32 only, and its
-two update phases exist on the CPU alone.
+two update phases exist on the CPU and on Metal; CUDA and Vulkan have no
+dispatch, so a Gefen run is refused there rather than falling back.
 
 The optimizer window is `micro_batch × gradient_accumulation`. Lower
 `micro_batch` when memory is constrained. It is a geometry setting, not a
