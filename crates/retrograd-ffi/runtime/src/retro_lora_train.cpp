@@ -834,6 +834,19 @@ extern "C" int retro_probe_op_run_ex(
             ne_src2, src2, param0, param1, dst, dst_len, implementation, info);
 }
 
+// retro delta: the two fixed-block Gefen ops driven directly.
+extern "C" int retro_probe_gefen_run(retro_gefen_probe * probe) {
+    return retro::gefen_probe_run_impl(probe);
+}
+
+extern "C" int retro_probe_gefen_supported(
+        int32_t use_gpu,
+        int32_t variant,
+        int32_t block_size,
+        int32_t * out_supported) {
+    return retro::gefen_probe_supported_impl(use_gpu, variant, block_size, out_supported);
+}
+
 extern "C" int retro_rir_counters_get(retro_rir_counters * out) {
     return retro::rir_counters_impl(out);
 }

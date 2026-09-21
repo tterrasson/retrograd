@@ -22,6 +22,11 @@ using issue_map = std::map<std::string, issue_group>;
 
 struct preflight_data {
     issue_map missing_grad;
+    // retro delta: parameters the built backward never reached. Distinct from
+    // missing_grad, which is an op with no rule at all: a rule that exists and
+    // declines the operand it was given leaves the op looking implemented and
+    // the parameter silently untrained.
+    std::set<std::string> unreached_params;
     std::map<std::string, issue_map> device_forward;
     std::map<std::string, issue_map> device_backward;
     // retro delta: per-device quantized types that caused an op to fall back
@@ -33,6 +38,7 @@ struct preflight_data {
     // Which part of the selection a reported node could not run, by
     // selector family.
     std::map<std::string, size_t> family_missing_grad;
+    std::map<std::string, size_t> family_unreached;
     std::map<std::string, size_t> family_device_fallback;
 };
 
@@ -146,6 +152,10 @@ void preflight_callback(
             record_issue(data->missing_grad, node);
             attribute_to_families(*data, node, data->family_missing_grad);
             break;
+        case LLAMA_OPT_PREFLIGHT_UNREACHED_PARAM:
+            data->unreached_params.insert(node->name);
+            ++data->family_unreached[trainable_family(node->name)];
+            break;
         case LLAMA_OPT_PREFLIGHT_DEVICE_FORWARD:
             record_issue(data->device_forward[ggml_backend_dev_name(dev)], node);
             record_undecodable(*data, dev, node);
@@ -233,6 +243,15 @@ std::string format_preflight_report(
     if (!data.missing_grad.empty()) {
         append_issues(out, data.missing_grad, "    ");
     }
+    // Reported beside it and counted separately: the two are different
+    // failures. `missing_gradient_rules` is an op nothing can differentiate;
+    // this is a parameter that was marked, went through ops that all have
+    // rules, and still has no gradient - which is what a rule that declines one
+    // of its operands looks like from the outside.
+    out << "  parameters_without_gradient: " << data.unreached_params.size() << "\n";
+    for (const std::string & name : data.unreached_params) {
+        out << "    - " << name << "\n";
+    }
 
     // An op signature says what the graph could not do; this says which part
     // of the selection, in the selector's vocabulary.
@@ -246,8 +265,11 @@ std::string format_preflight_report(
             out << "    " << family.first << ": " << family.second << " tensor(s), ";
             const auto missing = data.family_missing_grad.find(family.first);
             const auto fallback = data.family_device_fallback.find(family.first);
+            const auto unreached = data.family_unreached.find(family.first);
             if (missing != data.family_missing_grad.end()) {
                 out << missing->second << " node(s) reading them have no gradient rule\n";
+            } else if (unreached != data.family_unreached.end()) {
+                out << unreached->second << " of them get no gradient at all\n";
             } else if (n_missing != 0) {
                 // The backward was never built, so nothing checked these nodes.
                 out << "not audited (the backward graph was not built)\n";

@@ -244,7 +244,10 @@ quantizer, not the decoder.
 Fetches and checksum-verifies the CPU GGUF fixture, then runs CLI,
 capabilities, PPO/GRPO, checkpoint/resume, `engine_contracts`,
 `kv_projection_gradients`, `muon_gefen` (Muon and fixed-block Gefen against
-independent F64 oracles, on the generated fixture), the CPU-only
+independent F64 oracles, on the generated fixture), `fixed_reference` (which
+includes the quantized-anchor measurement: a Q8_0 anchor against its own F32
+twin, on identical tokens, which is what the fourth generated fixture exists
+for), the CPU-only
 LoRA/generation/parity tests, and
 `retrograd-server`'s `tests/e2e_cpu.rs`. The root test binaries are built with
 `--no-default-features --features agent` (the `-p retrograd-server` ones need
@@ -398,9 +401,10 @@ invocations below directly on such a machine.
 | `lora_metal` | trainable LoRA tensors allocated on the Metal buffer, and a short step updating them |
 | `model_offload` | `--device` actually offloads model tensors to the GPU |
 | `train_parity` | a full CPU against Metal epoch (train, save, reload) with matching losses |
-| `device_memory` | the optimizer path's measured device budget, for an adapter run and for a base one |
+| `device_memory` | the optimizer path's measured device budget, for an adapter run and for a base one, and what an attached anchor adds to it |
 | `base_training` | its two `device_resident` cases: a base run's model export and trainable bundle, read off the device |
-| `muon_gefen` | its two GPU cases: the Metal Gefen kernels against the F64 oracle, and the agreement between `cap_opt_step_device` and the preflight refusal |
+| `muon_gefen` | its two GPU cases: the device's Gefen kernels against the F64 oracle, and the agreement between `cap_opt_step_device` and the preflight |
+| `gefen_ops` | the two Gefen ops driven directly: the op-level edge cases, and CPU against device on identical inputs (no model) |
 | `vulkan_backend` | Vulkan registration, isolated ops, model offload, LoRA placement, a minimal training step |
 | `cuda_backend` | CUDA registration, CPU against CUDA op parity, model offload, LoRA placement, the training preflight |
 
@@ -437,9 +441,22 @@ cargo test --features metal --test muon_gefen -- --test-threads=1
 
 `muon_gefen` runs whole on both lanes: its seven CPU cases are the algorithm
 oracles, and the two GPU ones skip themselves without a device. The GPU oracle
-is fed the inputs the GPU run observed, not the CPU run's output. Gefen has no
-CUDA and no Vulkan dispatch: there the same binary asserts the refusal,
-because `cap_opt_step_device` says so.
+is fed the inputs the GPU run observed, not the CPU run's output. The device
+case has no opinion about which backends carry the kernels: it reads
+`cap_opt_step_device` and requires the preflight to give the same answer, in
+both directions, so landing the step on a new backend cannot leave it asserting
+a refusal that no longer happens.
+
+`gefen_ops` is the same algorithm from the other side: the two Gefen ops
+driven directly, with no model and no training graph. It is where the edge
+cases live, because none of them is reachable through a training step. Every
+case runs on the CPU and, when a device is registered, on it; one case runs
+identical inputs on both and compares the two kernels. It needs no fixture and
+belongs to whichever backend lane is being run:
+
+```sh
+cargo test --release --features cuda --test gefen_ops -- --test-threads=1
+```
 
 Vulkan and CUDA, whole binaries. Model-dependent Vulkan cases want
 `RETRO_VULKAN_TEST_MODEL`; CUDA cases default to the in-repo CPU fixture, and

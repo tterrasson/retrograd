@@ -154,6 +154,12 @@ name = "profile"
 path = "src/bin/profile/main.rs"
 required-features = ["cli"]
 
+# The optimizer evaluation campaign. Prints tables and trains; it needs the
+# library and the runtime, and nothing the two front-ends draw with.
+[[bin]]
+name = "optim-report"
+path = "src/bin/optim_report/main.rs"
+
 
 [workspace.lints.clippy]
 # Every production `unwrap` in this repo is an `expect` that says why the call

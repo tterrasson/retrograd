@@ -6,12 +6,14 @@ vocabulary projection to the input embedding. This file produces the
 complementary model: ``output.weight`` a tensor of its own, ``output.bias``
 present, and no quantized tensor anywhere.
 
-It writes that model at two storage precisions holding the *same numbers*:
-every weight is generated, then snapped to the F16 grid in both variants. The
+It writes that model at three storage precisions holding the *same numbers*:
+every weight is generated, then snapped to the F16 grid in every variant. The
 F32 file stores the snapped values widened back to F32; the F16 file stores
-them verbatim. The only difference between the two files is the precision the
-weights are stored at, so a gradient that differs between runs differs because
-of precision and for no other reason.
+them verbatim; the Q8_0 file quantizes them block by block. The only difference
+between the files is the precision the weights are stored at, so a gradient - or
+a score - that differs between runs differs because of precision and for no
+other reason. That is what makes the Q8_0 file usable as a *quantized anchor*
+against its own F32 twin: the two models are the same model.
 
 Norms and biases stay F32 in both: they are one-dimensional, llama.cpp expects
 F32 there, and a real F16 GGUF keeps them F32 too.
@@ -21,11 +23,19 @@ through ``gguf-py``, and the weights come from an explicit xorshift rather
 than a library PRNG, so the digests in ``tests/fixtures/TINY_FIXTURE.toml``
 and ``tests/fixtures/TINY_F16_FIXTURE.toml`` never drift with a dependency.
 
-Usage: scripts/gen-tiny-fixture.py [--dtype f32|f16] <destination.gguf>
+Usage: scripts/gen-tiny-fixture.py [--dtype f32|f16|q8_0]
+                                   [--layers N] [--embd N] [--heads N]
+                                   [--kv-heads N] [--ff N]
+                                   <destination.gguf>
+
+The shape flags default to the pinned fixture's, so omitting them writes the
+bytes the manifests record. They exist for the models that are not unit
+fixtures - an optimizer campaign needs a real matrix count, not four layers.
 """
 
 from __future__ import annotations
 
+import math
 import struct
 import sys
 from pathlib import Path
@@ -33,6 +43,11 @@ from pathlib import Path
 ARCHITECTURE = "qwen2"
 MODEL_NAME = "retrograd-tiny-qwen2"
 
+# The pinned shape. Overridable from the command line for a model that is not a
+# unit fixture - an optimizer whose cost per eligible matrix is the question
+# needs hundreds of matrices, and four layers of sixty-four is not that. The
+# defaults are the pinned ones, so a run that names no shape writes the same
+# bytes as before and the digests in the two manifests still hold.
 N_LAYER = 4
 N_EMBD = 64
 N_HEAD = 4
@@ -45,15 +60,34 @@ ROPE_FREQ_BASE = 10000.0
 N_EMBD_HEAD = N_EMBD // N_HEAD
 N_EMBD_GQA = N_EMBD_HEAD * N_HEAD_KV
 
+
+def configure(layers: int, embd: int, heads: int, heads_kv: int, ff: int) -> None:
+    """Rebinds the shape and the two dimensions derived from it."""
+    global N_LAYER, N_EMBD, N_HEAD, N_HEAD_KV, N_FF, N_EMBD_HEAD, N_EMBD_GQA
+    if embd % heads != 0:
+        raise SystemExit("embedding length must be a multiple of the head count")
+    N_LAYER, N_EMBD, N_HEAD, N_HEAD_KV, N_FF = layers, embd, heads, heads_kv, ff
+    N_EMBD_HEAD = N_EMBD // N_HEAD
+    N_EMBD_GQA = N_EMBD_HEAD * N_HEAD_KV
+
+
 ALIGNMENT = 32
 GGUF_MAGIC = 0x46554747
 GGUF_VERSION = 3
 GGML_TYPE_F32 = 0
 GGML_TYPE_F16 = 1
+# retro delta: the one quantized storage this generator writes. Q8_0 because it
+# is the simplest block format ggml has - 32 values, one F16 scale, no
+# sub-blocks and no importance matrix - so the twin of an F32 file can be
+# written here rather than through a quantizer, which is what makes the two
+# files hold the same numbers at two precisions rather than two models.
+GGML_TYPE_Q8_0 = 8
+QUANT_K_Q8_0 = 32
 
-# llama.cpp's general.file_type for the two variants.
+# llama.cpp's general.file_type for the three variants.
 FILE_TYPE_ALL_F32 = 0
 FILE_TYPE_MOSTLY_F16 = 1
+FILE_TYPE_MOSTLY_Q8_0 = 7
 
 # GGUF metadata value types.
 T_UINT32 = 4
@@ -104,7 +138,36 @@ def weights(count: int, seed: int, scale: float, offset: float = 0.0) -> list[fl
     return [snap_to_f16(offset + scale * rng.unit()) for _ in range(count)]
 
 
+def quantize_q8_0(values: list[float]) -> bytes:
+    """ggml's Q8_0, restated: 32 values per block, one F16 scale, int8 codes.
+
+    `d = amax/127` and `q = round(x/d)`, which is `quantize_row_q8_0_ref` in
+    ggml-quants.c. Written here for the same reason the weights are: the file's
+    bytes must be a property of this script, not of whichever quantizer happened
+    to be on the machine.
+    """
+    if len(values) % QUANT_K_Q8_0 != 0:
+        raise SystemExit("q8_0 needs a row length that is a multiple of 32")
+    out = bytearray()
+    for start in range(0, len(values), QUANT_K_Q8_0):
+        block = values[start : start + QUANT_K_Q8_0]
+        amax = max(abs(value) for value in block)
+        d = amax / 127.0
+        inverse = 1.0 / d if d != 0.0 else 0.0
+        out += struct.pack("<e", d)
+        for value in block:
+            # round-half-away-from-zero, which is C's roundf and not Python's
+            # banker's rounding.
+            scaled = value * inverse
+            code = math.floor(abs(scaled) + 0.5)
+            code = min(code, 127)
+            out += struct.pack("<b", int(code if scaled >= 0.0 else -code))
+    return bytes(out)
+
+
 def pack(values: list[float], ggml_type: int) -> bytes:
+    if ggml_type == GGML_TYPE_Q8_0:
+        return quantize_q8_0(values)
     fmt = "e" if ggml_type == GGML_TYPE_F16 else "f"
     return struct.pack(f"<{len(values)}{fmt}", *values)
 
@@ -246,7 +309,12 @@ def encode_string(value: str) -> bytes:
 def build(matrix_type: int) -> bytes:
     table = tensors(matrix_type)
     header = bytearray()
-    kvs = metadata(FILE_TYPE_MOSTLY_F16 if matrix_type == GGML_TYPE_F16 else FILE_TYPE_ALL_F32)
+    kvs = metadata(
+        {
+            GGML_TYPE_F16: FILE_TYPE_MOSTLY_F16,
+            GGML_TYPE_Q8_0: FILE_TYPE_MOSTLY_Q8_0,
+        }.get(matrix_type, FILE_TYPE_ALL_F32)
+    )
     header += struct.pack("<IIQQ", GGUF_MAGIC, GGUF_VERSION, len(table), len(kvs))
     for key, value_type, payload in kvs:
         write_kv(header, key, value_type, payload)
@@ -271,16 +339,43 @@ def build(matrix_type: int) -> bytes:
     return bytes(header) + bytes(body)
 
 
+SHAPE_FLAGS = {
+    "--layers": "layers",
+    "--embd": "embd",
+    "--heads": "heads",
+    "--kv-heads": "heads_kv",
+    "--ff": "ff",
+}
+
+
 def main(argv: list[str]) -> int:
     matrix_type = GGML_TYPE_F32
+    shape = {
+        "layers": N_LAYER,
+        "embd": N_EMBD,
+        "heads": N_HEAD,
+        "heads_kv": N_HEAD_KV,
+        "ff": N_FF,
+    }
     argv = argv[1:]
-    if len(argv) >= 2 and argv[0] == "--dtype":
-        choice = argv[1].lower()
-        if choice not in ("f32", "f16"):
+    while len(argv) >= 2 and argv[0].startswith("--"):
+        flag, value = argv[0], argv[1]
+        if flag == "--dtype":
+            choice = value.lower()
+            if choice not in ("f32", "f16", "q8_0"):
+                print(__doc__, file=sys.stderr)
+                return 2
+            matrix_type = {
+                "f16": GGML_TYPE_F16,
+                "q8_0": GGML_TYPE_Q8_0,
+            }.get(choice, GGML_TYPE_F32)
+        elif flag in SHAPE_FLAGS:
+            shape[SHAPE_FLAGS[flag]] = int(value)
+        else:
             print(__doc__, file=sys.stderr)
             return 2
-        matrix_type = GGML_TYPE_F16 if choice == "f16" else GGML_TYPE_F32
         argv = argv[2:]
+    configure(**shape)
     if len(argv) != 1:
         print(__doc__, file=sys.stderr)
         return 2

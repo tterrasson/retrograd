@@ -835,6 +835,253 @@ int probe_op_run_impl(
 }
 
 // ---------------------------------------------------------------------------
+// retro delta: the two fixed-block Gefen ops, driven directly
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The state tensors of one Gefen variant, built once so the probe and the
+// support predicate below cannot describe different graphs.
+struct gefen_graph {
+    ggml_tensor * w        = nullptr;
+    ggml_tensor * grad     = nullptr;
+    ggml_tensor * moment   = nullptr;
+    ggml_tensor * scales   = nullptr;
+    ggml_tensor * v        = nullptr;
+    ggml_tensor * codebook = nullptr;
+    ggml_tensor * pars     = nullptr;
+    ggml_tensor * stats    = nullptr;
+    ggml_tensor * step     = nullptr;
+};
+
+// `n_blocks` the way both phases compute it, so a caller that passed a
+// different one is refused rather than silently reshaped.
+int64_t gefen_block_count(int64_t n_elements, int64_t block_size) {
+    return n_elements/block_size + (n_elements % block_size != 0);
+}
+
+bool gefen_build(
+        ggml_context * ctx, gefen_graph & g, int32_t variant,
+        int64_t n_elements, int64_t block_size, int64_t levels) {
+    const bool quantized = variant == GGML_OPT_GEFEN_VARIANT_QUANTIZED_M;
+    const int64_t n_blocks = gefen_block_count(n_elements, block_size);
+
+    g.w = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_elements);
+    if (!g.w) {
+        return false;
+    }
+    // Phase B asserts the flag: it writes the parameter in place, and the flag
+    // is what says a tensor may be written in place.
+    ggml_set_param(g.w);
+    g.grad   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_elements);
+    g.moment = ggml_new_tensor_1d(ctx, quantized ? GGML_TYPE_I8 : GGML_TYPE_F32, n_elements);
+    g.v      = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_blocks);
+    g.pars   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    if (quantized) {
+        g.scales   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_blocks);
+        g.codebook = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, levels);
+    }
+    if (!g.grad || !g.moment || !g.v || !g.pars || (quantized && (!g.scales || !g.codebook))) {
+        return false;
+    }
+
+    g.stats = ggml_opt_step_gefen_stats(
+            ctx, g.grad, g.moment, g.scales, g.v, g.codebook, g.pars,
+            variant, static_cast<int>(block_size));
+    if (!g.stats) {
+        return false;
+    }
+    g.step = ggml_opt_step_gefen(
+            ctx, g.w, g.grad, g.moment, g.scales, g.v, g.stats, g.codebook, g.pars,
+            variant, static_cast<int>(block_size));
+    return g.step != nullptr;
+}
+
+// A device carries this step only when it carries *both* phases: one of the two
+// on a fallback backend would mutate a copy of the state and leave the
+// device-resident slot stale.
+bool gefen_device_supports(ggml_backend_dev_t dev, const gefen_graph & g) {
+    return ggml_backend_dev_supports_op(dev, g.stats)
+            && ggml_backend_dev_supports_op(dev, g.step);
+}
+
+} // namespace
+
+int gefen_probe_supported_impl(
+        int32_t use_gpu, int32_t variant, int32_t block_size, int32_t * out_supported) {
+    return boundary([&]() -> int {
+        std::lock_guard<std::mutex> serialize(probe_device_mutex());
+        ensure_backend_initialized();
+        if (!out_supported) {
+            set_error("out_supported is required");
+            return -1;
+        }
+        if (block_size <= 0) {
+            set_error("gefen probe block_size must be positive");
+            return -1;
+        }
+        ggml_backend_dev_t dev = use_gpu
+                ? first_gpu_device()
+                : ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        if (!dev) {
+            set_error(use_gpu ? "no GPU device available for probe"
+                              : "no CPU device available for probe");
+            return -1;
+        }
+        ggml_init_params params {
+            /*.mem_size   =*/ ggml_tensor_overhead() * 16,
+            /*.mem_buffer =*/ nullptr,
+            /*.no_alloc   =*/ true,
+        };
+        std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx(ggml_init(params), &ggml_free);
+        if (!ctx) {
+            set_error("gefen probe context allocation failed");
+            return -1;
+        }
+        gefen_graph g;
+        // Two full blocks and a partial third: the shape a per-block kernel is
+        // allowed to refuse for reasons that have nothing to do with the dtype.
+        if (!gefen_build(ctx.get(), g, variant, 2*block_size + 1, block_size,
+                    GGML_OPT_GEFEN_CODEBOOK_LEVELS)) {
+            set_error("gefen probe graph construction failed");
+            return -1;
+        }
+        *out_supported = gefen_device_supports(dev, g) ? 1 : 0;
+        return 0;
+    });
+}
+
+int gefen_probe_run_impl(retro_gefen_probe * probe) {
+    return boundary([&]() -> int {
+        std::lock_guard<std::mutex> serialize(probe_device_mutex());
+        ensure_backend_initialized();
+        if (!probe) {
+            set_error("retro_gefen_probe is required");
+            return -1;
+        }
+        if (probe->struct_size != sizeof(retro_gefen_probe)) {
+            set_error("retro_gefen_probe.struct_size does not match this build");
+            return -1;
+        }
+        const bool quantized = probe->variant == GGML_OPT_GEFEN_VARIANT_QUANTIZED_M;
+        if (!quantized && probe->variant != GGML_OPT_GEFEN_VARIANT_SHARED_V) {
+            set_error("unknown gefen variant");
+            return -1;
+        }
+        if (probe->block_size <= 0 || probe->n_elements <= 0 || probe->n_steps <= 0) {
+            set_error("gefen probe needs a positive block size, element count and step count");
+            return -1;
+        }
+        if (gefen_block_count(probe->n_elements, probe->block_size) != probe->n_blocks) {
+            set_error("gefen probe n_blocks is not ceil(n_elements / block_size)");
+            return -1;
+        }
+        if (!probe->weights || !probe->grad || !probe->v || !probe->pars) {
+            set_error("gefen probe requires weights, grad, v and pars");
+            return -1;
+        }
+        if (quantized) {
+            if (!probe->indices || !probe->scales || !probe->codebook || probe->levels < 2) {
+                set_error("quantized_m needs indices, scales and a codebook of at least two entries");
+                return -1;
+            }
+            if (probe->moment) {
+                set_error("quantized_m keeps no F32 first moment; pass indices instead");
+                return -1;
+            }
+        } else {
+            if (!probe->moment) {
+                set_error("shared_v needs an F32 first moment");
+                return -1;
+            }
+            if (probe->indices || probe->scales || probe->codebook) {
+                set_error("shared_v keeps no indices, scales or codebook");
+                return -1;
+            }
+        }
+
+        ggml_backend_dev_t dev = probe->use_gpu
+                ? first_gpu_device()
+                : ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        if (!dev) {
+            set_error(probe->use_gpu ? "no GPU device available for probe"
+                                     : "no CPU device available for probe");
+            return -1;
+        }
+        ggml_backend_ptr backend(ggml_backend_dev_init(dev, nullptr));
+        if (!backend) {
+            set_error("failed to initialize backend for gefen probe");
+            return -1;
+        }
+
+        ggml_init_params params {
+            /*.mem_size   =*/ ggml_tensor_overhead() * 16 + ggml_graph_overhead() + 1024,
+            /*.mem_buffer =*/ nullptr,
+            /*.no_alloc   =*/ true,
+        };
+        std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx(ggml_init(params), &ggml_free);
+        if (!ctx) {
+            set_error("gefen probe context allocation failed");
+            return -1;
+        }
+
+        gefen_graph g;
+        if (!gefen_build(ctx.get(), g, probe->variant, probe->n_elements,
+                    probe->block_size, probe->levels)) {
+            set_error("gefen probe graph construction failed");
+            return -1;
+        }
+        if (!gefen_device_supports(dev, g)) {
+            set_error("the selected device does not carry both fixed-block Gefen phases");
+            return -1;
+        }
+
+        ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend.get()));
+        if (!buffer) {
+            set_error("gefen probe backend buffer allocation failed");
+            return -1;
+        }
+
+        ggml_backend_tensor_set(g.w,    probe->weights, 0, ggml_nbytes(g.w));
+        ggml_backend_tensor_set(g.grad, probe->grad,    0, ggml_nbytes(g.grad));
+        ggml_backend_tensor_set(g.v,    probe->v,       0, ggml_nbytes(g.v));
+        ggml_backend_tensor_set(g.pars, probe->pars,    0, ggml_nbytes(g.pars));
+        if (quantized) {
+            ggml_backend_tensor_set(g.moment,   probe->indices,  0, ggml_nbytes(g.moment));
+            ggml_backend_tensor_set(g.scales,   probe->scales,   0, ggml_nbytes(g.scales));
+            ggml_backend_tensor_set(g.codebook, probe->codebook, 0, ggml_nbytes(g.codebook));
+        } else {
+            ggml_backend_tensor_set(g.moment, probe->moment, 0, ggml_nbytes(g.moment));
+        }
+
+        // One graph, computed n_steps times: the state tensors are the same
+        // allocations across steps, which is exactly what a run does between
+        // two optimizer steps.
+        ggml_cgraph * gf = ggml_new_graph(ctx.get());
+        ggml_build_forward_expand(gf, g.step);
+        for (int32_t step = 0; step < probe->n_steps; ++step) {
+            if (ggml_backend_graph_compute(backend.get(), gf) != GGML_STATUS_SUCCESS) {
+                set_error("gefen probe graph compute failed on the selected backend");
+                return -1;
+            }
+        }
+
+        ggml_backend_tensor_get(g.w, probe->weights, 0, ggml_nbytes(g.w));
+        ggml_backend_tensor_get(g.v, probe->v,       0, ggml_nbytes(g.v));
+        if (quantized) {
+            ggml_backend_tensor_get(g.moment, probe->indices, 0, ggml_nbytes(g.moment));
+            ggml_backend_tensor_get(g.scales, probe->scales,  0, ggml_nbytes(g.scales));
+        } else {
+            ggml_backend_tensor_get(g.moment, probe->moment, 0, ggml_nbytes(g.moment));
+        }
+        if (probe->stats) {
+            ggml_backend_tensor_get(g.stats, probe->stats, 0, ggml_nbytes(g.stats));
+        }
+        return 0;
+    });
+}
+
+// ---------------------------------------------------------------------------
 // RIR: implementation selection and reporting
 // ---------------------------------------------------------------------------
 

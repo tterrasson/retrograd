@@ -351,3 +351,124 @@ fn distillation_with_a_kl_term_scores_the_attached_reference() {
         .expect("KL scores align with the live members of both prompt groups");
     assert!(metrics.global_step > 0);
 }
+
+/// What a *quantized* anchor costs in accuracy.
+///
+/// A run's KL term scores against a frozen reference, and nothing says that
+/// reference has to be stored at the precision the policy is: a Q8_0 anchor is
+/// a quarter of the weights on the device. Whether its scores are close enough
+/// to an F32 anchor's is a measurement, and it needs two files holding *one*
+/// model - which is what the generated fixtures are, the same numbers snapped
+/// to the F16 grid and then stored three ways.
+///
+/// The comparison is on identical tokens through identical geometry, so the
+/// only difference between the two runs is the anchor's storage. The bound is
+/// deliberately on the *divergence of the scores*, not on a per-token
+/// tolerance: a KL term reads a sum, and a handful of tokens disagreeing by
+/// more than the rest is what a quantized anchor actually does.
+#[test]
+fn a_quantized_anchor_scores_within_a_measured_distance_of_its_f32_twin() {
+    let model = tiny_fixture!();
+    let Some(quantized) = common::tiny_q8_model_path_if_available() else {
+        eprintln!("skipping: the Q8_0 fixture is not available");
+        return;
+    };
+    let _guard = common::serialize_models();
+    let root = scratch("quantized-anchor");
+
+    let mut trainer = Trainer::new(&model, config(TrainablePolicy::Partial)).expect("load trainer");
+    declare_norms(&mut trainer, &model);
+    let ids = tokens(&trainer);
+
+    // The F32 anchor is a copy of this run's own file, so it is the control:
+    // the only reason its scores could differ from the quantized anchor's is
+    // the quantization.
+    trainer
+        .attach_reference(
+            copy_of(&model, &root),
+            &config(TrainablePolicy::Partial),
+            None,
+        )
+        .expect("attach the F32 anchor");
+    let exact = trainer
+        .score_reference_tokens(&ids)
+        .expect("the F32 anchor scores");
+
+    trainer
+        .attach_reference(&quantized, &config(TrainablePolicy::Partial), None)
+        .expect("attach the Q8_0 anchor");
+    let approximate = trainer
+        .score_reference_tokens(&ids)
+        .expect("the Q8_0 anchor scores");
+
+    assert_eq!(
+        exact.len(),
+        approximate.len(),
+        "two anchors over one token sequence score the same positions"
+    );
+    assert!(!exact.is_empty(), "the fixture scores at least one token");
+
+    // Both are log-probabilities whatever the storage: a quantized anchor that
+    // stopped producing them would be a different failure from an inaccurate
+    // one, and it is worth separating.
+    assert!(
+        approximate
+            .iter()
+            .all(|score| score.is_finite() && *score <= 0.0),
+        "a Q8_0 anchor still scores log-probabilities"
+    );
+
+    let mean_absolute = exact
+        .iter()
+        .zip(&approximate)
+        .map(|(left, right)| f64::from(*left - *right).abs())
+        .sum::<f64>()
+        / exact.len() as f64;
+    let worst = exact
+        .iter()
+        .zip(&approximate)
+        .map(|(left, right)| f64::from(*left - *right).abs())
+        .fold(0.0_f64, f64::max);
+    // The quantity a KL term actually reads: the sum of the per-token
+    // differences, which is what the penalty is built out of.
+    let total = (exact.iter().map(|score| f64::from(*score)).sum::<f64>()
+        - approximate
+            .iter()
+            .map(|score| f64::from(*score))
+            .sum::<f64>())
+    .abs();
+
+    eprintln!(
+        "quantized anchor over {} tokens: mean |delta| {mean_absolute:.6}, \
+         worst {worst:.6}, |sum delta| {total:.6}",
+        exact.len()
+    );
+
+    // Measured on this fixture - mean 0.005 nats per token, worst 0.017 - and
+    // bounded an order of magnitude above that. The bounds are a ceiling rather
+    // than a claim: what they pin is that a Q8_0 anchor is a perturbation of
+    // its F32 twin and not a different model. A run that needs a tighter bound
+    // has to measure its own pair.
+    assert!(
+        mean_absolute < 0.05,
+        "a Q8_0 anchor of the same model diverges by {mean_absolute} per token on average"
+    );
+    assert!(
+        worst < 0.2,
+        "a Q8_0 anchor of the same model diverges by {worst} on its worst token"
+    );
+
+    // The control, asserted last so a vacuous pass is impossible: the two
+    // anchors are *not* the same file, and the scores must not be identical.
+    // If they were, the run would be scoring against the same weights twice and
+    // the measurement above would mean nothing.
+    assert!(
+        exact
+            .iter()
+            .zip(&approximate)
+            .any(|(left, right)| left != right),
+        "the two anchors produced identical scores, so the quantized one was never read"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}

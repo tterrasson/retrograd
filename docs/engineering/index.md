@@ -39,6 +39,9 @@ it is, and what the tests pin.
   validation map.
 - [Agentic GRPO](./AGENTIC_GRPO): trajectories, tools, environments and judges.
 - [The GRPO sampling path](./optims/SAMPLING): generation and behavior scoring.
+- [Optimizer cost and quality](./optims/OPTIMIZERS): what Muon and Gefen were
+  measured to cost, and how far Gefen's approximation is from the update it
+  approximates.
 
 ## Interface contracts
 

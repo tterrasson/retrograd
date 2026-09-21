@@ -204,12 +204,23 @@ fn a_gpu_run_measures_a_self_consistent_device_peak() {
     );
 }
 
-/// OUT_PROD decodes production quant types in place, so the compatibility-path
-/// budget must not affect a Q8_0 training graph's scratch peak.
-/// The pool still has other users, hence the non-zero accounting assertion.
+/// The dequantization budget bounds a quantized training step's scratch peak.
+///
+/// A quantized `OUT_PROD` has two CUDA paths and this graph uses both: the
+/// scratch-free in-place decoder for small reductions and strided weights, and
+/// bounded dequantize+SGEMM for the wide contiguous projections, where
+/// serializing the whole reduction inside a tile costs milliseconds per node.
+/// The second one sizes its F32 scratch from `GGML_CUDA_DEQUANT_BUDGET_MB`, so
+/// the budget *is* expected to move the peak - downwards. What must hold is
+/// that it only ever bounds it: a tighter budget never buys more scratch, and
+/// the accounting still sees a non-zero pool, without which the comparison
+/// would be two zeros. That the budget changes no *number* the step produces
+/// is a separate claim, asserted on the op itself by
+/// `common::assert_out_prod_quant_budget_independent` and by the type sweep in
+/// `tests/out_prod_quant.rs`.
 #[cfg(retro_cuda)]
 #[test]
-fn native_quant_out_prod_scratch_is_independent_of_the_legacy_dequant_budget() {
+fn the_legacy_dequant_budget_only_bounds_a_quant_training_steps_scratch() {
     let Some(_model) = common::model_path_if_available() else {
         eprintln!("skipping: no local test model");
         return;
@@ -236,12 +247,13 @@ fn native_quant_out_prod_scratch_is_independent_of_the_legacy_dequant_budget() {
     eprintln!("backend scratch peak: default {default_budget} B, 1 MiB budget {tight_budget} B");
     assert!(
         default_budget > 0,
-        "a Q8_0 GPU training step must allocate backend scratch; measuring zero means \
-         the accounting is not wired to the pool"
+        "a quantized GPU training step must allocate backend scratch; measuring zero \
+         means the accounting is not wired to the pool"
     );
-    assert_eq!(
-        tight_budget, default_budget,
-        "the legacy dequantization budget changed a native-Q2 training graph's scratch"
+    assert!(
+        tight_budget <= default_budget,
+        "a tighter dequantization budget must not raise the scratch peak: \
+         1 MiB {tight_budget} B against {default_budget} B at the default"
     );
 }
 
@@ -488,4 +500,121 @@ fn a_cpu_base_run_accounts_for_its_components_and_reports_no_measurement() {
     assert_eq!(report.device_peak_used_bytes, 0);
     assert_eq!(report.backend_scratch_peak_bytes, 0);
     assert_eq!(report.unaccounted_device_bytes(), None);
+}
+
+/// A run's anchor is a second model, and on a device it is a second model *on
+/// the device*.
+///
+/// The anchor's cost has always been an arithmetic term in the plan's estimate,
+/// `co_resident_bytes`, and nothing had measured it where it is actually paid.
+/// This is that measurement: the same base run, once without an anchor and once
+/// with, on the device, with the runtime's own report on both sides.
+///
+/// What is asserted is the part that is attributable. The anchor's own report
+/// is exact - it is a forward-only trainer, so its bytes are weights plus KV
+/// and nothing else - and the *process's* backend scratch is noise-free. The
+/// device-wide budget is not asserted directionally, for the reason the module
+/// header gives: it carries every other process on the card.
+#[test]
+fn an_anchor_on_a_device_is_a_second_model_on_the_device() {
+    let Some(model) = common::model_path_if_available() else {
+        eprintln!("skipping: no local test model");
+        return;
+    };
+    if !common::gpu_device_present() {
+        eprintln!("skipping: no GPU device");
+        return;
+    }
+    let _guard = common::serialize_models();
+
+    let mut trainer = trained_base(Device::Gpu);
+    assert!(
+        trainer
+            .reference_memory_report()
+            .expect("the anchor's report")
+            .is_none(),
+        "a run with no anchor has no anchor report"
+    );
+    let alone = trainer.memory_report().expect("memory report");
+
+    // A copy of the file rather than the file: an anchor that shares the
+    // loaded weights would measure nothing at all.
+    let root = std::env::temp_dir().join(format!("retrograd-anchor-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create scratch directory");
+    let copy = root.join("anchor.gguf");
+    std::fs::copy(&model, &copy).expect("copy the model");
+
+    trainer
+        .attach_reference(&copy, &base_config(Device::Gpu), None)
+        .expect("attach the anchor");
+
+    let anchor = trainer
+        .reference_memory_report()
+        .expect("the anchor's report")
+        .expect("an attached anchor reports its own memory");
+
+    // --- What the anchor is, exactly ------------------------------------
+    assert!(
+        anchor.model_weight_bytes > 0,
+        "the anchor holds the weights it scores with: {anchor:?}"
+    );
+    assert_eq!(
+        anchor.trainable_gradient_bytes, 0,
+        "a forward-only anchor has no gradients: {anchor:?}"
+    );
+    assert_eq!(
+        anchor.optimizer_state_bytes, 0,
+        "a forward-only anchor has no optimizer state: {anchor:?}"
+    );
+    assert!(
+        anchor.device_bytes > 0,
+        "an anchor attached to a device run is resident on the device, not on the \
+         host: {anchor:?}"
+    );
+    // The same weights as the run it anchors: it is a copy of the same file.
+    assert_eq!(
+        anchor.model_weight_bytes, alone.model_weight_bytes,
+        "a copy of the model weighs what the model weighs"
+    );
+
+    // --- That it is actually used --------------------------------------
+    let tokens = trainer
+        .tokenize_text("A shared prompt asks for the first answer.")
+        .expect("tokenize");
+    let scores = trainer
+        .score_reference_tokens(&tokens)
+        .expect("the anchor scores this run's tokens");
+    assert!(
+        !scores.is_empty()
+            && scores
+                .iter()
+                .all(|score| score.is_finite() && *score <= 0.0),
+        "the anchor's scores are finite log-probabilities"
+    );
+
+    // --- Recorded, not gated --------------------------------------------
+    let with_anchor = trainer.memory_report().expect("memory report");
+    eprintln!(
+        "anchor on a device: run device {} B, anchor device {} B (weights {} B, kv {} B), \
+         run peak {} B -> {} B, scratch peak {} B -> {} B",
+        alone.device_bytes,
+        anchor.device_bytes,
+        anchor.model_weight_bytes,
+        anchor.optimizer_kv_bytes,
+        alone.device_peak_used_bytes,
+        with_anchor.device_peak_used_bytes,
+        alone.backend_scratch_peak_bytes,
+        with_anchor.backend_scratch_peak_bytes,
+    );
+
+    // The run's own report describes the trained model alone and must not have
+    // absorbed the anchor: whether the two should ever be summed is a question
+    // about the estimate, and this is the measurement that keeps it answerable.
+    assert_eq!(
+        with_anchor.model_weight_bytes, alone.model_weight_bytes,
+        "the run's report describes the model it trains, not the model it scores against"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }

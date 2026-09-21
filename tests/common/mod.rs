@@ -8,6 +8,10 @@
 //! Not every test binary uses every helper, so silence dead-code warnings.
 #![allow(dead_code)]
 
+/// The fixed-block Gefen algorithm in slow F64, shared by the model-driven and
+/// op-driven Gefen tests.
+pub mod gefen;
+
 use std::{
     fs::{self, OpenOptions},
     io::Write,
@@ -26,6 +30,11 @@ pub const TINY_FIXTURE: &str = "tests/fixtures/retrograd-tiny-qwen2-f32.gguf";
 /// The same generated model with its matrices stored as F16. Same numbers,
 /// different storage precision, so runs of the two are comparable.
 pub const TINY_F16_FIXTURE: &str = "tests/fixtures/retrograd-tiny-qwen2-f16.gguf";
+
+/// The same generated model again, matrices stored as Q8_0. Its use is the
+/// quantized-anchor measurement: the same numbers as the F32 fixture, so a
+/// score that differs differs because of quantization.
+pub const TINY_Q8_FIXTURE: &str = "tests/fixtures/retrograd-tiny-qwen2-q8_0.gguf";
 
 /// Repository-relative default location for the Vulkan integration model.
 /// Nothing ships at this path - `RETRO_VULKAN_TEST_MODEL` is how a developer
@@ -100,6 +109,29 @@ pub fn tiny_f16_model_path_if_available() -> Option<PathBuf> {
     } else if std::env::var_os("RETRO_REQUIRE_CPU_FIXTURE").is_some() {
         panic!(
             "F16 tiny CPU fixture missing at {}; run scripts/fetch-cpu-fixture.sh",
+            path.display()
+        );
+    } else {
+        None
+    }
+}
+
+/// Resolves the Q8_0 tiny fixture, honouring an explicit test override.
+pub fn tiny_q8_model_path() -> PathBuf {
+    std::env::var("RETRO_TINY_Q8_FIXTURE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(TINY_Q8_FIXTURE))
+}
+
+/// Returns the Q8_0 tiny fixture when available, required by the dedicated CPU
+/// lane like its two twins.
+pub fn tiny_q8_model_path_if_available() -> Option<PathBuf> {
+    let path = tiny_q8_model_path();
+    if path.exists() {
+        Some(path)
+    } else if std::env::var_os("RETRO_REQUIRE_CPU_FIXTURE").is_some() {
+        panic!(
+            "Q8_0 tiny CPU fixture missing at {}; run scripts/fetch-cpu-fixture.sh",
             path.display()
         );
     } else {

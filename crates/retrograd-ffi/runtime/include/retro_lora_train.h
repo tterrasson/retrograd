@@ -228,6 +228,62 @@ int retro_probe_op_run_ex(
     int32_t implementation,
     retro_kernel_run_info * info);
 
+// retro delta: the two fixed-block Gefen ops driven directly, with no model and
+// no training graph.
+//
+// A Gefen step reached through a run is a step whose inputs were produced by a
+// backward pass: a gradient nobody chose, a state nobody wrote, and one
+// arithmetic path per fixture. This drives both phases over state the caller
+// supplies, which is what makes the algorithm's edge cases - a zero block, a
+// block of one repeated magnitude, every one of the 256 index codes, a partial
+// trailing block, a decay-only step - reachable at all, and what lets the same
+// inputs be run on two backends and compared.
+//
+// Every buffer is host memory in the caller's layout; the probe uploads it,
+// computes `n_steps` full updates on the selected device, and reads the state
+// back into the same buffers. `weights`, `moment`/`indices`, `scales` and `v`
+// are therefore in/out.
+//
+// Which pointers are required depends on the variant:
+//   shared_v     moment != NULL, indices/scales/codebook == NULL
+//   quantized_m  indices/scales/codebook != NULL, moment == NULL
+// `stats` is phase A's answer for the last step, or NULL when the caller does
+// not want it.
+typedef struct retro_gefen_probe {
+    uint32_t struct_size;
+    int32_t  use_gpu;
+    int32_t  variant;     // ggml_opt_gefen_variant
+    int32_t  block_size;
+    int64_t  n_elements;
+    int64_t  n_blocks;    // ceil(n_elements / block_size)
+    int32_t  levels;      // codebook entries, 0 under shared_v
+    int32_t  n_steps;     // full updates over the same gradient, >= 1
+
+    float         * weights;  // [n_elements], in/out
+    const float   * grad;     // [n_elements]
+    float         * moment;   // [n_elements] F32, shared_v only, in/out
+    uint8_t       * indices;  // [n_elements] bytes, quantized_m only, in/out
+    float         * scales;   // [n_blocks], quantized_m only, in/out
+    float         * v;        // [n_blocks], in/out
+    const float   * codebook; // [levels], quantized_m only
+    const float   * pars;     // 8: alpha, beta1, beta2, eps, wd, beta1h, beta2h, grad_scale
+    float         * stats;    // [2*n_blocks], out, may be NULL
+} retro_gefen_probe;
+
+// Returns 0, or non-zero with retro_last_error() set. A device that declines
+// either phase is one of the failures, and its message says so: the two are
+// admitted together, so a partial answer is never returned.
+int retro_probe_gefen_run(retro_gefen_probe * probe);
+
+// Whether `device` (0 CPU, 1 GPU) declares both Gefen phases for this variant
+// and block size. Writes 1 or 0 into `out_supported`. The predicate is the
+// backend's own, so it is the same answer a run's preflight gets.
+int retro_probe_gefen_supported(
+    int32_t use_gpu,
+    int32_t variant,
+    int32_t block_size,
+    int32_t * out_supported);
+
 // Process-wide RIR dispatch counters. Monotonic since
 // process start, across every backend. `struct_size` must be set by the caller.
 typedef struct retro_rir_counters {

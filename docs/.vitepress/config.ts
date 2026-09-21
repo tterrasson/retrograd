@@ -185,6 +185,7 @@ export default defineConfig({
             { text: 'GRPO', link: '/engineering/GRPO' },
             { text: 'Agentic GRPO', link: '/engineering/AGENTIC_GRPO' },
             { text: 'GRPO sampling path', link: '/engineering/optims/SAMPLING' },
+            { text: 'Optimizer cost and quality', link: '/engineering/optims/OPTIMIZERS' },
           ],
         },
       ],

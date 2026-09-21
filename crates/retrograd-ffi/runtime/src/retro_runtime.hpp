@@ -699,6 +699,10 @@ int probe_op_run_ex_impl(
         size_t dst_len,
         int32_t implementation,
         retro_kernel_run_info * info);
+// retro delta: the two fixed-block Gefen ops driven directly.
+int gefen_probe_run_impl(retro_gefen_probe * probe);
+int gefen_probe_supported_impl(
+        int32_t use_gpu, int32_t variant, int32_t block_size, int32_t * out_supported);
 int rir_counters_impl(retro_rir_counters * out);
 int rir_variant_report_impl(char * buffer, size_t n_buffer, size_t * out_n_bytes);
 int rir_census_report_impl(char * buffer, size_t n_buffer, size_t * out_n_bytes);

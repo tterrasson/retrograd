@@ -1,5 +1,6 @@
 use super::*;
 use crate::rir::kernel_run_info;
+use retrograd_core::{GEFEN_CODEBOOK_LEVELS, GEFEN_ZERO_BLOCK_INDEX, GefenVariant};
 
 // FFI safety contract for this module: every input slice is checked against
 // its declared shape before its pointer is passed, every output pointer names
@@ -574,4 +575,202 @@ pub fn slot_initial_bytes(
         return Err(runtime_error());
     }
     Ok(bytes)
+}
+
+/// The state one fixed-block Gefen step reads and writes, in host memory.
+///
+/// A Gefen step reached through a run is a step whose inputs a backward pass
+/// produced: a gradient nobody chose, a state nobody wrote, one arithmetic path
+/// per fixture. This is the same two ops with the state named by the caller,
+/// which is what makes the algorithm's edge cases - a zero block, a block of
+/// one repeated magnitude, every one of the 256 index codes, a partial trailing
+/// block, a decay-only step - reachable at all, and what lets one set of inputs
+/// be run on two devices and compared.
+#[derive(Clone, Debug)]
+pub struct GefenState {
+    pub weights: Vec<f32>,
+    /// The F32 first moment of `shared_v`; empty under `quantized_m`.
+    pub moment: Vec<f32>,
+    /// The byte indices of `quantized_m`; empty under `shared_v`.
+    pub indices: Vec<u8>,
+    /// One scale per block under `quantized_m`; empty under `shared_v`.
+    pub scales: Vec<f32>,
+    /// One second moment per block, under both variants.
+    pub v: Vec<f32>,
+    /// Phase A's answer for the last step: `[scale, second moment]` per block.
+    pub stats: Vec<f32>,
+}
+
+impl GefenState {
+    /// The state a run starts from: zero moments, zero second moments, and the
+    /// canonical index of a zero block everywhere.
+    pub fn initial(variant: GefenVariant, weights: Vec<f32>, block_size: usize) -> Self {
+        let n = weights.len();
+        let blocks = n.div_ceil(block_size);
+        let quantized = variant == GefenVariant::QuantizedM;
+        Self {
+            weights,
+            moment: if quantized { Vec::new() } else { vec![0.0; n] },
+            indices: if quantized {
+                vec![GEFEN_ZERO_BLOCK_INDEX; n]
+            } else {
+                Vec::new()
+            },
+            scales: if quantized {
+                vec![0.0; blocks]
+            } else {
+                Vec::new()
+            },
+            v: vec![0.0; blocks],
+            stats: vec![0.0; 2 * blocks],
+        }
+    }
+}
+
+/// The eight coefficients a Gefen step reads, in the order the op takes them.
+///
+/// `beta1h` and `beta2h` are the bias corrections - `1/(1 - beta^t)` - rather
+/// than the step count, because the op applies them and never computes them.
+#[derive(Clone, Copy, Debug)]
+pub struct GefenParams {
+    pub learning_rate: f32,
+    pub beta1: f32,
+    pub beta2: f32,
+    pub eps: f32,
+    pub weight_decay: f32,
+    pub beta1h: f32,
+    pub beta2h: f32,
+    pub grad_scale: f32,
+}
+
+impl GefenParams {
+    /// The coefficients of step `t`, counting from one, with the two bias
+    /// corrections derived rather than restated.
+    pub fn at_step(learning_rate: f32, beta1: f32, beta2: f32, eps: f32, t: u32) -> Self {
+        Self {
+            learning_rate,
+            beta1,
+            beta2,
+            eps,
+            weight_decay: 0.0,
+            beta1h: 1.0 / (1.0 - beta1.powi(t as i32)),
+            beta2h: 1.0 / (1.0 - beta2.powi(t as i32)),
+            grad_scale: 1.0,
+        }
+    }
+
+    fn as_array(self) -> [f32; 8] {
+        [
+            self.learning_rate,
+            self.beta1,
+            self.beta2,
+            self.eps,
+            self.weight_decay,
+            self.beta1h,
+            self.beta2h,
+            self.grad_scale,
+        ]
+    }
+}
+
+/// The uniform codebook `c[k] = -1 + 2k/255`, generated here rather than read
+/// out of a run, so a probe needs no model to start.
+pub fn gefen_codebook() -> Vec<f32> {
+    let levels = GEFEN_CODEBOOK_LEVELS as usize;
+    (0..levels)
+        .map(|k| -1.0 + 2.0 * (k as f32) / ((levels - 1) as f32))
+        .collect()
+}
+
+/// Whether `device` declares both Gefen phases for this variant and block size.
+///
+/// The two phases are asked about together because they are admitted together:
+/// a device that ran the pure one and not the mutating one would be scheduled
+/// as a split, and the update would land on a copy of the state.
+pub fn gefen_step_supported(
+    device: Device,
+    variant: GefenVariant,
+    block_size: u64,
+) -> Result<bool> {
+    let mut supported = 0_i32;
+    // SAFETY: the module contract validates input shapes and keeps every input/output allocation live.
+    let status = unsafe {
+        ffi::retro_probe_gefen_supported(
+            i32::from(device != Device::Cpu),
+            gefen_variant_id(variant),
+            i32::try_from(block_size).unwrap_or(i32::MAX),
+            &mut supported,
+        )
+    };
+    if status != 0 {
+        return Err(runtime_error());
+    }
+    Ok(supported != 0)
+}
+
+/// Runs `n_steps` complete fixed-block Gefen updates over `gradient` on
+/// `device`, starting from `state` and returning the state that came out.
+///
+/// Errors when the device declines either phase, which is the same predicate a
+/// run's preflight refuses on.
+pub fn gefen_step_probe(
+    device: Device,
+    variant: GefenVariant,
+    block_size: u64,
+    state: &GefenState,
+    gradient: &[f32],
+    params: GefenParams,
+    n_steps: u32,
+) -> Result<GefenState> {
+    let quantized = variant == GefenVariant::QuantizedM;
+    let n_elements = state.weights.len();
+    if gradient.len() != n_elements {
+        return Err(Error::invalid(format!(
+            "the gradient has {} elements and the weights {n_elements}",
+            gradient.len()
+        )));
+    }
+    let blocks = n_elements.div_ceil(block_size as usize);
+    let codebook = gefen_codebook();
+    let coefficients = params.as_array();
+
+    let mut out = state.clone();
+    out.stats.resize(2 * blocks, 0.0);
+
+    let mut probe = ffi::RetroGefenProbe {
+        use_gpu: i32::from(device != Device::Cpu),
+        variant: gefen_variant_id(variant),
+        block_size: i32::try_from(block_size).unwrap_or(i32::MAX),
+        n_elements: n_elements as i64,
+        n_blocks: blocks as i64,
+        levels: if quantized { codebook.len() as i32 } else { 0 },
+        n_steps: n_steps as i32,
+        weights: out.weights.as_mut_ptr(),
+        grad: gradient.as_ptr(),
+        v: out.v.as_mut_ptr(),
+        pars: coefficients.as_ptr(),
+        stats: out.stats.as_mut_ptr(),
+        ..ffi::RetroGefenProbe::default()
+    };
+    if quantized {
+        probe.indices = out.indices.as_mut_ptr();
+        probe.scales = out.scales.as_mut_ptr();
+        probe.codebook = codebook.as_ptr();
+    } else {
+        probe.moment = out.moment.as_mut_ptr();
+    }
+
+    // SAFETY: the module contract validates input shapes and keeps every input/output allocation live.
+    let status = unsafe { ffi::retro_probe_gefen_run(&mut probe) };
+    if status != 0 {
+        return Err(runtime_error());
+    }
+    Ok(out)
+}
+
+fn gefen_variant_id(variant: GefenVariant) -> i32 {
+    match variant {
+        GefenVariant::SharedV => ffi::RETRO_GEFEN_SHARED_V,
+        GefenVariant::QuantizedM => ffi::RETRO_GEFEN_QUANTIZED_M,
+    }
 }

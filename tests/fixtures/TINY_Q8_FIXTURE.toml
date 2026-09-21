@@ -1,0 +1,35 @@
+# The fourth CPU fixture: the tiny model once more, with its matrices stored as
+# Q8_0.
+#
+# It exists for one question the other three cannot be asked: what a *quantized
+# anchor* costs in accuracy. A run's KL term scores against a frozen reference
+# model, and nothing says that reference has to be stored at the precision the
+# policy is - a quantized anchor is half the weights on the device. Whether the
+# scores it produces are close enough to the ones an F32 anchor produces is a
+# measurement, and a measurement needs two files holding the same model.
+#
+# That is what this file is. The generator snaps every weight to the F16 grid
+# before storing it, in every variant, so `TINY_FIXTURE.toml` and this file are
+# the same numbers at two precisions and not two models. A score that differs
+# between a run anchored on one and a run anchored on the other therefore
+# differs because of quantization, and for no other reason.
+#
+# Architecture `qwen2`, same geometry as the F32 fixture: 4 blocks, n_embd 64,
+# n_ff 128, 4 heads over 2 KV heads, vocabulary 260. Matrices are Q8_0 - 32
+# values per block, one F16 scale, int8 codes - and vectors stay F32, which is
+# what a real quantized GGUF looks like.
+#
+# Q8_0 rather than a k-quant: it has no sub-blocks and needs no importance
+# matrix, so the quantizer is thirty lines inside the generator and the file's
+# bytes stay a property of this repository rather than of whichever
+# `llama-quantize` happened to be on the machine.
+#
+# Regenerating after editing the generator means updating `sha256` and
+# `size_bytes` here *and* in the other three manifests, in the same commit: one
+# generator writes them all, and a set that drifts apart stops being a control.
+filename = "retrograd-tiny-qwen2-q8_0.gguf"
+generator = "scripts/gen-tiny-fixture.py"
+generator_args = "--dtype q8_0"
+override_env = "RETRO_TINY_Q8_FIXTURE"
+size_bytes = 207072
+sha256 = "f48a0e831ab1c16b07aa98b645205fb08e5c390ada539fa36052fc9e93463890"

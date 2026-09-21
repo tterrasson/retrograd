@@ -31,40 +31,63 @@ one.
 | AdamW | ✅ | ✅ | ✅ | ✅ |
 | SGD | ✅ | ✅ | ✅ | ✅ |
 | Muon | ✅ | ✅ | ✅ | ✅ |
-| Gefen | ✅ | ✅ | ❌ | ❌ |
+| Gefen | ✅ | ✅ | 🟡 [a] | ✅ |
 
-Gefen's two update phases are only implemented on CPU and Metal. A run asks
+Gefen's two update phases are implemented on every backend. A run still asks
 the live device whether it has them (`cap_opt_step_device` in the capability
-report) and is refused at preflight on Vulkan or CUDA, rather than silently
+report) and is refused at preflight where it does not, rather than silently
 falling back to a copy that would leave the real optimizer state stale.
+
+- **[a]** Vulkan carries both phases, with one restriction under
+  `variant = "quantized_m"`: the block size must be a multiple of four.
+  `shared_v` has no such restriction. The default (1024) satisfies it, and a
+  run that asks for a non-multiple is refused at preflight.
+
+Both optimizers are correct on every backend and neither is yet recommended
+over AdamW: see [Optimizer cost and quality](optims/OPTIMIZERS.md) for what
+they were measured to cost and to approximate.
 
 ## Kernels and execution
 
 | Capability | CPU | Metal | Vulkan | CUDA |
 |---|---|---|---|---|
-| Differentiable flash attention | ➖ | ❌ [1] | ✅ | 🟡 [2] |
-| Chunked cross-entropy | ✅ | 🟡 [3] | ✅ | ✅ |
-| Device-side sampling | ➖ | 🟡 [4] | 🟡 [4] | 🟡 [4] |
-| Generated RIR kernels | ❌ [5] | 🟡 [6] | 🟡 [6] | 🟡 [7] |
-| Multi-GPU | ➖ | ❌ | ❌ | ❌ [8] |
-| Automatic CI lane | ✅ [9] | ⚠️ | ⚠️ | ⚠️ |
+| Differentiable flash attention | ➖ [1] | 🟡 [2] | ✅ [3] | 🟡 [4] |
+| Chunked cross-entropy | ✅ | ✅ [5] | ✅ [5] | ✅ [5] |
+| Device-side sampling | ➖ | 🟡 [6] | 🟡 [6] | 🟡 [6] |
+| Generated RIR kernels | ❌ [7] | 🟡 [8] | 🟡 [8] | 🟡 [9] |
+| Multi-GPU | ➖ | ❌ | ❌ | ❌ [10] |
+| Automatic CI lane | ✅ [11] | ⚠️ | ⚠️ | ⚠️ |
 
-- **[1]** Metal has no differentiable flash-attention path; it runs a
-  materialized F32 backward graph instead.
-- **[2]** CUDA covers `head_dim` 64, 128 and 256 only.
-- **[3]** Chunked cross-entropy is off by default on Metal; two nodes fall back
-  to the CPU.
-- **[4]** Advertised per `ggml_backend_dev_supports_op`, never by a backend-name
+- **[1]** GPU only: a CPU run builds the materialized F32 backward graph, and
+  so does any GPU shape the device declines. What follows is probed per model
+  at load time (`supports_flash_attn_back`), never read off a backend name.
+- **[2]** Metal stops at `head_dim` 256 (`GGML_METAL_FA_BACK_MAX_D`), K/V in
+  F16 or F32, no attention sinks.
+- **[3]** Vulkan reaches `head_dim` 512 and is the only backend accepting
+  attention sinks - the only one with a probe exercising them. It needs a
+  32-wide subgroup.
+- **[4]** CUDA reaches `head_dim` 512 (`FA_BACK_MAX_D`), K/V in F16 or F32, no
+  attention sinks.
+- **[5]** On by default everywhere, and every backend ships both fused nodes -
+  but they are probed against the model's head geometry and weight type
+  (`cap_fused_sparse_ce`). A device that declines either sends the whole loss
+  tail to the CPU, which the backend report names
+  (`chunked_cross_entropy_status: cpu_fallback`) and
+  `RETRO_REQUIRE_GPU_RESIDENT=1` turns into a preflight failure.
+- **[6]** Advertised per `ggml_backend_dev_supports_op`, never by a backend-name
   comparison.
-- **[5]** CPU is always native and serves as the Loop IR oracle; it never runs a
+- **[7]** CPU is always native and serves as the Loop IR oracle; it never runs a
   generated kernel.
-- **[6]** Per-kernel policy in the RIR registry
+- **[8]** Per-kernel policy in the RIR registry
   (`crates/rir-kernels/src/integration.rs`): a generated kernel may replace a
-  native one.
-- **[7]** Native by default; a kernel is promoted only after parity and timing
-  validation, per a spec.
-- **[8]** Single device (`CUDA0`); no sharding, NCCL or peer-copy.
-- **[9]** CPU-only features, fast Rust and Python lanes. A *manual* row is run
+  native one, and two families (`L2_NORM_BACK`, `RMS_NORM_BACK`) have had
+  theirs retired from the fork outright.
+- **[9]** Same registry, one gate more: a CUDA policy above native-only has to
+  be a line in `CUDA_ADMITTED` (`crates/rir-gen/src/validate.rs`), with its
+  measurement. Two ops are promoted there today, `L2_NORM_BACK` and `SCALE`;
+  the rest stay native or in observe.
+- **[10]** Single device (`CUDA0`); no sharding, NCCL or peer-copy.
+- **[11]** CPU-only features, fast Rust and Python lanes. A *manual* row is run
   by hand on the reference hardware (§Release criteria).
 
 Recurrent and hybrid model families train correctly everywhere; what varies

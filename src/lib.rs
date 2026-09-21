@@ -29,11 +29,13 @@ pub use retrograd_core::{
 };
 pub use retrograd_core::{Dataset as DatasetRecord, Progress as CheckpointProgress};
 pub use retrograd_engine::{
-    DutyCycleStats, FusedCeProbeInputs, FusedCeProbeShape, OptimizerMemory, ProbeInputs,
-    ProbeOperand, Trainer, TransferRates, backend_list, dequant_types, fused_sparse_ce_probe,
-    fused_sparse_ce_probe_offloaded, gpu_runtime_available, model_info, parse_assistant_output,
-    probe_op, probe_op_ex, render_chat_template_source, rir_census_report, rir_counters,
-    rir_runtime_policy, rir_selection_selftest, rir_variant_report, set_rir_runtime_policy,
-    slot_initial_bytes, tensor_inventory, tool_call_parser_from_source, transfer_probe,
+    DutyCycleStats, FusedCeProbeInputs, FusedCeProbeShape, GefenParams, GefenState,
+    OptimizerMemory, ProbeInputs, ProbeOperand, Trainer, TransferRates, backend_list,
+    dequant_types, fused_sparse_ce_probe, fused_sparse_ce_probe_offloaded, gefen_codebook,
+    gefen_step_probe, gefen_step_supported, gpu_runtime_available, model_info,
+    parse_assistant_output, probe_op, probe_op_ex, render_chat_template_source, rir_census_report,
+    rir_counters, rir_runtime_policy, rir_selection_selftest, rir_variant_report,
+    set_rir_runtime_policy, slot_initial_bytes, tensor_inventory, tool_call_parser_from_source,
+    transfer_probe,
 };
 pub use training::batch::{GrpoBatchParams, TrainSequence};

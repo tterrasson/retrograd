@@ -113,6 +113,60 @@ impl Default for RetroKernelRunInfo {
     }
 }
 
+/// The two fixed-block Gefen ops driven directly, with no model and no
+/// training graph. Every pointer is host memory in the caller's layout; the
+/// probe uploads it, runs `n_steps` full updates on the selected device and
+/// reads the state back into the same buffers.
+///
+/// Which pointers are required depends on the variant: `shared_v` keeps
+/// `moment` and no `indices`/`scales`/`codebook`, `quantized_m` the reverse.
+/// Set `struct_size` before the call.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RetroGefenProbe {
+    pub struct_size: u32,
+    pub use_gpu: i32,
+    pub variant: i32,
+    pub block_size: i32,
+    pub n_elements: i64,
+    pub n_blocks: i64,
+    pub levels: i32,
+    pub n_steps: i32,
+    pub weights: *mut c_float,
+    pub grad: *const c_float,
+    pub moment: *mut c_float,
+    pub indices: *mut u8,
+    pub scales: *mut c_float,
+    pub v: *mut c_float,
+    pub codebook: *const c_float,
+    pub pars: *const c_float,
+    pub stats: *mut c_float,
+}
+
+impl Default for RetroGefenProbe {
+    fn default() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            use_gpu: 0,
+            variant: RETRO_GEFEN_SHARED_V,
+            block_size: 0,
+            n_elements: 0,
+            n_blocks: 0,
+            levels: 0,
+            n_steps: 1,
+            weights: std::ptr::null_mut(),
+            grad: std::ptr::null(),
+            moment: std::ptr::null_mut(),
+            indices: std::ptr::null_mut(),
+            scales: std::ptr::null_mut(),
+            v: std::ptr::null_mut(),
+            codebook: std::ptr::null(),
+            pars: std::ptr::null(),
+            stats: std::ptr::null_mut(),
+        }
+    }
+}
+
 /// Process-wide RIR dispatch counters. Set `struct_size` before the call.
 /// `reject_by_reason` has one bucket per `retro_kernel_reject` value, including
 /// `MATCHED`; its size must stay synchronized with the C and ggml definitions.
@@ -861,6 +915,21 @@ unsafe extern "C" {
         dst_len: usize,
         implementation: i32,
         info: *mut RetroKernelRunInfo,
+    ) -> c_int;
+
+    /// Runs both fixed-block Gefen phases over caller-supplied state. Fails
+    /// when the selected device declines either phase: they are admitted
+    /// together, so a partial answer is never returned.
+    pub fn retro_probe_gefen_run(probe: *mut RetroGefenProbe) -> c_int;
+
+    /// Whether the device declares both Gefen phases for this variant and block
+    /// size. The predicate is the backend's own, so it is the answer a run's
+    /// preflight gets.
+    pub fn retro_probe_gefen_supported(
+        use_gpu: i32,
+        variant: i32,
+        block_size: i32,
+        out_supported: *mut i32,
     ) -> c_int;
 
     /// Fills a snapshot of the process-wide RIR dispatch counters. `struct_size`

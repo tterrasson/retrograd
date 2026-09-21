@@ -20,6 +20,7 @@ cargo build --features cuda
 |---|---|---|
 | `RETRO_CUDA_ARCHITECTURES` | `native` | GPU architectures to compile for, for example `89-real` |
 | `RETRO_CUDA_GRAPHS` | off | Enable CUDA Graphs capture |
+| `GGML_CUDA_DEQUANT_BUDGET_MB` | 64 | F32 scratch ceiling of the sliced `OUT_PROD` dequantization; 0 or less means no slicing |
 
 NCCL is always disabled.
 
@@ -32,14 +33,15 @@ CPU.
 |---|---|
 | `OUT_PROD` | F32, F16 and 23 quantized types |
 | `FUSED_SPARSE_CE` and its backward | F32, F16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K to Q6_K |
-| `FLASH_ATTN_BACK` | `head_dim` 64, 128 or 256; K/V in F16 or F32; GQA; softcap |
+| `FLASH_ATTN_BACK` | `head_dim` up to 512; K/V in F16 or F32; GQA; softcap; no attention sinks |
 | `SSM_CONV_BACK`, `SSM_SCAN_BACK` | contiguous F32 |
 | `SILU_BACK`, `RMS_NORM_BACK`, `SOFT_MAX_BACK`, `GET_ROWS_BACK`, `CROSS_ENTROPY_LOSS_BACK` | yes |
 | `CONV_RS_GATHER` | yes, used when `RETRO_RECURRENT_ROLLBACK=auto` |
 | AdamW | F16 parameters, with stochastic rounding identical to the CPU |
 
-A `head_dim` other than 64, 128 or 256 uses the CPU path for flash attention
-backward.
+The kernel picks the smallest register bucket covering the head dimension -
+128, 256 or 512 (`FA_BACK_MAX_D`); a wider head, or a model with attention
+sinks, takes the materialized F32 backward graph instead.
 
 The runtime detects these capabilities from the device itself.
 `backend_report` shows them in `gpu_device`, `cap_flash_attn_back` and
@@ -56,9 +58,11 @@ The runtime detects these capabilities from the device itself.
 - **VRAM numbers.** In the memory report, `scratch_*` is the memory used by
   this process. `device_*` is for the whole GPU, so only compare it between
   two points in time.
-- **Known failing test, not CUDA related.**
-  `checkpoint_resume::restoring_the_optimizer_state_tracks_the_uninterrupted_run_more_closely`
-  also fails on CPU.
+- **A quantized `OUT_PROD` does not always decode in place.** Wide
+  projections use a dequantize+SGEMM path whose F32 scratch is bounded by
+  `GGML_CUDA_DEQUANT_BUDGET_MB`; small and strided outputs keep the
+  scratch-free in-place decoder. So the budget moves a step's scratch peak by
+  design, and it bounds the scratch without changing any gradient.
 
 ## Running the tests
 
@@ -74,6 +78,13 @@ RETRO_CUDA_ARCHITECTURES=89-real RETRO_CUDA_GRAPHS=1 cargo test --features cuda 
 
 # CPU non-regression
 cargo test --no-default-features --features agent
+
+# The device-memory guard (discrete GPU only): on unified memory a "device"
+# allocation is a host allocation.
+RETRO_REQUIRE_GPU_RESIDENT=1 \
+RETRO_CPU_FIXTURE=tests/fixtures/LFM2.5-230M-Q4_K_M.gguf \
+RETRO_TINY_FIXTURE=tests/fixtures/retrograd-tiny-qwen2-f32.gguf \
+  cargo test --release --features cuda --test device_memory --test gefen_ops -- --test-threads=1
 ```
 
 Replace `89-real` with the compute capability of your GPU.

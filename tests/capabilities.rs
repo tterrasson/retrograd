@@ -77,6 +77,16 @@ fn train_preflight_reports_per_device_training_support() {
     assert!(report.contains("training preflight"), "{report}");
     assert!(report.contains("architecture: lfm2"), "{report}");
     assert!(report.contains("missing_gradient_rules: 0"), "{report}");
+    // A separate count from the one above, and separate on purpose: that line
+    // is an op with no gradient rule at all, this one is a parameter that was
+    // marked and still ends the backward with no gradient. A rule that exists
+    // and declines the operand it was given is invisible to the first and
+    // caught by the second, and the symptom - a marked tensor that trains as a
+    // silent no-op - is the same either way.
+    assert!(
+        report.contains("parameters_without_gradient: 0"),
+        "{report}"
+    );
     assert!(report.contains("CPU: training graph ready"), "{report}");
 
     // The preflight result is cached and surfaced by the capability report.
