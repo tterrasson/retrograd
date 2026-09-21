@@ -259,7 +259,6 @@ def test_pyo3_carries_an_optimizer_section_into_the_run(tmp_path: Path) -> None:
     finally:
         trainer.close()
 
-
     other = _base_trainer(native, model, optimizer="gefen")
     try:
         dataset = other.prepare_dataset(str(corpus), "text", _CONTEXT)
