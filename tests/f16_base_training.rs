@@ -29,10 +29,10 @@ use std::path::{Path, PathBuf};
 
 use retrograd::checkpoint::{self, Checkpoint};
 use retrograd::{
-    BASE_DTYPE_TABLE, BaseDtypeCapability, CheckpointMetadata, Device, OptimizerKind, ProbeInputs,
-    ProbeOp, TensorDtype, TrainConfig, TrainablePolicy, TrainableRunConfig, TrainableSelector,
-    TrainableSet, Trainer, base_dtype_admits, base_dtype_capability, probe_op, resolve_base,
-    tensor_inventory,
+    BASE_DTYPE_TABLE, BaseDtypeCapability, CheckpointMetadata, Device, MIN_BASE_STEP_ULPS,
+    OptimizerKind, ProbeInputs, ProbeOp, TensorDtype, TrainConfig, TrainablePolicy,
+    TrainableRunConfig, TrainableSelector, TrainableSet, Trainer, base_dtype_admits,
+    base_dtype_capability, probe_op, resolve_base, tensor_inventory,
 };
 
 const TEXT: &str = concat!(
@@ -500,6 +500,78 @@ fn table_agrees_with_backend(storage: &Storage, optimizer: OptimizerKind, device
             assert!(message.contains(&registry), "{message}");
         }
     }
+}
+
+/// The row admits the store; whether this rate can move it is a separate
+/// check, and it is refused when the step is far under one ulp.
+#[test]
+fn a_rate_under_the_grid_of_a_half_precision_store_is_refused() {
+    per_case(rate_under_the_grid);
+}
+
+/// A rate under every grid this build stores a weight on.
+const RATE_UNDER_EVERY_GRID: f32 = 1.0e-12;
+
+fn rate_under_the_grid(storage: &Storage, optimizer: OptimizerKind, device: Device) {
+    let Some((model, control)) = storage.pair() else {
+        return;
+    };
+    let _guard = common::serialize_models();
+
+    let tiny = |optimizer, device| TrainConfig {
+        learning_rate: RATE_UNDER_EVERY_GRID,
+        ..config(optimizer, device)
+    };
+    let set = resolved_set(&model, device);
+    let mut trainer = Trainer::new(&model, tiny(optimizer, device)).expect("load trainer");
+    if row_for(&mut trainer, &storage.dtype, optimizer).is_none() {
+        eprintln!("skipping: no row admits this combination here");
+        return;
+    }
+    trainer
+        .declare_trainable_set(&set)
+        .expect("the selected projections");
+    match trainer.prepare_optimizer() {
+        // SGD's step is `alpha * |gradient|`, which no preflight knows, so it
+        // is not graded against the grid.
+        Ok(()) => assert_eq!(
+            optimizer,
+            OptimizerKind::Sgd,
+            "{optimizer} steps about alpha per element and {} cannot carry {RATE_UNDER_EVERY_GRID}",
+            storage.dtype
+        ),
+        Err(error) => {
+            assert_eq!(
+                optimizer,
+                OptimizerKind::AdamW,
+                "{optimizer}'s step is not sized by alpha alone: {error}"
+            );
+            let message = error.to_string();
+            // The store, the unit, and the knob.
+            let named = storage.dtype.name().to_ascii_lowercase();
+            assert!(message.contains(&named), "{message}");
+            assert!(message.contains("ulp"), "{message}");
+            assert!(message.contains("training.lr"), "{message}");
+            // The run's own step, in the same unit, is on the report.
+            let measured = report_line(&mut trainer, "base_step_ulps")
+                .parse::<f32>()
+                .expect("the report carries this run's step in ulps");
+            assert!(measured < MIN_BASE_STEP_ULPS, "{measured} ulp");
+        }
+    }
+
+    // The same rate on the F32 control: the refusal is about the storage, not
+    // the rate alone.
+    let control_set = resolved_set(&control, device);
+    let mut control_trainer =
+        Trainer::new(&control, tiny(optimizer, device)).expect("load the control");
+    control_trainer
+        .declare_trainable_set(&control_set)
+        .expect("the selected projections");
+    control_trainer
+        .prepare_optimizer()
+        .expect("an F32 store carries any rate this trainer accepts");
+    assert_eq!(report_line(&mut control_trainer, "base_step_ulps"), "n/a");
 }
 
 /// A half-precision base tensor is marked, carries an F32 gradient, and moves.

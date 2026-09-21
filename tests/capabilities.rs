@@ -3,7 +3,7 @@
 
 mod common;
 
-use retrograd::{Device, KvDtype, LoraConfig, TargetSet, TrainConfig, Trainer};
+use retrograd::{Device, KvDtype, LoraConfig, MIN_BASE_STEP_ULPS, TargetSet, TrainConfig, Trainer};
 
 fn cpu_config() -> TrainConfig {
     TrainConfig {
@@ -63,6 +63,43 @@ fn the_capability_report_names_each_optimizers_half_precision_storages() {
     // The F32-only optimizers are absent, not named with an empty brace pair.
     assert!(!line.contains("muon"), "{report}");
     assert!(!line.contains("gefen"), "{report}");
+}
+
+/// The floor a half-precision base run is refused under, as one report line.
+/// The runtime keeps its own copy of the constant; this checks it agrees with
+/// the Rust table.
+#[test]
+fn the_capability_report_carries_the_half_precision_step_floor() {
+    let Some(model) = common::model_path_if_available() else {
+        eprintln!(
+            "skipping: no local model at {}",
+            common::model_path().display()
+        );
+        return;
+    };
+    let _guard = common::serialize_models();
+    let trainer = Trainer::new(model, cpu_config()).expect("load CPU model");
+    let report = trainer.backend_report().expect("backend report");
+    let floor = report
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("base_step_min_ulps: "))
+        .expect("the report names the half-precision step floor")
+        .trim()
+        .parse::<f32>()
+        .expect("the floor is a number");
+    assert!(
+        (floor - MIN_BASE_STEP_ULPS).abs() < f32::EPSILON,
+        "the runtime refuses under {floor} ulp and the table declares \
+         {MIN_BASE_STEP_ULPS}:\n{report}"
+    );
+    // A LoRA run steps no base tensor, so there is no measured step to print.
+    let measured = report
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("base_step_ulps: "))
+        .expect("the report names this run's own step")
+        .trim()
+        .to_string();
+    assert_eq!(measured, "n/a", "{report}");
 }
 
 #[test]

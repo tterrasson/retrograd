@@ -1,5 +1,7 @@
 #include "retro_runtime.hpp"
 
+#include <cfloat>
+#include <cmath>
 #include <functional>
 #include <map>
 #include <random>
@@ -666,6 +668,192 @@ bool declared_base_dtypes_are_admitted(const trainer_state & state) {
             + " base tensor(s) not admitted for " + join_patterns(offenders) + " on "
             + state.backend_registry + ": [" + join_patterns(unsupported) + "]. "
             + join_patterns(elsewhere) + "; store these tensors as F32 to train them here");
+    return false;
+}
+
+// Copies of MIN_BASE_STEP_ULPS and MAX_BASE_STEP_UNDERFLOW_SHARE from
+// retrograd-core/src/base_dtype.rs; tests/capabilities.rs checks they agree.
+static const float MIN_BASE_STEP_ULPS = 0.125f;
+static const float MAX_BASE_STEP_UNDERFLOW_SHARE = 0.5f;
+
+// The floor, exposed for the capability report.
+float base_step_min_ulps() {
+    return MIN_BASE_STEP_ULPS;
+}
+
+// Significand bits below the leading one, or 0 for types this rule does not
+// grade (F32 and every quantization).
+static int store_significand_bits(ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_F16:  return 10;
+        case GGML_TYPE_BF16: return 7;
+        default:             return 0;
+    }
+}
+
+// One ulp of `type`'s grid at `value`; zero and subnormals use the smallest
+// normal's ulp.
+static float storage_ulp(ggml_type type, float value, int significand_bits) {
+    const float smallest_normal = type == GGML_TYPE_F16 ? 6.1035156e-5f : FLT_MIN;
+    const float magnitude = std::fabs(value);
+    if (!std::isfinite(magnitude) || magnitude < smallest_normal) {
+        return std::ldexp(1.0f, std::ilogb(smallest_normal) - significand_bits);
+    }
+    return std::ldexp(1.0f, std::ilogb(magnitude) - significand_bits);
+}
+
+// Three significant digits, because the values here span ten orders of
+// magnitude.
+std::string format_significant(float value) {
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "%.3g", value);
+    return std::string(buffer);
+}
+
+// The mean ulp of a sample of a tensor's weights, or false when the sample
+// carries nothing to average. Sampled, not read whole: the marked set of a
+// full run is the size of the model. The read goes through the backend
+// because a base weight may be device-resident.
+static bool sampled_mean_ulp(const ggml_tensor * tensor, int significand_bits, float & out_ulp) {
+    const int64_t n_elements = ggml_nelements(tensor);
+    if (n_elements <= 0 || !ggml_is_contiguous(tensor)) {
+        return false;
+    }
+    // Widening: a count clamped to 4096 fits every size type below.
+    const size_t sampled = static_cast<size_t>(std::min<int64_t>(n_elements, 4096));
+    std::vector<uint16_t> half(sampled);
+    ggml_backend_tensor_get(const_cast<ggml_tensor *>(tensor), half.data(), 0,
+            half.size() * sizeof(uint16_t));
+    double total = 0.0;
+    int64_t counted = 0;
+    for (const uint16_t bits : half) {
+        const float value = tensor->type == GGML_TYPE_BF16
+                ? ggml_bf16_to_fp32(ggml_bf16_t { bits })
+                : ggml_fp16_to_fp32(static_cast<ggml_fp16_t>(bits));
+        if (!std::isfinite(value)) {
+            continue;
+        }
+        total += static_cast<double>(storage_ulp(tensor->type, value, significand_bits));
+        ++counted;
+    }
+    if (counted == 0) {
+        return false;
+    }
+    out_ulp = static_cast<float>(total / static_cast<double>(counted));
+    return out_ulp > 0.0f;
+}
+
+// One marked half-precision tensor's grid and the rate it is stepped at.
+struct base_step_entry {
+    std::string  name;
+    ggml_type    type;
+    float        ulp;
+    float        step;
+    int64_t      n_elements;
+};
+
+// Whether the per-element update this run intends is large enough for the
+// half-precision stores it is written to. There is no F32 master copy: a step
+// below one ulp is a whole ulp taken with probability step/ulp, so the weights
+// follow the rounding rather than the gradient.
+//
+// Only optimizers whose step is about alpha per element are graded (AdamW,
+// Gefen). SGD's step is alpha*|gradient|, which no preflight can know.
+bool declared_base_steps_are_representable(trainer_state & state) {
+    state.base_step_ulps = -1.0f;
+    if (!trains_base_weights(state) || state.trainable_base.empty()) {
+        return true;
+    }
+    const retro_train_config & config = state.train_config;
+    std::vector<base_step_entry> entries;
+    int64_t total_elements = 0;
+    int64_t under_elements = 0;
+    double step_ulps_total = 0.0;
+    for (const std::string & name : state.trainable_base) {
+        const ggml_tensor * tensor = nullptr;
+        for (const auto & item : state.model->tensors_by_name) {
+            if (item.first == name) {
+                tensor = item.second;
+                break;
+            }
+        }
+        if (!tensor) {
+            continue;  // the marked-set check owns names that resolve to nothing
+        }
+        const int significand_bits = store_significand_bits(tensor->type);
+        if (significand_bits == 0) {
+            continue;  // F32, or a dtype the admission above already refused
+        }
+        const int32_t optimizer = retro_optimizer_of(opt_param_optimizer(tensor, &state));
+        if (optimizer != RETRO_OPTIMIZER_ADAMW && optimizer != RETRO_OPTIMIZER_GEFEN) {
+            continue;
+        }
+        // A Muon run steps the parameters Muon declines at its fallback rate.
+        const bool muon_fallback = optimizer == RETRO_OPTIMIZER_ADAMW
+                && config.optimizer == RETRO_OPTIMIZER_MUON
+                && config.muon_fallback_learning_rate > 0.0f;
+        const float step = muon_fallback
+                ? config.muon_fallback_learning_rate
+                : config.learning_rate;
+        float ulp = 0.0f;
+        if (!sampled_mean_ulp(tensor, significand_bits, ulp)) {
+            continue;
+        }
+        const int64_t n_elements = ggml_nelements(tensor);
+        entries.push_back(base_step_entry { name, tensor->type, ulp, step, n_elements });
+        total_elements += n_elements;
+        step_ulps_total += static_cast<double>(step / ulp) * static_cast<double>(n_elements);
+        if (step < MIN_BASE_STEP_ULPS * ulp) {
+            under_elements += n_elements;
+        }
+    }
+    if (total_elements == 0) {
+        return true;  // nothing graded here
+    }
+    // One number for the whole marked set, weighted by element count; the
+    // report prints it whether or not the run is refused.
+    state.base_step_ulps =
+            static_cast<float>(step_ulps_total / static_cast<double>(total_elements));
+    const double share = static_cast<double>(under_elements) / static_cast<double>(total_elements);
+    if (share <= static_cast<double>(MAX_BASE_STEP_UNDERFLOW_SHARE)) {
+        return true;
+    }
+    // The tensor whose step is the smallest fraction of its own grid.
+    const base_step_entry * worst = &entries.front();
+    for (const base_step_entry & entry : entries) {
+        if (entry.step / entry.ulp < worst->step / worst->ulp) {
+            worst = &entry;
+        }
+    }
+    // The rate that would bring the share back under the cap: MIN_BASE_STEP_ULPS
+    // ulps of the grid at the tolerated quantile.
+    std::vector<base_step_entry> by_ulp = entries;
+    std::sort(by_ulp.begin(), by_ulp.end(),
+            [](const base_step_entry & a, const base_step_entry & b) { return a.ulp < b.ulp; });
+    const double carried_target = static_cast<double>(total_elements)
+            * (1.0 - static_cast<double>(MAX_BASE_STEP_UNDERFLOW_SHARE));
+    double carried = 0.0;
+    float quantile_ulp = by_ulp.back().ulp;
+    for (const base_step_entry & entry : by_ulp) {
+        carried += static_cast<double>(entry.n_elements);
+        if (carried >= carried_target) {
+            quantile_ulp = entry.ulp;
+            break;
+        }
+    }
+    const int percent = static_cast<int>(share * 100.0 + 0.5);
+    set_error("the learning rate " + format_significant(config.learning_rate)
+            + " is below what this run's " + ggml_type_name(worst->type)
+            + " base weights can carry: " + std::to_string(percent)
+            + "% of the trained parameters take an update under "
+            + format_significant(MIN_BASE_STEP_ULPS) + " ulp of their own store (worst "
+            + worst->name + ": ulp " + format_significant(worst->ulp) + ", update "
+            + format_significant(worst->step / worst->ulp) + " ulp). The update step has no F32 "
+              "master copy: it rounds the sum back onto the same grid, so a step under one ulp "
+              "is a whole ulp taken at random and the weights follow the rounding rather than "
+              "the gradient. Train from an F32 model file, raise training.lr to "
+            + format_significant(MIN_BASE_STEP_ULPS * quantile_ulp)
+            + " or above, or train a LoRA adapter, whose factors are stored F32");
     return false;
 }
 

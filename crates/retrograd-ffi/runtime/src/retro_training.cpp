@@ -417,6 +417,12 @@ bool ensure_opt_context(trainer_state & state) {
         return false;
     }
 
+    // The store is admitted; whether this rate can move it is a separate
+    // claim. Asked after the dtype check because it reads the same tensors.
+    if (!declared_base_steps_are_representable(state)) {
+        return false;
+    }
+
     // A step whose mutations the active device cannot run must not be built:
     // the scheduler would answer it on a fallback backend, update a copy of the
     // state and leave the real slot stale. Refused here, before the graph.

@@ -22,8 +22,9 @@ mod types;
 mod wire_enum;
 
 pub use base_dtype::{
-    BASE_DTYPE_TABLE, BaseDtypeCapability, base_dtype_admits, base_dtype_backends,
-    base_dtype_capability, base_dtype_is_tabled,
+    BASE_DTYPE_TABLE, BaseDtypeCapability, MAX_BASE_STEP_UNDERFLOW_SHARE, MIN_BASE_STEP_ULPS,
+    base_dtype_admits, base_dtype_backends, base_dtype_capability, base_dtype_is_tabled,
+    base_step_is_representable, storage_ulp,
 };
 pub use capability::{
     ArchitectureCapability, CAPABILITY_TABLE, architecture_capability, architecture_exports_model,

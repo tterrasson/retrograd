@@ -1717,6 +1717,14 @@ std::string backend_report(const trainer_state & state) {
     out << "  n_gpu_layers: " << state.n_gpu_layers << "\n";
     out << "  lora_dtype: " << lora_dtype_name(state.lora_dtype) << "\n";
     out << "  optimizer_f16: " << optimizer_f16_status(state) << "\n";
+    // The per-element update this run's half-precision base tensors receive,
+    // against the floor the preflight refuses under. "n/a" when no such tensor
+    // is trained or the preflight has not run.
+    out << "  base_step_ulps: "
+        << (state.base_step_ulps < 0.0f ? std::string("n/a")
+                                        : format_significant(state.base_step_ulps))
+        << "\n";
+    out << "  base_step_min_ulps: " << format_significant(base_step_min_ulps()) << "\n";
     // Every byte figure in this report comes from `memory_totals`, the same computation
     // `retro_trainer_memory_report` hands to callers as data. The report renders
     // it; it does not recompute it.

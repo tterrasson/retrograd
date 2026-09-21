@@ -183,6 +183,10 @@ struct trainer_state {
     // copy, and the real slot would stay stale. Refused at preflight, which is
     // why the probe is here and not inside the step.
     bool cap_opt_step_device = true;
+    // The per-element update this run's half-precision base tensors receive,
+    // in ulps of their own store, weighted by element count. Negative until
+    // the preflight computes it, or when nothing is stepped.
+    float base_step_ulps = -1.0f;
     // Micro-batch the training context was actually built with. Equal to the
     // requested n_ubatch unless the load-time finiteness probe escalated it.
     uint32_t effective_ubatch = 0;
@@ -543,6 +547,14 @@ bool optimizer_kernel_writes_dtype(int32_t optimizer, ggml_type type);
 // anything: a dtype the mark step skips would otherwise surface as rule 6's
 // "declared but not marked".
 bool declared_base_dtypes_are_admitted(const trainer_state & state);
+// Whether the per-element update this run intends is large enough for the
+// half-precision stores it is written to. Records the run's own step, in
+// ulps, on the state for the capability report.
+bool declared_base_steps_are_representable(trainer_state & state);
+// The floor that check refuses under, in ulps of the store.
+float base_step_min_ulps();
+// Three significant digits, for rates and grids in errors and the report.
+std::string format_significant(float value);
 // The optimizer that owns one parameter: the declared assignment, falling
 // back to the run's own optimizer. `userdata` is the `trainer_state *`.
 ggml_opt_optimizer_type opt_param_optimizer(const ggml_tensor * tensor, void * userdata);

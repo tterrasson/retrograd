@@ -180,6 +180,50 @@ pub const BASE_DTYPE_TABLE: &[BaseDtypeCapability] = &[
     },
 ];
 
+/// Smallest per-element update, in ulps of the store it is written to, a
+/// half-precision base weight is trained at here.
+///
+/// The rows above admit a storage but say nothing about how far one step
+/// moves. The update kernels have no F32 master copy: they read the parameter,
+/// add the step and round the sum back onto the same grid. A step below one
+/// ulp is a whole ulp taken with probability `step / ulp`, so the weights
+/// follow the rounding rather than the gradient. At one eighth of an ulp the
+/// gradient still dominates the rounding noise within a few hundred steps.
+pub const MIN_BASE_STEP_ULPS: f32 = 0.125;
+
+/// Share of the trained half-precision *parameters* allowed to sit under
+/// [`MIN_BASE_STEP_ULPS`] before the run is refused.
+///
+/// The grid is relative, so the count is by element: a norm vector near 1.0
+/// has a much coarser ulp than the matrices, and a minority of under-represented
+/// elements is tolerated.
+pub const MAX_BASE_STEP_UNDERFLOW_SHARE: f32 = 0.5;
+
+/// One ulp of the grid `dtype` stores `value` on, or `None` for dtypes with no
+/// half-precision grid (F32 and every quantization).
+///
+/// Subnormals answer with the smallest normal's ulp, so a zero weight still
+/// gets a positive grid.
+pub fn storage_ulp(dtype: &TensorDtype, value: f32) -> Option<f32> {
+    // Significand bits below the leading one, and the smallest normal.
+    let (significand_bits, smallest_normal) = match dtype {
+        TensorDtype::F16 => (f32::from(10_u8), 6.103_515_6e-5_f32),
+        TensorDtype::BF16 => (f32::from(7_u8), f32::MIN_POSITIVE),
+        TensorDtype::F32 | TensorDtype::Other(_) => return None,
+    };
+    let magnitude = value.abs();
+    if !magnitude.is_finite() || magnitude < smallest_normal {
+        return Some((smallest_normal.log2() - significand_bits).exp2());
+    }
+    Some((magnitude.log2().floor() - significand_bits).exp2())
+}
+
+/// Whether one per-element update is large enough to be carried by a grid of
+/// `ulp`. The step is the update the optimizer intends, not the learning rate.
+pub fn base_step_is_representable(step: f32, ulp: f32) -> bool {
+    step.is_finite() && ulp > 0.0 && step >= MIN_BASE_STEP_ULPS * ulp
+}
+
 /// Whether any row admits this dtype, under some optimizer, on some backend.
 /// A screen the resolver can apply, not an admission: it says the question is
 /// worth asking where the optimizer and the device are known. F32 is the
@@ -340,5 +384,39 @@ mod tests {
             base_dtype_backends(&TensorDtype::F16, OptimizerKind::Muon).count(),
             0
         );
+    }
+
+    #[test]
+    fn the_grid_of_a_store_is_relative_and_f32_has_no_row_here_either() {
+        // 8e-3 sits in [2^-7, 2^-6): the ulp is 2^-7 / 2^7 for BF16.
+        let ulp = storage_ulp(&TensorDtype::BF16, 8.0e-3).expect("BF16 has a grid");
+        assert!((ulp - 6.103_515_6e-5).abs() < 1.0e-9, "{ulp:e}");
+        // F16 has four more significand bits: eight times finer.
+        let fine = storage_ulp(&TensorDtype::F16, 8.0e-3).expect("F16 has a grid");
+        assert!((fine - ulp / 8.0).abs() < 1.0e-12, "{fine:e}");
+        assert_eq!(storage_ulp(&TensorDtype::F32, 8.0e-3), None);
+        assert_eq!(storage_ulp(&TensorDtype::from_ggml_name("Q4_K"), 1.0), None);
+        // Zero answers with a positive ulp, not zero.
+        assert!(storage_ulp(&TensorDtype::BF16, 0.0).expect("a grid") > 0.0);
+    }
+
+    #[test]
+    fn the_rate_the_rows_were_measured_at_is_representable_and_an_rl_rate_is_not() {
+        // Tens of ulps per step, the regime the table was measured at.
+        let ulp = storage_ulp(&TensorDtype::BF16, 8.0e-3).expect("a grid");
+        assert!(base_step_is_representable(1.0e-3, ulp));
+        // 1e-6 is a fortieth of an ulp: too small.
+        assert!(!base_step_is_representable(1.0e-6, ulp));
+        // The boundary is the constant, not a nearby value.
+        assert!(base_step_is_representable(MIN_BASE_STEP_ULPS * ulp, ulp));
+        assert!(!base_step_is_representable(
+            MIN_BASE_STEP_ULPS * ulp * 0.99,
+            ulp
+        ));
+        // F16 is eight times finer: the same rate is representable there.
+        let fine = storage_ulp(&TensorDtype::F16, 8.0e-3).expect("a grid");
+        assert!(base_step_is_representable(1.0e-6 * 8.0, fine));
+        assert!(!base_step_is_representable(f32::NAN, ulp));
+        assert!(MAX_BASE_STEP_UNDERFLOW_SHARE > 0.0 && MAX_BASE_STEP_UNDERFLOW_SHARE < 1.0);
     }
 }
