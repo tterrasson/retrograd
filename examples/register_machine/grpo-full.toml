@@ -1,0 +1,122 @@
+# GRPO on the register machine, full finetuning: every eligible base tensor is
+# trained, and the run writes a standalone model rather than an adapter. The
+# task, the reward and the data are `grpo.toml`'s - see README.md in this
+# directory; what changes here is which parameters move.
+#
+# Run from the repository root (`reward_command` is relative to it):
+# cargo run --release -- train examples/register_machine/grpo-full.toml
+# cargo run --release -- bench examples/register_machine/grpo-full.toml
+
+[run]
+algorithm = "grpo"
+verbose = false
+
+[model]
+# Not the Q4_K_M CPU fixture: `trainable = "full"` refuses a quantized tensor
+# instead of quietly training the handful of F32 norms beside it and calling
+# that "full". Point this at an unquantized GGUF of the same family - the F16
+# build of LFM2.5-230M from the repository the fixture comes from does, and so
+# does anything you convert to F32 yourself.
+path = "../../models/LFM2.5-230M-F16.gguf"
+# F16 base weights are trained under AdamW on the CPU backend, and that is the
+# one combination measured today: on a GPU, or under another optimizer, an F16
+# tensor is refused at the preflight. An F32 file has no such restriction and
+# runs with `device = "auto"`.
+device = "cpu"
+
+[output]
+# A full run's default export is the `trainable` bundle, which needs the base
+# model beside it. `model` is the standalone GGUF - the file the weights were
+# loaded from, with the trained ones in it - and it is available for lfm2.
+# It is written whole, so budget the size of the model on that filesystem.
+path = "/tmp/retrograd-register-machine-full.gguf"
+kind = "model"
+
+[training]
+# Every supported eligible base tensor: no [lora] section (a full run creates
+# no adapter) and no [trainable] selector (that is what `partial` is for).
+trainable = "full"
+# A prompt is about 250 tokens (system rules + task) and the budget below adds
+# 96: 512 leaves room for a more verbose chat template.
+ctx = 512
+# The memory lever. `gradient_accumulation` is pinned to ctx / micro_batch.
+# It must also hold the shared prompt plus several completions, or
+# shared-prefix packing is refused and every completion takes its own
+# optimizer step: 512 fits a whole group of the short early programs.
+micro_batch = 512
+# Full finetuning already pays F32 gradients and two AdamW moments for every
+# parameter; recomputing the layer activations buys the peak back at the cost
+# of a second forward, and keeps this example runnable beside the LoRA one.
+gradient_checkpointing = true
+# An order of magnitude below the LoRA run: the same reward signal now moves
+# the weights themselves, and a rate that only nudges two low-rank factors
+# walks a 230M-parameter model off its own distribution in a few updates.
+lr = 1e-6
+lr_scheduler = "cosine"
+# Longer than the LoRA warmup for the same reason the rate is lower: the first
+# updates of a full run are the ones that can do damage nothing recovers from.
+warmup_steps = 20
+weight_decay = 0.0
+max_grad_norm = 1.0
+
+[grpo]
+# 600 tasks written easy-first by generate.py; `sequential` keeps that order,
+# and 250 updates draw 1,000 prompts before dynamic resampling.
+prompts = "prompts.jsonl"
+prompt_order = "sequential"
+reward_command = ["python3", "examples/register_machine/reward_server.py"]
+updates = 250
+prompts_per_update = 4
+group_size = 8
+# One pass: a second one is off-policy and moved this small model too far.
+grpo_epochs = 1
+clip_range_low = 0.2
+clip_range_high = 0.28
+# Left off, as in the LoRA run. Turning it on here needs a [reference] section:
+# the base weights move, so "this model with its adapter disabled" is no longer
+# the original policy and cannot serve as the anchor.
+kl_coefficient = 0.0
+# A cut-off program has no closing </program> and scores 0: rambling is a
+# mistake to learn from, so truncated members stay in the group.
+mask_truncated = false
+# Early on the easy tasks, then later on the hard ones, whole groups score the
+# same (all solved, or all stuck) and carry no signal: draw replacements.
+max_stalled_updates = 25
+
+[grpo.dynamic_sampling]
+max_resample_factor = 3
+
+[grpo.sampling]
+# Dr. GRPO is strictly on-policy: temperature and top_p must both be 1.
+temperature = 1.0
+top_p = 1.0
+# The longest shortest program is 5 commands plus a slack of one: about 40 tokens.
+max_new_tokens = 96
+seed = 42
+
+[evaluation]
+data = "eval.jsonl"
+every_iterations = 10
+# Evenly spaced over a file written tier by tier in turn, so all three tiers stay in.
+max_examples = 30
+patience = 10
+min_delta = 0.0
+
+[checkpoint]
+# Its own directory: a full run's checkpoints carry base tensors, and mixing
+# them with the LoRA run's adapters under one path serves neither resume.
+directory = "/tmp/retrograd-register-machine-full-checkpoints"
+# Only the best evaluation is kept: `best_eval` writes no scheduled checkpoint
+# at all, and rewrites the one `best` directory in place each time the metric
+# improves. That matters more here than for the LoRA run, one checkpoint of a
+# full run is the size of the model plus its optimizer state, so a `steps`
+# cadence would fill the disk with copies of a model that got worse.
+mode = "best_eval"
+
+[metrics]
+tensorboard_dir = "/tmp/retrograd-register-machine-full-tensorboard"
+
+# Live export of the rollouts; open /tmp/retrograd-register-machine-full-observe/index.html.
+[observe]
+directory = "/tmp/retrograd-register-machine-full-observe"
+every = 10

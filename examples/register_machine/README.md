@@ -31,7 +31,8 @@ with before the model solves anything.
 | `generate.py` | Writes `prompts.jsonl` and `eval.jsonl` (seeded, reproducible). |
 | `prompts.jsonl` | 600 training tasks, in easy-first order. |
 | `eval.jsonl` | 78 held-out tasks, each ending with one shortest program as the assistant reference. |
-| `grpo.toml` | The training configuration. |
+| `grpo.toml` | The training configuration: LoRA on the quantized CPU fixture. |
+| `grpo-full.toml` | The same run in full finetuning: every eligible base tensor, on an unquantized model you supply. |
 | `test_register_machine.py` | Standard-library tests: the machine, the reward, the generator, the shipped data and the protocol. |
 
 Everything in Python uses only the standard library, so the reward command
