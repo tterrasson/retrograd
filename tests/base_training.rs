@@ -1708,6 +1708,157 @@ fn a_model_export_of_the_generated_fixture_is_the_run_it_came_from() {
     assert_eq!(deviation(&cold, &scores(&mut source)), 0.0);
 }
 
+/// The model export on a real Qwen3.5 file: what the `qwen35` row's
+/// `exports_model = true` claims, on the architecture that asked for it.
+///
+/// Its matrices are BF16, so this is also the only export case where a
+/// *changed* half-precision weight is written and read back. The selection is
+/// therefore not the norms-only one the other export cases use: the last three
+/// blocks' fused QKV comes with it, which on this hybrid is two delta-net
+/// blocks' worth of BF16 beside the F32 norms.
+///
+/// Run once per device this build can reach: the writer reads every weight
+/// back out of wherever the run kept it, and a hybrid's is the case the
+/// generated fixture cannot stand in for.
+///
+/// Opt-in: no Qwen3.5 fixture is generated or downloaded here, so this skips
+/// unless `RETRO_QWEN3NEXT_TEST_MODEL` points at one.
+#[test]
+fn a_model_export_of_a_real_hybrid_is_the_run_it_came_from() {
+    hybrid_model_export(Device::Cpu);
+    if common::gpu_device_present() {
+        hybrid_model_export(Device::Gpu);
+    } else {
+        eprintln!("skipping the qwen35 model export on the device: no GPU device");
+    }
+}
+
+fn hybrid_model_export(device: Device) {
+    let family = common::RECURRENT_FAMILIES
+        .iter()
+        .find(|family| family.family == "gated_delta_net")
+        .expect("the gated delta net fixture definition");
+    let Some(model) = family.path_if_available() else {
+        eprintln!(
+            "skipping the qwen35 model export: no model at {} (set {})",
+            family.path().display(),
+            family.env
+        );
+        return;
+    };
+    let _guard = common::serialize_models();
+    let root = scratch(&format!("hybrid-model-export-{device:?}"));
+
+    let inventory = tensor_inventory(&model, device).expect("inventory");
+    assert_eq!(inventory.architecture, "qwen35");
+    assert!(
+        retrograd::architecture_exports_model(&inventory.architecture),
+        "the row for '{}' does not grant a model export",
+        inventory.architecture
+    );
+
+    // A model export is the size of the model, and this one is a real file:
+    // skipping beats filling the scratch filesystem.
+    let required = std::fs::metadata(&model).expect("stat the model").len();
+    let free = retrograd::checkpoint::free_space(&root).expect("free space");
+    if free < required {
+        eprintln!(
+            "skipping the qwen35 model export: {} needs {required} bytes and has {free}",
+            root.display()
+        );
+        return;
+    }
+
+    let selector = TrainableSelector {
+        layers: retrograd::LayerRange::Last(3),
+        modules: vec!["attn_qkv".to_string()],
+        norms: true,
+        ..Default::default()
+    };
+    let mut config = base_config_on(device, TrainablePolicy::Partial, OptimizerKind::AdamW);
+    config.trainable.selector = selector.clone();
+    let set = resolve_base(&inventory, TrainablePolicy::Partial, &selector)
+        .expect("a BF16 hybrid has a partial training path");
+    assert!(
+        set.entries
+            .iter()
+            .any(|entry| entry.dtype == TensorDtype::BF16),
+        "the selection carries no half-precision weight, so the export would \
+         only prove the F32 path: {:?}",
+        names(&set.entries)
+    );
+
+    let mut trainer = Trainer::new(&model, config.clone()).expect("load trainer");
+    trainer
+        .declare_trainable_set(&set)
+        .expect("select the hybrid's norms and fused QKV");
+    if device == Device::Gpu {
+        // Otherwise the device column would be the host column again, and the
+        // writer's read-back off the device would go unexercised.
+        let report = trainer.memory_report().expect("memory report");
+        assert!(
+            !report.base_trainable_on_host,
+            "the selected base tensors did not land on the device: {report:?}"
+        );
+    }
+    let cold = scores(&mut trainer);
+    // One row, not a whole text: every step here is a 0.8B forward and
+    // backward, and the export does not care how far the run went. The row is
+    // the context llama.cpp *allocated*, which for this architecture is not
+    // the one the configuration asked for.
+    let n_ctx = trainer.context_size().expect("the effective context");
+    let mut tokens = trainer
+        .tokenize_text(&TEXT.repeat(n_ctx / 8 + 8))
+        .expect("tokenize");
+    assert!(
+        tokens.len() > n_ctx,
+        "{} tokens for a context of {n_ctx}",
+        tokens.len()
+    );
+    tokens.truncate(n_ctx + 1);
+    trainer.train_tokens(&tokens).expect("training run");
+    let trained = scores(&mut trainer);
+    assert!(
+        deviation(&cold, &trained) > 0.0,
+        "the run has to move the model for the export to mean anything"
+    );
+
+    let exported = root.join("trained-model.gguf");
+    trainer.save_model(&exported).expect("write the model");
+    drop(trainer);
+    assert_eq!(
+        std::fs::metadata(&exported).expect("stat the export").len(),
+        required,
+        "a model export is the file it was loaded from, tensor list included"
+    );
+
+    let reloaded_inventory = tensor_inventory(&exported, device).expect("inventory");
+    let reloaded_set = resolve_base(&reloaded_inventory, TrainablePolicy::Partial, &selector)
+        .expect("the exported model resolves the same selection");
+    assert_eq!(names(&reloaded_set.entries), names(&set.entries));
+    let mut reloaded = Trainer::new(&exported, config.clone()).expect("load the exported model");
+    reloaded
+        .declare_trainable_set(&reloaded_set)
+        .expect("the same selection");
+    assert_eq!(
+        deviation(&trained, &scores(&mut reloaded)),
+        0.0,
+        "the exported model is not the run it came from"
+    );
+    drop(reloaded);
+
+    // The source file is untouched: the run owns its buffers.
+    let mut source = Trainer::new(&model, config).expect("load the model again");
+    source
+        .declare_trainable_set(&set)
+        .expect("the same selection");
+    assert_eq!(
+        deviation(&cold, &scores(&mut source)),
+        0.0,
+        "the run wrote back into the file it was loaded from"
+    );
+}
+
 /// The same export, from a run whose weights live on the device: every weight
 /// the writer emits must come back off the device.
 ///

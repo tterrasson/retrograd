@@ -323,6 +323,14 @@ itself without `RETRO_CPU_FIXTURE` and **fails** without it when
 unless `RETRO_FALCON_H1_TEST_MODEL` and `RETRO_QWEN3NEXT_TEST_MODEL` point at a
 GGUF.
 
+`RETRO_QWEN3NEXT_TEST_MODEL` also carries the `qwen35` row's model export:
+`base_training::a_model_export_of_a_real_hybrid_is_the_run_it_came_from`
+trains the last blocks' fused QKV beside the norms, writes the standalone
+GGUF, reloads it and asserts the scores are the run's - on the CPU and, where
+the build reaches one, on the device. It is the only export case whose trained
+set is half-precision, and `exports_model: true` on that row is that
+measurement and nothing else.
+
 ### `container` - sandboxes against a real daemon
 
 `scripts/test-container.sh`: `retrograd-container`'s `tests/daemon.rs`, which
@@ -436,7 +444,7 @@ invocations below directly on such a machine.
 | `model_offload` | `--device` actually offloads model tensors to the GPU |
 | `train_parity` | a full CPU against Metal epoch (train, save, reload) with matching losses |
 | `device_memory` | the optimizer path's measured device budget, for an adapter run and for a base one, and what an attached anchor adds to it |
-| `base_training` | its two `device_resident` cases: a base run's model export and trainable bundle, read off the device |
+| `base_training` | its two `device_resident` cases: a base run's model export and trainable bundle, read off the device, plus the `real_hybrid` model export when `RETRO_QWEN3NEXT_TEST_MODEL` names a file |
 | `muon_gefen` | its two GPU cases: the device's Gefen kernels against the F64 oracle, and the agreement between `cap_opt_step_device` and the preflight |
 | `gefen_ops` | the two Gefen ops driven directly: the op-level edge cases, and CPU against device on identical inputs (no model) |
 | `vulkan_backend` | Vulkan registration, isolated ops, model offload, LoRA placement, a minimal training step |

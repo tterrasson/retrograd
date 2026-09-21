@@ -26,8 +26,10 @@ device = "auto"
 [output]
 # A full run's default export is the `trainable` bundle, which needs the base
 # model beside it. `model` is the standalone GGUF - the file the weights were
-# loaded from, with the trained ones in it - and it is available for lfm2.
-# It is written whole, so budget the size of the model on that filesystem.
+# loaded from, with the trained ones in it - and it is available for the
+# architectures a round-trip lane here has written and read back: lfm2, qwen2
+# and qwen35. It is written whole, so budget the size of the model on that
+# filesystem.
 path = "/tmp/retrograd-register-machine-full.gguf"
 kind = "model"
 

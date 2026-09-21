@@ -189,9 +189,10 @@ pub const CAPABILITY_TABLE: &[ArchitectureCapability] = &[
         block_families: &QWEN35_BLOCK,
         global_families: &DENSE_GLOBAL,
         // No fixture of this architecture is generated here: the row is
-        // resolved against a real file by the opt-in lane in
-        // `tests/trainable_inventory.rs`, and no export has been measured.
-        exports_model: false,
+        // resolved against a real file by the opt-in lanes in
+        // `tests/trainable_inventory.rs` and `tests/base_training.rs`, the
+        // second of which writes the export and reads it back.
+        exports_model: true,
     },
     ArchitectureCapability {
         architecture: "lfm2",
@@ -357,11 +358,12 @@ mod tests {
     fn a_model_export_is_available_only_where_a_row_grants_it() {
         assert!(architecture_exports_model("lfm2"));
         assert!(architecture_exports_model("qwen2"));
+        assert!(architecture_exports_model("qwen35"));
         assert!(!architecture_exports_model("llama"));
         assert!(!architecture_exports_model("an-architecture-with-no-row"));
 
         let granted: Vec<&str> = model_export_architectures().collect();
-        assert_eq!(granted, vec!["qwen2", "lfm2"]);
+        assert_eq!(granted, vec!["qwen2", "qwen35", "lfm2"]);
         assert!(
             granted
                 .iter()
