@@ -556,14 +556,14 @@ fn compatibility_for(
     }
 }
 
-/// The kernel table, not the optimizer name, is what decides. An F16 adapter is
-/// the default storage, so this is the ordinary way to reach for SGD - and the
-/// alternative to this refusal is `GGML_ABORT` in the middle of the first step.
+/// The kernel table, not the optimizer name, is what decides: the default
+/// F16 adapter is refused for Muon at load time rather than by `GGML_ABORT`
+/// in the middle of the first step. AdamW and SGD are not refused.
 #[test]
-fn sgd_refuses_an_adapter_its_update_step_cannot_write() {
+fn an_f32_only_optimizer_refuses_an_adapter_its_update_step_cannot_write() {
     let model = fixture!();
     let _guard = common::serialize_models();
-    let mut config = base_config(TrainablePolicy::Lora, OptimizerKind::Sgd);
+    let mut config = base_config(TrainablePolicy::Lora, OptimizerKind::Muon);
     config.trainable.selector = TrainableSelector::default();
     let mut trainer = Trainer::new(&model, config).expect("load trainer");
 
@@ -572,7 +572,7 @@ fn sgd_refuses_an_adapter_its_update_step_cannot_write() {
     trainer.create_lora(&f16).expect("create an f16 adapter");
     let error = trainer
         .prepare_optimizer()
-        .expect_err("the sgd kernel carries no F16 path");
+        .expect_err("the muon kernel carries no F16 path");
     let message = error.to_string();
     assert!(message.contains("F32-only"), "{message}");
     assert!(
@@ -583,6 +583,24 @@ fn sgd_refuses_an_adapter_its_update_step_cannot_write() {
         .prepare_optimizer()
         .expect_err("retry must remain safe");
     assert!(retry.to_string().contains("F32-only"), "{retry}");
+}
+
+/// The other side of the same table: SGD's step rounds a half-precision
+/// store, so the default F16 adapter is marked rather than refused.
+#[test]
+fn sgd_marks_the_default_f16_adapter() {
+    let model = fixture!();
+    let _guard = common::serialize_models();
+    let mut config = base_config(TrainablePolicy::Lora, OptimizerKind::Sgd);
+    config.trainable.selector = TrainableSelector::default();
+    let mut trainer = Trainer::new(&model, config).expect("load trainer");
+
+    let mut f16 = f32_lora();
+    f16.dtype = LoraDtype::F16;
+    trainer.create_lora(&f16).expect("create an f16 adapter");
+    trainer
+        .prepare_optimizer()
+        .expect("sgd writes an f16 adapter");
 }
 
 /// Every declared optimizer now has an update step, so the refusal that used
@@ -2128,7 +2146,7 @@ fn an_assignment_row_that_names_no_trained_parameter_is_refused() {
 }
 
 /// The dtype refusal follows the owner of each parameter: the run is AdamW,
-/// but the refusal comes from the parameter assigned to SGD.
+/// but the refusal comes from the parameter assigned to Muon.
 #[test]
 fn the_dtype_refusal_follows_the_owner_of_each_parameter() {
     let model = tiny_fixture!();
@@ -2152,12 +2170,15 @@ fn the_dtype_refusal_follows_the_owner_of_each_parameter() {
     let mut trainer = Trainer::new(&model, config).expect("load trainer");
     trainer.create_lora(&f16).expect("create an f16 adapter");
     trainer
-        .set_optimizer_assignment(&[("blk.0.attn_q.weight.lora_a".to_string(), OptimizerKind::Sgd)])
-        .expect("declare one factor onto sgd");
+        .set_optimizer_assignment(&[(
+            "blk.0.attn_q.weight.lora_a".to_string(),
+            OptimizerKind::Muon,
+        )])
+        .expect("declare one factor onto muon");
     let error = trainer
         .prepare_optimizer()
-        .expect_err("the sgd kernel carries no F16 path");
+        .expect_err("the muon kernel carries no F16 path");
     let message = error.to_string();
-    assert!(message.contains("sgd"), "{message}");
+    assert!(message.contains("muon"), "{message}");
     assert!(message.contains("F32-only"), "{message}");
 }

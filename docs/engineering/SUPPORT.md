@@ -47,6 +47,55 @@ Both optimizers are correct on every backend and neither is yet recommended
 over AdamW: see [Optimizer cost and quality](optims/OPTIMIZERS.md) for what
 they were measured to cost and to approximate.
 
+## Base-weight storage precision
+
+Base training reads the weights at the precision the GGUF stores them at and
+writes them back there. Nothing is converted, at load or at checkpoint. Below
+F32 the update rounds stochastically instead of to nearest, which is what
+keeps a step smaller than half a grid point from being discarded; there is no
+F32 master copy, because one costs more per parameter than training in F32
+would.
+
+| Stored as | CPU | Metal | Vulkan | CUDA |
+|---|---|---|---|---|
+| F32 | ✅ | ✅ | ✅ | ✅ |
+| F16, under AdamW or SGD | ✅ | ❌ [c] | ❌ [c] | ✅ |
+| BF16, under AdamW or SGD | ✅ | ❌ [c] [e] | ❌ [c] [e] | ✅ |
+| F16 or BF16, under Muon or Gefen | ❌ [d] | ❌ [d] | ❌ [d] | ❌ [d] |
+
+A cell is one row of `BASE_DTYPE_TABLE`
+(`crates/retrograd-core/src/base_dtype.rs`), indexed by (dtype, optimizer,
+backend): a row is a measurement, run by `tests/f16_base_training.rs` with the
+tolerances read from the row. A combination with no row is refused before the
+graph is built, by dtype, optimizer and backend. `cap_opt_step` in the backend
+report is the other half of the answer, which storages the live device runs
+each step on; the table declares and the device is asked, and either can
+refuse.
+
+- **[c]** The update kernel exists on both and an exact CPU-against-device
+  equality test holds it to the CPU's rounding, but no lane has run a model on
+either, so no row admits them. The Metal test has not been run at all, for
+  want of a machine.
+- **[d]** Both steps write F32 parameters only: Muon's ends in a
+  Newton-Schulz orthogonalization, Gefen's already approximates the first
+  moment, and a rounded store would stack a second approximation on the
+  first. The refusal says that, not an empty list of backends.
+- **[e]** Neither backend decodes a BF16 weight in `OUT_PROD`, which an
+  activation gradient needs; the CPU and CUDA do. A row needs that too.
+
+BF16 keeps 8 significand bits against F16's 11, so its grid is eight times
+coarser and the measured gaps follow: ten times the F16 ones on the CPU,
+three times on CUDA, where BF16's own grid then dominates the reduction-order
+difference. Stochastic rounding keeps the difference a rounding rather than a
+bias.
+
+The optimizer matters too. An AdamW step is wider than the grid, so it mostly
+lands on the same grid point whichever backend computed the gradient; an SGD
+step is the gradient itself, about one grid point wide, so a small difference
+between backends decides which side of a point each element lands on. That is
+why the SGD rows' outlier fractions move more between CPU and CUDA than
+AdamW's do.
+
 ## Kernels and execution
 
 | Capability | CPU | Metal | Vulkan | CUDA |

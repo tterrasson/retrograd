@@ -146,6 +146,15 @@ typedef enum retro_probe_op {
     // src1 is ignored but must be non-null (the probe ABI always takes two
     // inputs). The second op with a RIR variant.
     RETRO_PROBE_OP_CUMSUM = 27,
+    // The AdamW step with a BF16 parameter; same ABI as the F16 probe.
+    RETRO_PROBE_OP_OPT_STEP_ADAMW_BF16 = 28,
+    // The SGD step on the two half-precision storages: src0 the initial
+    // weight, src1 its gradient, param0 = learning rate, param1 = weight
+    // decay, src2 = {gradient scale, rounding seed} as for AdamW. One id per
+    // (optimizer, storage): four separate kernels, so a test naming the wrong
+    // one fails rather than measuring another.
+    RETRO_PROBE_OP_OPT_STEP_SGD_F16 = 29,
+    RETRO_PROBE_OP_OPT_STEP_SGD_BF16 = 30,
 } retro_probe_op;
 
 // Which kernel implementation a probe asks for / reports.

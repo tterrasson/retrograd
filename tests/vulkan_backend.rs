@@ -1839,6 +1839,157 @@ fn f16_adamw_vulkan_kernel_matches_cpu() {
     );
 }
 
+// The same contract at 8 significand bits: BF16 is stored as raw 16-bit
+// words and rounded on its own grid.
+#[cfg(retro_vulkan)]
+#[test]
+fn bf16_adamw_vulkan_kernel_matches_cpu() {
+    if !vulkan_available() {
+        eprintln!("skipping: no Vulkan device available");
+        return;
+    }
+    let weights = [0.5, -1.0, 2.0, -0.25, 0.125];
+    let gradients = [0.25, -0.5, 1.0, -2.0, 0.75];
+    let run = |gpu| {
+        probe_op(
+            ProbeOp::OptStepAdamwBf16,
+            gpu,
+            ProbeInputs::pair([5, 1, 1, 1], &weights, [5, 1, 1, 1], &gradients),
+            [1.0e-2, 0.1],
+            5,
+        )
+        .expect("run BF16 AdamW probe")
+    };
+    let cpu = run(false);
+    let gpu = run(true);
+    assert_eq!(
+        cpu, gpu,
+        "Vulkan BF16 AdamW must match CPU after BF16 rounding"
+    );
+}
+
+// One step shares a single rounding seed; this moves the seed the way a run
+// does, so the rounding formula, not the arithmetic, decides the result.
+#[cfg(retro_vulkan)]
+#[test]
+fn bf16_adamw_vulkan_matches_cpu_across_chained_steps() {
+    if !vulkan_available() {
+        eprintln!("skipping: no Vulkan device available");
+        return;
+    }
+    let n = 256;
+    // Updates well below half a BF16 ulp at 1.0 (2^-8), so every step is
+    // decided purely by the stochastic rounding.
+    let alpha = 1.0e-5_f32;
+    let steps = 64;
+    let gradients = vec![1.0_f32; n];
+
+    let chained = |gpu: bool| {
+        let ne = [n as i64, 1, 1, 1];
+        let mut current = vec![1.0_f32; n];
+        for step in 0..steps {
+            let scale_and_seed = [1.0_f32, step as f32];
+            current = probe_op(
+                ProbeOp::OptStepAdamwBf16,
+                gpu,
+                ProbeInputs::pair(ne, &current, ne, &gradients)
+                    .with_src2(Some(([2, 1, 1, 1], scale_and_seed.as_slice()))),
+                [alpha, 0.0],
+                n,
+            )
+            .expect("run chained BF16 AdamW probe");
+        }
+        current
+    };
+
+    let cpu = chained(false);
+    let gpu = chained(true);
+    assert!(
+        cpu.iter().any(|value| *value != 1.0),
+        "the fixture rounded every update away; it proves nothing"
+    );
+    assert_eq!(
+        cpu, gpu,
+        "Vulkan BF16 AdamW must track the CPU's stochastic rounding step for step"
+    );
+}
+
+// The same contract for SGD, whose store is the rounding itself: it keeps no
+// moments.
+#[cfg(retro_vulkan)]
+#[test]
+fn half_precision_sgd_vulkan_kernel_matches_cpu() {
+    if !vulkan_available() {
+        eprintln!("skipping: no Vulkan device available");
+        return;
+    }
+    let weights = [0.5, -1.0, 2.0, -0.25, 0.125];
+    let gradients = [0.25, -0.5, 1.0, -2.0, 0.75];
+    for op in [ProbeOp::OptStepSgdF16, ProbeOp::OptStepSgdBf16] {
+        let run = |gpu| {
+            probe_op(
+                op,
+                gpu,
+                ProbeInputs::pair([5, 1, 1, 1], &weights, [5, 1, 1, 1], &gradients),
+                [1.0e-2, 0.1],
+                5,
+            )
+            .expect("run the half-precision SGD probe")
+        };
+        assert_eq!(
+            run(false),
+            run(true),
+            "Vulkan {op:?} must match CPU after the rounded store"
+        );
+    }
+}
+
+// The same moving-seed chain for SGD.
+#[cfg(retro_vulkan)]
+#[test]
+fn half_precision_sgd_vulkan_matches_cpu_across_chained_steps() {
+    if !vulkan_available() {
+        eprintln!("skipping: no Vulkan device available");
+        return;
+    }
+    let n = 256;
+    // Below half a BF16 ulp at 1.0 (2^-8), so every step is decided purely by
+    // the stochastic rounding on either grid.
+    let alpha = 1.0e-5_f32;
+    let steps = 64;
+    let gradients = vec![1.0_f32; n];
+
+    for op in [ProbeOp::OptStepSgdF16, ProbeOp::OptStepSgdBf16] {
+        let chained = |gpu: bool| {
+            let ne = [n as i64, 1, 1, 1];
+            let mut current = vec![1.0_f32; n];
+            for step in 0..steps {
+                let scale_and_seed = [1.0_f32, step as f32];
+                current = probe_op(
+                    op,
+                    gpu,
+                    ProbeInputs::pair(ne, &current, ne, &gradients)
+                        .with_src2(Some(([2, 1, 1, 1], scale_and_seed.as_slice()))),
+                    [alpha, 0.0],
+                    n,
+                )
+                .expect("run the chained half-precision SGD probe");
+            }
+            current
+        };
+        let cpu = chained(false);
+        assert!(
+            cpu.iter().any(|value| *value != 1.0),
+            "the fixture rounded every update away; it proves nothing"
+        );
+        assert_eq!(
+            cpu,
+            chained(true),
+            "Vulkan {op:?} must track the CPU's stochastic rounding step for step"
+        );
+    }
+}
+
 /// A wide training step with a real vocabulary head, on the geometry that used
 /// to lose the device on MoltenVK: `n_ctx = 1024` split into 256-token physical
 /// micro-batches, so one `FUSED_SPARSE_CE` node covers 256 tokens against a

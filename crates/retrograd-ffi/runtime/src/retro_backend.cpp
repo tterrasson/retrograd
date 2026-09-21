@@ -415,13 +415,14 @@ bool supports_opt_step_dtype(
     ggml_tensor * step = nullptr;
     switch (optimizer) {
         case RETRO_OPTIMIZER_SGD: {
-            ggml_tensor * pars = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 2);
+            // alpha, weight decay and the rounding seed the half-precision
+            // stores read.
+            ggml_tensor * pars = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 3);
             if (!g || !pars) {
                 return false;
             }
-            // The kernel is F32-only; anything else would abort in its CPU path.
-            if (type != GGML_TYPE_F32) {
-                return false;
+            if (type != GGML_TYPE_F32 && type != GGML_TYPE_F16 && type != GGML_TYPE_BF16) {
+                return false;  // ggml_opt_step_sgd asserts on anything else
             }
             step = ggml_opt_step_sgd(ctx.get(), w, g, pars);
         } break;
@@ -429,6 +430,8 @@ bool supports_opt_step_dtype(
             // Muon's step is built out of ordinary graph ops, so there is no
             // one node to ask about: every op it uses is one every backend
             // already carries, and the only dtype question is the writeback.
+            // Its writeback is F32 by decision, so this answers without
+            // probing.
             return type == GGML_TYPE_F32;
         case RETRO_OPTIMIZER_GEFEN: {
             // Both phases, because a device that runs the pure one and not the
@@ -448,6 +451,8 @@ bool supports_opt_step_dtype(
             ggml_tensor * pars = ggml_new_tensor_1d(
                     ctx.get(), GGML_TYPE_F32,
                     ggml_opt_optimizer_n_params(GGML_OPT_OPTIMIZER_TYPE_GEFEN) + 1);
+            // F32 only: Gefen already approximates the first moment, and a
+            // rounded store would be a second approximation on top.
             if (!g || !moment || !v || !pars || type != GGML_TYPE_F32) {
                 return false;
             }
@@ -475,7 +480,7 @@ bool supports_opt_step_dtype(
             if (!g || !m || !v || !pars) {
                 return false;
             }
-            if (type != GGML_TYPE_F32 && type != GGML_TYPE_F16) {
+            if (type != GGML_TYPE_F32 && type != GGML_TYPE_F16 && type != GGML_TYPE_BF16) {
                 return false;  // ggml_opt_step_adamw asserts on anything else
             }
             step = ggml_opt_step_adamw(ctx.get(), w, g, m, v, pars);
@@ -981,14 +986,14 @@ bool load_model_and_context(trainer_state & state) {
     // assignment can hand a parameter to either, and the report describes the
     // device rather than the run.
     ggml_backend_dev_t step_device = use_gpu ? gpu_device : nullptr;
-    state.cap_opt_step_f16[RETRO_OPTIMIZER_ADAMW] =
-            supports_opt_step_dtype(step_device, RETRO_OPTIMIZER_ADAMW, GGML_TYPE_F16);
-    state.cap_opt_step_f16[RETRO_OPTIMIZER_SGD] =
-            supports_opt_step_dtype(step_device, RETRO_OPTIMIZER_SGD, GGML_TYPE_F16);
-    state.cap_opt_step_f16[RETRO_OPTIMIZER_MUON] =
-            supports_opt_step_dtype(step_device, RETRO_OPTIMIZER_MUON, GGML_TYPE_F16);
-    state.cap_opt_step_f16[RETRO_OPTIMIZER_GEFEN] =
-            supports_opt_step_dtype(step_device, RETRO_OPTIMIZER_GEFEN, GGML_TYPE_F16);
+    // One probe per matrix cell, filled the way it is indexed.
+    for (int slot = 0; slot < RETRO_OPT_STEP_DTYPE_COUNT; ++slot) {
+        const ggml_type type = opt_step_dtype_of(slot);
+        for (int32_t optimizer = 0; optimizer < 4; ++optimizer) {
+            state.cap_opt_step_dtypes[slot][optimizer] =
+                    supports_opt_step_dtype(step_device, optimizer, type);
+        }
+    }
     // The run's own step on the dtype it will actually write, and for Gefen,
     // the variant/block_size it will actually run: probing the frozen v1
     // defaults instead would report a capability the run's real layout may not
@@ -1617,18 +1622,24 @@ std::string backend_report(const trainer_state & state) {
     // warning about what enabling it would cost, not a description of this run.
     out << "  cap_fused_sparse_ce: "
         << (state.cap_fused_sparse_ce ? "supported" : "unavailable") << "\n";
-    // Which optimizers this device can run an F16 update step for; empty means
-    // F32 base weights only.
-    out << "  cap_opt_step_f16: ";
+    // The half-precision storages each optimizer's step runs on, as
+    // `adamw{f16, bf16}, sgd{f16}`; "none" means F32 base weights only.
     {
         std::vector<std::string> writers;
-        if (state.cap_opt_step_f16[RETRO_OPTIMIZER_ADAMW]) {
-            writers.emplace_back("adamw");
+        for (int32_t optimizer = 0; optimizer < 4; ++optimizer) {
+            std::vector<std::string> storages;
+            for (int slot = 0; slot < RETRO_OPT_STEP_DTYPE_COUNT; ++slot) {
+                if (state.cap_opt_step_dtypes[slot][optimizer]) {
+                    storages.emplace_back(ggml_type_name(opt_step_dtype_of(slot)));
+                }
+            }
+            if (!storages.empty()) {
+                writers.push_back(std::string(optimizer_name(optimizer)) + "{"
+                        + join_patterns(storages) + "}");
+            }
         }
-        if (state.cap_opt_step_f16[RETRO_OPTIMIZER_SGD]) {
-            writers.emplace_back("sgd");
-        }
-        out << (writers.empty() ? std::string("none") : join_patterns(writers)) << "\n";
+        out << "  cap_opt_step: "
+            << (writers.empty() ? std::string("none") : join_patterns(writers)) << "\n";
     }
     // Whether the active device carries this run's own update step. It is the
     // predicate ensure_opt_context() refuses on, so report it beside the

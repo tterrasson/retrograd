@@ -389,17 +389,25 @@ impl OptimizerKind {
     ///
     /// Beside [`Self::is_eligible`] and a different question: eligibility asks
     /// whether this optimizer is the right one for the parameter, this asks
-    /// whether its kernel can touch it at all. The SGD step is F32-only while
-    /// AdamW writes F32 and F16, and F16 is the default adapter storage.
+    /// whether its kernel can touch it at all. The Muon and Gefen steps are
+    /// F32-only while AdamW and SGD write F32, F16 and BF16, and F16 is the
+    /// default adapter storage. Which backend carries a kernel is
+    /// [`crate::base_dtype::BASE_DTYPE_TABLE`]'s job, not this one.
     ///
     /// A `false` is a refusal in a single-optimizer run and a fallback in a
     /// mixed one; see [`Self::assign`].
     pub fn supports_dtype(self, dtype: &TensorDtype) -> bool {
         match self {
-            Self::AdamW => matches!(dtype, TensorDtype::F32 | TensorDtype::F16),
-            // F32 first; an F16 writeback has to preserve the intended
-            // rounding and is separate work.
-            Self::Sgd | Self::Muon | Self::Gefen(_) => matches!(dtype, TensorDtype::F32),
+            // Both store their update with rounding, so both take the two
+            // half-precision grids beside F32.
+            Self::AdamW | Self::Sgd => matches!(
+                dtype,
+                TensorDtype::F32 | TensorDtype::F16 | TensorDtype::BF16
+            ),
+            // F32 only: Muon's Newton-Schulz orthogonalization and Gefen's
+            // first-moment estimate are already approximations, and a rounded
+            // store would stack a second on them.
+            Self::Muon | Self::Gefen(_) => matches!(dtype, TensorDtype::F32),
         }
     }
 
@@ -1560,8 +1568,8 @@ mod tests {
         );
     }
 
-    /// Under SGD an F16 factor is a refusal; under Muon it falls back to the
-    /// optimizer that writes F16.
+    /// Under Muon an F16 factor falls back to an optimizer that writes F16;
+    /// a dtype nothing writes is refused by name rather than substituted.
     #[test]
     fn the_dtype_predicate_refuses_under_a_chosen_optimizer_and_falls_back_under_a_mixed_one() {
         let mut factor = entry(
@@ -1575,8 +1583,8 @@ mod tests {
             OptimizerKind::AdamW.assign(&factor),
             Some(OptimizerKind::AdamW)
         );
-        // SGD has no fallback.
-        assert_eq!(OptimizerKind::Sgd.assign(&factor), None);
+        // SGD writes F16, so it assigns and needs no fallback.
+        assert_eq!(OptimizerKind::Sgd.assign(&factor), Some(OptimizerKind::Sgd));
         assert_eq!(OptimizerKind::Sgd.fallback(), None);
         // Muon falls back; AdamW writes F16.
         assert_eq!(

@@ -99,8 +99,9 @@ pub fn emit_ggml_header(formats: &[QuantFormat]) -> String {
 //   NVFP4          Blackwell-oriented; now covered by OUT_PROD only.
 //   Q1_0, Q2_0     Very recent; now covered by OUT_PROD only.
 // Deliberately excluded from every table:
-//   BF16           ggml_compute_forward_out_prod hits GGML_ABORT on it, so there
-//                  is no CPU oracle. Needs a CPU path first.
+//   BF16           CPU and CUDA decode it in OUT_PROD now. Metal and Vulkan
+//                  are what a row here would claim, and neither carries a
+//                  dequantize_bf16 tile loader yet.
 //   TQ1_0, TQ2_0   CUDA and Vulkan expose no dequantize_tq* primitive to reuse.
 //
 // F32 is not a row: it needs no decoding and both ops give it a cheaper dedicated

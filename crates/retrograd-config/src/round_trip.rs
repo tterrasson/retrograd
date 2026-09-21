@@ -895,21 +895,32 @@ fn muons_section_reaches_its_declared_rows() {
 }
 
 /// The pair a user reaches by writing one line: the default adapter dtype is
-/// F16, and SGD's update kernel carries no F16 path. Refused at load time
-/// rather than by `GGML_ABORT` in the middle of the first step.
+/// F16, and the Muon kernel is F32-only. Refused at load time rather than by
+/// `GGML_ABORT` in the middle of the first step.
 #[test]
-fn sgd_is_refused_against_the_default_f16_adapter() {
+fn an_f32_only_optimizer_is_refused_against_the_default_f16_adapter() {
     let root = Path::new("/tmp/retrograd-round-trip");
     let mut document = lora_normalized(exhaustive_document());
     document.checkpoint.as_mut().unwrap().resume_from = None;
-    document.training.optimizer = Some("sgd".to_string());
+    document.training.optimizer = Some("muon".to_string());
     document.lora.as_mut().expect("section").dtype = Some(LoraDtype::F16);
-    let error = build(document, root).expect_err("the sgd kernel is F32-only");
+    let error = build(document, root).expect_err("the muon kernel is F32-only");
     assert!(error.is_user_error(), "{error}");
     assert!(
         error.to_string().contains("cannot write a F16 adapter"),
         "{error}"
     );
+}
+
+/// The counterpart: SGD writes F16, so the default adapter needs no override.
+#[test]
+fn sgd_accepts_the_default_f16_adapter() {
+    let root = Path::new("/tmp/retrograd-round-trip");
+    let mut document = lora_normalized(exhaustive_document());
+    document.checkpoint.as_mut().unwrap().resume_from = None;
+    document.training.optimizer = Some("sgd".to_string());
+    document.lora.as_mut().expect("section").dtype = Some(LoraDtype::F16);
+    build(document, root).expect("sgd writes an F16 adapter");
 }
 
 #[test]

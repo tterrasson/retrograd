@@ -288,46 +288,58 @@ fn the_hybrid_rows_families_are_the_ones_a_real_qwen35_file_carries() {
         "no gated-delta-net block"
     );
     assert!(
-        names.iter().any(|name| name.ends_with(".attn_output.weight")),
+        names
+            .iter()
+            .any(|name| name.ends_with(".attn_output.weight")),
         "no full-attention block"
     );
 }
 
-/// The file the row was written from stores its matrices in BF16, which no
-/// row of the base-dtype table admits. `full` has to say so - and say it
-/// about the dtype, now that the architecture is no longer the refusal.
+/// The file the row was written from stores its matrices in BF16, which the
+/// base-dtype table now carries: `full` selects them instead of refusing them,
+/// and the selection is the model's own weights at their own precision, with
+/// nothing dropped to a frozen F32 fallback.
 #[test]
-fn full_training_refuses_a_bf16_qwen35_by_dtype_and_not_by_architecture() {
+fn full_training_selects_a_bf16_qwen35_at_its_own_precision() {
     let family = common::RECURRENT_FAMILIES
         .iter()
         .find(|family| family.family == "gated_delta_net")
         .expect("the gated delta net fixture definition");
     let Some(model) = family.path_if_available() else {
-        eprintln!("skipping the qwen35 dtype refusal: set {}", family.env);
+        eprintln!("skipping the qwen35 dtype case: set {}", family.env);
         return;
     };
     let inventory = read_inventory(&model).expect("read the qwen35 inventory");
-    if inventory
+    let bf16 = inventory
         .tensors
         .iter()
-        .all(|tensor| tensor.dtype.is_trainable_base())
-    {
-        eprintln!("skipping: the qwen35 model at hand is trainable throughout");
+        .filter(|tensor| tensor.dtype == TensorDtype::BF16)
+        .count();
+    if bf16 == 0 {
+        eprintln!("skipping: the qwen35 model at hand stores nothing in BF16");
         return;
     }
-    let error = resolve_base(
+    let set = resolve_base(
         &inventory,
         TrainablePolicy::Full,
         &TrainableSelector::default(),
     )
-    .expect_err("a model stored in an untabled dtype has no full-training path");
-    assert!(error.is_user_error(), "{error}");
-    let message = error.to_string();
+    .expect("a BF16 model has a full-training path");
+    let selected = set
+        .entries
+        .iter()
+        .filter(|entry| entry.dtype == TensorDtype::BF16)
+        .count();
     assert!(
-        !message.contains("capability table"),
-        "the architecture is tabled now: {message}"
+        selected > 0,
+        "{bf16} BF16 tensor(s) in the file and none of them selected"
     );
-    assert!(message.contains("admits F32, F16"), "{message}");
+    assert!(
+        set.entries
+            .iter()
+            .all(|entry| entry.dtype == TensorDtype::F32 || entry.dtype == TensorDtype::BF16),
+        "the selection carries a dtype the file does not store"
+    );
 }
 
 /// The properties the generated fixture must hold, asserted rather than
@@ -390,4 +402,153 @@ fn full_training_derives_a_set_from_the_generated_fixtures_row() {
     assert!(set.trains_loss_head());
     // qwen2 carries biases on the projections.
     assert!(names.iter().any(|name| name.ends_with("attn_q.bias")));
+}
+
+// --- the BF16 fixture family --------------------------------------------------
+
+fn u32_le(bytes: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"))
+}
+
+fn u64_le(bytes: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(bytes[at..at + 8].try_into().expect("eight bytes"))
+}
+
+/// The byte span of one GGUF metadata value. All the reader below needs of the
+/// metadata: it reads no key, it only has to step over them.
+fn gguf_value_len(bytes: &[u8], at: usize, kind: u32) -> usize {
+    match kind {
+        0 | 1 | 7 => 1,
+        2 | 3 => 2,
+        4..=6 => 4,
+        10..=12 => 8,
+        8 => 8 + u64_le(bytes, at) as usize,
+        9 => {
+            let element = u32_le(bytes, at);
+            let count = u64_le(bytes, at + 4);
+            let mut span = 12;
+            for _ in 0..count {
+                span += gguf_value_len(bytes, at + span, element);
+            }
+            span
+        }
+        other => panic!("unknown GGUF value type {other}"),
+    }
+}
+
+/// Every tensor's values, read straight out of a GGUF.
+///
+/// A dtype with no row is never marked, so the trainer has nothing to read
+/// here; the claim is about the file the generator wrote. Only the two
+/// storages this fixture family uses are decoded.
+fn gguf_values(path: &std::path::Path) -> std::collections::BTreeMap<String, Vec<f32>> {
+    let bytes = std::fs::read(path).expect("read the fixture");
+    assert_eq!(u32_le(&bytes, 0), 0x4655_4747, "not a GGUF");
+    assert_eq!(u32_le(&bytes, 4), 3, "GGUF version");
+    let n_tensors = u64_le(&bytes, 8);
+    let n_kv = u64_le(&bytes, 16);
+    let mut at = 24;
+
+    for _ in 0..n_kv {
+        at += 8 + u64_le(&bytes, at) as usize;
+        let kind = u32_le(&bytes, at);
+        at += 4;
+        at += gguf_value_len(&bytes, at, kind);
+    }
+
+    let mut table = Vec::new();
+    for _ in 0..n_tensors {
+        let name_len = u64_le(&bytes, at) as usize;
+        at += 8;
+        let name = String::from_utf8(bytes[at..at + name_len].to_vec()).expect("a tensor name");
+        at += name_len;
+        let n_dims = u32_le(&bytes, at);
+        at += 4;
+        let mut elements = 1_usize;
+        for _ in 0..n_dims {
+            elements *= u64_le(&bytes, at) as usize;
+            at += 8;
+        }
+        let dtype = u32_le(&bytes, at);
+        let offset = u64_le(&bytes, at + 4) as usize;
+        at += 12;
+        table.push((name, elements, dtype, offset));
+    }
+    // `general.alignment`, which this generator pins at 32.
+    let data = at.next_multiple_of(32);
+
+    table
+        .into_iter()
+        .map(|(name, elements, dtype, offset)| {
+            let start = data + offset;
+            let values: Vec<f32> = match dtype {
+                0 => bytes[start..start + 4 * elements]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|word| f32::from_le_bytes(*word))
+                    .collect(),
+                30 => bytes[start..start + 2 * elements]
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|word| f32::from_bits(u32::from(u16::from_le_bytes(*word)) << 16))
+                    .collect(),
+                other => panic!("{name} is stored as ggml type {other}"),
+            };
+            (name, values)
+        })
+        .collect()
+}
+
+/// The BF16 fixture and its control are one model at two storage precisions.
+///
+/// The F32 fixture above cannot play that role: it is snapped to the F16
+/// grid, and an F16-grid value is not a BF16 value. This pair is generated
+/// with `--grid bf16`, so the only difference between the two files is the
+/// storage.
+#[test]
+fn the_bf16_fixture_and_its_control_are_one_model_at_two_storage_precisions() {
+    let (Some(bf16), Some(control)) = (
+        common::tiny_bf16_model_path_if_available(),
+        common::tiny_bf16_control_model_path_if_available(),
+    ) else {
+        eprintln!(
+            "skipping: no BF16 fixture family at {}",
+            common::tiny_bf16_model_path().display()
+        );
+        return;
+    };
+
+    let left = read_inventory(&bf16).expect("read the BF16 inventory");
+    let right = read_inventory(&control).expect("read the control inventory");
+    assert_eq!(left.architecture, right.architecture);
+    assert_eq!(left.tensors.len(), right.tensors.len());
+
+    let mut matrices = 0_usize;
+    let mut vectors = 0_usize;
+    for (a, b) in left.tensors.iter().zip(&right.tensors) {
+        assert_eq!(a.name, b.name);
+        assert_eq!(a.ne, b.ne, "{}", a.name);
+        assert_eq!(b.dtype, TensorDtype::F32, "{}", b.name);
+        if a.ne[1] > 1 {
+            assert_eq!(a.dtype, TensorDtype::BF16, "{}", a.name);
+            assert_eq!(a.n_bytes, b.n_bytes / 2, "{}", a.name);
+            matrices += 1;
+        } else {
+            // Vectors stay F32 in both, as a real BF16 GGUF does.
+            assert_eq!(a.dtype, TensorDtype::F32, "{}", a.name);
+            vectors += 1;
+        }
+    }
+    assert!(matrices > 0 && vectors > 0, "{matrices} / {vectors}");
+
+    // And the numbers themselves, which the inventory does not carry:
+    let stored = gguf_values(&bf16);
+    let reference = gguf_values(&control);
+    assert_eq!(stored.len(), reference.len());
+    for (name, values) in &stored {
+        let expected = reference.get(name).unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(values, expected, "{name} differs between the two files");
+    }
 }

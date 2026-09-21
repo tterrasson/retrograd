@@ -1,0 +1,42 @@
+# The tiny model again, matrices stored as BF16.
+#
+# BF16 keeps F32's exponent with 8 significand bits, against F16's 11 - so the
+# two grids are not nested and this file cannot be compared against the F16
+# family. It belongs to its own family instead: this file and
+# TINY_BF16_CONTROL_FIXTURE.toml, generated with `--grid bf16`, hold the same
+# numbers at two storage precisions, and nothing else is compared against
+# either. A gradient that differs between a run of this file and a run of its
+# control therefore differs because of precision.
+#
+# Architecture `qwen2`, same geometry as the rest: 4 blocks, n_embd 64, n_ff
+# 128, 4 heads over 2 KV heads, vocabulary 260. Matrices are BF16, vectors stay
+# F32 - what a real BF16 GGUF looks like, and what makes the fixture the mixed
+# case where one run marks both precisions at once:
+#
+#   token_embd.weight               [64, 260]   BF16  (frozen for every policy)
+#   blk.{0..3}.attn_norm.weight     [64]        F32
+#   blk.{0..3}.attn_q.weight        [64, 64]    BF16  .bias [64]  F32
+#   blk.{0..3}.attn_k.weight        [64, 32]    BF16  .bias [32]  F32
+#   blk.{0..3}.attn_v.weight        [64, 32]    BF16  .bias [32]  F32
+#   blk.{0..3}.attn_output.weight   [64, 64]    BF16
+#   blk.{0..3}.ffn_norm.weight      [64]        F32
+#   blk.{0..3}.ffn_gate.weight      [64, 128]   BF16
+#   blk.{0..3}.ffn_up.weight        [64, 128]   BF16
+#   blk.{0..3}.ffn_down.weight      [128, 64]   BF16
+#   output_norm.weight              [64]        F32
+#   output.weight                   [64, 260]   BF16  .bias [260] F32
+#
+# Which of those an actual run may mark is not a property of this file: it is
+# the (dtype, optimizer, backend) row in retrograd-core's BASE_DTYPE_TABLE, and
+# the live device is asked again before the first update.
+#
+# Regenerating after editing the generator means updating `sha256` and
+# `size_bytes` here *and* in TINY_BF16_CONTROL_FIXTURE.toml, in the same
+# commit: one generator writes both, and a pair that drifts apart stops being
+# a control.
+filename = "retrograd-tiny-qwen2-bf16.gguf"
+generator = "scripts/gen-tiny-fixture.py"
+generator_args = "--dtype bf16"
+override_env = "RETRO_TINY_BF16_FIXTURE"
+size_bytes = 376480
+sha256 = "e17cf199f43344c05ea004005295e77ce1c604a017c7539e331b9aa87f4b95cc"

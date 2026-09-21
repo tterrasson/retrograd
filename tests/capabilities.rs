@@ -39,6 +39,32 @@ fn f16_training_kv_request_falls_back_explicitly_on_cpu() {
     assert!(report.contains("training_kv_f16: fallback_f32"), "{report}");
 }
 
+/// The half-precision update matrix as one report line: which optimizers this
+/// device runs a rounded store for, and on which grids. A frontend reads it to
+/// explain why a precision was turned down.
+#[test]
+fn the_capability_report_names_each_optimizers_half_precision_storages() {
+    let Some(model) = common::model_path_if_available() else {
+        eprintln!(
+            "skipping: no local model at {}",
+            common::model_path().display()
+        );
+        return;
+    };
+    let _guard = common::serialize_models();
+    let trainer = Trainer::new(model, cpu_config()).expect("load CPU model");
+    let report = trainer.backend_report().expect("backend report");
+    let line = report
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("cap_opt_step: "))
+        .expect("the report names the half-precision update matrix");
+    // The CPU carries both storages under both optimizers whose step rounds.
+    assert_eq!(line.trim(), "adamw{f16, bf16}, sgd{f16, bf16}", "{report}");
+    // The F32-only optimizers are absent, not named with an empty brace pair.
+    assert!(!line.contains("muon"), "{report}");
+    assert!(!line.contains("gefen"), "{report}");
+}
+
 #[test]
 fn train_preflight_reports_per_device_training_support() {
     let Some(model) = common::model_path_if_available() else {

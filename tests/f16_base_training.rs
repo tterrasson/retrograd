@@ -1,20 +1,26 @@
-//! F16 base weights: the admission, the parity, the stability and the resume.
+//! Half-precision base weights: the admission, the parity, the stability and
+//! the resume.
 //!
 //! - **Admission**: a dtype is admitted under an *optimizer* whose update
 //!   kernel writes it, on a *backend* whose implementation accepts it. Both
 //!   refusals are exercised, and the declared table is compared with what the
 //!   live device says.
 //! - **Parity**: the same step, on the same numbers, at two storage
-//!   precisions. Meaningful only because the two fixtures hold *identical*
-//!   values (every weight is snapped to the F16 grid before storage), so a
-//!   difference is a difference in precision, not in the draw.
+//!   precisions. Meaningful only because a fixture and its control hold
+//!   *identical* values (every weight is snapped to the storage grid before
+//!   either file is written), so a difference is a difference in precision,
+//!   not in the draw.
 //! - **Stability**: a long run of the number of steps the row claims, with the
 //!   run kept finite and bounded over all of them.
-//! - **Resume**: an F16 AdamW step rounds stochastically from a stream seeded
-//!   by the optimizer's iteration counter, which the checkpoint already holds.
-//!   One case checks restored weights, iteration and forward loss; a second
-//!   one checks the whole of it, on the F32 fixture - an interrupted `n + m`
-//!   step run landing bit-for-bit where an uninterrupted one does.
+//! - **Resume**: a half-precision AdamW step rounds stochastically from a
+//!   stream seeded by the optimizer's iteration counter, which the checkpoint
+//!   already holds. One case checks restored weights, iteration and forward
+//!   loss; a second checks the whole of it on an F32 fixture, an interrupted
+//!   `n + m` step run landing bit-for-bit where an uninterrupted one does.
+//!
+//! Every lane runs once per (storage, optimizer, device) triple, which is
+//! what a row is indexed by; a combination with no row is skipped, not
+//! failed.
 
 mod common;
 
@@ -23,9 +29,10 @@ use std::path::{Path, PathBuf};
 
 use retrograd::checkpoint::{self, Checkpoint};
 use retrograd::{
-    BASE_DTYPE_TABLE, BaseDtypeCapability, CheckpointMetadata, Device, OptimizerKind, TensorDtype,
-    TrainConfig, TrainablePolicy, TrainableRunConfig, TrainableSelector, TrainableSet, Trainer,
-    base_dtype_admits, base_dtype_capability, resolve_base, tensor_inventory,
+    BASE_DTYPE_TABLE, BaseDtypeCapability, CheckpointMetadata, Device, OptimizerKind, ProbeInputs,
+    ProbeOp, TensorDtype, TrainConfig, TrainablePolicy, TrainableRunConfig, TrainableSelector,
+    TrainableSet, Trainer, base_dtype_admits, base_dtype_capability, probe_op, resolve_base,
+    tensor_inventory,
 };
 
 const TEXT: &str = concat!(
@@ -57,16 +64,61 @@ macro_rules! f32_fixture {
     };
 }
 
-macro_rules! f16_fixture {
-    () => {
-        match common::tiny_f16_model_path_if_available() {
-            Some(model) => model,
-            None => {
-                eprintln!("skipping: generated F16 fixture not available");
-                return;
+/// One storage precision the lane asks its four questions of, with the
+/// control those questions are answered against.
+///
+/// The F16 and BF16 grids are not nested, so each storage carries its own
+/// control rather than sharing the F32 fixture.
+struct Storage {
+    dtype: TensorDtype,
+    model: fn() -> Option<PathBuf>,
+    control: fn() -> Option<PathBuf>,
+}
+
+fn storages() -> Vec<Storage> {
+    vec![
+        Storage {
+            dtype: TensorDtype::F16,
+            model: common::tiny_f16_model_path_if_available,
+            control: common::tiny_model_path_if_available,
+        },
+        Storage {
+            dtype: TensorDtype::BF16,
+            model: common::tiny_bf16_model_path_if_available,
+            control: common::tiny_bf16_control_model_path_if_available,
+        },
+    ]
+}
+
+/// The optimizers whose update step writes a half-precision parameter; Muon
+/// and Gefen are F32-only and the refusal test covers them.
+fn optimizers() -> [OptimizerKind; 2] {
+    [OptimizerKind::AdamW, OptimizerKind::Sgd]
+}
+
+impl Storage {
+    /// The fixture pair, or `None` with a skip printed: a missing fixture
+    /// cannot run the lane, and that is not a failure.
+    fn pair(&self) -> Option<(PathBuf, PathBuf)> {
+        match ((self.model)(), (self.control)()) {
+            (Some(model), Some(control)) => Some((model, control)),
+            _ => {
+                eprintln!("skipping: the {} fixture pair is not available", self.dtype);
+                None
             }
         }
-    };
+    }
+
+    /// The update step driven on its own, without a model: one probe id per
+    /// (optimizer, storage), because that is one kernel each.
+    fn probe(&self, optimizer: OptimizerKind) -> ProbeOp {
+        match (optimizer, &self.dtype) {
+            (OptimizerKind::Sgd, TensorDtype::BF16) => ProbeOp::OptStepSgdBf16,
+            (OptimizerKind::Sgd, _) => ProbeOp::OptStepSgdF16,
+            (_, TensorDtype::BF16) => ProbeOp::OptStepAdamwBf16,
+            (_, _) => ProbeOp::OptStepAdamwF16,
+        }
+    }
 }
 
 fn selector() -> TrainableSelector {
@@ -76,17 +128,60 @@ fn selector() -> TrainableSelector {
     }
 }
 
-fn config(optimizer: OptimizerKind) -> TrainConfig {
+/// The devices this build can run a lane on: the CPU, plus the GPU when the
+/// runtime can create a context on it.
+fn devices() -> Vec<Device> {
+    let mut devices = vec![Device::Cpu];
+    if common::gpu_device_present() {
+        devices.push(Device::Gpu);
+    }
+    devices
+}
+
+/// Runs `lane` once per device, naming the device on the way in so a failure
+/// says which backend produced it.
+fn per_device(lane: impl Fn(Device)) {
+    for device in devices() {
+        eprintln!("--- device {device:?} ---");
+        lane(device);
+    }
+}
+
+/// Runs `lane` once per (storage, optimizer, device) triple, naming all
+/// three on the way in.
+fn per_case(lane: impl Fn(&Storage, OptimizerKind, Device)) {
+    for storage in storages() {
+        for optimizer in optimizers() {
+            for device in devices() {
+                eprintln!(
+                    "--- {} under {optimizer} on device {device:?} ---",
+                    storage.dtype
+                );
+                lane(&storage, optimizer, device);
+            }
+        }
+    }
+}
+
+/// The step size each optimizer's lane runs at. AdamW normalizes its step to
+/// roughly `alpha`; SGD's step is the raw gradient, two orders of magnitude
+/// smaller here, so it needs a larger rate to leave a visible trace.
+fn learning_rate(optimizer: OptimizerKind) -> f32 {
+    match optimizer {
+        OptimizerKind::Sgd => 1.0e-1,
+        _ => 1.0e-3,
+    }
+}
+
+fn config(optimizer: OptimizerKind, device: Device) -> TrainConfig {
     TrainConfig {
         n_ctx: 256,
         n_batch: 256,
         n_ubatch: 64,
         epochs: 1,
-        // Above an F16 ulp of these weights (~1e-4), so one step is visible
-        // in the stored value rather than rounded away.
-        learning_rate: 1.0e-3,
+        learning_rate: learning_rate(optimizer),
         weight_decay: 0.0,
-        device: Device::Cpu,
+        device,
         trainable: TrainableRunConfig {
             policy: TrainablePolicy::Partial,
             selector: selector(),
@@ -96,8 +191,8 @@ fn config(optimizer: OptimizerKind) -> TrainConfig {
     }
 }
 
-fn resolved_set(model: &Path) -> TrainableSet {
-    let inventory = tensor_inventory(model, Device::Cpu).expect("read the tensor inventory");
+fn resolved_set(model: &Path, device: Device) -> TrainableSet {
+    let inventory = tensor_inventory(model, device).expect("read the tensor inventory");
     resolve_base(&inventory, TrainablePolicy::Partial, &selector())
         .expect("the selected projections resolve")
 }
@@ -131,7 +226,7 @@ fn read_f32(bytes: &[u8]) -> Vec<f32> {
 }
 
 /// F16 bits, widened. The parameter read returns the parameter's own storage;
-/// comparing it is comparing what an F16 run keeps.
+/// comparing it is comparing what a half-precision run keeps.
 fn read_f16(bytes: &[u8]) -> Vec<f32> {
     bytes
         .as_chunks::<2>()
@@ -139,6 +234,18 @@ fn read_f16(bytes: &[u8]) -> Vec<f32> {
         .iter()
         .copied()
         .map(|pair| f16_to_f32(u16::from_ne_bytes(pair)))
+        .collect()
+}
+
+/// BF16 bits, widened. BF16 is the top half of the F32 with the same value, so
+/// the decode is a shift and there is no subnormal or infinity special case.
+fn read_bf16(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .copied()
+        .map(|pair| f32::from_bits(u32::from(u16::from_ne_bytes(pair)) << 16))
         .collect()
 }
 
@@ -160,10 +267,17 @@ fn f16_to_f32(bits: u16) -> f32 {
     f32::from_bits(sign | ((exponent + 127 - 15) << 23) | (mantissa << 13))
 }
 
-/// One unit in the last place of the F16 grid an F16 parameter is stored on.
+/// One unit in the last place of the grid a parameter of `dtype` is stored on.
 /// The natural unit for comparing two update trajectories when one is
 /// quantized; a relative error would count a correct rounding near zero as an
 /// error of one.
+fn storage_ulp(dtype: &TensorDtype, value: f32) -> f32 {
+    match dtype {
+        TensorDtype::BF16 => bf16_ulp(value),
+        _ => f16_ulp(value),
+    }
+}
+
 fn f16_ulp(value: f32) -> f32 {
     let magnitude = value.abs();
     if magnitude < 6.103_515_6e-5 {
@@ -172,6 +286,18 @@ fn f16_ulp(value: f32) -> f32 {
     }
     let exponent = magnitude.log2().floor();
     (exponent - 10.0).exp2()
+}
+
+/// BF16 carries 8 significand bits against F16's 11 and F32's exponent range,
+/// so its grid is F32's shifted by 16 bits: one ulp is 2^(e-7), and the
+/// smallest normal is F32's.
+fn bf16_ulp(value: f32) -> f32 {
+    let magnitude = value.abs();
+    if magnitude < f32::MIN_POSITIVE {
+        return (-133.0_f32).exp2();
+    }
+    let exponent = magnitude.log2().floor();
+    (exponent - 7.0).exp2()
 }
 
 fn parameter_bytes(trainer: &mut Trainer, index: usize, n_bytes: u64) -> Vec<u8> {
@@ -192,6 +318,7 @@ fn parameter_values(
     let bytes = parameter_bytes(trainer, index, n_bytes);
     match entry_dtype {
         TensorDtype::F16 => read_f16(&bytes),
+        TensorDtype::BF16 => read_bf16(&bytes),
         _ => read_f32(&bytes),
     }
 }
@@ -232,47 +359,72 @@ fn report_line(trainer: &mut Trainer, key: &str) -> String {
         .to_string()
 }
 
-/// The row that admitted this combination here, or a skip: a device with no
-/// row is a combination nobody measured, not a failure of this lane.
-fn row_for(trainer: &mut Trainer) -> Option<&'static BaseDtypeCapability> {
+/// The row that admitted this combination here, or `None`: a pair with no
+/// row was never measured and is skipped.
+fn row_for(
+    trainer: &mut Trainer,
+    dtype: &TensorDtype,
+    optimizer: OptimizerKind,
+) -> Option<&'static BaseDtypeCapability> {
     let registry = backend_registry(trainer);
-    base_dtype_capability(&TensorDtype::F16, OptimizerKind::AdamW, &registry)
+    base_dtype_capability(dtype, optimizer, &registry)
+}
+
+/// The live device's own answer, read from the `cap_opt_step` line, which
+/// spells the matrix as `adamw{f16, bf16}, sgd{f16, bf16}`.
+fn device_probe_admits(
+    trainer: &mut Trainer,
+    dtype: &TensorDtype,
+    optimizer: OptimizerKind,
+) -> bool {
+    let line = report_line(trainer, "cap_opt_step");
+    let named = format!("{optimizer}{{");
+    let Some(rest) = line.split(&named).nth(1) else {
+        return false;
+    };
+    let storages = rest.split('}').next().unwrap_or_default();
+    storages
+        .split(',')
+        .any(|storage| storage.trim().eq_ignore_ascii_case(dtype.name()))
 }
 
 // --- admission ----------------------------------------------------------------
 
-/// The fixture pair is a control, asserted rather than assumed: same names,
+/// Each fixture pair is a control, asserted rather than assumed: same names,
 /// same shapes, same *numbers*, different storage.
 #[test]
-fn the_two_fixtures_are_one_model_at_two_storage_precisions() {
-    let f32_model = f32_fixture!();
-    let f16_model = f16_fixture!();
+fn each_fixture_pair_is_one_model_at_two_storage_precisions() {
+    for storage in storages() {
+        let Some((model, control)) = storage.pair() else {
+            continue;
+        };
+        let left = tensor_inventory(&control, Device::Cpu).expect("read the control inventory");
+        let right = tensor_inventory(&model, Device::Cpu).expect("read the stored inventory");
+        assert_eq!(left.architecture, right.architecture);
+        assert_eq!(left.n_layer, right.n_layer);
+        assert_eq!(left.tensors.len(), right.tensors.len());
 
-    let left = tensor_inventory(&f32_model, Device::Cpu).expect("read the F32 inventory");
-    let right = tensor_inventory(&f16_model, Device::Cpu).expect("read the F16 inventory");
-    assert_eq!(left.architecture, right.architecture);
-    assert_eq!(left.n_layer, right.n_layer);
-    assert_eq!(left.tensors.len(), right.tensors.len());
-
-    let mut matrices = 0_usize;
-    let mut vectors = 0_usize;
-    for (a, b) in left.tensors.iter().zip(&right.tensors) {
-        assert_eq!(a.name, b.name);
-        assert_eq!(a.ne, b.ne, "{}", a.name);
-        assert_eq!(a.n_elements, b.n_elements, "{}", a.name);
-        assert_eq!(a.dtype, TensorDtype::F32, "{}", a.name);
-        if a.ne[1] > 1 {
-            assert_eq!(b.dtype, TensorDtype::F16, "{}", b.name);
-            assert_eq!(b.n_bytes, a.n_bytes / 2, "{}", b.name);
-            matrices += 1;
-        } else {
-            // Vectors stay F32 in both, as a real F16 GGUF does, which makes
-            // the F16 fixture the mixed case: one run marks both precisions.
-            assert_eq!(b.dtype, TensorDtype::F32, "{}", b.name);
-            vectors += 1;
+        let mut matrices = 0_usize;
+        let mut vectors = 0_usize;
+        for (a, b) in left.tensors.iter().zip(&right.tensors) {
+            assert_eq!(a.name, b.name);
+            assert_eq!(a.ne, b.ne, "{}", a.name);
+            assert_eq!(a.n_elements, b.n_elements, "{}", a.name);
+            assert_eq!(a.dtype, TensorDtype::F32, "{}", a.name);
+            if a.ne[1] > 1 {
+                assert_eq!(b.dtype, storage.dtype, "{}", b.name);
+                assert_eq!(b.n_bytes, a.n_bytes / 2, "{}", b.name);
+                matrices += 1;
+            } else {
+                // Vectors stay F32 in both, as a real half-precision GGUF does,
+                // which makes each fixture the mixed case: one run marks both
+                // precisions.
+                assert_eq!(b.dtype, TensorDtype::F32, "{}", b.name);
+                vectors += 1;
+            }
         }
+        assert!(matrices > 0 && vectors > 0, "{matrices} / {vectors}");
     }
-    assert!(matrices > 0 && vectors > 0, "{matrices} / {vectors}");
 }
 
 /// The dtype screen, and the terms it does *not* answer alone.
@@ -280,14 +432,14 @@ fn the_two_fixtures_are_one_model_at_two_storage_precisions() {
 fn the_dtype_screen_is_a_screen_and_the_row_is_the_admission() {
     assert!(TensorDtype::F32.is_trainable_base());
     assert!(TensorDtype::F16.is_trainable_base());
-    assert!(!TensorDtype::BF16.is_trainable_base());
+    assert!(TensorDtype::BF16.is_trainable_base());
     assert!(!TensorDtype::from_ggml_name("Q4_K").is_trainable_base());
 
     // Passing the screen is not admission: the optimizer and the backend are
     // asked separately and either can refuse.
     assert!(!base_dtype_admits(
         &TensorDtype::F16,
-        OptimizerKind::Sgd,
+        OptimizerKind::Muon,
         "CPU"
     ));
     assert!(!base_dtype_admits(
@@ -298,25 +450,85 @@ fn the_dtype_screen_is_a_screen_and_the_row_is_the_admission() {
     assert!(!BASE_DTYPE_TABLE.is_empty(), "the widening has no row");
 }
 
-/// An F16 base tensor is marked, carries an F32 gradient, and moves.
+/// The declared table and the running backend answer the same question in
+/// both directions: a row means the marking succeeds, no row means it is
+/// refused by name. Only the backend this process runs on can be asked, which
+/// is also why a row is written per measured backend.
 #[test]
-fn an_f16_base_tensor_is_marked_and_the_update_moves_it() {
-    let model = f16_fixture!();
+fn the_row_and_the_running_backend_agree_on_whether_a_storage_is_admitted() {
+    per_case(table_agrees_with_backend);
+}
+
+fn table_agrees_with_backend(storage: &Storage, optimizer: OptimizerKind, device: Device) {
+    let Some((model, _)) = storage.pair() else {
+        return;
+    };
     let _guard = common::serialize_models();
 
-    let set = resolved_set(&model);
-    let mut trainer = Trainer::new(&model, config(OptimizerKind::AdamW)).expect("load trainer");
-    let Some(_row) = row_for(&mut trainer) else {
+    let set = resolved_set(&model, device);
+    let mut trainer = Trainer::new(&model, config(optimizer, device)).expect("load trainer");
+    let registry = backend_registry(&mut trainer);
+    let tabled = base_dtype_capability(&storage.dtype, optimizer, &registry).is_some();
+    // The device's own probe, which is neither the table nor the refusal.
+    let probed = device_probe_admits(&mut trainer, &storage.dtype, optimizer);
+    assert_eq!(
+        tabled, probed,
+        "{registry}: the table says {tabled} and the device's {optimizer} {} probe says {probed}",
+        storage.dtype
+    );
+
+    trainer
+        .declare_trainable_set(&set)
+        .expect("the selected projections");
+    let named = storage.dtype.name().to_ascii_lowercase();
+    match trainer.prepare_optimizer() {
+        Ok(()) => assert!(
+            tabled,
+            "{registry} marked a {} base set under {optimizer} that no row admits",
+            storage.dtype
+        ),
+        Err(error) => {
+            assert!(
+                !tabled,
+                "{registry} refused a combination it has a row for: {error}"
+            );
+            let message = error.to_string();
+            // The refusal names all three coordinates, because all three are
+            // what a reader has to change.
+            assert!(message.contains(&named), "{message}");
+            assert!(message.contains(optimizer.as_str()), "{message}");
+            assert!(message.contains(&registry), "{message}");
+        }
+    }
+}
+
+/// A half-precision base tensor is marked, carries an F32 gradient, and moves.
+#[test]
+fn a_half_precision_base_tensor_is_marked_and_the_update_moves_it() {
+    per_case(marked_and_moved);
+}
+
+fn marked_and_moved(storage: &Storage, optimizer: OptimizerKind, device: Device) {
+    let Some((model, _)) = storage.pair() else {
+        return;
+    };
+    let _guard = common::serialize_models();
+
+    let set = resolved_set(&model, device);
+    let mut trainer = Trainer::new(&model, config(optimizer, device)).expect("load trainer");
+    let Some(_row) = row_for(&mut trainer, &storage.dtype, optimizer) else {
         eprintln!(
-            "skipping: no BASE_DTYPE_TABLE row for F16/adamw on {}",
+            "skipping: no BASE_DTYPE_TABLE row for {}/{optimizer} on {}",
+            storage.dtype,
             backend_registry(&mut trainer)
         );
         return;
     };
     // The declared table and the live device agree.
     assert!(
-        report_line(&mut trainer, "cap_opt_step_f16").contains("adamw"),
-        "the row claims F16 AdamW and the device's own probe declines it"
+        device_probe_admits(&mut trainer, &storage.dtype, optimizer),
+        "the row claims {} under {optimizer} and the device's own probe declines it",
+        storage.dtype
     );
 
     trainer
@@ -324,7 +536,7 @@ fn an_f16_base_tensor_is_marked_and_the_update_moves_it() {
         .expect("the selected projections");
     trainer
         .prepare_optimizer()
-        .expect("an F16 base set is marked");
+        .expect("a half-precision base set is marked");
 
     let marked = trainer.marked_trainable_set().expect("the marked set");
     assert_eq!(
@@ -332,24 +544,24 @@ fn an_f16_base_tensor_is_marked_and_the_update_moves_it() {
         set.entries.len(),
         "the declared set and the marked set are the same set"
     );
-    let f16_entries = marked
+    let stored_entries = marked
         .entries
         .iter()
-        .filter(|entry| entry.dtype == TensorDtype::F16)
+        .filter(|entry| entry.dtype == storage.dtype)
         .count();
     assert_eq!(
-        f16_entries,
+        stored_entries,
         marked.entries.len(),
         "the selection was supposed to be matrices only"
     );
 
     let sizes: Vec<u64> = marked.entries.iter().map(|entry| entry.n_bytes).collect();
     let before: Vec<Vec<f32>> = (0..sizes.len())
-        .map(|i| parameter_values(&mut trainer, i, &TensorDtype::F16, sizes[i]))
+        .map(|i| parameter_values(&mut trainer, i, &storage.dtype, sizes[i]))
         .collect();
     assert_eq!(train_one_row(&mut trainer), 1);
     let after: Vec<Vec<f32>> = (0..sizes.len())
-        .map(|i| parameter_values(&mut trainer, i, &TensorDtype::F16, sizes[i]))
+        .map(|i| parameter_values(&mut trainer, i, &storage.dtype, sizes[i]))
         .collect();
 
     let mut moved = 0_usize;
@@ -377,29 +589,58 @@ fn an_f16_base_tensor_is_marked_and_the_update_moves_it() {
             .filter(|(a, b)| a != b)
             .count();
     }
-    assert!(moved > 0, "no F16 element changed in the step");
+    assert!(moved > 0, "no stored element changed in the step");
 }
 
-/// The admission follows the optimizer, not the dtype: SGD's update step is
-/// F32-only, so the same selection that trains under AdamW is refused under
-/// SGD by name, before a graph is built.
+/// Muon's update step is F32-only, so a set assigned to it is refused by
+/// name before a graph is built. The assignment is named per parameter,
+/// which overrides Muon's AdamW fallback; the refusal says the step is
+/// F32-only rather than naming an empty list of backends.
 #[test]
-fn an_f16_base_set_is_refused_by_an_optimizer_whose_step_cannot_write_it() {
-    let model = f16_fixture!();
+fn an_f32_only_optimizer_refuses_a_half_precision_base_set() {
+    for storage in storages() {
+        for device in devices() {
+            eprintln!("--- {} under muon on device {device:?} ---", storage.dtype);
+            refused_by_muon(&storage, device);
+        }
+    }
+}
+
+fn refused_by_muon(storage: &Storage, device: Device) {
+    let Some((model, _)) = storage.pair() else {
+        return;
+    };
     let _guard = common::serialize_models();
 
-    let set = resolved_set(&model);
-    let mut trainer = Trainer::new(&model, config(OptimizerKind::Sgd)).expect("load trainer");
+    assert!(
+        !OptimizerKind::Muon.supports_dtype(&storage.dtype),
+        "muon grew a half-precision store; this case needs another optimizer"
+    );
+    let set = resolved_set(&model, device);
+    let mut trainer =
+        Trainer::new(&model, config(OptimizerKind::Muon, device)).expect("load trainer");
     trainer
         .declare_trainable_set(&set)
         .expect("the same selection resolves whatever the optimizer");
+    let assignment: Vec<(String, OptimizerKind)> = set
+        .base_entries()
+        .map(|entry| (entry.name.clone(), OptimizerKind::Muon))
+        .collect();
+    assert!(!assignment.is_empty());
+    trainer
+        .set_optimizer_assignment(&assignment)
+        .expect("muon is named for every selected parameter");
     let error = trainer
         .prepare_optimizer()
-        .expect_err("sgd cannot write an F16 parameter");
+        .expect_err("muon cannot write a half-precision parameter");
     let message = error.to_string();
-    assert!(message.contains("sgd"), "{message}");
+    assert!(message.contains("muon"), "{message}");
     // `ggml_type_name`'s spelling, which is what the runtime quotes.
-    assert!(message.contains("f16"), "{message}");
+    assert!(
+        message.contains(&storage.dtype.name().to_ascii_lowercase()),
+        "{message}"
+    );
+    assert!(message.contains("F32 only"), "{message}");
     // The refusal is the dtype one, not rule 6's "declared but not marked".
     assert!(
         !message.contains("marked"),
@@ -410,39 +651,119 @@ fn an_f16_base_set_is_refused_by_an_optimizer_whose_step_cannot_write_it() {
     assert!(message.contains(&registry), "{message}");
 }
 
+/// The rounding on its own, without a model: an update below half a grid
+/// point still has to accumulate, which is the reason the store is
+/// stochastic. Run through the probe, which is also what a backend's kernel
+/// is compared against.
+#[test]
+fn an_update_below_half_a_grid_point_still_accumulates() {
+    const N: usize = 256;
+    const STEPS: u32 = 300;
+    const ALPHA: f32 = 1.0e-5;
+
+    for storage in storages() {
+        for optimizer in optimizers() {
+            let grid = storage_ulp(&storage.dtype, 1.0);
+            assert!(
+                ALPHA < grid / 2.0,
+                "{}: a step of {ALPHA} is not below half a grid point of {grid}",
+                storage.dtype
+            );
+            let ne = [N as i64, 1, 1, 1];
+            let gradients = vec![1.0_f32; N];
+            let mut weights = vec![1.0_f32; N];
+            for step in 0..STEPS {
+                // Both optimizers move by ALPHA here: AdamW's moments reset
+                // each probe call, and SGD's step is the gradient itself.
+                // src2 carries {clipping scale, rounding seed}; the moving
+                // seed mirrors a run's iteration counter.
+                let scale_and_seed = [1.0_f32, step as f32];
+                weights = probe_op(
+                    storage.probe(optimizer),
+                    false,
+                    ProbeInputs::pair(ne, &weights, ne, &gradients)
+                        .with_src2(Some(([2, 1, 1, 1], scale_and_seed.as_slice()))),
+                    [ALPHA, 0.0],
+                    N,
+                )
+                .expect("run one chained update through the probe");
+            }
+
+            assert!(
+                weights.iter().all(|value| value.is_finite()),
+                "{}: stochastic rounding manufactured a non-finite weight",
+                storage.dtype
+            );
+            assert!(
+                weights.iter().any(|value| *value != 1.0),
+                "{}: every weight is still exactly 1.0, so the updates rounded away",
+                storage.dtype
+            );
+
+            // Unbiased means the mean lands on the exact arithmetic, not merely
+            // somewhere below where it started. The spread is one grid point over
+            // the root of the population, which is what makes this a bound rather
+            // than a fitted number.
+            let mean = weights.iter().sum::<f32>() / N as f32;
+            let expected = 1.0 - ALPHA * STEPS as f32;
+            let spread = grid / (N as f32).sqrt();
+            eprintln!(
+                "{} under {optimizer} rounding over {N} elements and {STEPS} steps: mean \
+             {mean:.6} against the exact {expected:.6}, one grid point being {grid:.3e}",
+                storage.dtype
+            );
+            assert!(
+                (mean - expected).abs() < 4.0 * spread,
+                "{}: the mean drifted to {mean} from the unbiased {expected}, beyond \
+             four times the {spread:.3e} spread one grid point allows",
+                storage.dtype
+            );
+        }
+    }
+}
+
 // --- parity -------------------------------------------------------------------
 
 /// One step, twice: the same tokens, the same configuration and the same
-/// weights, stored once as F32 and once as F16. Per tensor and per element,
-/// the gradient and the update are held to the tolerances the row publishes,
-/// which come from the table so the row's combination has to keep meeting
-/// them rather than describing a one-off measurement.
+/// weights, stored once as F32 and once at the storage under test. Per tensor
+/// and per element, the gradient and the update are held to the tolerances the
+/// row publishes, which come from the table so the row's combination has to
+/// keep meeting them rather than describing a one-off measurement.
 #[test]
-fn an_f16_step_matches_the_f32_step_within_the_published_tolerance() {
-    let f32_model = f32_fixture!();
-    let f16_model = f16_fixture!();
+fn a_half_precision_step_matches_the_f32_step_within_the_published_tolerance() {
+    per_case(step_parity);
+}
+
+fn step_parity(storage: &Storage, optimizer: OptimizerKind, device: Device) {
+    let Some((stored_model, f32_model)) = storage.pair() else {
+        return;
+    };
     let _guard = common::serialize_models();
 
     let mut f32_trainer =
-        Trainer::new(&f32_model, config(OptimizerKind::AdamW)).expect("load the F32 trainer");
-    let Some(row) = row_for(&mut f32_trainer) else {
-        eprintln!("skipping: no row for this backend");
+        Trainer::new(&f32_model, config(optimizer, device)).expect("load the F32 trainer");
+    let Some(row) = row_for(&mut f32_trainer, &storage.dtype, optimizer) else {
+        eprintln!("skipping: no row for this combination");
         return;
     };
     f32_trainer
-        .declare_trainable_set(&resolved_set(&f32_model))
+        .declare_trainable_set(&resolved_set(&f32_model, device))
         .expect("the F32 selection");
     f32_trainer.prepare_optimizer().expect("mark the F32 set");
 
-    let mut f16_trainer =
-        Trainer::new(&f16_model, config(OptimizerKind::AdamW)).expect("load the F16 trainer");
-    f16_trainer
-        .declare_trainable_set(&resolved_set(&f16_model))
-        .expect("the F16 selection");
-    f16_trainer.prepare_optimizer().expect("mark the F16 set");
+    let mut stored_trainer = Trainer::new(&stored_model, config(optimizer, device))
+        .expect("load the half-precision trainer");
+    stored_trainer
+        .declare_trainable_set(&resolved_set(&stored_model, device))
+        .expect("the half-precision selection");
+    stored_trainer
+        .prepare_optimizer()
+        .expect("mark the half-precision set");
 
     let left = f32_trainer.marked_trainable_set().expect("marked F32");
-    let right = f16_trainer.marked_trainable_set().expect("marked F16");
+    let right = stored_trainer
+        .marked_trainable_set()
+        .expect("marked half-precision");
     assert_eq!(left.entries.len(), right.entries.len());
     assert!(!left.entries.is_empty());
 
@@ -456,12 +777,12 @@ fn an_f16_step_matches_the_f32_step_within_the_published_tolerance() {
             )
         })
         .collect();
-    let before_f16: Vec<Vec<f32>> = (0..right.entries.len())
+    let before_stored: Vec<Vec<f32>> = (0..right.entries.len())
         .map(|i| {
             parameter_values(
-                &mut f16_trainer,
+                &mut stored_trainer,
                 i,
-                &TensorDtype::F16,
+                &storage.dtype,
                 right.entries[i].n_bytes,
             )
         })
@@ -472,19 +793,22 @@ fn an_f16_step_matches_the_f32_step_within_the_published_tolerance() {
     // difference in the draw.
     for (index, entry) in left.entries.iter().enumerate() {
         assert_eq!(
-            before_f32[index], before_f16[index],
+            before_f32[index], before_stored[index],
             "{} differs before the step: the fixtures are not one model",
             entry.name
         );
     }
 
     assert_eq!(train_one_row(&mut f32_trainer), 1);
-    assert_eq!(train_one_row(&mut f16_trainer), 1);
+    assert_eq!(train_one_row(&mut stored_trainer), 1);
 
-    // AdamW's own bound on one step: `|delta| <= alpha * (1 + wd)`, so two
-    // trajectories are at most twice that apart, plus the grid the F16 result
-    // lands on (an ulp at the largest weight in the set).
-    let knobs = f16_trainer
+    // Each optimizer's own bound on one step, so two trajectories are at most
+    // twice that apart, plus the grid the stored result lands on. AdamW
+    // normalizes its step: `|delta| <= alpha * (1 + wd)`, whatever the
+    // gradient. SGD does not - its step *is* the gradient - so the bound is
+    // read from the gradient of the element being compared, which the clipping
+    // scale can only shrink.
+    let knobs = stored_trainer
         .optimizer_hyperparameters()
         .expect("the values the update read");
     let scalar = |name: &str| match knobs.get(name) {
@@ -493,12 +817,14 @@ fn an_f16_step_matches_the_f32_step_within_the_published_tolerance() {
     };
     let alpha = scalar("learning_rate");
     let decay = scalar("weight_decay");
-    let largest = before_f16
-        .iter()
-        .flatten()
-        .fold(0.0_f32, |acc, value| acc.max(value.abs()));
-    let ceiling = 2.0 * alpha * (1.0 + decay) + f16_ulp(largest);
-    assert!(alpha > 0.0 && ceiling.is_finite());
+    let step_ceiling = |gradient: f32, weight: f32| {
+        let step = match optimizer {
+            OptimizerKind::Sgd => alpha * (gradient.abs() + decay * weight.abs()),
+            _ => alpha * (1.0 + decay),
+        };
+        2.0 * step + storage_ulp(&storage.dtype, weight)
+    };
+    assert!(alpha > 0.0);
 
     let mut worst_gradient = 0.0_f32;
     let mut worst_gradient_at = String::new();
@@ -507,11 +833,14 @@ fn an_f16_step_matches_the_f32_step_within_the_published_tolerance() {
     let mut compared = 0_usize;
     let mut over = 0_usize;
     let mut worst_divergence = 0.0_f32;
+    // The divergence of the worst element as a fraction of what that element's
+    // own step could move it: one number for a bound that is per element.
+    let mut worst_excess = 0.0_f32;
 
     for (index, entry) in left.entries.iter().enumerate() {
         assert_eq!(entry.name, right.entries[index].name);
         let g32 = parameter_gradient(&mut f32_trainer, index);
-        let g16 = parameter_gradient(&mut f16_trainer, index);
+        let g16 = parameter_gradient(&mut stored_trainer, index);
         assert_eq!(g32.len(), g16.len(), "{}", entry.name);
 
         let after_f32 = parameter_values(
@@ -520,10 +849,10 @@ fn an_f16_step_matches_the_f32_step_within_the_published_tolerance() {
             &TensorDtype::F32,
             left.entries[index].n_bytes,
         );
-        let after_f16 = parameter_values(
-            &mut f16_trainer,
+        let after_stored = parameter_values(
+            &mut stored_trainer,
             index,
-            &TensorDtype::F16,
+            &storage.dtype,
             right.entries[index].n_bytes,
         );
 
@@ -540,7 +869,7 @@ fn an_f16_step_matches_the_f32_step_within_the_published_tolerance() {
                 g32[element].is_finite()
                     && g16[element].is_finite()
                     && after_f32[element].is_finite()
-                    && after_f16[element].is_finite(),
+                    && after_stored[element].is_finite(),
                 "{}[{element}] has a non-finite gradient or parameter",
                 entry.name
             );
@@ -551,14 +880,14 @@ fn an_f16_step_matches_the_f32_step_within_the_published_tolerance() {
                 worst_gradient_at = format!("{}[{element}]", entry.name);
             }
 
-            // The update, in units of the grid the F16 parameter is stored on;
-            // an F16 run cannot land between two grid points.
+            // The update, in units of the grid the parameter is stored on; a
+            // half-precision run cannot land between two grid points.
             let delta32 = after_f32[element] - before_f32[index][element];
-            let delta16 = after_f16[element] - before_f16[index][element];
-            let scale = before_f16[index][element]
+            let delta16 = after_stored[element] - before_stored[index][element];
+            let scale = before_stored[index][element]
                 .abs()
                 .max(after_f32[element].abs());
-            let ulps = (delta32 - delta16).abs() / f16_ulp(scale);
+            let ulps = (delta32 - delta16).abs() / storage_ulp(&storage.dtype, scale);
             if ulps > worst_update_ulps {
                 worst_update_ulps = ulps;
                 worst_update_at = format!("{}[{element}]", entry.name);
@@ -566,19 +895,30 @@ fn an_f16_step_matches_the_f32_step_within_the_published_tolerance() {
             if ulps > row.update_tolerance {
                 over += 1;
             }
-            worst_divergence = worst_divergence.max((delta32 - delta16).abs());
+            let divergence = (delta32 - delta16).abs();
+            worst_divergence = worst_divergence.max(divergence);
+            let ceiling = step_ceiling(
+                g32[element].abs().max(g16[element].abs()),
+                before_stored[index][element]
+                    .abs()
+                    .max(after_f32[element].abs()),
+            );
+            assert!(ceiling.is_finite() && ceiling > 0.0);
+            worst_excess = worst_excess.max(divergence / ceiling);
             compared += 1;
         }
     }
 
     assert!(compared > 0);
     let outliers = over as f32 / compared as f32;
+    let registry = backend_registry(&mut stored_trainer);
     eprintln!(
-        "F16 parity over {compared} elements: gradient {worst_gradient:.3e} \
-         (at {worst_gradient_at}), update worst {worst_update_ulps:.1} ulp \
+        "{} under {optimizer} parity on {registry} over {compared} elements: gradient \
+         {worst_gradient:.3e} (at {worst_gradient_at}), update worst {worst_update_ulps:.1} ulp \
          (at {worst_update_at}), {over} over {:.1} ulp ({outliers:.2e} of the set), \
-         largest divergence {worst_divergence:.3e} against a step ceiling of {ceiling:.3e}; \
-         the row publishes {:.3e} / {:.1} ulp / {:.2e}",
+         largest divergence {worst_divergence:.3e} at {worst_excess:.2} of its own step \
+         ceiling; the row publishes {:.3e} / {:.1} ulp / {:.2e}",
+        storage.dtype,
         row.update_tolerance,
         row.gradient_tolerance,
         row.update_tolerance,
@@ -598,40 +938,49 @@ fn an_f16_step_matches_the_f32_step_within_the_published_tolerance() {
         row.update_tolerance,
         row.update_outlier_fraction
     );
-    // The bound that holds for *every* element, outliers included: an AdamW
-    // step is bounded by alpha in magnitude, so two trajectories cannot be
-    // further apart than two steps plus the grid the F16 result is stored on.
+    // The bound that holds for *every* element, outliers included: two
+    // trajectories cannot be further apart than two of that element's steps
+    // plus the grid the half-precision result is stored on.
     assert!(
-        worst_divergence <= ceiling,
-        "an element diverged by {worst_divergence:.3e}, beyond the optimizer's own step \
-         ceiling of {ceiling:.3e}: F16 storage amplified the update rather than rounding it"
+        worst_excess <= 1.0,
+        "an element diverged by {worst_divergence:.3e}, {worst_excess:.2} times its own \
+         step ceiling: half-precision storage amplified the update rather than rounding it"
     );
     // Two bit-identical runs would prove nothing about precision.
     assert!(
         worst_update_ulps > 0.0,
-        "the two runs were bit-identical: the F16 fixture is not F16"
+        "the two runs were bit-identical: the {} fixture is not {}",
+        storage.dtype,
+        storage.dtype
     );
 }
 
 // --- stability ------------------------------------------------------------------
 
 /// The row claims a number of steps; this runs them and asserts what a long
-/// F16 run can actually lose: finiteness, a weight that has not walked out of
-/// the representable range, and a loss that has not diverged from where it
-/// started.
+/// half-precision run can actually lose: finiteness, a weight that has not
+/// walked out of the representable range, and a loss that has not diverged
+/// from where it started.
 ///
 /// `RETRO_F16_STABILITY_STEPS` shortens the run while iterating but cannot
 /// lengthen the claim: the row is what the lane ran.
 #[test]
-fn f16_base_training_stays_finite_and_bounded_over_the_claimed_run() {
-    let model = f16_fixture!();
-    let _guard = common::serialize_models();
+fn half_precision_base_training_stays_finite_and_bounded_over_the_claimed_run() {
+    per_case(stability);
+}
 
-    let mut trainer = Trainer::new(&model, config(OptimizerKind::AdamW)).expect("load trainer");
-    let Some(row) = row_for(&mut trainer) else {
-        eprintln!("skipping: no row for this backend");
+fn stability(storage: &Storage, optimizer: OptimizerKind, device: Device) {
+    let Some((model, f32_model)) = storage.pair() else {
         return;
     };
+    let _guard = common::serialize_models();
+
+    let mut trainer = Trainer::new(&model, config(optimizer, device)).expect("load trainer");
+    let Some(row) = row_for(&mut trainer, &storage.dtype, optimizer) else {
+        eprintln!("skipping: no row for this combination");
+        return;
+    };
+    let registry = backend_registry(&mut trainer);
     let steps = std::env::var("RETRO_F16_STABILITY_STEPS")
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
@@ -643,14 +992,15 @@ fn f16_base_training_stays_finite_and_bounded_over_the_claimed_run() {
     );
     drop(trainer);
 
-    let f32_model = f32_fixture!();
-    let f16 = run_stability(&model, steps, &TensorDtype::F16);
-    let f32 = run_stability(&f32_model, steps, &TensorDtype::F32);
+    let f16 = run_stability(&model, steps, &storage.dtype, optimizer, device);
+    let f32 = run_stability(&f32_model, steps, &TensorDtype::F32, optimizer, device);
 
     eprintln!(
-        "F16 stability over {steps} steps: loss {:.5} -> {:.5} (F32: {:.5} -> {:.5}), \
-         |w|max {:.5} -> {:.5} (F32: {:.5}), {} of {} elements moved, \
-         last {LATE} steps moved {}",
+        "{} under {optimizer} stability on {registry} over {steps} steps: loss {:.5} -> {:.5} \
+         (F32: {:.5} -> {:.5}), \
+         |w|max {:.5} -> {:.5} (F32: {:.5}), |w|rms {:.5} (F32: {:.5}), \
+         {} of {} elements moved, last {LATE} steps moved {}",
+        storage.dtype,
         f16.first_loss,
         f16.last_loss,
         f32.first_loss,
@@ -658,6 +1008,8 @@ fn f16_base_training_stays_finite_and_bounded_over_the_claimed_run() {
         f16.largest_initial,
         f16.largest_final,
         f32.largest_final,
+        f16.rms_final,
+        f32.rms_final,
         f16.moved,
         f16.elements,
         f16.moved_late
@@ -668,21 +1020,22 @@ fn f16_base_training_stays_finite_and_bounded_over_the_claimed_run() {
     assert!(f16.largest_final.is_finite() && f16.last_loss.is_finite());
     assert!(f16.moved > 0, "{steps} steps changed nothing");
 
-    // How far the weights travelled, against the F32 control on identical data.
-    // What F16 storage can do is inflate the drift (a rounding with an
-    // accumulating bias walks a weight outward every step), and the F32 run is
-    // the reference that shows it. The margin is small on purpose: a
-    // combination that starts drifting has changed.
-    let envelope = f32.largest_final * 1.05 + f16_ulp(f32.largest_final);
+    // How far the weights travelled, against the F32 control on identical
+    // data. Bounded on the RMS over the whole set: a storage bias moves every
+    // element, while the single largest is the noisiest summary of the run,
+    // and the F32 controls alone spread over 20% between fixture and backend.
+    let envelope = f32.rms_final * 1.02;
     assert!(
-        f16.largest_final <= envelope,
-        "the largest weight reached {} after {steps} steps against F32's {}: F16 \
+        f16.rms_final <= envelope,
+        "the weights ended at an RMS of {} after {steps} steps against F32's {}: {} \
          storage inflated the drift rather than rounding it",
-        f16.largest_final,
-        f32.largest_final
+        f16.rms_final,
+        f32.rms_final,
+        storage.dtype
     );
-    // And stayed far from where F16 stops being a number: 65504 is the largest
-    // finite F16, and within an order of magnitude of it is one bad step from
+    // And stayed far from where the storage stops being a number: 65504 is the
+    // largest finite F16 (BF16 reaches F32's range, so this is the tighter of
+    // the two), and within an order of magnitude of it is one bad step from
     // infinity.
     assert!(
         f16.largest_final < 6550.0,
@@ -704,7 +1057,8 @@ fn f16_base_training_stays_finite_and_bounded_over_the_claimed_run() {
     // training looks identical on every check above and differs here.
     assert!(
         f16.last_loss < f16.first_loss,
-        "the F16 run did not train: {} -> {}",
+        "the {} run did not train: {} -> {}",
+        storage.dtype,
         f16.first_loss,
         f16.last_loss
     );
@@ -712,8 +1066,9 @@ fn f16_base_training_stays_finite_and_bounded_over_the_claimed_run() {
         (f16.last_loss - f32.last_loss).abs() / f32.last_loss.abs().max(f32::MIN_POSITIVE);
     assert!(
         loss_gap <= row.stability_loss_tolerance,
-        "after {steps} steps the F16 run's loss is {} against F32's {} - a relative \
+        "after {steps} steps the {} run's loss is {} against F32's {} - a relative \
          gap of {loss_gap:.3e}, and the row admits {:.3e}",
+        storage.dtype,
         f16.last_loss,
         f32.last_loss,
         row.stability_loss_tolerance
@@ -729,19 +1084,26 @@ struct StabilityRun {
     last_loss: f32,
     largest_initial: f32,
     largest_final: f32,
+    rms_final: f32,
     moved: usize,
     moved_late: usize,
     elements: usize,
 }
 
 /// `steps` optimizer steps on one row, with everything the assertions above
-/// read recorded as it goes. Run once per fixture: a claim about F16 that is
-/// not also measured on F32 is a claim about this model, not about the
-/// precision.
-fn run_stability(model: &Path, steps: u32, dtype: &TensorDtype) -> StabilityRun {
-    let mut trainer = Trainer::new(model, config(OptimizerKind::AdamW)).expect("load trainer");
+/// read recorded as it goes. Run once per fixture: a claim about a storage
+/// precision that is not also measured on F32 is a claim about this model, not
+/// about the precision.
+fn run_stability(
+    model: &Path,
+    steps: u32,
+    dtype: &TensorDtype,
+    optimizer: OptimizerKind,
+    device: Device,
+) -> StabilityRun {
+    let mut trainer = Trainer::new(model, config(optimizer, device)).expect("load trainer");
     trainer
-        .declare_trainable_set(&resolved_set(model))
+        .declare_trainable_set(&resolved_set(model, device))
         .expect("the selected projections");
     trainer.prepare_optimizer().expect("mark the set");
     let marked = trainer.marked_trainable_set().expect("the marked set");
@@ -756,6 +1118,15 @@ fn run_stability(model: &Path, steps: u32, dtype: &TensorDtype) -> StabilityRun 
             .iter()
             .flatten()
             .fold(0.0_f32, |acc, value| acc.max(value.abs()))
+    };
+    let rms = |values: &[Vec<f32>]| {
+        let count = values.iter().flatten().count();
+        let sum: f64 = values
+            .iter()
+            .flatten()
+            .map(|value| f64::from(*value) * f64::from(*value))
+            .sum();
+        (sum / count.max(1) as f64).sqrt() as f32
     };
 
     let initial = values(&mut trainer);
@@ -815,6 +1186,7 @@ fn run_stability(model: &Path, steps: u32, dtype: &TensorDtype) -> StabilityRun 
         last_loss,
         largest_initial: largest(&initial),
         largest_final: largest(&final_values),
+        rms_final: rms(&final_values),
         moved,
         moved_late,
         elements,
@@ -858,8 +1230,13 @@ fn metadata(model: &Path, global_step: u64) -> CheckpointMetadata {
     }
 }
 
-fn compatibility_for(trainer: &mut Trainer, model: &Path) -> checkpoint::Compatibility {
-    let reference = config(OptimizerKind::AdamW);
+fn compatibility_for(
+    trainer: &mut Trainer,
+    model: &Path,
+    optimizer: OptimizerKind,
+    device: Device,
+) -> checkpoint::Compatibility {
+    let reference = config(optimizer, device);
     let hyperparameters = trainer
         .optimizer_hyperparameters()
         .expect("optimizer hyperparameters");
@@ -875,7 +1252,7 @@ fn compatibility_for(trainer: &mut Trainer, model: &Path) -> checkpoint::Compati
         learning_rate: reference.learning_rate,
         warmup_steps: 0,
         total_steps: None,
-        optimizer_kind: "adamw".into(),
+        optimizer_kind: optimizer.as_str().into(),
         optimizer_layout_version: hyperparameters.optimizer().layout_version(),
         optimizer_hyperparameters: hyperparameters.lines(),
         weight_decay: reference.weight_decay,
@@ -885,22 +1262,28 @@ fn compatibility_for(trainer: &mut Trainer, model: &Path) -> checkpoint::Compati
     }
 }
 
-/// Restores the F16 bytes and the optimizer iteration, then checks the next
+/// Restores the stored bytes and the optimizer iteration, then checks the next
 /// forward loss. Forward-loss parity does not establish parity of the
 /// subsequent update or RNG draws.
 #[test]
-fn an_f16_checkpoint_restores_weights_iteration_and_forward_loss() {
-    let model = f16_fixture!();
+fn a_half_precision_checkpoint_restores_weights_iteration_and_forward_loss() {
+    per_case(checkpoint_restores);
+}
+
+fn checkpoint_restores(storage: &Storage, optimizer: OptimizerKind, device: Device) {
+    let Some((model, _)) = storage.pair() else {
+        return;
+    };
     let _guard = common::serialize_models();
     let root = scratch("resume");
-    let set = resolved_set(&model);
+    let set = resolved_set(&model, device);
 
     // Long enough that the momenta are no longer their initial zeros.
     const BEFORE: u32 = 3;
 
-    let mut trainer = Trainer::new(&model, config(OptimizerKind::AdamW)).expect("load trainer");
-    if row_for(&mut trainer).is_none() {
-        eprintln!("skipping: no row for this backend");
+    let mut trainer = Trainer::new(&model, config(optimizer, device)).expect("load trainer");
+    if row_for(&mut trainer, &storage.dtype, optimizer).is_none() {
+        eprintln!("skipping: no row for this combination");
         return;
     }
     trainer
@@ -928,7 +1311,7 @@ fn an_f16_checkpoint_restores_weights_iteration_and_forward_loss() {
     let state = root.join("step-000000000001.state");
     trainer
         .save_checkpoint(&state, &metadata(&model, step))
-        .expect("checkpoint an F16 base run");
+        .expect("checkpoint a half-precision base run");
     let next_loss = trainer
         .train_tokens(&tokens)
         .expect("the step after the checkpoint")
@@ -937,25 +1320,29 @@ fn an_f16_checkpoint_restores_weights_iteration_and_forward_loss() {
 
     let record = Checkpoint::read(&state).expect("read the checkpoint");
     let bundle = record.manifest.trainable.as_ref().expect("a base bundle");
-    // An F16 run that published F32 values would restore a *different* model:
-    // every weight moved to the nearest F32, not where the F16 run left it.
+    // A half-precision run that published F32 values would restore a
+    // *different* model: every weight moved to the nearest F32, not where the
+    // run left it.
     assert!(
-        bundle.tensors.iter().all(|tensor| tensor.dtype == "F16"),
+        bundle
+            .tensors
+            .iter()
+            .all(|tensor| tensor.dtype == storage.dtype.name()),
         "the bundle widened the values it was given"
     );
     let saved_iter = record.optimizer.iter;
     assert!(saved_iter > 1, "the counter never advanced: {saved_iter}");
 
-    let mut resumed = Trainer::new(&model, config(OptimizerKind::AdamW)).expect("load trainer");
+    let mut resumed = Trainer::new(&model, config(optimizer, device)).expect("load trainer");
     resumed
         .declare_trainable_set(&set)
         .expect("the same selection");
-    let expected = compatibility_for(&mut resumed, &model);
+    let expected = compatibility_for(&mut resumed, &model, optimizer, device);
     resumed
         .load_checkpoint(&state, &expected)
-        .expect("restore an F16 base checkpoint");
+        .expect("restore a half-precision base checkpoint");
 
-    // The weights came back bit-for-bit, in F16.
+    // The weights came back bit-for-bit, at their storage precision.
     for (index, entry) in marked.entries.iter().enumerate() {
         assert_eq!(
             parameter_bytes(&mut resumed, index, sizes[index]),
@@ -1014,10 +1401,14 @@ fn an_f16_checkpoint_restores_weights_iteration_and_forward_loss() {
 /// from the comparison.
 #[test]
 fn an_interrupted_run_lands_bit_for_bit_where_an_uninterrupted_one_does() {
+    per_device(interrupted_run_continuity);
+}
+
+fn interrupted_run_continuity(device: Device) {
     let model = f32_fixture!();
     let _guard = common::serialize_models();
     let root = scratch("continuity");
-    let set = resolved_set(&model);
+    let set = resolved_set(&model, device);
 
     // Both halves are longer than one step: with `n_batch / n_ubatch` micro
     // batches per step, a single step on each side would accumulate one window
@@ -1041,7 +1432,8 @@ fn an_interrupted_run_lands_bit_for_bit_where_an_uninterrupted_one_does() {
     };
 
     // The reference: every step in one process.
-    let mut straight = Trainer::new(&model, config(OptimizerKind::AdamW)).expect("load trainer");
+    let mut straight =
+        Trainer::new(&model, config(OptimizerKind::AdamW, device)).expect("load trainer");
     straight
         .declare_trainable_set(&set)
         .expect("the selected projections");
@@ -1053,7 +1445,8 @@ fn an_interrupted_run_lands_bit_for_bit_where_an_uninterrupted_one_does() {
     drop(straight);
 
     // The same run, interrupted after `BEFORE`.
-    let mut first = Trainer::new(&model, config(OptimizerKind::AdamW)).expect("load trainer");
+    let mut first =
+        Trainer::new(&model, config(OptimizerKind::AdamW, device)).expect("load trainer");
     first
         .declare_trainable_set(&set)
         .expect("the same selection");
@@ -1070,11 +1463,12 @@ fn an_interrupted_run_lands_bit_for_bit_where_an_uninterrupted_one_does() {
         .expect("checkpoint the interrupted run");
     drop(first);
 
-    let mut resumed = Trainer::new(&model, config(OptimizerKind::AdamW)).expect("load trainer");
+    let mut resumed =
+        Trainer::new(&model, config(OptimizerKind::AdamW, device)).expect("load trainer");
     resumed
         .declare_trainable_set(&set)
         .expect("the same selection");
-    let expected = compatibility_for(&mut resumed, &model);
+    let expected = compatibility_for(&mut resumed, &model, OptimizerKind::AdamW, device);
     resumed
         .load_checkpoint(&state, &expected)
         .expect("restore the checkpoint");

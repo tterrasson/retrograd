@@ -406,63 +406,99 @@ static int probe_op_run_locked(
             return 0;
         }
 
-        if (op == RETRO_PROBE_OP_OPT_STEP_ADAMW_F16) {
+        if (op == RETRO_PROBE_OP_OPT_STEP_ADAMW_F16 ||
+                op == RETRO_PROBE_OP_OPT_STEP_ADAMW_BF16 ||
+                op == RETRO_PROBE_OP_OPT_STEP_SGD_F16 ||
+                op == RETRO_PROBE_OP_OPT_STEP_SGD_BF16) {
+            // One id per (optimizer, storage): the four are separate kernel
+            // implementations, so a test that names the wrong one fails
+            // instead of measuring another.
+            const bool bf16 = op == RETRO_PROBE_OP_OPT_STEP_ADAMW_BF16
+                    || op == RETRO_PROBE_OP_OPT_STEP_SGD_BF16;
+            const bool sgd = op == RETRO_PROBE_OP_OPT_STEP_SGD_F16
+                    || op == RETRO_PROBE_OP_OPT_STEP_SGD_BF16;
+            const ggml_type wtype = bf16 ? GGML_TYPE_BF16 : GGML_TYPE_F16;
+            const char * label = sgd
+                    ? (bf16 ? "SGD BF16" : "SGD F16")
+                    : (bf16 ? "AdamW BF16" : "AdamW F16");
             if (!ggml_are_same_shape(
-                        ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F16,
+                        ggml_new_tensor_4d(ctx.get(), wtype,
                             ne_src0[0], ne_src0[1], ne_src0[2], ne_src0[3]),
                         ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32,
                             ne_src1[0], ne_src1[1], ne_src1[2], ne_src1[3]))) {
-                set_error("AdamW F16 probe requires matching weight and gradient shapes");
+                set_error(std::string(label)
+                        + " probe requires matching weight and gradient shapes");
                 return -1;
             }
             // Recreate named pointers after the shape-only validation.
-            ggml_tensor * w = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F16,
+            ggml_tensor * w = ggml_new_tensor_4d(ctx.get(), wtype,
                     ne_src0[0], ne_src0[1], ne_src0[2], ne_src0[3]);
             ggml_tensor * g = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32,
                     ne_src1[0], ne_src1[1], ne_src1[2], ne_src1[3]);
-            ggml_tensor * m = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32,
+            ggml_tensor * m = sgd ? nullptr : ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32,
                     ne_src0[0], ne_src0[1], ne_src0[2], ne_src0[3]);
-            ggml_tensor * v = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32,
+            ggml_tensor * v = sgd ? nullptr : ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32,
                     ne_src0[0], ne_src0[1], ne_src0[2], ne_src0[3]);
-            ggml_tensor * p = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 9);
+            ggml_tensor * p = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, sgd ? 3 : 9);
             ggml_set_param(w);
-            ggml_tensor * out = ggml_opt_step_adamw(ctx.get(), w, g, m, v, p);
+            ggml_tensor * out = sgd
+                    ? ggml_opt_step_sgd(ctx.get(), w, g, p)
+                    : ggml_opt_step_adamw(ctx.get(), w, g, m, v, p);
             ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend.get()));
             if (!buffer) {
-                set_error("AdamW F16 probe backend allocation failed");
+                set_error(std::string(label) + " probe backend allocation failed");
                 return -1;
             }
             const size_t n = static_cast<size_t>(ggml_nelements(w));
             if (dst_len < n) {
-                set_error("probe dst buffer is too small for AdamW F16");
+                set_error(std::string("probe dst buffer is too small for ") + label);
                 return -1;
             }
-            std::vector<ggml_fp16_t> w16(n);
-            ggml_fp32_to_fp16_row(src0, w16.data(), n);
-            // pars[7] seeds the stochastic rounding of the F16 store, pars[8]
-            // is the gradient-clipping scale the kernel folds into the
-            // gradient. src2, when present, carries both as {scale, seed}, so a
-            // test can pin them down instead of inferring them from a full
-            // training run.
+            std::vector<uint16_t> stored(n);
+            if (bf16) {
+                ggml_fp32_to_bf16_row_ref(src0, reinterpret_cast<ggml_bf16_t *>(stored.data()), n);
+            } else {
+                ggml_fp32_to_fp16_row(src0, reinterpret_cast<ggml_fp16_t *>(stored.data()), n);
+            }
+            // AdamW: pars[7] seeds the stochastic rounding of the half
+            // precision store, pars[8] is the clipping scale. SGD: pars[2]
+            // is the seed and the gradient is pre-scaled. src2, when given,
+            // carries {scale, seed} so a test can pin them down.
             const float gscale = src2 ? src2[0] : 1.0f;
             const float sr_seed = (src2 && ne_src2[0] > 1) ? src2[1] : 0.0f;
-            const float pars[9] = {
-                param0, 0.9f, 0.999f, 1.0e-8f, param1,
-                1.0f / (1.0f - 0.9f), 1.0f / (1.0f - 0.999f), sr_seed, gscale,
-            };
-            ggml_backend_tensor_set(w, w16.data(), 0, n*sizeof(ggml_fp16_t));
-            ggml_backend_tensor_set(g, src1, 0, n*sizeof(float));
-            ggml_backend_tensor_set(p, pars, 0, sizeof(pars));
-            ggml_backend_tensor_memset(m, 0, 0, ggml_nbytes(m));
-            ggml_backend_tensor_memset(v, 0, 0, ggml_nbytes(v));
+            ggml_backend_tensor_set(w, stored.data(), 0, n*sizeof(uint16_t));
+            if (sgd) {
+                // The SGD kernel takes an already-scaled gradient, as the
+                // graph multiplies it in.
+                std::vector<float> scaled(n);
+                for (size_t i = 0; i < n; ++i) {
+                    scaled[i] = src1[i] * gscale;
+                }
+                const float pars[3] = { param0, param1, sr_seed };
+                ggml_backend_tensor_set(g, scaled.data(), 0, n*sizeof(float));
+                ggml_backend_tensor_set(p, pars, 0, sizeof(pars));
+            } else {
+                const float pars[9] = {
+                    param0, 0.9f, 0.999f, 1.0e-8f, param1,
+                    1.0f / (1.0f - 0.9f), 1.0f / (1.0f - 0.999f), sr_seed, gscale,
+                };
+                ggml_backend_tensor_set(g, src1, 0, n*sizeof(float));
+                ggml_backend_tensor_set(p, pars, 0, sizeof(pars));
+                ggml_backend_tensor_memset(m, 0, 0, ggml_nbytes(m));
+                ggml_backend_tensor_memset(v, 0, 0, ggml_nbytes(v));
+            }
             ggml_cgraph * gf = ggml_new_graph(ctx.get());
             ggml_build_forward_expand(gf, out);
             if (ggml_backend_graph_compute(backend.get(), gf) != GGML_STATUS_SUCCESS) {
-                set_error("AdamW F16 probe graph compute failed");
+                set_error(std::string(label) + " probe graph compute failed");
                 return -1;
             }
-            ggml_backend_tensor_get(w, w16.data(), 0, n*sizeof(ggml_fp16_t));
-            ggml_fp16_to_fp32_row(w16.data(), dst, n);
+            ggml_backend_tensor_get(w, stored.data(), 0, n*sizeof(uint16_t));
+            if (bf16) {
+                ggml_bf16_to_fp32_row(reinterpret_cast<const ggml_bf16_t *>(stored.data()), dst, n);
+            } else {
+                ggml_fp16_to_fp32_row(reinterpret_cast<const ggml_fp16_t *>(stored.data()), dst, n);
+            }
             return 0;
         }
 

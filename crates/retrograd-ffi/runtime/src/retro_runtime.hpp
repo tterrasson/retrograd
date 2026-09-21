@@ -33,6 +33,22 @@ namespace retro {
 
 extern thread_local std::string g_last_error;
 
+// The half-precision parameter storages an update step can be probed for, as
+// the row index of trainer_state::cap_opt_step_dtypes. F32 is the floor and is
+// deliberately absent: every step writes it.
+enum retro_opt_step_dtype {
+    RETRO_OPT_STEP_DTYPE_F16 = 0,
+    RETRO_OPT_STEP_DTYPE_BF16 = 1,
+    RETRO_OPT_STEP_DTYPE_COUNT = 2,
+};
+
+// The matrix row a ggml type occupies, or -1 for a type no row describes
+// (F32 included).
+int opt_step_dtype_index(ggml_type type);
+
+// The ggml type a matrix row stands for.
+ggml_type opt_step_dtype_of(int index);
+
 struct llama_model_deleter {
     void operator()(llama_model * model) const;
 };
@@ -153,13 +169,13 @@ struct trainer_state {
     // Whether the behavior scorer can gather log p(target) inside the decode
     // graph instead of pulling an n_vocab logits row per scored position.
     bool cap_device_logprobs = false;
-    // Whether the active device can run each optimizer's update step on an
-    // F16 parameter. Probed with ggml_backend_dev_supports_op at load time,
-    // because "AdamW writes F16" is a statement about one backend's kernel and
-    // not about ggml. Indexed by the RETRO_OPTIMIZER_* wire value; a new
-    // optimizer widens this array in the same change that adds its
-    // enumerator.
-    bool cap_opt_step_f16[4] = {};
+    // Whether the active device can run each optimizer's update step on a
+    // parameter of each half-precision storage, probed with
+    // ggml_backend_dev_supports_op at load time: "AdamW writes F16" is a
+    // statement about one backend's kernel, not about ggml. Indexed by
+    // [RETRO_OPT_STEP_DTYPE_*][RETRO_OPTIMIZER_*]. F32 is not a row: every
+    // step writes it.
+    bool cap_opt_step_dtypes[RETRO_OPT_STEP_DTYPE_COUNT][4] = {};
     // Whether the active device can run the run's own update step at all, on
     // an F32 parameter. AdamW and SGD are everywhere; a Gefen step is two ops
     // this build has written for the CPU alone, and a mutation must never be
@@ -518,8 +534,11 @@ bool assert_marked_set_is_resolved(const trainer_state & state);
 // parameter's dtype. The kernels abort on anything they do not carry, so this
 // has to run between the graph build and the first step.
 bool optimizer_supports_marked_dtypes(const trainer_state & state);
-// Whether one optimizer's update kernel can write a parameter of this type.
+// Whether one optimizer's update kernel can write a parameter of this type on
+// this device: the kernel's dtype table, then the device's answer.
 bool optimizer_supports_dtype(const trainer_state & state, int32_t optimizer, ggml_type type);
+// The kernel's dtype table alone, no device in it.
+bool optimizer_kernel_writes_dtype(int32_t optimizer, ggml_type type);
 // The same admission over the declared base set, before llama_opt_init marks
 // anything: a dtype the mark step skips would otherwise surface as rule 6's
 // "declared but not marked".
@@ -527,6 +546,9 @@ bool declared_base_dtypes_are_admitted(const trainer_state & state);
 // The optimizer that owns one parameter: the declared assignment, falling
 // back to the run's own optimizer. `userdata` is the `trainer_state *`.
 ggml_opt_optimizer_type opt_param_optimizer(const ggml_tensor * tensor, void * userdata);
+// The name a refusal and the capability report spell an optimizer with, from
+// the wire value the config carries.
+const char * optimizer_name(int32_t optimizer);
 // The one place retro_optimizer and ggml_opt_optimizer_type are translated.
 ggml_opt_optimizer_type ggml_optimizer_of(int32_t optimizer);
 int32_t retro_optimizer_of(ggml_opt_optimizer_type optimizer);

@@ -1106,7 +1106,8 @@ fn silu_back_is_not_all_zero() {
 // convergence, because the whole point of stochastic rounding is that updates
 // below half an ULP must still accumulate. CUDA and Vulkan already assert it
 // (`f16_adamw_{cuda,vulkan}_kernel_matches_cpu`); Metal was the one backend
-// where the kernel existed with nothing checking it.
+// where the kernel existed with nothing checking it. The BF16 cases below
+// repeat the same checks on the other grid.
 #[cfg(retro_metal)]
 #[test]
 fn f16_adamw_metal_kernel_matches_cpu() {
@@ -1181,6 +1182,154 @@ fn f16_adamw_metal_matches_cpu_across_chained_steps() {
         cpu, gpu,
         "Metal F16 AdamW must track the CPU's stochastic rounding step for step"
     );
+}
+
+// The same two contracts at 8 significand bits: BF16 rounds on its own grid
+// through its own conversion.
+#[cfg(retro_metal)]
+#[test]
+fn bf16_adamw_metal_kernel_matches_cpu() {
+    if !common::gpu_device_present() {
+        eprintln!("skipping: no GPU device registered at runtime");
+        return;
+    }
+    let weights = [0.5, -1.0, 2.0, -0.25, 0.125];
+    let gradients = [0.25, -0.5, 1.0, -2.0, 0.75];
+    let run = |gpu| {
+        probe_op(
+            ProbeOp::OptStepAdamwBf16,
+            gpu,
+            ProbeInputs::pair([5, 1, 1, 1], &weights, [5, 1, 1, 1], &gradients),
+            [1.0e-2, 0.1],
+            5,
+        )
+        .expect("run BF16 AdamW probe")
+    };
+    assert_eq!(
+        run(false),
+        run(true),
+        "Metal BF16 AdamW must match CPU after BF16 rounding"
+    );
+}
+
+#[cfg(retro_metal)]
+#[test]
+fn bf16_adamw_metal_matches_cpu_across_chained_steps() {
+    if !common::gpu_device_present() {
+        eprintln!("skipping: no GPU device registered at runtime");
+        return;
+    }
+    let n = 256;
+    // Updates well below half a BF16 ulp at 1.0 (2^-8), so every step is
+    // decided purely by the stochastic rounding.
+    let alpha = 1.0e-5_f32;
+    let steps = 64;
+    let gradients = vec![1.0_f32; n];
+
+    let chained = |gpu: bool| {
+        let ne = [n as i64, 1, 1, 1];
+        let mut current = vec![1.0_f32; n];
+        for step in 0..steps {
+            let scale_and_seed = [1.0_f32, step as f32];
+            current = probe_op(
+                ProbeOp::OptStepAdamwBf16,
+                gpu,
+                ProbeInputs::pair(ne, &current, ne, &gradients)
+                    .with_src2(Some(([2, 1, 1, 1], scale_and_seed.as_slice()))),
+                [alpha, 0.0],
+                n,
+            )
+            .expect("run chained BF16 AdamW probe");
+        }
+        current
+    };
+
+    let cpu = chained(false);
+    let gpu = chained(true);
+    assert!(
+        cpu.iter().any(|value| *value != 1.0),
+        "the fixture rounded every update away; it proves nothing"
+    );
+    assert_eq!(
+        cpu, gpu,
+        "Metal BF16 AdamW must track the CPU's stochastic rounding step for step"
+    );
+}
+
+// The same contract for SGD, whose store is the rounding itself: it keeps no
+// moments.
+#[cfg(retro_metal)]
+#[test]
+fn half_precision_sgd_metal_kernel_matches_cpu() {
+    if !common::gpu_device_present() {
+        eprintln!("skipping: no GPU device registered at runtime");
+        return;
+    }
+    let weights = [0.5, -1.0, 2.0, -0.25, 0.125];
+    let gradients = [0.25, -0.5, 1.0, -2.0, 0.75];
+    for op in [ProbeOp::OptStepSgdF16, ProbeOp::OptStepSgdBf16] {
+        let run = |gpu| {
+            probe_op(
+                op,
+                gpu,
+                ProbeInputs::pair([5, 1, 1, 1], &weights, [5, 1, 1, 1], &gradients),
+                [1.0e-2, 0.1],
+                5,
+            )
+            .expect("run the half-precision SGD probe")
+        };
+        assert_eq!(
+            run(false),
+            run(true),
+            "Metal {op:?} must match CPU after the rounded store"
+        );
+    }
+}
+
+// The same moving-seed chain for SGD.
+#[cfg(retro_metal)]
+#[test]
+fn half_precision_sgd_metal_matches_cpu_across_chained_steps() {
+    if !common::gpu_device_present() {
+        eprintln!("skipping: no GPU device registered at runtime");
+        return;
+    }
+    let n = 256;
+    // Below half a BF16 ulp at 1.0 (2^-8), so every step is decided purely by
+    // the stochastic rounding on either grid.
+    let alpha = 1.0e-5_f32;
+    let steps = 64;
+    let gradients = vec![1.0_f32; n];
+
+    for op in [ProbeOp::OptStepSgdF16, ProbeOp::OptStepSgdBf16] {
+        let chained = |gpu: bool| {
+            let ne = [n as i64, 1, 1, 1];
+            let mut current = vec![1.0_f32; n];
+            for step in 0..steps {
+                let scale_and_seed = [1.0_f32, step as f32];
+                current = probe_op(
+                    op,
+                    gpu,
+                    ProbeInputs::pair(ne, &current, ne, &gradients)
+                        .with_src2(Some(([2, 1, 1, 1], scale_and_seed.as_slice()))),
+                    [alpha, 0.0],
+                    n,
+                )
+                .expect("run the chained half-precision SGD probe");
+            }
+            current
+        };
+        let cpu = chained(false);
+        assert!(
+            cpu.iter().any(|value| *value != 1.0),
+            "the fixture rounded every update away; it proves nothing"
+        );
+        assert_eq!(
+            cpu,
+            chained(true),
+            "Metal {op:?} must track the CPU's stochastic rounding step for step"
+        );
+    }
 }
 
 /// Runs one `out_prod` shape on both backends and asserts closeness. Shared by

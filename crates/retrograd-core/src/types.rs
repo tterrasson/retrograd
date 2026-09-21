@@ -1199,6 +1199,17 @@ pub enum ProbeOp {
     /// be passed (the probe ABI always carries two inputs). Output shape ==
     /// `src0`. The second op with a RIR variant.
     Cumsum,
+    /// One AdamW update of a BF16 parameter; same inputs as
+    /// [`ProbeOp::OptStepAdamwF16`]. A separate variant because the kernels
+    /// are separate.
+    OptStepAdamwBf16,
+    /// One SGD update of an F16 parameter; same inputs as
+    /// [`ProbeOp::OptStepAdamwF16`]. SGD keeps no moments, so `src2`'s
+    /// clipping scale is multiplied into the gradient rather than folded
+    /// into the coefficients.
+    OptStepSgdF16,
+    /// One SGD update of a BF16 parameter.
+    OptStepSgdBf16,
 }
 
 impl ProbeOp {
@@ -1231,6 +1242,9 @@ impl ProbeOp {
             ProbeOp::RepeatBack => 25,
             ProbeOp::OutProdQuant => 26,
             ProbeOp::Cumsum => 27,
+            ProbeOp::OptStepAdamwBf16 => 28,
+            ProbeOp::OptStepSgdF16 => 29,
+            ProbeOp::OptStepSgdBf16 => 30,
         }
     }
 }

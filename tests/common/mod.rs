@@ -31,6 +31,15 @@ pub const TINY_FIXTURE: &str = "tests/fixtures/retrograd-tiny-qwen2-f32.gguf";
 /// different storage precision, so runs of the two are comparable.
 pub const TINY_F16_FIXTURE: &str = "tests/fixtures/retrograd-tiny-qwen2-f16.gguf";
 
+/// The same generated model with its matrices stored as BF16, and its own F32
+/// control. A separate family from the F16 one: the grids are not nested, so
+/// the F32 fixture above is not a control for this file. Both are generated
+/// with `--grid bf16`.
+pub const TINY_BF16_FIXTURE: &str = "tests/fixtures/retrograd-tiny-qwen2-bf16.gguf";
+
+/// The BF16 fixture's control: the same numbers, stored as F32 throughout.
+pub const TINY_BF16_CONTROL_FIXTURE: &str = "tests/fixtures/retrograd-tiny-qwen2-bf16ctl-f32.gguf";
+
 /// The same generated model again, matrices stored as Q8_0. Its use is the
 /// quantized-anchor measurement: the same numbers as the F32 fixture, so a
 /// score that differs differs because of quantization.
@@ -109,6 +118,53 @@ pub fn tiny_f16_model_path_if_available() -> Option<PathBuf> {
     } else if std::env::var_os("RETRO_REQUIRE_CPU_FIXTURE").is_some() {
         panic!(
             "F16 tiny CPU fixture missing at {}; run scripts/fetch-cpu-fixture.sh",
+            path.display()
+        );
+    } else {
+        None
+    }
+}
+
+/// Resolves the BF16 tiny fixture, honouring an explicit test override.
+pub fn tiny_bf16_model_path() -> PathBuf {
+    std::env::var("RETRO_TINY_BF16_FIXTURE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(TINY_BF16_FIXTURE))
+}
+
+/// Returns the BF16 tiny fixture when available, required by the dedicated CPU
+/// lane like its twins.
+pub fn tiny_bf16_model_path_if_available() -> Option<PathBuf> {
+    let path = tiny_bf16_model_path();
+    if path.exists() {
+        Some(path)
+    } else if std::env::var_os("RETRO_REQUIRE_CPU_FIXTURE").is_some() {
+        panic!(
+            "BF16 tiny CPU fixture missing at {}; run scripts/fetch-cpu-fixture.sh",
+            path.display()
+        );
+    } else {
+        None
+    }
+}
+
+/// Resolves the BF16 fixture's F32 control, honouring an explicit override.
+pub fn tiny_bf16_control_model_path() -> PathBuf {
+    std::env::var("RETRO_TINY_BF16_CONTROL_FIXTURE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(TINY_BF16_CONTROL_FIXTURE)
+        })
+}
+
+/// Returns the BF16 fixture's F32 control when available.
+pub fn tiny_bf16_control_model_path_if_available() -> Option<PathBuf> {
+    let path = tiny_bf16_control_model_path();
+    if path.exists() {
+        Some(path)
+    } else if std::env::var_os("RETRO_REQUIRE_CPU_FIXTURE").is_some() {
+        panic!(
+            "BF16 tiny control fixture missing at {}; run scripts/fetch-cpu-fixture.sh",
             path.display()
         );
     } else {
@@ -737,17 +793,14 @@ pub fn deterministic_f32s(n: usize, seed: u64) -> Vec<f32> {
         .collect()
 }
 
-/// A type outside `GGML_RETRO_OUT_PROD_TYPES` must come back as an error, not take
-/// the process down.
+/// A type outside `GGML_RETRO_OUT_PROD_TYPES` must come back as an error, not
+/// take the process down. The probe computes on a single backend with no
+/// scheduler, so an unlisted type reaches `ggml_out_prod` directly and a GPU
+/// backend aborts on the missing pipeline; checking that the id is a valid
+/// `ggml_type` is not enough.
 ///
-/// The probe computes on a single backend with no scheduler, so an unlisted type
-/// would reach `ggml_out_prod` directly: the CPU reference `GGML_ABORT`s on BF16, and
-/// a GPU backend aborts on the missing pipeline (verified: an unlisted id aborts in
-/// `ggml_metal_op_encode`). Validating only "is a valid ggml_type id" was therefore
-/// not enough -- it turned a bad argument into SIGABRT.
-///
-/// BF16 (id 30) is the sharpest case: it is a real, common type that Metal and Vulkan
-/// can both decode, so nothing about it looks wrong until the CPU oracle aborts.
+/// BF16 (id 30) is the sharpest case: a real type the CPU, Metal and Vulkan
+/// all decode, so nothing looks wrong until the GPU pipeline is missing.
 pub fn assert_out_prod_rejects_unlisted_type(use_gpu: bool) {
     const GGML_TYPE_BF16: i32 = 30;
     let types = retrograd::dequant_types();

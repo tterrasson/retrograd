@@ -97,8 +97,8 @@ and the planner budgets the vocabulary buffer the dense path allocates.
 
 | Key | Default | Description |
 | --- | ---: | --- |
-| `trainable` | `lora` | Which family of parameters this run trains: `lora`, `full`, `partial`, or `hybrid`. |
-| `optimizer` | `adamw` | `adamw`, `sgd`, `muon` or `gefen`. Each has its own knobs under `[optimizer.<name>]`. Only AdamW's update kernel writes an F16 parameter, so every other name is rejected beside the default F16 adapter. Gefen's update has a CPU and a Metal implementation; the run asks the live device about its own two nodes and is refused at preflight where they are missing, because its state mutations must not be answered on a fallback backend. `cap_opt_step_device` in the backend report is that answer. |
+| `trainable` | `lora` | Which family of parameters this run trains: `lora`, `full`, `partial`, or `hybrid`. A base weight is trained at the precision its file stores it at - nothing is converted - so which precisions a run may select depends on the optimizer and the device: see [Base-weight storage precision](../engineering/SUPPORT#base-weight-storage-precision). A selected tensor in a precision no row admits is refused before the graph, by name. |
+| `optimizer` | `adamw` | `adamw`, `sgd`, `muon` or `gefen`. Each has its own knobs under `[optimizer.<name>]`. AdamW and SGD write a half-precision parameter (F16 or BF16); Muon and Gefen write F32 only, so either is rejected beside the default F16 adapter. Gefen's update has a CPU and a Metal implementation and is refused at preflight where the live device carries neither, because its state mutations must not run on a fallback backend. `cap_opt_step_device` in the backend report is that answer. |
 | `ctx` | `128` | Trained context window in tokens. |
 | `micro_batch` | `32` | Physical forward/backward width and primary activation-memory control. |
 | `gradient_accumulation` | `1` for SFT; derived for rollout | Micro-batches per optimizer step. Its product with `micro_batch` must divide `ctx`. Rollout algorithms default to `ctx / micro_batch`. |

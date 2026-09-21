@@ -820,12 +820,9 @@ fn check_across_sections(
             "checkpoint.resume_from and lora.init_adapter are mutually exclusive",
         ));
     }
-    // The update step is a kernel with a dtype table, and SGD's carries F32
-    // alone. F16 is the *default* adapter storage, so this pair is the ordinary
-    // way to ask for it - and the runtime's own refusal would arrive after the
-    // model is loaded and the training graph is built.
-    // Asked through `supports_dtype` rather than by naming SGD and F16: the
-    // table belongs to the optimizer.
+    // Muon and Gefen are F32-only kernels and F16 is the default adapter
+    // storage, so this pair cannot work; asking the kernel's own table refuses
+    // it at load time instead of after the graph is built.
     let adapter_dtype = lora_config.map(|config| match config.dtype {
         LoraDtype::F32 => TensorDtype::F32,
         LoraDtype::F16 => TensorDtype::F16,

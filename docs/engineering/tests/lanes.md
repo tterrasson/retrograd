@@ -246,12 +246,15 @@ capabilities, PPO/GRPO, checkpoint/resume, `engine_contracts`,
 `kv_projection_gradients`, `muon_gefen` (Muon and fixed-block Gefen against
 independent F64 oracles, on the generated fixture), `fixed_reference` (which
 includes the quantized-anchor measurement: a Q8_0 anchor against its own F32
-twin, on identical tokens, which is what the fourth generated fixture exists
-for), the CPU-only
+twin, on identical tokens, which is what the Q8_0 generated fixture exists
+for), `f16_base_training` (below), the CPU-only
 LoRA/generation/parity tests, and
 `retrograd-server`'s `tests/e2e_cpu.rs`. The root test binaries are built with
-`--no-default-features --features agent` (the `-p retrograd-server` ones need
-nothing: that package is CPU-only by default), and every run sets
+`--no-default-features --features agent,cli` - `cli` because `tests/cli.rs` and
+one `distill_runtime` case spawn the `retrograd` executable, whose target
+carries `required-features = ["cli"]`, and cargo defines
+`CARGO_BIN_EXE_retrograd` whether or not it built it. (The `-p retrograd-server`
+ones need nothing: that package is CPU-only by default.) Every run sets
 `RETRO_REQUIRE_CPU_FIXTURE=1` (missing fixture is a hard failure, not a silent
 skip). Model-loading tests share process-global llama.cpp runtime state, so
 this lane runs with `--test-threads=1` and a cross-process file lock
@@ -263,6 +266,37 @@ Q4_K_M); its URL, size and SHA-256 live in `tests/fixtures/CPU_FIXTURE.toml`.
 `RETRO_CPU_FIXTURE=/path/to/model.gguf` reuses a verified local copy. The fetch
 script writes a sidecar `.verified` stamp containing the checksum, size and
 mtime, so repeated lane runs avoid hashing the full file unless it changed.
+
+The other fixtures are written by `scripts/gen-tiny-fixture.py`, one manifest
+each, and come in two **families**. Within a family every variant holds the
+same numbers at a different storage precision, which is what makes a
+difference between two runs of them a difference in precision and not in the
+draw. Across families nothing is comparable: the F16 grid keeps 11 significand
+bits and the BF16 grid 8, so neither is a subset of the other.
+
+| Manifest | File | Family |
+| --- | --- | --- |
+| `TINY_FIXTURE.toml` | `retrograd-tiny-qwen2-f32.gguf` | F16-grid, F32 storage - the control |
+| `TINY_F16_FIXTURE.toml` | `retrograd-tiny-qwen2-f16.gguf` | F16-grid, matrices F16 |
+| `TINY_Q8_FIXTURE.toml` | `retrograd-tiny-qwen2-q8_0.gguf` | F16-grid, matrices Q8_0 - the quantized anchor |
+| `TINY_BF16_FIXTURE.toml` | `retrograd-tiny-qwen2-bf16.gguf` | BF16-grid, matrices BF16 |
+| `TINY_BF16_CONTROL_FIXTURE.toml` | `retrograd-tiny-qwen2-bf16ctl-f32.gguf` | BF16-grid, F32 storage - its control |
+
+Vectors stay F32 everywhere, as a real half-precision GGUF keeps them, so each
+non-F32 fixture is also the mixed case where one run marks both precisions.
+Editing the generator means regenerating the family and updating `sha256` and
+`size_bytes` in each manifest, in the same commit.
+
+`f16_base_training` is the base-dtype lane: admission, one-step parity
+against the F32 twin, 2000 steps of stability and a bit-for-bit resume, plus
+the update step's rounding driven through the probe with no model. It runs
+every (storage, optimizer, device) triple this build can reach and skips a
+triple with no row in `BASE_DTYPE_TABLE`, so a CPU build runs the CPU column
+and a `--features cuda` build adds the GPU column where a row exists. One
+case sits outside the product: Muon, named per parameter so its fallback to
+AdamW does not answer, has to refuse with the F32-only reason.
+`RETRO_F16_STABILITY_STEPS` shortens the long run while iterating; it cannot
+lengthen it.
 
 The lane defaults to four llama.cpp CPU workers. Override with
 `RETRO_TEST_CPU_THREADS=<n>`. Set `RETRO_PROFILE_TESTS=1` only when diagnosing compilation: it restores the
@@ -407,6 +441,14 @@ invocations below directly on such a machine.
 | `gefen_ops` | the two Gefen ops driven directly: the op-level edge cases, and CPU against device on identical inputs (no model) |
 | `vulkan_backend` | Vulkan registration, isolated ops, model offload, LoRA placement, a minimal training step |
 | `cuda_backend` | CUDA registration, CPU against CUDA op parity, model offload, LoRA placement, the training preflight |
+| `f16_base_training` | the base-dtype lane's four questions, per storage precision and per optimizer, on the device as well as on the CPU - the row it reads has all three columns |
+
+Each backend lane also carries `{f16,bf16}_adamw_<backend>_kernel_matches_cpu`,
+`half_precision_sgd_<backend>_kernel_matches_cpu` and their chained-step
+twins: each half-precision update step driven through the op probe with no
+model, asserted **equal** to the CPU's rather than close to it, since an
+off-by-one-ulp rounding is invisible in a loss and fatal in convergence. The
+chained case moves the seed the way a run does.
 
 On Apple hardware the Metal lane is `metal_ops`, `lora_metal`, **`fused_ce`
 and `scoring_logprobs`** - the last two are not Metal-specific by name, but
@@ -471,6 +513,24 @@ RETRO_REQUIRE_GPU_RESIDENT=1 \
 RETRO_REQUIRE_GPU_RESIDENT=1 \
   cargo test --features cuda --test cuda_backend -- --test-threads=1
 ```
+
+`f16_base_training` runs on whichever GPU the build registered, beside its CPU
+column, and is what a `BASE_DTYPE_TABLE` row for that backend is written from.
+It takes the generated fixtures rather than a device-specific model, one pair
+per storage precision, and asks its questions of each optimizer that writes
+one:
+
+```sh
+export RETRO_TINY_FIXTURE=tests/fixtures/retrograd-tiny-qwen2-f32.gguf
+export RETRO_TINY_F16_FIXTURE=tests/fixtures/retrograd-tiny-qwen2-f16.gguf
+export RETRO_TINY_BF16_FIXTURE=tests/fixtures/retrograd-tiny-qwen2-bf16.gguf
+export RETRO_TINY_BF16_CONTROL_FIXTURE=tests/fixtures/retrograd-tiny-qwen2-bf16ctl-f32.gguf
+cargo test --features cuda --test f16_base_training -- --test-threads=1 --nocapture
+```
+
+`--nocapture` on purpose: the parity and stability cases print what they
+measured, per storage, per optimizer and per backend, and those numbers are
+what the row publishes.
 
 The model-free Vulkan GDN chunking coverage can be run on its own; it compares
 the chunked default, its local adverse-gate fallback and the retained sequential

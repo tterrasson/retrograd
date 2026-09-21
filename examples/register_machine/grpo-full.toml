@@ -18,11 +18,10 @@ verbose = false
 # build of LFM2.5-230M from the repository the fixture comes from does, and so
 # does anything you convert to F32 yourself.
 path = "../../models/LFM2.5-230M-F16.gguf"
-# F16 base weights are trained under AdamW on the CPU backend, and that is the
-# one combination measured today: on a GPU, or under another optimizer, an F16
-# tensor is refused at the preflight. An F32 file has no such restriction and
-# runs with `device = "auto"`.
-device = "cpu"
+# Half-precision base weights are trained where a lane has measured the
+# combination (F16/BF16, AdamW or SGD, CPU or CUDA); everything else is refused
+# at preflight. An F32 file has no such restriction.
+device = "auto"
 
 [output]
 # A full run's default export is the `trainable` bundle, which needs the base

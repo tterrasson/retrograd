@@ -93,7 +93,6 @@ impl TensorDtype {
     /// Only the screen the resolver can apply: it holds no optimizer and no
     /// device, so the row's optimizer and backend columns are checked again
     /// downstream against the declared optimizer and the live device.
-    /// BF16 has no row.
     pub fn is_trainable_base(&self) -> bool {
         matches!(self, Self::F32) || crate::base_dtype::base_dtype_is_tabled(self)
     }

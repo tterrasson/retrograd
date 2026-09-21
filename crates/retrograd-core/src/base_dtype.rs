@@ -31,10 +31,11 @@ pub struct BaseDtypeCapability {
     /// Gradients are F32 in both runs; the weights the forward read differ.
     pub gradient_tolerance: f32,
     /// Bound on the per-element parameter delta of one step, in units of the
-    /// F16 grid the parameter is stored on. A quantized trajectory cannot land
-    /// between grid points, so one grid point is the closest agreement the
-    /// storage allows; a relative error would count a correct rounding near
-    /// zero as an error of one.
+    /// storage grid the parameter is kept on. A quantized trajectory cannot
+    /// land between grid points, so one grid point is the closest agreement
+    /// the storage allows; a relative error would count a correct rounding
+    /// near zero as an error of one. Being in grid units is what lets one
+    /// value stand for every dtype.
     pub update_tolerance: f32,
     /// Fraction of elements allowed to exceed [`Self::update_tolerance`].
     ///
@@ -57,21 +58,127 @@ pub struct BaseDtypeCapability {
 /// Every base dtype beyond F32 this build admits. One row per combination a
 /// lane has actually executed; adding a backend means running the lane, not
 /// editing a string.
-pub const BASE_DTYPE_TABLE: &[BaseDtypeCapability] = &[BaseDtypeCapability {
-    dtype: "F16",
-    optimizer: OptimizerKind::AdamW,
-    backend: "CPU",
-    // An F16 weight carries 11 significant bits, so the forward it feeds
-    // differs from the F32 forward by ~5e-4 per operand; the gradient is
-    // allowed an order of magnitude more than that.
-    gradient_tolerance: 5.0e-2,
-    update_tolerance: 1.0,
-    // Measured 1.8e-3 over 24576 elements; the headroom is deliberate and
-    // modest, so a doubled outlier population fails the lane.
-    update_outlier_fraction: 5.0e-3,
-    stability_steps: 2000,
-    stability_loss_tolerance: 2.0e-1,
-}];
+pub const BASE_DTYPE_TABLE: &[BaseDtypeCapability] = &[
+    BaseDtypeCapability {
+        dtype: "F16",
+        optimizer: OptimizerKind::AdamW,
+        backend: "CPU",
+        // The F16 forward differs from F32 by ~5e-4 per operand; the bound
+        // sits an order of magnitude above that.
+        gradient_tolerance: 5.0e-2,
+        update_tolerance: 1.0,
+        // Measured 1.8e-3, bound 5e-3.
+        update_outlier_fraction: 5.0e-3,
+        stability_steps: 2000,
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "F16",
+        optimizer: OptimizerKind::AdamW,
+        backend: "CUDA",
+        // Measured 1.7e-3, three times the CPU row's 5.5e-4: the forward
+        // reduction order differs. The bound is set by the dtype, not the
+        // backend.
+        gradient_tolerance: 5.0e-2,
+        update_tolerance: 1.0,
+        // Measured 2.1e-3 against CPU's 1.8e-3.
+        update_outlier_fraction: 6.0e-3,
+        stability_steps: 2000,
+        // Measured 7.9e-4 after 2000 steps. The bound catches a run whose
+        // training quietly stopped, not bit parity.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "BF16",
+        optimizer: OptimizerKind::AdamW,
+        backend: "CPU",
+        // BF16 carries 8 significant bits, so an operand costs about eight
+        // times more than F16. Measured 5.5e-3.
+        gradient_tolerance: 4.0e-1,
+        update_tolerance: 1.0,
+        // Measured 2.3e-3; the coarser grid puts more elements a grid point
+        // away from the F32 trajectory.
+        update_outlier_fraction: 5.0e-3,
+        stability_steps: 2000,
+        // Measured 5.9e-3 after 2000 steps; the bound is the same on every
+        // row.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "BF16",
+        optimizer: OptimizerKind::AdamW,
+        backend: "CUDA",
+        // Same bound as the CPU row. Measured 4.9e-3 against 5.5e-3 there: at
+        // this grid the storage error dominates the reduction-order one.
+        gradient_tolerance: 4.0e-1,
+        update_tolerance: 1.0,
+        // Measured 2.2e-3 against the CPU row's 2.3e-3.
+        update_outlier_fraction: 5.0e-3,
+        stability_steps: 2000,
+        // Measured 1.5e-3 after 2000 steps.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "F16",
+        optimizer: OptimizerKind::Sgd,
+        backend: "CPU",
+        // Same bound as AdamW: the gradient comes out of the forward, which
+        // does not know which optimizer will read it. Measured 5.5e-4.
+        gradient_tolerance: 5.0e-2,
+        update_tolerance: 1.0,
+        // Measured 5.7e-4, half the AdamW row: an SGD step is smaller than
+        // AdamW's normalized one.
+        update_outlier_fraction: 2.0e-3,
+        stability_steps: 2000,
+        // Measured 2.2e-3 after 2000 steps.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "BF16",
+        optimizer: OptimizerKind::Sgd,
+        backend: "CPU",
+        // The BF16 operand cost, as in the AdamW row. Measured 5.5e-3.
+        gradient_tolerance: 4.0e-1,
+        update_tolerance: 1.0,
+        // Measured 8.5e-4 against the F16 SGD row's 5.7e-4: the coarser grid
+        // puts more elements a grid point away.
+        update_outlier_fraction: 3.0e-3,
+        stability_steps: 2000,
+        // Measured 6.3e-3 after 2000 steps.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "F16",
+        optimizer: OptimizerKind::Sgd,
+        backend: "CUDA",
+        // The F16 bound. Measured 1.7e-3, the AdamW CUDA number exactly: the
+        // forward does not know which optimizer will read it.
+        gradient_tolerance: 5.0e-2,
+        update_tolerance: 1.0,
+        // Measured 3.3e-3, six times the CPU row: an SGD step is about one
+        // grid point wide, so the backend's forward difference decides which
+        // side of a grid point the update lands on.
+        update_outlier_fraction: 1.0e-2,
+        stability_steps: 2000,
+        // Measured 2.3e-5 after 2000 steps.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "BF16",
+        optimizer: OptimizerKind::Sgd,
+        backend: "CUDA",
+        // The BF16 bound. Measured 4.9e-3, the AdamW CUDA number.
+        gradient_tolerance: 4.0e-1,
+        update_tolerance: 1.0,
+        // Measured 6.5e-4, below the F16 SGD row: the step is well inside one
+        // grid point, so the forward difference flips fewer elements across
+        // one.
+        update_outlier_fraction: 2.5e-3,
+        stability_steps: 2000,
+        // Measured 5.0e-3 after 2000 steps.
+        stability_loss_tolerance: 2.0e-1,
+    },
+];
 
 /// Whether any row admits this dtype, under some optimizer, on some backend.
 /// A screen the resolver can apply, not an admission: it says the question is
@@ -125,7 +232,7 @@ mod tests {
         );
         assert!(base_dtype_admits(
             &TensorDtype::F32,
-            OptimizerKind::Sgd,
+            OptimizerKind::Muon,
             "a-backend-with-no-row"
         ));
     }
@@ -146,13 +253,25 @@ mod tests {
         // Same dtype and backend, an optimizer whose kernel is F32-only.
         assert!(!base_dtype_admits(
             &TensorDtype::F16,
+            OptimizerKind::Muon,
+            "CPU"
+        ));
+        // And one whose kernel writes it, on the backend that measured it.
+        assert!(base_dtype_admits(
+            &TensorDtype::F16,
             OptimizerKind::Sgd,
             "CPU"
         ));
-        assert!(!base_dtype_admits(
+        assert!(base_dtype_admits(
             &TensorDtype::BF16,
             OptimizerKind::AdamW,
             "CPU"
+        ));
+        // A backend that carries the kernel and has no lane behind it.
+        assert!(!base_dtype_admits(
+            &TensorDtype::BF16,
+            OptimizerKind::AdamW,
+            "Vulkan"
         ));
     }
 
@@ -209,9 +328,16 @@ mod tests {
     fn a_refusal_can_name_the_backends_that_do_carry_it() {
         let backends: Vec<&str> =
             base_dtype_backends(&TensorDtype::F16, OptimizerKind::AdamW).collect();
-        assert_eq!(backends, vec!["CPU"]);
+        assert_eq!(backends, vec!["CPU", "CUDA"]);
+        let backends: Vec<&str> =
+            base_dtype_backends(&TensorDtype::BF16, OptimizerKind::AdamW).collect();
+        assert_eq!(backends, vec!["CPU", "CUDA"]);
+        let backends: Vec<&str> =
+            base_dtype_backends(&TensorDtype::F16, OptimizerKind::Sgd).collect();
+        assert_eq!(backends, vec!["CPU", "CUDA"]);
+        // An optimizer that writes F32 only has no backend to name, ever.
         assert_eq!(
-            base_dtype_backends(&TensorDtype::F16, OptimizerKind::Sgd).count(),
+            base_dtype_backends(&TensorDtype::F16, OptimizerKind::Muon).count(),
             0
         );
     }

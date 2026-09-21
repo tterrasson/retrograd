@@ -370,7 +370,7 @@ std::string describe_lora(const trainer_state & state) {
 }
 
 // The name a refusal spells, from the wire value the config carries.
-static const char * optimizer_name(int32_t optimizer) {
+const char * optimizer_name(int32_t optimizer) {
     switch (optimizer) {
         case RETRO_OPTIMIZER_SGD:   return "sgd";
         case RETRO_OPTIMIZER_ADAMW: return "adamw";
@@ -401,30 +401,52 @@ int32_t retro_optimizer_of(ggml_opt_optimizer_type optimizer) {
     }
 }
 
-bool optimizer_supports_dtype(const trainer_state & state, int32_t optimizer, ggml_type type) {
-    // The dtype alone says nothing: the kernel has a dtype table (AdamW
-    // carries F32 and F16, SGD F32 alone, and an unsupported type meets
-    // GGML_ABORT rather than an error), and each backend reimplements the
-    // kernel, so the same pair can be refused by the device. F32 is the floor
-    // and never asks the device.
+int opt_step_dtype_index(ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_F16:  return RETRO_OPT_STEP_DTYPE_F16;
+        case GGML_TYPE_BF16: return RETRO_OPT_STEP_DTYPE_BF16;
+        default:             return -1;
+    }
+}
+
+ggml_type opt_step_dtype_of(int index) {
+    return index == RETRO_OPT_STEP_DTYPE_BF16 ? GGML_TYPE_BF16 : GGML_TYPE_F16;
+}
+
+bool optimizer_kernel_writes_dtype(int32_t optimizer, ggml_type type) {
+    if (type == GGML_TYPE_F32) {
+        return true;  // the floor, under every optimizer
+    }
     switch (optimizer) {
+        // Both store their update with rounding, so both take the two
+        // half-precision grids.
+        case RETRO_OPTIMIZER_ADAMW:
         case RETRO_OPTIMIZER_SGD:
-        // Muon and Gefen both write F32 weights only: a quantized first moment
-        // and a stochastically rounded writeback are two approximations, and
-        // they are measured one at a time.
+            return opt_step_dtype_index(type) >= 0;
+        // F32 only: both steps already approximate (Muon's Newton-Schulz,
+        // Gefen's first moment), and a rounded store would add a second.
         case RETRO_OPTIMIZER_MUON:
         case RETRO_OPTIMIZER_GEFEN:
-            return type == GGML_TYPE_F32;
-        case RETRO_OPTIMIZER_ADAMW:
-            if (type == GGML_TYPE_F32) {
-                return true;
-            }
-            // The load-time probe knows whether this device's AdamW step takes
-            // an F16 parameter, and stays right when a kernel is added.
-            return type == GGML_TYPE_F16 && state.cap_opt_step_f16[RETRO_OPTIMIZER_ADAMW];
+            return false;
         default:
             return false;
     }
+}
+
+bool optimizer_supports_dtype(const trainer_state & state, int32_t optimizer, ggml_type type) {
+    // The kernel table first, then the device probe: a pair the table carries
+    // can still be refused by the backend. F32 never asks the device.
+    if (!optimizer_kernel_writes_dtype(optimizer, type)) {
+        return false;
+    }
+    if (type == GGML_TYPE_F32) {
+        return true;
+    }
+    const int slot = opt_step_dtype_index(type);
+    // The load-time probe recorded which half-precision parameters this
+    // device's step takes.
+    return slot >= 0 && optimizer >= 0 && optimizer < 4
+            && state.cap_opt_step_dtypes[slot][optimizer];
 }
 
 ggml_opt_optimizer_type opt_param_optimizer(const ggml_tensor * tensor, void * userdata) {
@@ -481,7 +503,9 @@ bool optimizer_supports_marked_dtypes(const trainer_state & state) {
         if (optimizer_supports_dtype(state, optimizer, tensor->type)) {
             return;
         }
-        if (optimizer == RETRO_OPTIMIZER_ADAMW && tensor->type == GGML_TYPE_F16) {
+        // The kernel carries the precision and the device turned it down:
+        // a different refusal from an optimizer that writes F32 only.
+        if (optimizer_kernel_writes_dtype(optimizer, tensor->type)) {
             backend_refused = true;
             if (std::find(refused_dtypes.begin(), refused_dtypes.end(),
                         ggml_type_name(tensor->type)) == refused_dtypes.end()) {
@@ -519,8 +543,51 @@ bool optimizer_supports_marked_dtypes(const trainer_state & state) {
             : "the " + join_patterns(offenders) + " update step is F32-only, and this run marks "
                       + std::to_string(total) + " parameter(s) it cannot write: ["
                       + join_patterns(unsupported)
-                      + "]. Store the adapter as F32 (lora.dtype = \"f32\") or use adamw");
+                      + "]. Store the adapter as F32 (lora.dtype = \"f32\"), or use adamw or "
+                        "sgd, whose steps round a half-precision store");
     return false;
+}
+
+// One admitted (dtype, optimizer, backend) combination for a *base* weight.
+// Mirrors BASE_DTYPE_TABLE in retrograd-core; only a measured backend is
+// admitted, and the device probe is asked as well. tests/f16_base_training.rs
+// checks the two answers agree.
+struct base_dtype_row {
+    ggml_type    type;
+    int32_t      optimizer;
+    const char * backend;  // ggml_backend_reg_name's spelling
+};
+
+static const base_dtype_row BASE_DTYPE_TABLE[] = {
+    { GGML_TYPE_F16,  RETRO_OPTIMIZER_ADAMW, "CPU"  },
+    { GGML_TYPE_F16,  RETRO_OPTIMIZER_ADAMW, "CUDA" },
+    { GGML_TYPE_BF16, RETRO_OPTIMIZER_ADAMW, "CPU"  },
+    { GGML_TYPE_BF16, RETRO_OPTIMIZER_ADAMW, "CUDA" },
+    { GGML_TYPE_F16,  RETRO_OPTIMIZER_SGD,   "CPU"  },
+    { GGML_TYPE_F16,  RETRO_OPTIMIZER_SGD,   "CUDA" },
+    { GGML_TYPE_BF16, RETRO_OPTIMIZER_SGD,   "CPU"  },
+    { GGML_TYPE_BF16, RETRO_OPTIMIZER_SGD,   "CUDA" },
+};
+
+static bool base_dtype_is_tabled(ggml_type type, int32_t optimizer, const std::string & backend) {
+    for (const base_dtype_row & row : BASE_DTYPE_TABLE) {
+        if (row.type == type && row.optimizer == optimizer && backend == row.backend) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The backends the table carries for one (dtype, optimizer) pair, so a
+// refusal can name where the combination does run.
+static std::vector<std::string> base_dtype_backends(ggml_type type, int32_t optimizer) {
+    std::vector<std::string> backends;
+    for (const base_dtype_row & row : BASE_DTYPE_TABLE) {
+        if (row.type == type && row.optimizer == optimizer) {
+            backends.emplace_back(row.backend);
+        }
+    }
+    return backends;
 }
 
 // The same admission over the declared base set, before llama_opt_init.
@@ -534,6 +601,9 @@ bool declared_base_dtypes_are_admitted(const trainer_state & state) {
     }
     std::vector<std::string> unsupported;
     std::vector<std::string> offenders;
+    // The refused (dtype, optimizer) pairs, so the message can name the
+    // backends that do carry them.
+    std::vector<std::pair<ggml_type, int32_t>> refused;
     for (const std::string & name : state.trainable_base) {
         const ggml_tensor * tensor = nullptr;
         for (const auto & item : state.model->tensors_by_name) {
@@ -547,13 +617,10 @@ bool declared_base_dtypes_are_admitted(const trainer_state & state) {
         }
         const int32_t optimizer = retro_optimizer_of(
                 opt_param_optimizer(tensor, const_cast<trainer_state *>(&state)));
-        // Mirrors BASE_DTYPE_TABLE in retrograd-core: kernel support alone
-        // does not admit an unvalidated backend. LoRA keeps its own policy in
-        // optimizer_supports_marked_dtypes.
+        // Table first, device probe right after; either can refuse.
+        // LoRA keeps its own policy in optimizer_supports_marked_dtypes.
         const bool admitted = tensor->type == GGML_TYPE_F32
-                || (tensor->type == GGML_TYPE_F16
-                    && optimizer == RETRO_OPTIMIZER_ADAMW
-                    && state.backend_registry == "CPU");
+                || base_dtype_is_tabled(tensor->type, optimizer, state.backend_registry);
         if (admitted && optimizer_supports_dtype(state, optimizer, tensor->type)) {
             continue;
         }
@@ -562,6 +629,10 @@ bool declared_base_dtypes_are_admitted(const trainer_state & state) {
         if (std::find(offenders.begin(), offenders.end(), optimizer_name(optimizer))
                 == offenders.end()) {
             offenders.push_back(optimizer_name(optimizer));
+        }
+        const std::pair<ggml_type, int32_t> pair { tensor->type, optimizer };
+        if (std::find(refused.begin(), refused.end(), pair) == refused.end()) {
+            refused.push_back(pair);
         }
     }
     if (unsupported.empty()) {
@@ -574,11 +645,27 @@ bool declared_base_dtypes_are_admitted(const trainer_state & state) {
         unsupported.resize(6);
         unsupported.push_back("and " + std::to_string(rest) + " more");
     }
+    // Where each refused combination does run, from the same table.
+    std::vector<std::string> elsewhere;
+    for (const auto & pair : refused) {
+        // A F32-only kernel refuses on every backend, so it says so instead
+        // of naming an empty list.
+        if (!optimizer_kernel_writes_dtype(pair.second, pair.first)) {
+            elsewhere.push_back(std::string(optimizer_name(pair.second))
+                    + "'s update step writes F32 only, on every backend");
+            continue;
+        }
+        const std::vector<std::string> backends = base_dtype_backends(pair.first, pair.second);
+        elsewhere.push_back(std::string(ggml_type_name(pair.first)) + " under "
+                + optimizer_name(pair.second)
+                + (backends.empty()
+                        ? " is measured on no backend yet"
+                        : " is measured on " + join_patterns(backends)));
+    }
     set_error("the declared trainable set carries " + std::to_string(total)
             + " base tensor(s) not admitted for " + join_patterns(offenders) + " on "
-            + state.backend_registry + ": [" + join_patterns(unsupported)
-            + "]. F16 base training requires adamw on CPU; use F32 for other backends "
-              "or optimizers");
+            + state.backend_registry + ": [" + join_patterns(unsupported) + "]. "
+            + join_patterns(elsewhere) + "; store these tensors as F32 to train them here");
     return false;
 }
 

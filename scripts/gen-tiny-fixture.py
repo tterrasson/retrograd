@@ -6,24 +6,31 @@ vocabulary projection to the input embedding. This file produces the
 complementary model: ``output.weight`` a tensor of its own, ``output.bias``
 present, and no quantized tensor anywhere.
 
-It writes that model at three storage precisions holding the *same numbers*:
-every weight is generated, then snapped to the F16 grid in every variant. The
-F32 file stores the snapped values widened back to F32; the F16 file stores
-them verbatim; the Q8_0 file quantizes them block by block. The only difference
-between the files is the precision the weights are stored at, so a gradient - or
-a score - that differs between runs differs because of precision and for no
-other reason. That is what makes the Q8_0 file usable as a *quantized anchor*
-against its own F32 twin: the two models are the same model.
+It writes that model at several storage precisions holding the *same numbers*:
+every weight is generated, then snapped to a grid, and every variant of one
+family is snapped to the *same* grid. The F32 file stores the snapped values
+widened back to F32; the F16 and BF16 files store them verbatim; the Q8_0 file
+quantizes them block by block. The only difference between the files of a
+family is the precision the weights are stored at, so a gradient - or a score -
+that differs between runs differs because of precision and for no other reason.
+That is what makes the Q8_0 file usable as a *quantized anchor* against its own
+F32 twin: the two models are the same model.
 
-Norms and biases stay F32 in both: they are one-dimensional, llama.cpp expects
-F32 there, and a real F16 GGUF keeps them F32 too.
+There are two families, because the two grids are not nested: BF16 keeps 8
+significand bits against F16's 11, so an F16-grid value is not a BF16 value.
+`--grid f16` (the default) writes the F32/F16/Q8_0 family; `--grid bf16`, which
+`--dtype bf16` selects on its own, writes the BF16 family and its own F32
+control. Each family is exact within itself; nothing compares across them.
+
+Norms and biases stay F32 in every variant: they are one-dimensional,
+llama.cpp expects F32 there, and a real F16 GGUF keeps them F32 too.
 
 The bytes depend on this file alone: the GGUF is written here rather than
 through ``gguf-py``, and the weights come from an explicit xorshift rather
-than a library PRNG, so the digests in ``tests/fixtures/TINY_FIXTURE.toml``
-and ``tests/fixtures/TINY_F16_FIXTURE.toml`` never drift with a dependency.
+than a library PRNG, so the digests in the ``tests/fixtures/*_FIXTURE.toml``
+manifests never drift with a dependency.
 
-Usage: scripts/gen-tiny-fixture.py [--dtype f32|f16|q8_0]
+Usage: scripts/gen-tiny-fixture.py [--dtype f32|f16|bf16|q8_0] [--grid f16|bf16]
                                    [--layers N] [--embd N] [--heads N]
                                    [--kv-heads N] [--ff N]
                                    <destination.gguf>
@@ -47,7 +54,7 @@ MODEL_NAME = "retrograd-tiny-qwen2"
 # unit fixture - an optimizer whose cost per eligible matrix is the question
 # needs hundreds of matrices, and four layers of sixty-four is not that. The
 # defaults are the pinned ones, so a run that names no shape writes the same
-# bytes as before and the digests in the two manifests still hold.
+# bytes as before and the digests in the manifests still hold.
 N_LAYER = 4
 N_EMBD = 64
 N_HEAD = 4
@@ -83,11 +90,13 @@ GGML_TYPE_F16 = 1
 # files hold the same numbers at two precisions rather than two models.
 GGML_TYPE_Q8_0 = 8
 QUANT_K_Q8_0 = 32
+GGML_TYPE_BF16 = 30
 
-# llama.cpp's general.file_type for the three variants.
+# llama.cpp's general.file_type for the variants.
 FILE_TYPE_ALL_F32 = 0
 FILE_TYPE_MOSTLY_F16 = 1
 FILE_TYPE_MOSTLY_Q8_0 = 7
+FILE_TYPE_MOSTLY_BF16 = 32
 
 # GGUF metadata value types.
 T_UINT32 = 4
@@ -125,17 +134,40 @@ class Xorshift:
 
 
 def snap_to_f16(value: float) -> float:
-    """`value` rounded to the nearest F16 and widened back to F32.
-
-    Applied to every weight in both variants so the two files hold the same
-    numbers.
-    """
+    """`value` rounded to the nearest F16 and widened back to F32."""
     return struct.unpack("<e", struct.pack("<e", value))[0]
+
+
+def bf16_bits(value: float) -> int:
+    """The top 16 bits of `value`, round-to-nearest-even on the tie.
+
+    `ggml_compute_fp32_to_bf16`, restated: struct has no BF16 format, and the
+    rounding has to be ggml's or a value would not survive the round trip
+    through the loader it is read by.
+    """
+    (bits,) = struct.unpack("<I", struct.pack("<f", value))
+    if bits & 0x7FFFFFFF > 0x7F800000:
+        return ((bits >> 16) | 64) & 0xFFFF  # NaN, forced quiet
+    return ((bits + (0x7FFF + ((bits >> 16) & 1))) >> 16) & 0xFFFF
+
+
+def snap_to_bf16(value: float) -> float:
+    """`value` rounded to the nearest BF16 and widened back to F32."""
+    return struct.unpack("<f", struct.pack("<I", bf16_bits(value) << 16))[0]
+
+
+# The grid every weight is snapped to before storage, and the storage that
+# holds a grid value exactly. A family shares one grid; the two grids are not
+# nested, so nothing is ever compared across them.
+GRIDS = {"f16": snap_to_f16, "bf16": snap_to_bf16}
+EXACT_GRID = {GGML_TYPE_F16: "f16", GGML_TYPE_BF16: "bf16"}
+GRID = "f16"
 
 
 def weights(count: int, seed: int, scale: float, offset: float = 0.0) -> list[float]:
     rng = Xorshift(seed)
-    return [snap_to_f16(offset + scale * rng.unit()) for _ in range(count)]
+    snap = GRIDS[GRID]
+    return [snap(offset + scale * rng.unit()) for _ in range(count)]
 
 
 def quantize_q8_0(values: list[float]) -> bytes:
@@ -168,6 +200,8 @@ def quantize_q8_0(values: list[float]) -> bytes:
 def pack(values: list[float], ggml_type: int) -> bytes:
     if ggml_type == GGML_TYPE_Q8_0:
         return quantize_q8_0(values)
+    if ggml_type == GGML_TYPE_BF16:
+        return struct.pack(f"<{len(values)}H", *(bf16_bits(value) for value in values))
     fmt = "e" if ggml_type == GGML_TYPE_F16 else "f"
     return struct.pack(f"<{len(values)}{fmt}", *values)
 
@@ -313,6 +347,7 @@ def build(matrix_type: int) -> bytes:
         {
             GGML_TYPE_F16: FILE_TYPE_MOSTLY_F16,
             GGML_TYPE_Q8_0: FILE_TYPE_MOSTLY_Q8_0,
+            GGML_TYPE_BF16: FILE_TYPE_MOSTLY_BF16,
         }.get(matrix_type, FILE_TYPE_ALL_F32)
     )
     header += struct.pack("<IIQQ", GGUF_MAGIC, GGUF_VERSION, len(table), len(kvs))
@@ -339,6 +374,15 @@ def build(matrix_type: int) -> bytes:
     return bytes(header) + bytes(body)
 
 
+def ggml_type_name(ggml_type: int) -> str:
+    return {
+        GGML_TYPE_F32: "f32",
+        GGML_TYPE_F16: "f16",
+        GGML_TYPE_Q8_0: "q8_0",
+        GGML_TYPE_BF16: "bf16",
+    }[ggml_type]
+
+
 SHAPE_FLAGS = {
     "--layers": "layers",
     "--embd": "embd",
@@ -349,7 +393,9 @@ SHAPE_FLAGS = {
 
 
 def main(argv: list[str]) -> int:
+    global GRID
     matrix_type = GGML_TYPE_F32
+    grid: str | None = None
     shape = {
         "layers": N_LAYER,
         "embd": N_EMBD,
@@ -362,19 +408,37 @@ def main(argv: list[str]) -> int:
         flag, value = argv[0], argv[1]
         if flag == "--dtype":
             choice = value.lower()
-            if choice not in ("f32", "f16", "q8_0"):
+            if choice not in ("f32", "f16", "bf16", "q8_0"):
                 print(__doc__, file=sys.stderr)
                 return 2
             matrix_type = {
                 "f16": GGML_TYPE_F16,
+                "bf16": GGML_TYPE_BF16,
                 "q8_0": GGML_TYPE_Q8_0,
             }.get(choice, GGML_TYPE_F32)
+        elif flag == "--grid":
+            if value.lower() not in GRIDS:
+                print(__doc__, file=sys.stderr)
+                return 2
+            grid = value.lower()
         elif flag in SHAPE_FLAGS:
             shape[SHAPE_FLAGS[flag]] = int(value)
         else:
             print(__doc__, file=sys.stderr)
             return 2
         argv = argv[2:]
+    # A storage that is a float grid of its own holds the values it was given
+    # exactly or it holds different numbers, which is the one thing a control
+    # pair may not do. The default grid is the storage's own where it has one.
+    if grid is None:
+        grid = EXACT_GRID.get(matrix_type, "f16")
+    if EXACT_GRID.get(matrix_type, grid) != grid:
+        print(
+            f"--dtype {ggml_type_name(matrix_type)} cannot store a {grid} grid exactly",
+            file=sys.stderr,
+        )
+        return 2
+    GRID = grid
     configure(**shape)
     if len(argv) != 1:
         print(__doc__, file=sys.stderr)

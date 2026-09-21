@@ -5,6 +5,12 @@
 #   scripts/test-cpu-integration.sh grpo_runtime [filter ...]    # one binary, while iterating
 #
 # RETRO_TEST_CPU_THREADS sets the llama.cpp CPU workers (default 4).
+#
+# `cli` is in every feature list below because two binaries spawn the
+# `retrograd` executable through CARGO_BIN_EXE_retrograd, and that target
+# carries `required-features = ["cli"]`: without it cargo skips the binary,
+# still defines the variable, and every such case fails on a path that was
+# never built.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -14,6 +20,8 @@ source "$repo_root/scripts/lib-step-timing.sh"
 export RETRO_CPU_FIXTURE="${RETRO_CPU_FIXTURE:-$repo_root/tests/fixtures/LFM2.5-230M-Q4_K_M.gguf}"
 export RETRO_TINY_FIXTURE="${RETRO_TINY_FIXTURE:-$repo_root/tests/fixtures/retrograd-tiny-qwen2-f32.gguf}"
 export RETRO_TINY_F16_FIXTURE="${RETRO_TINY_F16_FIXTURE:-$repo_root/tests/fixtures/retrograd-tiny-qwen2-f16.gguf}"
+export RETRO_TINY_BF16_FIXTURE="${RETRO_TINY_BF16_FIXTURE:-$repo_root/tests/fixtures/retrograd-tiny-qwen2-bf16.gguf}"
+export RETRO_TINY_BF16_CONTROL_FIXTURE="${RETRO_TINY_BF16_CONTROL_FIXTURE:-$repo_root/tests/fixtures/retrograd-tiny-qwen2-bf16ctl-f32.gguf}"
 export RETRO_TINY_Q8_FIXTURE="${RETRO_TINY_Q8_FIXTURE:-$repo_root/tests/fixtures/retrograd-tiny-qwen2-q8_0.gguf}"
 export RETRO_REQUIRE_CPU_FIXTURE=1
 export RETRO_RUNTIME_LOCK_PATH="${RETRO_RUNTIME_LOCK_PATH:-${TMPDIR:-/tmp}/retrograd-runtime.lock}"
@@ -25,14 +33,14 @@ export RETRO_TEST_TIMING="${RETRO_TEST_TIMING:-1}"
 if [[ $# -gt 0 ]]; then
   test_binary="$1"
   shift
-  exec cargo test --no-default-features --features agent --test "$test_binary" -- --test-threads=1 "$@"
+  exec cargo test --no-default-features --features agent,cli --test "$test_binary" -- --test-threads=1 "$@"
 fi
 
 # Compilation profiling is optional: a normal `cargo test` already builds
 # missing artifacts, so unconditional `--no-run` passes only add Cargo startup
 # and dependency-scanning overhead to warm lane runs.
 if [[ "${RETRO_PROFILE_TESTS:-0}" == "1" ]]; then
-  timed_step compile cargo test --no-default-features --features agent --no-run \
+  timed_step compile cargo test --no-default-features --features agent,cli --no-run \
     --test capabilities \
     --test trainable_inventory \
     --test base_training \
@@ -61,7 +69,7 @@ fi
 # GRPO, distillation-teacher, offline top-k distillation, checkpoint and CLI
 # smoke tests. Cargo may start them concurrently; `serialize_models` supplies
 # the cross-process runtime lock.
-timed_step run:capabilities-suite cargo test --no-default-features --features agent \
+timed_step run:capabilities-suite cargo test --no-default-features --features agent,cli \
   --test capabilities \
   --test ppo_runtime \
   --test grpo_runtime \
@@ -89,7 +97,7 @@ timed_step run:capabilities-suite cargo test --no-default-features --features ag
 # in the same file). `fused_ce_parity` and `ubatch_parity` have no non-CPU
 # sibling tests, so their test names are listed as filters too rather than
 # left unfiltered, since any filter argument restricts every selected binary.
-timed_step run:cpu-slices cargo test --no-default-features --features agent \
+timed_step run:cpu-slices cargo test --no-default-features --features agent,cli \
   --test lora_resume \
   --test lora_f16 \
   --test train_parity \

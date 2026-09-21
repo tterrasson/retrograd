@@ -1,0 +1,19 @@
+# The F32 control of the BF16 fixture: same numbers, stored as F32 throughout.
+#
+# TINY_FIXTURE.toml cannot serve as that control. It is snapped to the F16
+# grid, and an F16-grid value is not a BF16 value - comparing the two would
+# measure the gap between two draws, not the cost of a precision. This file is
+# generated with `--grid bf16` so every weight it carries is exactly the weight
+# TINY_BF16_FIXTURE.toml carries, widened.
+#
+# Same geometry as the rest of the family; every tensor F32, which is the
+# baseline the BF16 rows of BASE_DTYPE_TABLE are measured against.
+#
+# Regenerating after editing the generator means updating `sha256` and
+# `size_bytes` here *and* in TINY_BF16_FIXTURE.toml, in the same commit.
+filename = "retrograd-tiny-qwen2-bf16ctl-f32.gguf"
+generator = "scripts/gen-tiny-fixture.py"
+generator_args = "--dtype f32 --grid bf16"
+override_env = "RETRO_TINY_BF16_CONTROL_FIXTURE"
+size_bytes = 737952
+sha256 = "db20e84de550ecdf5c907e2aa01c85962a2864860308161f633768dacbdefaf0"
