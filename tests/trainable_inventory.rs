@@ -252,6 +252,84 @@ fn the_generated_fixtures_architecture_row_covers_every_parameter_it_carries() {
     assert_row_covers(&inventory);
 }
 
+/// The hybrid row, against a real Qwen3.5 file rather than against names typed
+/// from memory: the family list is what `full` derives its set from, and a
+/// family spelled wrong here silently freezes a parameter instead of failing.
+///
+/// Opt-in: no Qwen3.5 fixture is generated or downloaded, so this skips unless
+/// `RETRO_QWEN3NEXT_TEST_MODEL` points at one.
+#[test]
+fn the_hybrid_rows_families_are_the_ones_a_real_qwen35_file_carries() {
+    let family = common::RECURRENT_FAMILIES
+        .iter()
+        .find(|family| family.family == "gated_delta_net")
+        .expect("the gated delta net fixture definition");
+    let Some(model) = family.path_if_available() else {
+        eprintln!(
+            "skipping the qwen35 row: no model at {} (set {})",
+            family.path().display(),
+            family.env
+        );
+        return;
+    };
+    let inventory = read_inventory(&model).expect("read the qwen35 inventory");
+    assert_eq!(inventory.architecture, "qwen35");
+    assert_row_covers(&inventory);
+
+    // Both kinds of block are present, so the row is checked against the
+    // hybrid and not against whichever half a truncated file kept.
+    let names: Vec<&str> = inventory
+        .tensors
+        .iter()
+        .map(|tensor| tensor.name.as_str())
+        .collect();
+    assert!(
+        names.iter().any(|name| name.ends_with(".ssm_out.weight")),
+        "no gated-delta-net block"
+    );
+    assert!(
+        names.iter().any(|name| name.ends_with(".attn_output.weight")),
+        "no full-attention block"
+    );
+}
+
+/// The file the row was written from stores its matrices in BF16, which no
+/// row of the base-dtype table admits. `full` has to say so - and say it
+/// about the dtype, now that the architecture is no longer the refusal.
+#[test]
+fn full_training_refuses_a_bf16_qwen35_by_dtype_and_not_by_architecture() {
+    let family = common::RECURRENT_FAMILIES
+        .iter()
+        .find(|family| family.family == "gated_delta_net")
+        .expect("the gated delta net fixture definition");
+    let Some(model) = family.path_if_available() else {
+        eprintln!("skipping the qwen35 dtype refusal: set {}", family.env);
+        return;
+    };
+    let inventory = read_inventory(&model).expect("read the qwen35 inventory");
+    if inventory
+        .tensors
+        .iter()
+        .all(|tensor| tensor.dtype.is_trainable_base())
+    {
+        eprintln!("skipping: the qwen35 model at hand is trainable throughout");
+        return;
+    }
+    let error = resolve_base(
+        &inventory,
+        TrainablePolicy::Full,
+        &TrainableSelector::default(),
+    )
+    .expect_err("a model stored in an untabled dtype has no full-training path");
+    assert!(error.is_user_error(), "{error}");
+    let message = error.to_string();
+    assert!(
+        !message.contains("capability table"),
+        "the architecture is tabled now: {message}"
+    );
+    assert!(message.contains("admits F32, F16"), "{message}");
+}
+
 /// The properties the generated fixture must hold, asserted rather than
 /// assumed by the runs that depend on them.
 #[test]

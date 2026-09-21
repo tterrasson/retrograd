@@ -125,6 +125,41 @@ const LFM2_BLOCK: [&str; 15] = [
     "shortconv.out_proj",
 ];
 
+/// Qwen3.5 is a hybrid: three gated-delta-net blocks carrying a fused QKV and
+/// an output gate, then one full-attention block, repeating. The two kinds of
+/// block share one row, because a family list is per architecture and a name
+/// only has to be admissible *somewhere* in the model - the file decides which
+/// block carries which tensor.
+///
+/// It normalizes after the attention rather than before the FFN, so the row
+/// adds `post_attention_norm`; `ffn_norm` is in it because every row carries
+/// the whole dense block, not because a Qwen3.5 file has one. `blk.N.ssm_a`
+/// carries no suffix at all and `blk.N.ssm_dt.bias` carries the other one;
+/// both reach their family through the same rule.
+const QWEN35_BLOCK: [&str; 21] = [
+    "attn_norm",
+    "attn_q",
+    "attn_k",
+    "attn_v",
+    "attn_qkv",
+    "attn_output",
+    "attn_q_norm",
+    "attn_k_norm",
+    "attn_gate",
+    "post_attention_norm",
+    "ffn_norm",
+    "ffn_up",
+    "ffn_down",
+    "ffn_gate",
+    "ssm_a",
+    "ssm_alpha",
+    "ssm_beta",
+    "ssm_conv1d",
+    "ssm_dt",
+    "ssm_norm",
+    "ssm_out",
+];
+
 /// Global families of a dense transformer. `output` is the untied vocabulary
 /// projection; a tied one is frozen by storage identity before this check.
 const DENSE_GLOBAL: [&str; 3] = ["output_norm", "output", "token_embd_norm"];
@@ -132,8 +167,10 @@ const DENSE_GLOBAL: [&str; 3] = ["output_norm", "output", "token_embd_norm"];
 /// The architectures `full` can derive a set for.
 ///
 /// `lfm2` and `qwen2` are the CPU fixtures, each checked against a real file
-/// by `tests/trainable_inventory.rs`; `llama` follows llama.cpp naming. A row
-/// lists parameters; the dtype rule decides what a given file can carry.
+/// by `tests/trainable_inventory.rs`; `qwen35` is checked there too, against
+/// the opt-in model `RETRO_QWEN3NEXT_TEST_MODEL` names; `llama` follows
+/// llama.cpp naming. A row lists parameters; the dtype rule decides what a
+/// given file can carry.
 pub const CAPABILITY_TABLE: &[ArchitectureCapability] = &[
     ArchitectureCapability {
         architecture: "llama",
@@ -146,6 +183,15 @@ pub const CAPABILITY_TABLE: &[ArchitectureCapability] = &[
         block_families: &QWEN2_BLOCK,
         global_families: &DENSE_GLOBAL,
         exports_model: true,
+    },
+    ArchitectureCapability {
+        architecture: "qwen35",
+        block_families: &QWEN35_BLOCK,
+        global_families: &DENSE_GLOBAL,
+        // No fixture of this architecture is generated here: the row is
+        // resolved against a real file by the opt-in lane in
+        // `tests/trainable_inventory.rs`, and no export has been measured.
+        exports_model: false,
     },
     ArchitectureCapability {
         architecture: "lfm2",
@@ -250,6 +296,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The hybrid row, on names taken from a real Qwen3.5 file: a
+    /// gated-delta-net block, a full-attention block, and the two parameters
+    /// whose suffix the family rule has to survive.
+    #[test]
+    fn the_hybrid_row_admits_both_kinds_of_block() {
+        let row = architecture_capability("qwen35").expect("qwen35 has a row");
+        for name in [
+            "blk.0.attn_qkv.weight",
+            "blk.0.attn_gate.weight",
+            "blk.0.post_attention_norm.weight",
+            "blk.0.ssm_a",
+            "blk.0.ssm_dt.bias",
+            "blk.0.ssm_conv1d.weight",
+            "blk.0.ssm_norm.weight",
+            "blk.0.ssm_out.weight",
+            "blk.3.attn_q.weight",
+            "blk.3.attn_k_norm.weight",
+            "output_norm.weight",
+        ] {
+            assert!(row.admits(name), "the qwen35 row refuses '{name}'");
+        }
+        // Tied on every published checkpoint, and frozen by storage identity
+        // when it is - but the row is about names, and an untied file is the
+        // one that reaches this check.
+        assert!(row.admits("output.weight"));
+        assert!(!row.admits("token_embd.weight"));
+        assert!(!row.admits("ssm_a"), "a block family outside every block");
     }
 
     #[test]
