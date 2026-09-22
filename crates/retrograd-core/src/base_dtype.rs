@@ -628,6 +628,6 @@ mod tests {
         let fine = storage_ulp(&TensorDtype::F16, 8.0e-3).expect("a grid");
         assert!(base_step_is_representable(1.0e-6 * 8.0, fine));
         assert!(!base_step_is_representable(f32::NAN, ulp));
-        assert!(MAX_BASE_STEP_UNDERFLOW_SHARE > 0.0 && MAX_BASE_STEP_UNDERFLOW_SHARE < 1.0);
+        const { assert!(MAX_BASE_STEP_UNDERFLOW_SHARE > 0.0 && MAX_BASE_STEP_UNDERFLOW_SHARE < 1.0) };
     }
 }
