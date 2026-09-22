@@ -30,7 +30,8 @@ use std::path::Path;
 
 use retrograd_core::{
     CheckpointDtype, FeatureDtype, GefenLayout, GefenVariant, KvDtype, LayerRange, LoraDtype,
-    LrScheduler, OptimizerKind, RewardMode, SharedPrefixFanout, TrainablePolicy, TrainableSelector,
+    LrScheduler, MasterWeights, OptimizerKind, RewardMode, SharedPrefixFanout, TrainablePolicy,
+    TrainableSelector,
 };
 use retrograd_dataset::DataFormat;
 
@@ -133,6 +134,7 @@ const KEYS: &[&str] = &[
     "training.kv_dtype",
     "training.lr",
     "training.lr_scheduler",
+    "training.master_weights",
     "training.max_gpu_duty_cycle",
     "training.max_grad_norm",
     "training.micro_batch",
@@ -316,6 +318,7 @@ fn exhaustive_document() -> ConfigDocument {
             gradient_checkpointing: Some(true),
             checkpoint_every_n_layers: Some(3),
             checkpoint_dtype: Some(CheckpointDtype::F16),
+            master_weights: Some(MasterWeights::Off),
             require_gpu_resident: Some(true),
             max_gpu_duty_cycle: Some(0.5),
         },
@@ -1033,6 +1036,7 @@ fn every_toml_field_reaches_the_run_config() {
     assert!(training.gradient_checkpointing);
     assert_eq!(training.checkpoint_every_n_layers, 3);
     assert_eq!(training.checkpoint_dtype, CheckpointDtype::F16);
+    assert_eq!(training.master_weights, MasterWeights::Off);
     assert!(training.require_gpu_resident);
     assert_eq!(training.max_gpu_duty_cycle, Some(0.5));
     assert_eq!(training.device, "cpu".parse().unwrap());

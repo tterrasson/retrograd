@@ -650,7 +650,10 @@ impl Trainer {
             optimizer: checkpoint::Optimizer {
                 version: checkpoint::FORMAT_VERSION,
                 kind: optimizer_kind.to_string(),
-                layout_version: optimizer_kind.layout_version(),
+                // The run's table, not the optimizer's alone: a master copy
+                // adds a slot to it, and a payload written with one is not
+                // readable without one.
+                layout_version: optimizer_kind.layout_version_with_master(plan.keeps_master_copy()),
                 hyperparameters: hyperparameters.lines(),
                 learning_rate: optimizer_state.learning_rate,
                 weight_decay: optimizer_state.weight_decay,

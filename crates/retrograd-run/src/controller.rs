@@ -185,9 +185,8 @@ impl RunController {
             warmup_steps: self.context.warmup_steps,
             total_steps: Some(total_steps),
             optimizer_kind: self.context.optimizer_kind.clone(),
-            // From the trainer, like the trainable signature below: only the
-            // runtime knows the coefficients no document spells.
-            optimizer_layout_version: optimizer_hyperparameters.optimizer().layout_version(),
+            // Only the trainer knows the layout version; no document spells it.
+            optimizer_layout_version: trainer.optimizer_layout_version()?,
             optimizer_hyperparameters: optimizer_hyperparameters.lines(),
             weight_decay: self.context.weight_decay,
             max_grad_norm: self.context.max_grad_norm,

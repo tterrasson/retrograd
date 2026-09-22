@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use retrograd::checkpoint::{self, Checkpoint};
 use retrograd::{
     BASE_DTYPE_TABLE, BaseDtypeCapability, CheckpointMetadata, Device, MIN_BASE_STEP_ULPS,
-    OptimizerKind, ProbeInputs, ProbeOp, TensorDtype, TrainConfig, TrainablePolicy,
+    MasterWeights, OptimizerKind, ProbeInputs, ProbeOp, TensorDtype, TrainConfig, TrainablePolicy,
     TrainableRunConfig, TrainableSelector, TrainableSet, Trainer, base_dtype_admits,
     base_dtype_capability, probe_op, resolve_base, tensor_inventory,
 };
@@ -119,6 +119,15 @@ impl Storage {
             (_, _) => ProbeOp::OptStepAdamwF16,
         }
     }
+
+    /// The store cast alone, without an optimizer: the second node of a
+    /// master-copy step.
+    fn cast_probe(&self) -> ProbeOp {
+        match &self.dtype {
+            TensorDtype::BF16 => ProbeOp::CastStoreBf16,
+            _ => ProbeOp::CastStoreF16,
+        }
+    }
 }
 
 fn selector() -> TrainableSelector {
@@ -147,17 +156,30 @@ fn per_device(lane: impl Fn(Device)) {
     }
 }
 
-/// Runs `lane` once per (storage, optimizer, device) triple, naming all
-/// three on the way in.
-fn per_case(lane: impl Fn(&Storage, OptimizerKind, Device)) {
+/// The two update paths a half-precision store can be trained on, as the
+/// table's `master` column spells them.
+///
+/// Not a variation of one lane but two lanes: an in-place rounded step and an
+/// F32 step followed by a cast are different arithmetic, which is why the row
+/// is keyed on this and why every lane below runs once per value.
+fn master_paths() -> [bool; 2] {
+    [false, true]
+}
+
+/// Runs `lane` once per (storage, optimizer, device, master) case, naming all
+/// four on the way in.
+fn per_case(lane: impl Fn(&Storage, OptimizerKind, Device, bool)) {
     for storage in storages() {
         for optimizer in optimizers() {
             for device in devices() {
-                eprintln!(
-                    "--- {} under {optimizer} on device {device:?} ---",
-                    storage.dtype
-                );
-                lane(&storage, optimizer, device);
+                for master in master_paths() {
+                    eprintln!(
+                        "--- {} under {optimizer} on device {device:?}, master copy {} ---",
+                        storage.dtype,
+                        if master { "on" } else { "off" }
+                    );
+                    lane(&storage, optimizer, device, master);
+                }
             }
         }
     }
@@ -173,8 +195,19 @@ fn learning_rate(optimizer: OptimizerKind) -> f32 {
     }
 }
 
-fn config(optimizer: OptimizerKind, device: Device) -> TrainConfig {
+/// `f32` and `off` rather than `auto` in either case: a lane that let the
+/// runtime derive the path would be measuring whichever one it derived.
+fn master_setting(master: bool) -> MasterWeights {
+    if master {
+        MasterWeights::F32
+    } else {
+        MasterWeights::Off
+    }
+}
+
+fn config(optimizer: OptimizerKind, device: Device, master: bool) -> TrainConfig {
     TrainConfig {
+        master_weights: master_setting(master),
         n_ctx: 256,
         n_batch: 256,
         n_ubatch: 64,
@@ -365,9 +398,10 @@ fn row_for(
     trainer: &mut Trainer,
     dtype: &TensorDtype,
     optimizer: OptimizerKind,
+    master: bool,
 ) -> Option<&'static BaseDtypeCapability> {
     let registry = backend_registry(trainer);
-    base_dtype_capability(dtype, optimizer, &registry)
+    base_dtype_capability(dtype, optimizer, &registry, master)
 }
 
 /// The live device's own answer, read from the `cap_opt_step` line, which
@@ -440,12 +474,23 @@ fn the_dtype_screen_is_a_screen_and_the_row_is_the_admission() {
     assert!(!base_dtype_admits(
         &TensorDtype::F16,
         OptimizerKind::Muon,
-        "CPU"
+        "CPU",
+        false
     ));
     assert!(!base_dtype_admits(
         &TensorDtype::F16,
         OptimizerKind::AdamW,
-        "a-backend-no-lane-has-run"
+        "a-backend-no-lane-has-run",
+        false
+    ));
+    // Nor does the master path admit what the in-place one does: the two are
+    // measured separately, and a backend that carries one may carry neither
+    // the other's kernel nor the other's evidence.
+    assert!(!base_dtype_admits(
+        &TensorDtype::F16,
+        OptimizerKind::AdamW,
+        "a-backend-no-lane-has-run",
+        true
     ));
     assert!(!BASE_DTYPE_TABLE.is_empty(), "the widening has no row");
 }
@@ -459,23 +504,36 @@ fn the_row_and_the_running_backend_agree_on_whether_a_storage_is_admitted() {
     per_case(table_agrees_with_backend);
 }
 
-fn table_agrees_with_backend(storage: &Storage, optimizer: OptimizerKind, device: Device) {
+fn table_agrees_with_backend(
+    storage: &Storage,
+    optimizer: OptimizerKind,
+    device: Device,
+    master: bool,
+) {
     let Some((model, _)) = storage.pair() else {
         return;
     };
     let _guard = common::serialize_models();
 
     let set = resolved_set(&model, device);
-    let mut trainer = Trainer::new(&model, config(optimizer, device)).expect("load trainer");
+    let mut trainer =
+        Trainer::new(&model, config(optimizer, device, master)).expect("load trainer");
     let registry = backend_registry(&mut trainer);
-    let tabled = base_dtype_capability(&storage.dtype, optimizer, &registry).is_some();
-    // The device's own probe, which is neither the table nor the refusal.
+    let tabled = base_dtype_capability(&storage.dtype, optimizer, &registry, master).is_some();
+    // The device's own probe, which is neither the table nor the refusal. It
+    // answers for the *in-place* step, so it is only the second opinion on the
+    // in-place path; with a master copy the step that runs is the F32 one and
+    // the store is written by a cast, which is why a backend can be admitted
+    // there while this probe says no.
     let probed = device_probe_admits(&mut trainer, &storage.dtype, optimizer);
-    assert_eq!(
-        tabled, probed,
-        "{registry}: the table says {tabled} and the device's {optimizer} {} probe says {probed}",
-        storage.dtype
-    );
+    if !master {
+        assert_eq!(
+            tabled, probed,
+            "{registry}: the table says {tabled} and the device's {optimizer} {} probe \
+             says {probed}",
+            storage.dtype
+        );
+    }
 
     trainer
         .declare_trainable_set(&set)
@@ -503,7 +561,9 @@ fn table_agrees_with_backend(storage: &Storage, optimizer: OptimizerKind, device
 }
 
 /// The row admits the store; whether this rate can move it is a separate
-/// check, and it is refused when the step is far under one ulp.
+/// check, and it is refused when the step is far under one ulp - unless the
+/// run keeps a master copy, where there is no in-place store for the grid to
+/// be a floor on.
 #[test]
 fn a_rate_under_the_grid_of_a_half_precision_store_is_refused() {
     per_case(rate_under_the_grid);
@@ -512,19 +572,19 @@ fn a_rate_under_the_grid_of_a_half_precision_store_is_refused() {
 /// A rate under every grid this build stores a weight on.
 const RATE_UNDER_EVERY_GRID: f32 = 1.0e-12;
 
-fn rate_under_the_grid(storage: &Storage, optimizer: OptimizerKind, device: Device) {
+fn rate_under_the_grid(storage: &Storage, optimizer: OptimizerKind, device: Device, master: bool) {
     let Some((model, control)) = storage.pair() else {
         return;
     };
     let _guard = common::serialize_models();
 
-    let tiny = |optimizer, device| TrainConfig {
+    let tiny = |optimizer, device, master| TrainConfig {
         learning_rate: RATE_UNDER_EVERY_GRID,
-        ..config(optimizer, device)
+        ..config(optimizer, device, master)
     };
     let set = resolved_set(&model, device);
-    let mut trainer = Trainer::new(&model, tiny(optimizer, device)).expect("load trainer");
-    if row_for(&mut trainer, &storage.dtype, optimizer).is_none() {
+    let mut trainer = Trainer::new(&model, tiny(optimizer, device, master)).expect("load trainer");
+    if row_for(&mut trainer, &storage.dtype, optimizer, master).is_none() {
         eprintln!("skipping: no row admits this combination here");
         return;
     }
@@ -533,14 +593,21 @@ fn rate_under_the_grid(storage: &Storage, optimizer: OptimizerKind, device: Devi
         .expect("the selected projections");
     match trainer.prepare_optimizer() {
         // SGD's step is `alpha * |gradient|`, which no preflight knows, so it
-        // is not graded against the grid.
-        Ok(()) => assert_eq!(
-            optimizer,
-            OptimizerKind::Sgd,
-            "{optimizer} steps about alpha per element and {} cannot carry {RATE_UNDER_EVERY_GRID}",
+        // is not graded against the grid. Nor is anything on the master path:
+        // the sum is formed in F32 and the store is written by one cast, so
+        // the grid stopped being the floor on the rate - which is the whole
+        // point of keeping the copy.
+        Ok(()) => assert!(
+            optimizer == OptimizerKind::Sgd || master,
+            "{optimizer} steps about alpha per element and an in-place {} store cannot \
+             carry {RATE_UNDER_EVERY_GRID}",
             storage.dtype
         ),
         Err(error) => {
+            assert!(
+                !master,
+                "a master copy accumulates in F32, so no rate is below its grid: {error}"
+            );
             assert_eq!(
                 optimizer,
                 OptimizerKind::AdamW,
@@ -552,11 +619,13 @@ fn rate_under_the_grid(storage: &Storage, optimizer: OptimizerKind, device: Devi
             assert!(message.contains(&named), "{message}");
             assert!(message.contains("ulp"), "{message}");
             assert!(message.contains("training.lr"), "{message}");
-            // The run's own step, in the same unit, is on the report.
+            // The run's own step, in the same unit, is on the report, and
+            // beside it whether that unit bounds anything.
             let measured = report_line(&mut trainer, "base_step_ulps")
                 .parse::<f32>()
                 .expect("the report carries this run's step in ulps");
             assert!(measured < MIN_BASE_STEP_ULPS, "{measured} ulp");
+            assert_eq!(report_line(&mut trainer, "base_master_copy"), "off");
         }
     }
 
@@ -564,7 +633,7 @@ fn rate_under_the_grid(storage: &Storage, optimizer: OptimizerKind, device: Devi
     // the rate alone.
     let control_set = resolved_set(&control, device);
     let mut control_trainer =
-        Trainer::new(&control, tiny(optimizer, device)).expect("load the control");
+        Trainer::new(&control, tiny(optimizer, device, false)).expect("load the control");
     control_trainer
         .declare_trainable_set(&control_set)
         .expect("the selected projections");
@@ -580,15 +649,16 @@ fn a_half_precision_base_tensor_is_marked_and_the_update_moves_it() {
     per_case(marked_and_moved);
 }
 
-fn marked_and_moved(storage: &Storage, optimizer: OptimizerKind, device: Device) {
+fn marked_and_moved(storage: &Storage, optimizer: OptimizerKind, device: Device, master: bool) {
     let Some((model, _)) = storage.pair() else {
         return;
     };
     let _guard = common::serialize_models();
 
     let set = resolved_set(&model, device);
-    let mut trainer = Trainer::new(&model, config(optimizer, device)).expect("load trainer");
-    let Some(_row) = row_for(&mut trainer, &storage.dtype, optimizer) else {
+    let mut trainer =
+        Trainer::new(&model, config(optimizer, device, master)).expect("load trainer");
+    let Some(_row) = row_for(&mut trainer, &storage.dtype, optimizer, master) else {
         eprintln!(
             "skipping: no BASE_DTYPE_TABLE row for {}/{optimizer} on {}",
             storage.dtype,
@@ -596,9 +666,10 @@ fn marked_and_moved(storage: &Storage, optimizer: OptimizerKind, device: Device)
         );
         return;
     };
-    // The declared table and the live device agree.
+    // The declared table and the live device agree - on the in-place path,
+    // which is the one this probe answers for.
     assert!(
-        device_probe_admits(&mut trainer, &storage.dtype, optimizer),
+        master || device_probe_admits(&mut trainer, &storage.dtype, optimizer),
         "the row claims {} under {optimizer} and the device's own probe declines it",
         storage.dtype
     );
@@ -664,6 +735,246 @@ fn marked_and_moved(storage: &Storage, optimizer: OptimizerKind, device: Device)
     assert!(moved > 0, "no stored element changed in the step");
 }
 
+// --- the master copy ---------------------------------------------------------
+
+/// `values` rounded once onto `storage`'s grid, through the same reference row
+/// conversion the cast lane compares a device against. One rounding oracle for
+/// the file, and it is the runtime's own.
+fn rounded_to_store(storage: &Storage, values: &[f32]) -> Vec<f32> {
+    let ne = [values.len() as i64, 1, 1, 1];
+    let both = probe_op(
+        storage.cast_probe(),
+        false,
+        ProbeInputs::pair(ne, values, ne, values),
+        [0.0, 0.0],
+        2 * values.len(),
+    )
+    .expect("round a vector onto the store's grid");
+    both[values.len()..].to_vec()
+}
+
+/// A master-copy run's store *is* its master copy, rounded once.
+///
+/// The assertion is an equality and not a tolerance band, because that
+/// equality is what a master copy means: the update accumulates in F32 and the
+/// store is written by a single round-to-nearest cast of the result, so the
+/// parameter is a function of the master and of nothing else. Nothing here is
+/// compared against a second run, so nothing here has to allow for one.
+///
+/// It is also what checks the second half of the two-node step: the cast has
+/// to land in the *model's* buffer, and a run whose `ggml_cpy` wrote a graph
+/// copy would leave the store where the previous step left it while the master
+/// moved on. The master is read back out of a checkpoint, which is the same
+/// enumeration a resume reads, so the slot being checkpointable at all is
+/// checked here too.
+///
+/// CPU only: it compares a run against itself rather than a backend against a
+/// backend, and the device lanes are the rows in the table.
+#[test]
+fn the_store_of_a_master_copy_run_is_its_master_rounded_once() {
+    for storage in storages() {
+        for optimizer in optimizers() {
+            eprintln!("--- {} under {optimizer} ---", storage.dtype);
+            the_store_follows_the_master(&storage, optimizer);
+        }
+    }
+}
+
+fn the_store_follows_the_master(storage: &Storage, optimizer: OptimizerKind) {
+    let Some((model, _)) = storage.pair() else {
+        return;
+    };
+    let device = Device::Cpu;
+    let _guard = common::serialize_models();
+    let root = scratch("master");
+
+    let mut trainer =
+        Trainer::new(&model, config(optimizer, device, true)).expect("load the stored trainer");
+    if row_for(&mut trainer, &storage.dtype, optimizer, true).is_none() {
+        eprintln!("skipping: no master row for this combination here");
+        return;
+    }
+    trainer
+        .declare_trainable_set(&resolved_set(&model, device))
+        .expect("the selected projections");
+    trainer
+        .prepare_optimizer()
+        .expect("a half-precision base set with a master copy is marked");
+    // The report says which path ran, so a lane that silently measured the
+    // in-place one cannot pass.
+    assert_eq!(report_line(&mut trainer, "base_master_copy"), "f32");
+
+    let marked = trainer.marked_trainable_set().expect("the marked set");
+    let sizes: Vec<u64> = marked.entries.iter().map(|entry| entry.n_bytes).collect();
+    let before: Vec<Vec<f32>> = (0..sizes.len())
+        .map(|index| parameter_values(&mut trainer, index, &storage.dtype, sizes[index]))
+        .collect();
+    assert_eq!(train_one_row(&mut trainer), 1);
+    let stored: Vec<Vec<f32>> = (0..sizes.len())
+        .map(|index| parameter_values(&mut trainer, index, &storage.dtype, sizes[index]))
+        .collect();
+
+    // The master copies, read where a resume would read them.
+    let state = root.join("after.state");
+    trainer
+        .save_checkpoint(&state, &metadata(&model, 1))
+        .expect("checkpoint a master-copy run");
+    let record = Checkpoint::read(&state).expect("read the checkpoint");
+    let payload =
+        std::fs::read(state.join(checkpoint::OPTIMIZER_STATE_FILE)).expect("the state payload");
+
+    let mut moved = 0_usize;
+    for (index, entry) in marked.entries.iter().enumerate() {
+        let slot = record
+            .optimizer
+            .slots
+            .iter()
+            .find(|slot| slot.owner == entry.name && slot.slot == retrograd::MASTER_SLOT)
+            .unwrap_or_else(|| panic!("{} has no master copy in the checkpoint", entry.name));
+        assert_eq!(slot.dtype, "f32", "{}", entry.name);
+        assert_eq!(
+            slot.n_bytes,
+            entry.n_elements * 4,
+            "{} keeps one F32 per element",
+            entry.name
+        );
+        let start = usize::try_from(slot.offset).expect("a host-sized offset");
+        let end = start + usize::try_from(slot.n_bytes).expect("a host-sized slot");
+        let master = read_f32(&payload[start..end]);
+        let expected = rounded_to_store(storage, &master);
+
+        let differing: Vec<usize> = (0..expected.len())
+            .filter(|&i| stored[index][i].to_bits() != expected[i].to_bits())
+            .collect();
+        assert!(
+            differing.is_empty(),
+            "{}: {} of {} stored elements are not this run's own master copy rounded once \
+             into the {} store (first at {}: {:e} against {:e}, master {:e})",
+            entry.name,
+            differing.len(),
+            expected.len(),
+            storage.dtype,
+            differing[0],
+            stored[index][differing[0]],
+            expected[differing[0]],
+            master[differing[0]],
+        );
+        // And the master is not the store widened: it carries values the store
+        // cannot hold, which is the entire reason it exists.
+        assert!(
+            master
+                .iter()
+                .zip(&expected)
+                .any(|(held, rounded)| held != rounded),
+            "{}: every master value is exactly on the {} grid, so the copy is carrying \
+             nothing the store could not",
+            entry.name,
+            storage.dtype
+        );
+        moved += before[index]
+            .iter()
+            .zip(&stored[index])
+            .filter(|(a, b)| a != b)
+            .count();
+    }
+    // An equality nothing moved would be an equality between two copies of the
+    // starting weights.
+    assert!(
+        moved > 0,
+        "{}: the step landed back on every weight it started from",
+        storage.dtype
+    );
+    eprintln!(
+        "{} under {optimizer}: {moved} stored element(s) moved, every one of them onto the \
+         grid point its own F32 master rounds to",
+        storage.dtype
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A whole model's worth of master copies fits in the context the allocator
+/// sized for them.
+///
+/// The master slot is one tensor per half-precision parameter that no
+/// optimizer's slot table declares, so the loop that sizes `ctx_static` has to
+/// count it separately from the tables. It did not: a run that marks a handful
+/// of parameters still fit, because the shared-slot headroom the same context
+/// reserves (four slots per optimizer, sixteen tensors) absorbed the
+/// shortfall, and every lane above marks eight. A 319-tensor full-finetuning
+/// run does not - `ggml_new_tensor` returns null inside `ggml_opt_slot_alloc`
+/// and ggml aborts the process rather than refusing.
+///
+/// The smallest set that outruns that headroom is the whole fixture, which is
+/// why this case marks `full` where the rest of the file marks two
+/// projections. One step is enough: the abort is in the allocator, before any
+/// arithmetic.
+#[test]
+fn a_master_copy_of_every_parameter_fits_the_context_the_allocator_sized() {
+    for storage in storages() {
+        for optimizer in optimizers() {
+            eprintln!("--- {} under {optimizer}, whole model ---", storage.dtype);
+            whole_model_master_copy(&storage, optimizer);
+        }
+    }
+}
+
+fn whole_model_master_copy(storage: &Storage, optimizer: OptimizerKind) {
+    let Some((model, _)) = storage.pair() else {
+        return;
+    };
+    let device = Device::Cpu;
+    let _guard = common::serialize_models();
+
+    let inventory = tensor_inventory(&model, device).expect("read the tensor inventory");
+    let set = resolve_base(
+        &inventory,
+        TrainablePolicy::Full,
+        &TrainableSelector::default(),
+    )
+    .expect("the fixture is unquantized, so every eligible tensor resolves");
+    let half = set
+        .base_entries()
+        .filter(|entry| entry.dtype == storage.dtype)
+        .count();
+    // The headroom that hid this: four shared slots per optimizer, four
+    // optimizers. A fixture that stopped outrunning it would make this case
+    // pass for a reason that has nothing to do with the fix.
+    assert!(
+        half > 16,
+        "{half} half-precision parameter(s) fit inside the shared-slot headroom, so this          case no longer reaches the sizing it exists to check"
+    );
+
+    let mut trainer = Trainer::new(
+        &model,
+        TrainConfig {
+            trainable: TrainableRunConfig {
+                policy: TrainablePolicy::Full,
+                selector: TrainableSelector::default(),
+                optimizer,
+            },
+            ..config(optimizer, device, true)
+        },
+    )
+    .expect("load trainer");
+    if row_for(&mut trainer, &storage.dtype, optimizer, true).is_none() {
+        eprintln!("skipping: no master row for this combination here");
+        return;
+    }
+    trainer
+        .declare_trainable_set(&set)
+        .expect("every eligible tensor");
+    trainer
+        .prepare_optimizer()
+        .expect("a master copy per parameter is allocated, not aborted on");
+    assert_eq!(report_line(&mut trainer, "base_master_copy"), "f32");
+    assert_eq!(train_one_row(&mut trainer), 1);
+    eprintln!(
+        "{} under {optimizer}: {} parameter(s), {half} of them with a master copy",
+        storage.dtype,
+        set.base_entries().count()
+    );
+}
+
 /// Muon's update step is F32-only, so a set assigned to it is refused by
 /// name before a graph is built. The assignment is named per parameter,
 /// which overrides Muon's AdamW fallback; the refusal says the step is
@@ -690,7 +1001,7 @@ fn refused_by_muon(storage: &Storage, device: Device) {
     );
     let set = resolved_set(&model, device);
     let mut trainer =
-        Trainer::new(&model, config(OptimizerKind::Muon, device)).expect("load trainer");
+        Trainer::new(&model, config(OptimizerKind::Muon, device, false)).expect("load trainer");
     trainer
         .declare_trainable_set(&set)
         .expect("the same selection resolves whatever the optimizer");
@@ -794,6 +1105,96 @@ fn an_update_below_half_a_grid_point_still_accumulates() {
     }
 }
 
+// --- the store cast -----------------------------------------------------------
+
+/// The values the cast is asked about: grid points, the exact midpoints
+/// between neighbouring ones, and an ordinary spread across several binades.
+///
+/// The midpoint is the whole question. Truncation, ties-away and
+/// ties-to-nearest-even give three different answers there and agree almost
+/// everywhere else, so a cast that is not round-to-nearest-even is visible
+/// here and invisible on a draw of arbitrary values.
+fn cast_inputs(dtype: &TensorDtype) -> Vec<f32> {
+    let mut values = vec![0.0_f32, -0.0];
+    for exponent in [-14_i32, -8, -3, 0, 3, 8] {
+        let base = (exponent as f32).exp2();
+        let grid = storage_ulp(dtype, base);
+        for step in 0..8_u16 {
+            // Still inside one binade, so every value below is exact in F32
+            // and the midpoint is exactly half a grid point.
+            let point = grid.mul_add(f32::from(step), base);
+            values.push(point);
+            values.push(point + grid / 2.0);
+            values.push(-(point + grid / 2.0));
+        }
+    }
+    // A deterministic spread on top, so the lane also covers the ordinary
+    // case where every rounding mode but truncation agrees.
+    let mut seed = 0x2545_F491_4F6C_DD1D_u64;
+    for _ in 0..128 {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        let unit = f32::from((seed >> 48) as u16) / 65_536.0;
+        values.push((unit - 0.5) * 8.0);
+    }
+    values
+}
+
+/// The cast into a half-precision store, driven alone on the device and
+/// compared with the reference row conversion **bit for bit**.
+///
+/// The master-copy step is an F32 update followed by this cast, so the cast is
+/// the only arithmetic the store sees. A backend that truncates instead of
+/// rounding to nearest-even puts half an ulp of bias on every weight at every
+/// step; equality here is what keeps that from being discovered as a slow
+/// drift in a long run.
+#[test]
+fn the_store_cast_rounds_the_way_the_reference_does() {
+    per_device(cast_matches_reference);
+}
+
+fn cast_matches_reference(device: Device) {
+    for storage in storages() {
+        let values = cast_inputs(&storage.dtype);
+        let n = values.len();
+        let ne = [n as i64, 1, 1, 1];
+        // src1 is unread and the ABI carries two inputs; the output is the
+        // device result followed by the reference one.
+        let both = probe_op(
+            storage.cast_probe(),
+            matches!(device, Device::Gpu),
+            ProbeInputs::pair(ne, &values, ne, &values),
+            [0.0, 0.0],
+            2 * n,
+        )
+        .expect("run the store cast through the probe");
+        let (measured, reference) = both.split_at(n);
+
+        let mut differing = Vec::new();
+        for (index, (device_value, reference_value)) in measured.iter().zip(reference).enumerate() {
+            if device_value.to_bits() != reference_value.to_bits() {
+                differing.push((values[index], *device_value, *reference_value));
+            }
+        }
+        assert!(
+            differing.is_empty(),
+            "{} on {device:?}: {} of {n} values are stored differently than the \
+             reference conversion stores them (first: {:e} became {:e}, not {:e}). A cast \
+             that does not round to nearest-even is half an ulp of bias on every weight \
+             and every step, and the master copy is written through exactly this cast",
+            storage.dtype,
+            differing.len(),
+            differing[0].0,
+            differing[0].1,
+            differing[0].2,
+        );
+        eprintln!(
+            "{} on {device:?}: {n} values stored exactly as the reference conversion \
+             stores them",
+            storage.dtype
+        );
+    }
+}
+
 // --- parity -------------------------------------------------------------------
 
 /// One step, twice: the same tokens, the same configuration and the same
@@ -806,15 +1207,15 @@ fn a_half_precision_step_matches_the_f32_step_within_the_published_tolerance() {
     per_case(step_parity);
 }
 
-fn step_parity(storage: &Storage, optimizer: OptimizerKind, device: Device) {
+fn step_parity(storage: &Storage, optimizer: OptimizerKind, device: Device, master: bool) {
     let Some((stored_model, f32_model)) = storage.pair() else {
         return;
     };
     let _guard = common::serialize_models();
 
     let mut f32_trainer =
-        Trainer::new(&f32_model, config(optimizer, device)).expect("load the F32 trainer");
-    let Some(row) = row_for(&mut f32_trainer, &storage.dtype, optimizer) else {
+        Trainer::new(&f32_model, config(optimizer, device, master)).expect("load the F32 trainer");
+    let Some(row) = row_for(&mut f32_trainer, &storage.dtype, optimizer, master) else {
         eprintln!("skipping: no row for this combination");
         return;
     };
@@ -823,7 +1224,7 @@ fn step_parity(storage: &Storage, optimizer: OptimizerKind, device: Device) {
         .expect("the F32 selection");
     f32_trainer.prepare_optimizer().expect("mark the F32 set");
 
-    let mut stored_trainer = Trainer::new(&stored_model, config(optimizer, device))
+    let mut stored_trainer = Trainer::new(&stored_model, config(optimizer, device, master))
         .expect("load the half-precision trainer");
     stored_trainer
         .declare_trainable_set(&resolved_set(&stored_model, device))
@@ -1041,14 +1442,15 @@ fn half_precision_base_training_stays_finite_and_bounded_over_the_claimed_run() 
     per_case(stability);
 }
 
-fn stability(storage: &Storage, optimizer: OptimizerKind, device: Device) {
+fn stability(storage: &Storage, optimizer: OptimizerKind, device: Device, master: bool) {
     let Some((model, f32_model)) = storage.pair() else {
         return;
     };
     let _guard = common::serialize_models();
 
-    let mut trainer = Trainer::new(&model, config(optimizer, device)).expect("load trainer");
-    let Some(row) = row_for(&mut trainer, &storage.dtype, optimizer) else {
+    let mut trainer =
+        Trainer::new(&model, config(optimizer, device, master)).expect("load trainer");
+    let Some(row) = row_for(&mut trainer, &storage.dtype, optimizer, master) else {
         eprintln!("skipping: no row for this combination");
         return;
     };
@@ -1064,8 +1466,17 @@ fn stability(storage: &Storage, optimizer: OptimizerKind, device: Device) {
     );
     drop(trainer);
 
-    let f16 = run_stability(&model, steps, &storage.dtype, optimizer, device);
-    let f32 = run_stability(&f32_model, steps, &TensorDtype::F32, optimizer, device);
+    let f16 = run_stability(&model, steps, &storage.dtype, optimizer, device, master);
+    // The control keeps no master copy: an F32 parameter is already its own,
+    // and asking for one would price a slot the run cannot use.
+    let f32 = run_stability(
+        &f32_model,
+        steps,
+        &TensorDtype::F32,
+        optimizer,
+        device,
+        false,
+    );
 
     eprintln!(
         "{} under {optimizer} stability on {registry} over {steps} steps: loss {:.5} -> {:.5} \
@@ -1172,8 +1583,9 @@ fn run_stability(
     dtype: &TensorDtype,
     optimizer: OptimizerKind,
     device: Device,
+    master: bool,
 ) -> StabilityRun {
-    let mut trainer = Trainer::new(model, config(optimizer, device)).expect("load trainer");
+    let mut trainer = Trainer::new(model, config(optimizer, device, master)).expect("load trainer");
     trainer
         .declare_trainable_set(&resolved_set(model, device))
         .expect("the selected projections");
@@ -1307,8 +1719,9 @@ fn compatibility_for(
     model: &Path,
     optimizer: OptimizerKind,
     device: Device,
+    master: bool,
 ) -> checkpoint::Compatibility {
-    let reference = config(optimizer, device);
+    let reference = config(optimizer, device, master);
     let hyperparameters = trainer
         .optimizer_hyperparameters()
         .expect("optimizer hyperparameters");
@@ -1325,7 +1738,9 @@ fn compatibility_for(
         warmup_steps: 0,
         total_steps: None,
         optimizer_kind: optimizer.as_str().into(),
-        optimizer_layout_version: hyperparameters.optimizer().layout_version(),
+        optimizer_layout_version: trainer
+            .optimizer_layout_version()
+            .expect("the layout version"),
         optimizer_hyperparameters: hyperparameters.lines(),
         weight_decay: reference.weight_decay,
         max_grad_norm: reference.max_grad_norm,
@@ -1342,7 +1757,7 @@ fn a_half_precision_checkpoint_restores_weights_iteration_and_forward_loss() {
     per_case(checkpoint_restores);
 }
 
-fn checkpoint_restores(storage: &Storage, optimizer: OptimizerKind, device: Device) {
+fn checkpoint_restores(storage: &Storage, optimizer: OptimizerKind, device: Device, master: bool) {
     let Some((model, _)) = storage.pair() else {
         return;
     };
@@ -1353,8 +1768,9 @@ fn checkpoint_restores(storage: &Storage, optimizer: OptimizerKind, device: Devi
     // Long enough that the momenta are no longer their initial zeros.
     const BEFORE: u32 = 3;
 
-    let mut trainer = Trainer::new(&model, config(optimizer, device)).expect("load trainer");
-    if row_for(&mut trainer, &storage.dtype, optimizer).is_none() {
+    let mut trainer =
+        Trainer::new(&model, config(optimizer, device, master)).expect("load trainer");
+    if row_for(&mut trainer, &storage.dtype, optimizer, master).is_none() {
         eprintln!("skipping: no row for this combination");
         return;
     }
@@ -1405,11 +1821,12 @@ fn checkpoint_restores(storage: &Storage, optimizer: OptimizerKind, device: Devi
     let saved_iter = record.optimizer.iter;
     assert!(saved_iter > 1, "the counter never advanced: {saved_iter}");
 
-    let mut resumed = Trainer::new(&model, config(optimizer, device)).expect("load trainer");
+    let mut resumed =
+        Trainer::new(&model, config(optimizer, device, master)).expect("load trainer");
     resumed
         .declare_trainable_set(&set)
         .expect("the same selection");
-    let expected = compatibility_for(&mut resumed, &model, optimizer, device);
+    let expected = compatibility_for(&mut resumed, &model, optimizer, device, master);
     resumed
         .load_checkpoint(&state, &expected)
         .expect("restore a half-precision base checkpoint");
@@ -1452,6 +1869,25 @@ fn checkpoint_restores(storage: &Storage, optimizer: OptimizerKind, device: Devi
     // No new checkpoint field was needed for any of this; the format version
     // is unchanged.
     assert_eq!(record.manifest.format_version, checkpoint::FORMAT_VERSION);
+
+    // And the other path cannot pick this state up. A master-copy payload
+    // restored into a run that keeps none would drop the copy and continue
+    // from the rounded store, which is a precision downgrade in the middle of
+    // a run and nothing downstream would say so; the reverse would leave the
+    // master holding the store's own values while the run believes it is
+    // accumulating. Either way the slot table is the run's, so the layout
+    // version moved with it and the refusal comes by name.
+    let mut crossed =
+        Trainer::new(&model, config(optimizer, device, !master)).expect("load trainer");
+    crossed
+        .declare_trainable_set(&set)
+        .expect("the same selection");
+    let crossed_expected = compatibility_for(&mut crossed, &model, optimizer, device, !master);
+    let error = crossed
+        .load_checkpoint(&state, &crossed_expected)
+        .expect_err("the other update path must not adopt this state");
+    let message = error.to_string();
+    assert!(message.contains("layout version"), "{message}");
 }
 
 /// An interrupted run and an uninterrupted one land on the same weights, to
@@ -1468,16 +1904,29 @@ fn checkpoint_restores(storage: &Storage, optimizer: OptimizerKind, device: Devi
 /// only the update after them differed, which is why nothing shorter than this
 /// saw it.
 ///
-/// On the F32 fixture: the finding is about what the optimizer carries between
-/// steps, not about storage precision, and F32 removes stochastic rounding
-/// from the comparison.
+/// On the F32 fixture, and on each half-precision fixture with a master copy.
+/// The finding is about what the optimizer carries between steps rather than
+/// about storage precision, and both of those runs remove stochastic rounding
+/// from the comparison: F32 never rounds, and a master-copy run takes its step
+/// in F32 and casts once. The in-place half-precision path is deliberately
+/// absent - there the rounding stream is seeded by the iteration counter, so
+/// the equality is a statement about that seed and not about continuity.
 #[test]
 fn an_interrupted_run_lands_bit_for_bit_where_an_uninterrupted_one_does() {
-    per_device(interrupted_run_continuity);
+    per_device(|device| {
+        eprintln!("--- F32, no master copy ---");
+        interrupted_run_continuity(f32_fixture!(), device, false);
+        for storage in storages() {
+            let Some((model, _)) = storage.pair() else {
+                continue;
+            };
+            eprintln!("--- {} with a master copy ---", storage.dtype);
+            interrupted_run_continuity(model, device, true);
+        }
+    });
 }
 
-fn interrupted_run_continuity(device: Device) {
-    let model = f32_fixture!();
+fn interrupted_run_continuity(model: PathBuf, device: Device, master: bool) {
     let _guard = common::serialize_models();
     let root = scratch("continuity");
     let set = resolved_set(&model, device);
@@ -1505,7 +1954,7 @@ fn interrupted_run_continuity(device: Device) {
 
     // The reference: every step in one process.
     let mut straight =
-        Trainer::new(&model, config(OptimizerKind::AdamW, device)).expect("load trainer");
+        Trainer::new(&model, config(OptimizerKind::AdamW, device, master)).expect("load trainer");
     straight
         .declare_trainable_set(&set)
         .expect("the selected projections");
@@ -1518,7 +1967,7 @@ fn interrupted_run_continuity(device: Device) {
 
     // The same run, interrupted after `BEFORE`.
     let mut first =
-        Trainer::new(&model, config(OptimizerKind::AdamW, device)).expect("load trainer");
+        Trainer::new(&model, config(OptimizerKind::AdamW, device, master)).expect("load trainer");
     first
         .declare_trainable_set(&set)
         .expect("the same selection");
@@ -1536,11 +1985,11 @@ fn interrupted_run_continuity(device: Device) {
     drop(first);
 
     let mut resumed =
-        Trainer::new(&model, config(OptimizerKind::AdamW, device)).expect("load trainer");
+        Trainer::new(&model, config(OptimizerKind::AdamW, device, master)).expect("load trainer");
     resumed
         .declare_trainable_set(&set)
         .expect("the same selection");
-    let expected = compatibility_for(&mut resumed, &model, OptimizerKind::AdamW, device);
+    let expected = compatibility_for(&mut resumed, &model, OptimizerKind::AdamW, device, master);
     resumed
         .load_checkpoint(&state, &expected)
         .expect("restore the checkpoint");

@@ -62,6 +62,13 @@ fn every_declared_slot_is_initialized_the_way_its_definition_says() {
                     .unwrap_or_else(|error| panic!("{optimizer}/{}: {error}", slot.name));
                 assert_eq!(bytes.len() as u64, planned.n_bytes, "{}", slot.name);
                 match slot.init {
+                    // The master copy is not in any optimizer's table: it
+                    // belongs to a parameter whose store is narrower than its
+                    // update, so nothing enumerated here can produce one.
+                    SlotInit::Parameter => unreachable!(
+                        "{optimizer} declares a parameter-initialized slot '{}'",
+                        slot.name
+                    ),
                     SlotInit::Zero => {
                         assert!(
                             bytes.iter().all(|byte| *byte == 0),

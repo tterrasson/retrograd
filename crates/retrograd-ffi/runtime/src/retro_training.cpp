@@ -337,6 +337,37 @@ ggml_opt_optimizer_params configured_optimizer_params(const trainer_state & stat
     return params;
 }
 
+// Whether this run keeps an F32 master copy of its half-precision parameters.
+// `auto` checks the marked base set, the only place a master copy matters: an
+// F32 parameter is already its own master. `f32` forces it on everywhere, the
+// adapter's factors included.
+bool master_weights_enabled(const trainer_state & state) {
+    switch (state.train_config.master_weights) {
+        case RETRO_MASTER_WEIGHTS_OFF:
+            return false;
+        case RETRO_MASTER_WEIGHTS_F32:
+            return true;
+        default:
+            break;
+    }
+    if (!state.model) {
+        return false;
+    }
+    for (const std::string & name : state.trainable_base) {
+        for (const auto & item : state.model->tensors_by_name) {
+            if (item.first != name) {
+                continue;
+            }
+            if (item.second && (item.second->type == GGML_TYPE_F16
+                        || item.second->type == GGML_TYPE_BF16)) {
+                return true;
+            }
+            break;
+        }
+    }
+    return false;
+}
+
 // The structural half: what the allocator and the update graph read, fixed for
 // the life of the optimizer context.
 ggml_opt_optimizer_layout configured_optimizer_layout(const trainer_state & state) {
@@ -352,6 +383,7 @@ ggml_opt_optimizer_layout configured_optimizer_layout(const trainer_state & stat
     if (config.gefen_block_size > 0) {
         layout.gefen.block_size = static_cast<int64_t>(config.gefen_block_size);
     }
+    layout.master_weights = master_weights_enabled(state);
     return layout;
 }
 

@@ -111,6 +111,7 @@ retro_train_config default_train_config() {
     config.gradient_checkpointing = false;
     config.checkpoint_every_n_layers = 1;
     config.checkpoint_dtype = RETRO_CHECKPOINT_DTYPE_F32;
+    config.master_weights = RETRO_MASTER_WEIGHTS_AUTO;
     config.require_gpu_resident = false;
     // Keep the default aligned with the Rust configuration so omitted configs
     // still shuffle training rows.
@@ -222,6 +223,12 @@ bool validate_train_config(const retro_train_config & config) {
             config.checkpoint_dtype != RETRO_CHECKPOINT_DTYPE_F16 &&
             config.checkpoint_dtype != RETRO_CHECKPOINT_DTYPE_BF16) {
         set_error("checkpoint_dtype must be f32, f16, or bf16");
+        return false;
+    }
+    if (config.master_weights != RETRO_MASTER_WEIGHTS_AUTO &&
+            config.master_weights != RETRO_MASTER_WEIGHTS_F32 &&
+            config.master_weights != RETRO_MASTER_WEIGHTS_OFF) {
+        set_error("master_weights must be auto, f32, or off");
         return false;
     }
     if (config.optimizer < RETRO_OPTIMIZER_ADAMW || config.optimizer > RETRO_OPTIMIZER_GEFEN) {

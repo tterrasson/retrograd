@@ -26,6 +26,7 @@ impl Trainer {
             declared_trainable: None,
             declared_assignment: Vec::new(),
             chosen_optimizer: config.trainable.optimizer,
+            master_weights: config.master_weights,
             reference: None,
             reference_path: None,
         });

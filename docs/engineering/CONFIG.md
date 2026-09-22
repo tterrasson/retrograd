@@ -357,6 +357,18 @@ without it the field has no effect, and "ignored" is indistinguishable from
 "applied" in every artifact the run produces. `bf16` keeps F32's exponent range,
 so it cannot overflow on a wide residual stream the way F16 can.
 
+`master_weights` - `"auto"` (default), `"f32"` or `"off"`. When a
+half-precision base weight is trained without a master copy, each step is
+rounded back onto the weight's own precision, and a step much smaller than that
+grid becomes random rather than the gradient; the preflight refuses such a run.
+With a copy, the step runs in F32 and is rounded into the store only once,
+costing four bytes per trained element.
+
+`"auto"` keeps a copy only when a marked *base* tensor is half precision - the
+only case it matters. `"f32"` keeps one everywhere; `"off"` trains in place
+subject to the refusal. A checkpoint written with master copies cannot be
+resumed by a run that keeps none.
+
 `require_gpu_resident` - default `false`. Fails the training preflight instead of
 letting the scheduler send a training-graph op back to the CPU. A fallback is
 correct - it only costs a scheduler split and a device↔host round trip per node -

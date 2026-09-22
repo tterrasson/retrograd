@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use retrograd_core::{CheckpointDtype, Device, KvDtype, LoraDtype};
+use retrograd_core::{CheckpointDtype, Device, KvDtype, LoraDtype, MasterWeights};
 
 use crate::agent::AgentToml;
 use crate::distill::DistillToml;
@@ -250,6 +250,10 @@ pub struct TrainingToml {
     pub checkpoint_every_n_layers: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_dtype: Option<CheckpointDtype>,
+    /// Train half-precision base weights through an F32 master copy:
+    /// `"auto"` (default), `"f32"` or `"off"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub master_weights: Option<MasterWeights>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub require_gpu_resident: Option<bool>,
     /// Upper target for the fraction of wall time this trainer spends waiting

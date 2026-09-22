@@ -63,6 +63,16 @@ typedef enum retro_checkpoint_dtype {
     RETRO_CHECKPOINT_DTYPE_BF16 = 2,
 } retro_checkpoint_dtype;
 
+// Whether half-precision parameters are trained through an F32 master copy.
+typedef enum retro_master_weights {
+    // Default: on when the run marks a half-precision base tensor.
+    RETRO_MASTER_WEIGHTS_AUTO = 0,
+    // Force on.
+    RETRO_MASTER_WEIGHTS_F32  = 1,
+    // Force off: the update is rounded back into the half-precision store.
+    RETRO_MASTER_WEIGHTS_OFF  = 2,
+} retro_master_weights;
+
 // Identifies a single training-backward op for the correctness probe API.
 typedef enum retro_probe_op {
     RETRO_PROBE_OP_SILU_BACK = 1,
@@ -155,6 +165,12 @@ typedef enum retro_probe_op {
     // one fails rather than measuring another.
     RETRO_PROBE_OP_OPT_STEP_SGD_F16 = 29,
     RETRO_PROBE_OP_OPT_STEP_SGD_BF16 = 30,
+    // The F32 -> F16/BF16 store cast alone on the active device. src0 is the
+    // F32 source; src1 is ignored but must be non-null.
+    // Output is 2N floats: the device's stored values widened to F32, then
+    // the reference conversion of the same input, widened the same way.
+    RETRO_PROBE_OP_CAST_STORE_F16 = 31,
+    RETRO_PROBE_OP_CAST_STORE_BF16 = 32,
 } retro_probe_op;
 
 // Which kernel implementation a probe asks for / reports.
@@ -904,6 +920,9 @@ typedef struct retro_train_config {
     float gefen_beta1;
     float gefen_beta2;
     float gefen_eps;
+    // One of retro_master_weights. Structural: it changes the optimizer
+    // layout, so it is fixed when the optimizer context is created.
+    int32_t master_weights;
 } retro_train_config;
 
 typedef struct retro_train_metrics {

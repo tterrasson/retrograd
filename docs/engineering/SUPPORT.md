@@ -50,27 +50,35 @@ they were measured to cost and to approximate.
 ## Base-weight storage precision
 
 Base training reads the weights at the precision the GGUF stores them at and
-writes them back there. Nothing is converted, at load or at checkpoint. Below
-F32 the update rounds stochastically instead of to nearest, which is what
-keeps a step smaller than half a grid point from being discarded; there is no
-F32 master copy, because one costs more per parameter than training in F32
-would.
+writes them back there. Nothing is converted, at load or at checkpoint. There
+are two update paths below F32, selected by `training.master_weights`.
+
+**In place** (`"off"`). Each step is stochastically rounded back onto the
+weight's own precision. It costs nothing per parameter, but a step far smaller
+than one grid point is still a whole grid point taken at random; a run whose
+steps fall below that floor is refused.
+
+**Through an F32 master copy** (`"f32"`, and `"auto"` for half-precision base
+tensors). Each step runs in F32 and is rounded into the store once, so the floor
+above does not apply. It costs four bytes per trained element - 1.9 GiB for a
+498M-parameter run, cheaper than converting the whole model to F32 because the
+store stays narrow in the forward. Measured on the GRPO full-finetuning example
+against a BF16 0.8B at `lr = 1e-6`: 8.47 GiB of device memory without the copy
+and 10.32 GiB with it; the run is refused without it, since at that rate every
+trained parameter takes a step under its own store's floor.
 
 | Stored as | CPU | Metal | Vulkan | CUDA |
 |---|---|---|---|---|
 | F32 | ✅ | ✅ | ✅ | ✅ |
-| F16, under AdamW or SGD | ✅ | ❌ [c] | ❌ [c] | ✅ |
-| BF16, under AdamW or SGD | ✅ | ❌ [c] [e] | ❌ [c] [e] | ✅ |
+| F16, under AdamW or SGD, in place | ✅ | ❌ [c] | ❌ [c] | ✅ |
+| BF16, under AdamW or SGD, in place | ✅ | ❌ [c] [e] | ❌ [c] [e] | ✅ |
+| F16 or BF16, under AdamW or SGD, master copy | ✅ | ❌ [f] | ❌ [g] | ✅ |
 | F16 or BF16, under Muon or Gefen | ❌ [d] | ❌ [d] | ❌ [d] | ❌ [d] |
 
-A cell is one row of `BASE_DTYPE_TABLE`
-(`crates/retrograd-core/src/base_dtype.rs`), indexed by (dtype, optimizer,
-backend): a row is a measurement, run by `tests/f16_base_training.rs` with the
-tolerances read from the row. A combination with no row is refused before the
-graph is built, by dtype, optimizer and backend. `cap_opt_step` in the backend
-report is the other half of the answer, which storages the live device runs
-each step on; the table declares and the device is asked, and either can
-refuse.
+A cell is a measured combination of (dtype, optimizer, backend, master), run
+with tolerances read from the row; a combination with no row is refused before
+the graph is built. The live device is also asked each step whether it can run
+the update, and either the table or the device can refuse.
 
 - **[c]** The update kernel exists on both and an exact CPU-against-device
   equality test holds it to the CPU's rounding, but no lane has run a model on
@@ -82,6 +90,12 @@ either, so no row admits them. The Metal test has not been run at all, for
   first. The refusal says that, not an empty list of backends.
 - **[e]** Neither backend decodes a BF16 weight in `OUT_PROD`, which an
   activation gradient needs; the CPU and CUDA do. A row needs that too.
+- **[f]** The path is supported there; the verification lanes have not been
+  run, for want of a machine.
+- **[g]** Measured, and refused on the resume lane: the loss of the step after
+  a restore differs from the uninterrupted run's by one ulp of F32 while the
+  restored weights are bit-identical - a difference in how the reported loss is
+  reduced in a fresh context, not in the master copy. The other lanes pass.
 
 BF16 keeps 8 significand bits against F16's 11, so its grid is eight times
 coarser and the measured gaps follow: ten times the F16 ones on the CPU,

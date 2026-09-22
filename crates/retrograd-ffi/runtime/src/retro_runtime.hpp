@@ -600,6 +600,7 @@ int preflight_summary_impl(retro_trainer * trainer, retro_preflight_summary * ou
 // scales the rate. Answerable before the optimizer graph exists, so a cold
 // trainer reports the values its first step will read.
 ggml_opt_optimizer_params configured_optimizer_params(const trainer_state & state);
+bool master_weights_enabled(const trainer_state & state);
 ggml_opt_optimizer_layout configured_optimizer_layout(const trainer_state & state);
 ggml_opt_optimizer_params scheduled_optimizer_params(void * userdata);
 int train_tokens_impl(

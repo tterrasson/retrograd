@@ -38,6 +38,7 @@ CPU.
 | `SILU_BACK`, `RMS_NORM_BACK`, `SOFT_MAX_BACK`, `GET_ROWS_BACK`, `CROSS_ENTROPY_LOSS_BACK` | yes |
 | `CONV_RS_GATHER` | yes, used when `RETRO_RECURRENT_ROLLBACK=auto` |
 | AdamW, SGD | F16 and BF16 parameters, with stochastic rounding identical to the CPU |
+| `CPY F32 -> F16/BF16` | the store write of a master-copy step, bit for bit what the reference conversion writes |
 
 The kernel picks the smallest register bucket covering the head dimension -
 128, 256 or 512 (`FA_BACK_MAX_D`); a wider head, or a model with attention
@@ -50,15 +51,11 @@ The runtime detects these capabilities from the device itself.
 ## Base weights in F16 and BF16
 
 A GGUF whose matrices are stored as F16 or BF16 trains on CUDA in place, under
-AdamW or SGD, with no conversion of the file and no F32 master copy. The
-gradient and both AdamW moments stay F32; only the parameter is half, and the
-update is rounded stochastically from a stream seeded by the optimizer's
-iteration counter, so a resume lands on the same weights bit for bit. The
-activation gradient of such a weight is `out_prod(W, dy)`, decoded through the
-type-generic `to_fp32` path.
-
-Measured by `tests/f16_base_training.rs` on each generated fixture against its
-own F32 twin, on the hardware named at the top of this page. Under AdamW:
+AdamW or SGD, with no conversion of the file. The gradient and both AdamW
+moments stay F32; only the parameter is half, and the update is rounded
+stochastically from a stream seeded by the optimizer's iteration counter, so a
+resume lands on the same weights bit for bit. The numbers below are measured
+against each fixture's own F32 twin, on the hardware named above. Under AdamW:
 
 | | CPU / F16 | CUDA / F16 | CPU / BF16 | CUDA / BF16 |
 |---|---|---|---|---|
@@ -80,13 +77,24 @@ about three times the CPU's because the forward feeds them differently;
 in BF16 the two backends land together, since the storage costs an order of
 magnitude more than that difference does.
 
-Each kernel's rounding is compared to the CPU's element for element, through
-the op probe with no model at all, by
-`{f16,bf16}_adamw_cuda_kernel_matches_cpu` and
-`half_precision_sgd_cuda_kernel_matches_cpu` in `tests/cuda_backend.rs`:
-equality, not a tolerance. All four kernels share the same helpers
-(`ggml/src/ggml-cuda/retro-stochastic-round.cuh`), so the rounding is written
-once for the backend.
+### Through an F32 master copy
+
+With `training.master_weights`, the update step runs in F32 on a per-parameter
+copy and a single `CPY F32 -> store` writes the weight, so no half-precision
+update kernel is involved at all. The store cast is bit for bit the reference
+conversion, and every stored element is exactly the master value rounded once.
+Against the same F32 twin:
+
+| | CUDA / F16 | CUDA / BF16 |
+|---|---|---|
+| worst relative gradient gap, one step over 24576 elements | 1.7e-3 | 4.9e-3 |
+| elements whose update is more than one grid point from the F32 trajectory, AdamW | 1.9e-3 | 2.0e-3 |
+| the same under SGD | 2.6e-3 | 7.3e-4 |
+| relative loss gap after 2000 steps, AdamW | 1.9e-4 | 2.0e-3 |
+| the same under SGD | 5.8e-3 | 5.2e-3 |
+
+The gradient row is the in-place path's, unchanged: the master copy touches
+only the update.
 
 ## Limitations
 

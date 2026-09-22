@@ -72,6 +72,53 @@ impl CheckpointDtype {
     }
 }
 
+/// Whether a half-precision base weight is trained through an F32 master copy.
+///
+/// Without one the update kernel reads the parameter, adds the step and rounds
+/// the sum back onto the same grid, so a step below one ulp is a whole ulp
+/// taken at random: the trajectory follows the rounding rather than the
+/// gradient. That is what [`crate::MIN_BASE_STEP_ULPS`] refuses. A master copy
+/// accumulates in F32 and writes the store through one cast, which makes those
+/// rates trainable at four bytes per trained element.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MasterWeights {
+    /// On when this run marks a half-precision base tensor, off otherwise.
+    #[default]
+    Auto,
+    /// One F32 copy per half-precision parameter this run trains, the adapter's
+    /// factors included.
+    F32,
+    /// No master copy: the update is rounded back into the store it read, and
+    /// a rate under the grid is refused.
+    Off,
+}
+
+impl MasterWeights {
+    pub fn as_ffi(self) -> i32 {
+        match self {
+            Self::Auto => 0,
+            Self::F32 => 1,
+            Self::Off => 2,
+        }
+    }
+
+    /// The spelling a document writes and a report prints.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::F32 => "f32",
+            Self::Off => "off",
+        }
+    }
+}
+
+impl std::fmt::Display for MasterWeights {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Storage precision for the PPO critic's host-side feature matrix.
 ///
 /// The critic keeps one row of `hidden_dim` features per completion state for the
@@ -301,6 +348,10 @@ pub struct TrainConfig {
     /// enabled - it has no effect without it, and silently ignoring a request
     /// for lower precision reads as if it had been honoured.
     pub checkpoint_dtype: CheckpointDtype,
+    /// Whether half-precision base weights are trained through an F32 master
+    /// copy. Structural: it decides whether a per-parameter slot exists, so it
+    /// is fixed when the optimizer context is created.
+    pub master_weights: MasterWeights,
     /// Fail the training preflight instead of letting the scheduler send a
     /// training-graph op back to the CPU. Off by default: a fallback is correct,
     /// it only costs a scheduler split and a device↔host round trip per node.
@@ -402,6 +453,7 @@ impl Default for TrainConfig {
             gradient_checkpointing: false,
             checkpoint_every_n_layers: DEFAULT_CHECKPOINT_STRIDE,
             checkpoint_dtype: CheckpointDtype::F32,
+            master_weights: MasterWeights::Auto,
             require_gpu_resident: false,
             generation_batch: 0,
             shuffle_dataset: true,
@@ -1210,6 +1262,15 @@ pub enum ProbeOp {
     OptStepSgdF16,
     /// One SGD update of a BF16 parameter.
     OptStepSgdBf16,
+    /// The store cast alone: `CPY F32 -> F16` on the active device. `src0` is
+    /// the F32 source, `src1` is ignored but must be passed. The output is
+    /// `2N`: the device's stored values widened back, then the `ggml-impl.h`
+    /// reference conversion's, widened the same way. A half-precision value
+    /// widens exactly, so equality of the two halves is equality of the stored
+    /// bits.
+    CastStoreF16,
+    /// The same cast into a BF16 store.
+    CastStoreBf16,
 }
 
 impl ProbeOp {
@@ -1245,6 +1306,8 @@ impl ProbeOp {
             ProbeOp::OptStepAdamwBf16 => 28,
             ProbeOp::OptStepSgdF16 => 29,
             ProbeOp::OptStepSgdBf16 => 30,
+            ProbeOp::CastStoreF16 => 31,
+            ProbeOp::CastStoreBf16 => 32,
         }
     }
 }

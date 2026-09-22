@@ -19,10 +19,10 @@ use retrograd::training::{self, Progress};
 use retrograd::{
     CheckpointDtype, CheckpointMetadata, CheckpointProgress, DEFAULT_CE_SEQ_CHUNK,
     DEFAULT_CHECKPOINT_STRIDE, DatasetRecord, Device, Error, FeatureDtype, GrpoBatchParams,
-    KvDtype, LayerRange, LoraConfig, LrScheduler, OptimizerKind, RewardMode, RewardProtocol,
-    SamplingParams, SharedPrefixFanout, TargetSet, TrainConfig, TrainMetrics, TrainSequence,
-    TrainablePolicy, TrainableRunConfig, TrainableSelector, TrainableSet, Trainer, WeightedBatch,
-    backend_list, checkpoint,
+    KvDtype, LayerRange, LoraConfig, LrScheduler, MasterWeights, OptimizerKind, RewardMode,
+    RewardProtocol, SamplingParams, SharedPrefixFanout, TargetSet, TrainConfig, TrainMetrics,
+    TrainSequence, TrainablePolicy, TrainableRunConfig, TrainableSelector, TrainableSet, Trainer,
+    WeightedBatch, backend_list, checkpoint,
 };
 use retrograd_agent::tools::{McpServerConfig, McpToolProvider, ToolProvider};
 use retrograd_agent::{
@@ -118,6 +118,20 @@ fn parse_checkpoint_dtype(value: &str) -> PyResult<CheckpointDtype> {
         "bf16" => Ok(CheckpointDtype::Bf16),
         _ => Err(PyValueError::new_err(format!(
             "unknown checkpoint_dtype '{value}'; use f32, f16, or bf16"
+        ))),
+    }
+}
+
+/// Whether half-precision base weights are trained through an F32 master copy.
+/// `auto` keeps one exactly when a marked base tensor is half precision, which
+/// is the only case it changes anything (see `MasterWeights`).
+fn parse_master_weights(value: &str) -> PyResult<MasterWeights> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => Ok(MasterWeights::Auto),
+        "f32" => Ok(MasterWeights::F32),
+        "off" => Ok(MasterWeights::Off),
+        _ => Err(PyValueError::new_err(format!(
+            "unknown master_weights '{value}'; use auto, f32, or off"
         ))),
     }
 }
@@ -355,7 +369,7 @@ fn python_trajectory_signature(config: &TrainConfig, algorithm: &str, extra: &st
         "trajectory-py-v1|n_ctx={}|n_batch={}|n_ubatch={}|n_seq_max={}|\
          generation_concurrency={}|fast_generation={}|kv_dtype={:?}|\
          gradient_checkpointing={}|checkpoint_every_n_layers={}|checkpoint_dtype={:?}|\
-         threads={}|epochs={}|lr={:08x}|wd={:08x}|max_grad_norm={:08x}|scheduler={}|\
+         master_weights={}|threads={}|epochs={}|lr={:08x}|wd={:08x}|max_grad_norm={:08x}|scheduler={}|\
          warmup={}|device={:?}|algorithm={algorithm}|extra={extra}",
         config.n_ctx,
         config.n_batch,
@@ -367,6 +381,7 @@ fn python_trajectory_signature(config: &TrainConfig, algorithm: &str, extra: &st
         config.gradient_checkpointing,
         config.checkpoint_every_n_layers,
         config.checkpoint_dtype,
+        config.master_weights,
         config.threads,
         config.epochs,
         config.learning_rate.to_bits(),
@@ -571,6 +586,7 @@ impl PyTrainer {
         gradient_checkpointing=false,
         checkpoint_every_n_layers=DEFAULT_CHECKPOINT_STRIDE,
         checkpoint_dtype="f32",
+        master_weights="auto",
         require_gpu_resident=false,
         shuffle=true,
         shuffle_seed=42,
@@ -611,6 +627,7 @@ impl PyTrainer {
         gradient_checkpointing: bool,
         checkpoint_every_n_layers: u32,
         checkpoint_dtype: &str,
+        master_weights: &str,
         require_gpu_resident: bool,
         shuffle: bool,
         shuffle_seed: u64,
@@ -688,6 +705,7 @@ impl PyTrainer {
             gradient_checkpointing,
             checkpoint_every_n_layers,
             checkpoint_dtype: parse_checkpoint_dtype(checkpoint_dtype)?,
+            master_weights: parse_master_weights(master_weights)?,
             require_gpu_resident,
             shuffle_dataset: shuffle,
             shuffle_seed,

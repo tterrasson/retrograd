@@ -222,6 +222,15 @@ impl OptimizerKind {
         }
     }
 
+    /// The same number for a parameter that keeps an F32 master copy.
+    ///
+    /// A master copy adds a slot, so it is a different slot table under the
+    /// same optimizer name and moves the version the same way. The numbering
+    /// is per optimizer, so this never collides with another optimizer's.
+    pub fn layout_version_with_master(self, master_weights: bool) -> u32 {
+        self.layout_version() + u32::from(master_weights)
+    }
+
     /// The hyperparameters this optimizer's update reads, with their defaults
     /// and the range each one is valid in.
     ///
@@ -533,13 +542,29 @@ impl OptimizerKind {
     /// The fallback is part of the total on purpose: an optimizer whose ratio
     /// only holds for the tensors it accepts reports a figure no run ever pays.
     pub fn state_bytes(self, set: &TrainableSet) -> u64 {
+        self.state_bytes_with_master(set, false)
+    }
+
+    /// The same total, counting the F32 master copy of every half-precision
+    /// parameter when the run keeps one: four bytes per element, on top of the
+    /// optimizer's own slots.
+    ///
+    /// A separate entry point rather than a flag in [`Self::state_bytes`]: the
+    /// master copy belongs to the run's layout, not to the optimizer.
+    pub fn state_bytes_with_master(self, set: &TrainableSet, master_weights: bool) -> u64 {
         set.entries
             .iter()
             .map(|entry| {
                 // An entry nothing can write is priced as AdamW, not free.
-                self.assign(entry)
+                let slots = self
+                    .assign(entry)
                     .unwrap_or(Self::AdamW)
-                    .eligible_state_bytes(entry.n_elements)
+                    .eligible_state_bytes(entry.n_elements);
+                let master = master_weights
+                    .then(|| master_slot_definition(&entry.dtype))
+                    .flatten()
+                    .map_or(0, |slot| slot.resolve(entry).n_bytes);
+                slots.saturating_add(master)
             })
             .fold(0, u64::saturating_add)
     }
@@ -549,6 +574,37 @@ impl OptimizerKind {
     /// allocates after `llama_opt_init`.
     pub fn plan(self, set: &TrainableSet) -> OptimizerPlan {
         self.plan_with(set, |entry| self.assign(entry))
+    }
+
+    /// The same table for a run that keeps an F32 master copy of every
+    /// half-precision parameter. The master slot rides each parameter's slot
+    /// list, last, where the allocator puts it, so the plan and the live
+    /// table stay row-for-row comparable.
+    pub fn plan_with_master(
+        self,
+        set: &TrainableSet,
+        master_weights: bool,
+        owner_of: impl Fn(&TrainableEntry) -> Option<Self>,
+    ) -> OptimizerPlan {
+        let mut plan = self.plan_with(set, owner_of);
+        if !master_weights {
+            return plan;
+        }
+        for (parameter, entry) in plan.parameters.iter_mut().zip(&set.entries) {
+            // `plan_with` emits one row per entry, in order; the pairing is
+            // checked, not assumed, since a mismatch would give one parameter
+            // another's dtype.
+            debug_assert_eq!(parameter.name, entry.name);
+            // A parameter no optimizer can write gets no slots at all, master
+            // copy included.
+            if parameter.optimizer.is_none() {
+                continue;
+            }
+            if let Some(master) = master_slot_definition(&entry.dtype) {
+                parameter.slots.push(master.resolve(entry));
+            }
+        }
+        plan
     }
 
     /// The same table, but with the owner of each parameter given explicitly
@@ -901,6 +957,9 @@ pub enum SlotInit {
     /// `c[k] = -1 + 2k/255` over [`GEFEN_CODEBOOK_LEVELS`] entries. Generated,
     /// not filled.
     UniformCodebook,
+    /// The parameter's own values, widened to the slot's dtype. Declared here
+    /// but filled by the allocator: the definition has no bytes to give.
+    Parameter,
 }
 
 /// One persistent slot an optimizer keeps, as the optimizer declares it.
@@ -939,6 +998,25 @@ impl SlotDefinition {
     }
 }
 
+/// The F32 master copy one half-precision parameter keeps, or `None` for a
+/// parameter that is already its own master.
+///
+/// Not part of any optimizer's [`OptimizerKind::slot_definitions`]: a slot
+/// table belongs to an optimizer, and this slot's existence depends on the
+/// parameter's dtype. Mirrors `ggml_opt_master_slot`.
+pub fn master_slot_definition(dtype: &TensorDtype) -> Option<SlotDefinition> {
+    matches!(dtype, TensorDtype::F16 | TensorDtype::BF16).then_some(SlotDefinition {
+        name: MASTER_SLOT,
+        dtype: SlotDtype::F32,
+        shape: SlotShape::Parameter,
+        init: SlotInit::Parameter,
+    })
+}
+
+/// The name the master copy is allocated, checkpointed and restored under, on
+/// both sides of the boundary.
+pub const MASTER_SLOT: &str = "master";
+
 /// One resolved slot: what the runtime is expected to have allocated.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlannedSlot {
@@ -960,10 +1038,18 @@ pub struct PlannedParameter {
 }
 
 impl PlannedParameter {
-    /// The layout version of the optimizer that owns this parameter. Derived
-    /// from [`OptimizerKind::layout_version`] so a row cannot disagree with it.
+    /// Whether this parameter keeps an F32 master copy: a `master` row in its
+    /// own slot list.
+    pub fn keeps_master_copy(&self) -> bool {
+        self.slots.iter().any(|slot| slot.slot == MASTER_SLOT)
+    }
+
+    /// The layout version of the slot table this parameter is allocated under,
+    /// derived from [`OptimizerKind::layout_version_with_master`] so a row
+    /// cannot disagree with it.
     pub fn layout_version(&self) -> Option<u32> {
-        self.optimizer.map(OptimizerKind::layout_version)
+        self.optimizer
+            .map(|optimizer| optimizer.layout_version_with_master(self.keeps_master_copy()))
     }
 }
 
@@ -989,6 +1075,14 @@ pub struct OptimizerPlan {
 }
 
 impl OptimizerPlan {
+    /// Whether this run keeps an F32 master copy at all: true as soon as one
+    /// parameter has one.
+    pub fn keeps_master_copy(&self) -> bool {
+        self.parameters
+            .iter()
+            .any(PlannedParameter::keeps_master_copy)
+    }
+
     /// Total persistent bytes, parameters and shared state together.
     pub fn state_bytes(&self) -> u64 {
         let parameters = self

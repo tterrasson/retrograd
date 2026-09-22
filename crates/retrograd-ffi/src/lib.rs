@@ -76,6 +76,9 @@ pub struct RetroTrainConfig {
     pub gefen_beta1: c_float,
     pub gefen_beta2: c_float,
     pub gefen_eps: c_float,
+    /// One of `RETRO_MASTER_WEIGHTS_*`: whether a half-precision parameter is
+    /// trained through an F32 master copy.
+    pub master_weights: c_int,
 }
 
 /// Which fixed-block state a Gefen run keeps, mirroring `retro_gefen_variant`.
@@ -1707,6 +1710,9 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroTrainConfig, muon_nesterov), 140);
         assert_eq!(offset_of!(RetroTrainConfig, gefen_variant), 144);
         assert_eq!(offset_of!(RetroTrainConfig, gefen_eps), 160);
+        // master_weights lands in the tail padding after gefen_eps, so the
+        // struct size is unchanged.
+        assert_eq!(offset_of!(RetroTrainConfig, master_weights), 164);
 
         assert_eq!(size_of::<RetroScoringStats>(), 48);
         assert_eq!(align_of::<RetroScoringStats>(), 8);
@@ -2364,6 +2370,7 @@ mod contract_tests {
             gefen_beta1: 0.0,
             gefen_beta2: 0.0,
             gefen_eps: 0.0,
+            master_weights: 0,
         };
         unsafe {
             assert!(retro_trainer_new(path.as_ptr(), &invalid).is_null());

@@ -19,8 +19,8 @@
 use serde::Serialize;
 
 use retrograd_core::{
-    CheckpointDtype, KvDtype, LoraConfig, LoraDtype, MemoryReport, ModelInfo, TargetSet,
-    TrainConfig, TrainableSet,
+    CheckpointDtype, KvDtype, LoraConfig, LoraDtype, MasterWeights, MemoryReport, ModelInfo,
+    TargetSet, TensorDtype, TrainConfig, TrainableSet,
 };
 
 /// The product of a byte formula's factors, saturating at `u64::MAX`.
@@ -70,6 +70,23 @@ fn lora_element_bytes(dtype: LoraDtype) -> u64 {
     match dtype {
         LoraDtype::F32 => 4,
         LoraDtype::F16 => 2,
+    }
+}
+
+/// Whether this run keeps an F32 master copy, resolved the way the runtime
+/// resolves it: `auto` asks the *base* half of the trainable set, because that
+/// is the only place a storage grid is coarser than the step it is given.
+///
+/// The budget and the run must agree here or the estimate is four bytes per
+/// trained element short of what is allocated.
+fn keeps_master_copy(training: &TrainConfig, base: Option<&TrainableSet>) -> bool {
+    match training.master_weights {
+        MasterWeights::Off => false,
+        MasterWeights::F32 => true,
+        MasterWeights::Auto => base.is_some_and(|set| {
+            set.base_entries()
+                .any(|entry| matches!(entry.dtype, TensorDtype::F16 | TensorDtype::BF16))
+        }),
     }
 }
 
@@ -664,9 +681,22 @@ pub fn estimate(
     // goes through the element-count entry point; the base half through the
     // resolved set, which is what Muon's shape rule needs.
     let optimizer = training.trainable.optimizer;
+    let master_weights = keeps_master_copy(training, base);
+    // The adapter's factors keep a master copy only when the run named one:
+    // `auto` looks at the base tensors, and a rank-16 factor sits far above
+    // its own grid anyway.
+    let adapter_master_bytes =
+        if master_weights && lora.is_some_and(|lora| lora_element_bytes(lora.dtype) == 2) {
+            product([adapter_elements, 4])
+        } else {
+            0
+        };
     let optimizer_state_bytes = total([
         optimizer.adapter_state_bytes(adapter_elements),
-        base.map_or(0, |set| optimizer.state_bytes(set)),
+        adapter_master_bytes,
+        base.map_or(0, |set| {
+            optimizer.state_bytes_with_master(set, master_weights)
+        }),
     ]);
     // Neither answer is right for a hybrid set, and the conservative one is
     // "added on top": the runtime's own report makes the same choice, so a

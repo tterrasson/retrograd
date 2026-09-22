@@ -37,7 +37,7 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
 
     let training = &config.training;
     let mut descriptor = format!(
-        "trajectory-v1|n_ctx={}|n_batch={}|n_ubatch={}|n_seq_max={}|generation_concurrency={}|fast_generation={}|kv_dtype={:?}|gradient_checkpointing={}|checkpoint_every_n_layers={}|checkpoint_dtype={:?}|threads={}|epochs={}|lr={:08x}|wd={:08x}|max_grad_norm={:08x}|scheduler={}|warmup={}|device={:?}",
+        "trajectory-v1|n_ctx={}|n_batch={}|n_ubatch={}|n_seq_max={}|generation_concurrency={}|fast_generation={}|kv_dtype={:?}|gradient_checkpointing={}|checkpoint_every_n_layers={}|checkpoint_dtype={:?}|master_weights={}|threads={}|epochs={}|lr={:08x}|wd={:08x}|max_grad_norm={:08x}|scheduler={}|warmup={}|device={:?}",
         training.n_ctx,
         training.n_batch,
         training.n_ubatch,
@@ -51,6 +51,8 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
         // change the recomputed activations, so a resume must not silently cross
         // that boundary.
         training.checkpoint_dtype,
+        // The rounding path of each update, so a resume must not cross it.
+        training.master_weights,
         training.threads,
         training.epochs,
         training.learning_rate.to_bits(),

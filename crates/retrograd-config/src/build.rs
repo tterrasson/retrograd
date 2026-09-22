@@ -327,6 +327,9 @@ fn build_training(
         }
         training.checkpoint_dtype = value;
     }
+    if let Some(value) = file.master_weights {
+        training.master_weights = value;
+    }
     if let Some(value) = file.require_gpu_resident {
         training.require_gpu_resident = value;
     }

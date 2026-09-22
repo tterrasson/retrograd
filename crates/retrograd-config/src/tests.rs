@@ -3,7 +3,8 @@ use std::path::Path;
 
 use retrograd_core::{
     CheckpointDtype, DEFAULT_REWARD_TIMEOUT_SECONDS, Device, FeatureDtype, KvDtype, LoraDtype,
-    LrScheduler, RewardMode, RewardProtocol, SamplingParams, SharedPrefixFanout, TargetSet,
+    LrScheduler, MasterWeights, RewardMode, RewardProtocol, SamplingParams, SharedPrefixFanout,
+    TargetSet,
 };
 
 use retrograd_dataset::DataFormat;
@@ -691,6 +692,42 @@ fn training_checkpoint_dtype_defaults_to_f32_and_rejects_unknown_precisions() {
             .unwrap_err()
             .to_string()
             .contains("checkpoint_dtype")
+    );
+    remove_config(&invalid);
+}
+
+/// `master_weights` defaults to `auto` and rejects unknown spellings.
+#[test]
+fn training_master_weights_defaults_to_auto_and_rejects_unknown_spellings() {
+    let source = |training: &str| {
+        format!(
+            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[training]\n{training}[sft]\ndata='data.txt'\n"
+        )
+    };
+
+    let defaults = write_config(&source(""));
+    assert_eq!(
+        load(&defaults).unwrap().training.master_weights,
+        MasterWeights::Auto
+    );
+    remove_config(&defaults);
+
+    for (spelling, expected) in [
+        ("f32", MasterWeights::F32),
+        ("off", MasterWeights::Off),
+        ("auto", MasterWeights::Auto),
+    ] {
+        let file = write_config(&source(&format!("master_weights='{spelling}'\n")));
+        assert_eq!(load(&file).unwrap().training.master_weights, expected);
+        remove_config(&file);
+    }
+
+    let invalid = write_config(&source("master_weights='bf16'\n"));
+    assert!(
+        load(&invalid)
+            .unwrap_err()
+            .to_string()
+            .contains("master_weights")
     );
     remove_config(&invalid);
 }

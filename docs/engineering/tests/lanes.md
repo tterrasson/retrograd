@@ -290,11 +290,15 @@ Editing the generator means regenerating the family and updating `sha256` and
 `f16_base_training` is the base-dtype lane: admission, one-step parity
 against the F32 twin, 2000 steps of stability and a bit-for-bit resume, plus
 the update step's rounding driven through the probe with no model. It runs
-every (storage, optimizer, device) triple this build can reach and skips a
-triple with no row in `BASE_DTYPE_TABLE`, so a CPU build runs the CPU column
-and a `--features cuda` build adds the GPU column where a row exists. One
-case sits outside the product: Muon, named per parameter so its fallback to
-AdamW does not answer, has to refuse with the F32-only reason.
+every (storage, optimizer, device, master copy) case this build can reach and
+skips a case with no row in `BASE_DTYPE_TABLE`, so a CPU build runs the CPU
+column and a `--features cuda` build adds the GPU column where a row exists.
+Three cases sit outside the product: Muon, named per parameter so its fallback
+to AdamW does not answer, has to refuse with the F32-only reason; the store of
+a master-copy run has to be that run's own master rounded once, which is an
+equality and not a tolerance; and a master copy of *every* parameter has to fit
+the static context the allocator sized for it, which the eight-parameter cases
+above cannot see because the shared-slot headroom hides the shortfall.
 `RETRO_F16_STABILITY_STEPS` shortens the long run while iterating; it cannot
 lengthen it.
 
@@ -449,7 +453,7 @@ invocations below directly on such a machine.
 | `gefen_ops` | the two Gefen ops driven directly: the op-level edge cases, and CPU against device on identical inputs (no model) |
 | `vulkan_backend` | Vulkan registration, isolated ops, model offload, LoRA placement, a minimal training step |
 | `cuda_backend` | CUDA registration, CPU against CUDA op parity, model offload, LoRA placement, the training preflight |
-| `f16_base_training` | the base-dtype lane's four questions, per storage precision and per optimizer, on the device as well as on the CPU - the row it reads has all three columns |
+| `f16_base_training` | the base-dtype lane's four questions, per storage precision, per optimizer and per update path, on the device as well as on the CPU - the row it reads has all four columns |
 
 Each backend lane also carries `{f16,bf16}_adamw_<backend>_kernel_matches_cpu`,
 `half_precision_sgd_<backend>_kernel_matches_cpu` and their chained-step

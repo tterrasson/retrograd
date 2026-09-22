@@ -406,6 +406,60 @@ static int probe_op_run_locked(
             return 0;
         }
 
+        if (op == RETRO_PROBE_OP_CAST_STORE_F16 || op == RETRO_PROBE_OP_CAST_STORE_BF16) {
+            // The F32 -> F16/BF16 cast alone on the device. Two answers come
+            // back: what CPY wrote, and the reference row conversion of the
+            // same input, so a truncating cast shows up here instead of as
+            // drift in a long run.
+            const bool bf16 = op == RETRO_PROBE_OP_CAST_STORE_BF16;
+            const ggml_type store = bf16 ? GGML_TYPE_BF16 : GGML_TYPE_F16;
+            const char * label = bf16 ? "CAST_STORE_BF16" : "CAST_STORE_F16";
+            ggml_tensor * source = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32,
+                    ne_src0[0], ne_src0[1], ne_src0[2], ne_src0[3]);
+            ggml_tensor * stored = ggml_new_tensor_4d(ctx.get(), store,
+                    ne_src0[0], ne_src0[1], ne_src0[2], ne_src0[3]);
+            if (!source || !stored) {
+                set_error(std::string(label) + " probe tensor allocation failed");
+                return -1;
+            }
+            ggml_tensor * out = ggml_cpy(ctx.get(), source, stored);
+            ggml_backend_buffer_ptr buffer(
+                    ggml_backend_alloc_ctx_tensors(ctx.get(), backend.get()));
+            if (!buffer) {
+                set_error(std::string(label) + " probe backend allocation failed");
+                return -1;
+            }
+            const size_t n = static_cast<size_t>(ggml_nelements(source));
+            if (dst_len < 2*n) {
+                set_error(std::string("probe dst buffer is too small for ") + label
+                        + "; it carries the device result and the reference one");
+                return -1;
+            }
+            ggml_backend_tensor_set(source, src0, 0, n*sizeof(float));
+            ggml_cgraph * gf = ggml_new_graph(ctx.get());
+            ggml_build_forward_expand(gf, out);
+            if (ggml_backend_graph_compute(backend.get(), gf) != GGML_STATUS_SUCCESS) {
+                set_error(std::string(label) + " probe graph compute failed");
+                return -1;
+            }
+            std::vector<uint16_t> bits(n);
+            ggml_backend_tensor_get(stored, bits.data(), 0, n*sizeof(uint16_t));
+            if (bf16) {
+                ggml_bf16_to_fp32_row(
+                        reinterpret_cast<const ggml_bf16_t *>(bits.data()), dst, n);
+                ggml_fp32_to_bf16_row_ref(src0, reinterpret_cast<ggml_bf16_t *>(bits.data()), n);
+                ggml_bf16_to_fp32_row(
+                        reinterpret_cast<const ggml_bf16_t *>(bits.data()), dst + n, n);
+            } else {
+                ggml_fp16_to_fp32_row(
+                        reinterpret_cast<const ggml_fp16_t *>(bits.data()), dst, n);
+                ggml_fp32_to_fp16_row(src0, reinterpret_cast<ggml_fp16_t *>(bits.data()), n);
+                ggml_fp16_to_fp32_row(
+                        reinterpret_cast<const ggml_fp16_t *>(bits.data()), dst + n, n);
+            }
+            return 0;
+        }
+
         if (op == RETRO_PROBE_OP_OPT_STEP_ADAMW_F16 ||
                 op == RETRO_PROBE_OP_OPT_STEP_ADAMW_BF16 ||
                 op == RETRO_PROBE_OP_OPT_STEP_SGD_F16 ||

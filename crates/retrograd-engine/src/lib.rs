@@ -123,6 +123,7 @@ fn train_config_to_ffi(config: &TrainConfig) -> Result<ffi::RetroTrainConfig> {
         gradient_checkpointing: config.gradient_checkpointing,
         checkpoint_every_n_layers: config.checkpoint_every_n_layers.max(1),
         checkpoint_dtype: config.checkpoint_dtype.as_ffi(),
+        master_weights: config.master_weights.as_ffi(),
         require_gpu_resident: config.require_gpu_resident,
         generation_batch: config.generation_batch,
         shuffle_dataset: config.shuffle_dataset,
@@ -615,6 +616,11 @@ pub struct Trainer {
     /// assignment says otherwise - so the plan and the live table would
     /// describe two different runs with nobody asking for it.
     chosen_optimizer: retrograd_core::OptimizerKind,
+    /// Whether this run keeps an F32 master copy of its half-precision
+    /// parameters. Kept beside the handle for the same reason the optimizer
+    /// is: it decides which slots the runtime allocates, so a plan built
+    /// without it would describe a different run.
+    master_weights: retrograd_core::MasterWeights,
     /// The frozen model this run's reference term scores against, when one was
     /// attached. `generate_base` and `score_reference_tokens` fall back to
     /// this model with its adapter disabled when it is absent. Boxed to keep
@@ -646,6 +652,45 @@ impl Trainer {
         self.chosen_optimizer
     }
 
+    /// What this run asked for, as the document spelled it.
+    pub fn master_weights(&self) -> retrograd_core::MasterWeights {
+        self.master_weights
+    }
+
+    /// Whether this run keeps an F32 master copy, for the set it is about to
+    /// plan. `auto` asks the base half of the set, which is where a storage
+    /// grid can be coarser than the step; naming it asks for it everywhere.
+    /// The same resolution the runtime performs, and it has to be, or the plan
+    /// and the live table would count different slots.
+    pub(crate) fn keeps_master_copy(&self, set: &retrograd_core::TrainableSet) -> bool {
+        match self.master_weights {
+            retrograd_core::MasterWeights::Off => false,
+            retrograd_core::MasterWeights::F32 => true,
+            retrograd_core::MasterWeights::Auto => set.base_entries().any(|entry| {
+                matches!(
+                    entry.dtype,
+                    retrograd_core::TensorDtype::F16 | retrograd_core::TensorDtype::BF16
+                )
+            }),
+        }
+    }
+
+    /// The slot-layout version this run allocates under: the optimizer's own,
+    /// moved by one when the run keeps an F32 master copy.
+    ///
+    /// Read off the run rather than from the optimizer's name, because a
+    /// master copy is the run's decision and adds a slot to whatever the
+    /// optimizer declared. It is what a resume compares, so a payload written
+    /// with masters is refused by name before its row count is counted.
+    pub fn optimizer_layout_version(&mut self) -> Result<u32> {
+        let kind = self.chosen_optimizer;
+        let set = match &self.declared_trainable {
+            Some(set) => set.clone(),
+            None => self.marked_trainable_set().unwrap_or_default(),
+        };
+        Ok(kind.layout_version_with_master(self.keeps_master_copy(&set)))
+    }
+
     /// The declared state table for this run: the optimizer's own policy
     /// unless an assignment was declared, in which case it is that assignment.
     pub(crate) fn optimizer_plan(
@@ -653,10 +698,11 @@ impl Trainer {
         kind: retrograd_core::OptimizerKind,
         set: &retrograd_core::TrainableSet,
     ) -> retrograd_core::OptimizerPlan {
+        let master = self.keeps_master_copy(set);
         if self.declared_assignment.is_empty() {
-            return kind.plan(set);
+            return kind.plan_with_master(set, master, |entry| kind.assign(entry));
         }
-        kind.plan_with(set, |entry| {
+        kind.plan_with_master(set, master, |entry| {
             self.declared_assignment
                 .iter()
                 .find(|(name, _)| *name == entry.name)
@@ -939,6 +985,7 @@ mod tests {
             gradient_checkpointing: true,
             checkpoint_every_n_layers: 2,
             checkpoint_dtype: CheckpointDtype::F16,
+            master_weights: retrograd_core::MasterWeights::F32,
             require_gpu_resident: true,
             generation_batch: 256,
             shuffle_dataset: false,
@@ -985,6 +1032,7 @@ mod tests {
         assert!(ffi.gradient_checkpointing);
         assert_eq!(ffi.checkpoint_every_n_layers, 2);
         assert_eq!(ffi.checkpoint_dtype, 1);
+        assert_eq!(ffi.master_weights, 1);
         assert!(ffi.require_gpu_resident);
         assert_eq!(ffi.generation_batch, 256);
         assert!(!ffi.shuffle_dataset);

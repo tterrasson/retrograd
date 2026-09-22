@@ -550,42 +550,57 @@ bool optimizer_supports_marked_dtypes(const trainer_state & state) {
     return false;
 }
 
-// One admitted (dtype, optimizer, backend) combination for a *base* weight.
-// Mirrors BASE_DTYPE_TABLE in retrograd-core; only a measured backend is
-// admitted, and the device probe is asked as well. tests/f16_base_training.rs
-// checks the two answers agree.
+// One admitted (dtype, optimizer, backend, master) combination for a *base*
+// weight. Mirrors BASE_DTYPE_TABLE in retrograd-core; only a measured backend
+// is admitted, and the device probe is asked as well.
+// tests/f16_base_training.rs checks the two answers agree.
+//
+// `master` is part of the key: with a copy the step runs in F32 and casts
+// once, without one it rounds the sum back into the store.
 struct base_dtype_row {
     ggml_type    type;
     int32_t      optimizer;
     const char * backend;  // ggml_backend_reg_name's spelling
+    bool         master;
 };
 
 static const base_dtype_row BASE_DTYPE_TABLE[] = {
-    { GGML_TYPE_F16,  RETRO_OPTIMIZER_ADAMW, "CPU"  },
-    { GGML_TYPE_F16,  RETRO_OPTIMIZER_ADAMW, "CUDA" },
-    { GGML_TYPE_BF16, RETRO_OPTIMIZER_ADAMW, "CPU"  },
-    { GGML_TYPE_BF16, RETRO_OPTIMIZER_ADAMW, "CUDA" },
-    { GGML_TYPE_F16,  RETRO_OPTIMIZER_SGD,   "CPU"  },
-    { GGML_TYPE_F16,  RETRO_OPTIMIZER_SGD,   "CUDA" },
-    { GGML_TYPE_BF16, RETRO_OPTIMIZER_SGD,   "CPU"  },
-    { GGML_TYPE_BF16, RETRO_OPTIMIZER_SGD,   "CUDA" },
+    { GGML_TYPE_F16,  RETRO_OPTIMIZER_ADAMW, "CPU",  false },
+    { GGML_TYPE_F16,  RETRO_OPTIMIZER_ADAMW, "CUDA", false },
+    { GGML_TYPE_BF16, RETRO_OPTIMIZER_ADAMW, "CPU",  false },
+    { GGML_TYPE_BF16, RETRO_OPTIMIZER_ADAMW, "CUDA", false },
+    { GGML_TYPE_F16,  RETRO_OPTIMIZER_SGD,   "CPU",  false },
+    { GGML_TYPE_F16,  RETRO_OPTIMIZER_SGD,   "CUDA", false },
+    { GGML_TYPE_BF16, RETRO_OPTIMIZER_SGD,   "CPU",  false },
+    { GGML_TYPE_BF16, RETRO_OPTIMIZER_SGD,   "CUDA", false },
+    { GGML_TYPE_F16,  RETRO_OPTIMIZER_ADAMW, "CPU",  true  },
+    { GGML_TYPE_BF16, RETRO_OPTIMIZER_ADAMW, "CPU",  true  },
+    { GGML_TYPE_F16,  RETRO_OPTIMIZER_SGD,   "CPU",  true  },
+    { GGML_TYPE_BF16, RETRO_OPTIMIZER_SGD,   "CPU",  true  },
+    { GGML_TYPE_F16,  RETRO_OPTIMIZER_ADAMW, "CUDA", true  },
+    { GGML_TYPE_BF16, RETRO_OPTIMIZER_ADAMW, "CUDA", true  },
+    { GGML_TYPE_F16,  RETRO_OPTIMIZER_SGD,   "CUDA", true  },
+    { GGML_TYPE_BF16, RETRO_OPTIMIZER_SGD,   "CUDA", true  },
 };
 
-static bool base_dtype_is_tabled(ggml_type type, int32_t optimizer, const std::string & backend) {
+static bool base_dtype_is_tabled(
+        ggml_type type, int32_t optimizer, const std::string & backend, bool master) {
     for (const base_dtype_row & row : BASE_DTYPE_TABLE) {
-        if (row.type == type && row.optimizer == optimizer && backend == row.backend) {
+        if (row.type == type && row.optimizer == optimizer && backend == row.backend
+                && row.master == master) {
             return true;
         }
     }
     return false;
 }
 
-// The backends the table carries for one (dtype, optimizer) pair, so a
-// refusal can name where the combination does run.
-static std::vector<std::string> base_dtype_backends(ggml_type type, int32_t optimizer) {
+// The backends the table carries for one (dtype, optimizer, master) triple, so
+// a refusal can name where the combination does run.
+static std::vector<std::string> base_dtype_backends(
+        ggml_type type, int32_t optimizer, bool master) {
     std::vector<std::string> backends;
     for (const base_dtype_row & row : BASE_DTYPE_TABLE) {
-        if (row.type == type && row.optimizer == optimizer) {
+        if (row.type == type && row.optimizer == optimizer && row.master == master) {
             backends.emplace_back(row.backend);
         }
     }
@@ -606,6 +621,7 @@ bool declared_base_dtypes_are_admitted(const trainer_state & state) {
     // The refused (dtype, optimizer) pairs, so the message can name the
     // backends that do carry them.
     std::vector<std::pair<ggml_type, int32_t>> refused;
+    const bool master = master_weights_enabled(state);
     for (const std::string & name : state.trainable_base) {
         const ggml_tensor * tensor = nullptr;
         for (const auto & item : state.model->tensors_by_name) {
@@ -622,8 +638,11 @@ bool declared_base_dtypes_are_admitted(const trainer_state & state) {
         // Table first, device probe right after; either can refuse.
         // LoRA keeps its own policy in optimizer_supports_marked_dtypes.
         const bool admitted = tensor->type == GGML_TYPE_F32
-                || base_dtype_is_tabled(tensor->type, optimizer, state.backend_registry);
-        if (admitted && optimizer_supports_dtype(state, optimizer, tensor->type)) {
+                || base_dtype_is_tabled(tensor->type, optimizer, state.backend_registry, master);
+        // With a master copy the step writes the F32 copy, so the probe is
+        // asked about F32; the cast into the store exists on every backend.
+        const ggml_type stepped = master ? GGML_TYPE_F32 : tensor->type;
+        if (admitted && optimizer_supports_dtype(state, optimizer, stepped)) {
             continue;
         }
         unsupported.push_back(name + " (" + ggml_type_name(tensor->type) + ", "
@@ -657,7 +676,8 @@ bool declared_base_dtypes_are_admitted(const trainer_state & state) {
                     + "'s update step writes F32 only, on every backend");
             continue;
         }
-        const std::vector<std::string> backends = base_dtype_backends(pair.first, pair.second);
+        const std::vector<std::string> backends =
+                base_dtype_backends(pair.first, pair.second, master);
         elsewhere.push_back(std::string(ggml_type_name(pair.first)) + " under "
                 + optimizer_name(pair.second)
                 + (backends.empty()
@@ -753,9 +773,10 @@ struct base_step_entry {
 };
 
 // Whether the per-element update this run intends is large enough for the
-// half-precision stores it is written to. There is no F32 master copy: a step
-// below one ulp is a whole ulp taken with probability step/ulp, so the weights
-// follow the rounding rather than the gradient.
+// half-precision stores it is written to. Without a master copy a step below
+// one ulp is a whole ulp taken with probability step/ulp, so the weights
+// follow the rounding rather than the gradient. With a master copy there is
+// no in-place store, so the run is reported but never refused.
 //
 // Only optimizers whose step is about alpha per element are graded (AdamW,
 // Gefen). SGD's step is alpha*|gradient|, which no preflight can know.
@@ -814,6 +835,11 @@ bool declared_base_steps_are_representable(trainer_state & state) {
     // report prints it whether or not the run is refused.
     state.base_step_ulps =
             static_cast<float>(step_ulps_total / static_cast<double>(total_elements));
+    if (master_weights_enabled(state)) {
+        // The number above is still reported, but it bounds nothing: the sum
+        // is formed in F32 and the store is written by one cast.
+        return true;
+    }
     const double share = static_cast<double>(under_elements) / static_cast<double>(total_elements);
     if (share <= static_cast<double>(MAX_BASE_STEP_UNDERFLOW_SHARE)) {
         return true;
@@ -842,16 +868,24 @@ bool declared_base_steps_are_representable(trainer_state & state) {
         }
     }
     const int percent = static_cast<int>(share * 100.0 + 0.5);
+    // If the run explicitly turned the master copy off, stop suggesting it.
+    const bool declined = config.master_weights == RETRO_MASTER_WEIGHTS_OFF;
+    const std::string remedy = declined
+            ? std::string("Set training.master_weights = 'f32' to accumulate the update in an "
+                          "F32 copy (four bytes per trained element), raise training.lr to ")
+            : std::string("Set training.master_weights, train from an F32 model file, raise "
+                          "training.lr to ");
     set_error("the learning rate " + format_significant(config.learning_rate)
             + " is below what this run's " + ggml_type_name(worst->type)
             + " base weights can carry: " + std::to_string(percent)
             + "% of the trained parameters take an update under "
             + format_significant(MIN_BASE_STEP_ULPS) + " ulp of their own store (worst "
             + worst->name + ": ulp " + format_significant(worst->ulp) + ", update "
-            + format_significant(worst->step / worst->ulp) + " ulp). The update step has no F32 "
-              "master copy: it rounds the sum back onto the same grid, so a step under one ulp "
-              "is a whole ulp taken at random and the weights follow the rounding rather than "
-              "the gradient. Train from an F32 model file, raise training.lr to "
+            + format_significant(worst->step / worst->ulp) + " ulp). This run has no F32 "
+              "master copy: the update step rounds the sum back onto the same grid, so a step "
+              "under one ulp is a whole ulp taken at random and the weights follow the rounding "
+              "rather than the gradient. "
+            + remedy
             + format_significant(MIN_BASE_STEP_ULPS * quantile_ulp)
             + " or above, or train a LoRA adapter, whose factors are stored F32");
     return false;

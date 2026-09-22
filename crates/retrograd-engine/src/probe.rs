@@ -547,6 +547,15 @@ pub fn slot_initial_bytes(
         retrograd_core::SlotInit::Zero => (0, 0),
         retrograd_core::SlotInit::Code(code) => (1, code),
         retrograd_core::SlotInit::UniformCodebook => (2, 0),
+        // The master copy's bytes are the parameter's, widened. There is no
+        // parameter here, so this is refused rather than answered with zeros:
+        // the runtime refuses it too, and one of the two answers would have to
+        // be wrong.
+        retrograd_core::SlotInit::Parameter => {
+            return Err(Error::invalid(
+                "a master copy is initialized from its parameter, not from its definition:                  its initial bytes cannot be asked for without one",
+            ));
+        }
     };
     // A slot whose byte count does not fit is an error, not a clamped
     // allocation the host aborts on.

@@ -9,6 +9,7 @@ Scheduler: TypeAlias = Literal["constant", "linear", "cosine"]
 DatasetFormat: TypeAlias = Literal["auto", "text", "chat_jsonl"]
 LoraDtype: TypeAlias = Literal["f32", "f16"]
 KvDtype: TypeAlias = Literal["f32", "f16"]
+MasterWeights: TypeAlias = Literal["auto", "f32", "off"]
 #: Optimizer kind. ``muon`` and ``gefen`` take their own knobs from
 #: :attr:`TrainingConfig.optimizer_options`.
 Optimizer: TypeAlias = Literal["adamw", "sgd", "muon", "gefen"]
@@ -273,6 +274,13 @@ class TrainingConfig:
     gradient_checkpointing: bool = False
     #: Number of layers between retained activation checkpoints.
     checkpoint_every_n_layers: int = 4
+    #: Whether half-precision base weights are trained through an F32 master
+    #: copy: ``"auto"``, ``"f32"`` or ``"off"``. Without one the update is
+    #: rounded back into the store it read, so a step under one unit in the
+    #: last place of that store is a whole unit taken at random and the run is
+    #: refused. ``auto`` keeps a copy exactly when a marked base tensor is half
+    #: precision, at four bytes per trained element.
+    master_weights: MasterWeights = "auto"
     #: Shuffle SFT training rows at the start of every epoch. Evaluation rows
     #: retain their order; this option is ignored outside SFT.
     shuffle: bool = True
@@ -349,6 +357,8 @@ class TrainingConfig:
             raise ValueError("device must be auto, cpu, or gpu")
         if self.kv_dtype not in ("f32", "f16"):
             raise ValueError("kv_dtype must be f32 or f16")
+        if self.master_weights not in ("auto", "f32", "off"):
+            raise ValueError("master_weights must be auto, f32, or off")
         if self.optimizer not in ("adamw", "sgd", "muon", "gefen"):
             raise ValueError("optimizer must be adamw, sgd, muon or gefen")
         if self.optimizer_options is not None:
@@ -390,6 +400,7 @@ class TrainingConfig:
             "chunked_ce_seq_chunk": self.chunked_ce_seq_chunk,
             "gradient_checkpointing": self.gradient_checkpointing,
             "checkpoint_every_n_layers": self.checkpoint_every_n_layers,
+            "master_weights": self.master_weights,
             "shuffle": self.shuffle,
             # `Trainer` replaces this fallback with the LoRA seed when needed.
             "shuffle_seed": 42 if self.shuffle_seed is None else self.shuffle_seed,

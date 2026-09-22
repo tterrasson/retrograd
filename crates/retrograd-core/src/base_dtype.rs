@@ -3,11 +3,16 @@
 //! F32 is the floor and is deliberately not a row here: a row is a measured
 //! claim, and F32 is the baseline those claims are measured against.
 //!
-//! Anything wider is admitted per (dtype, optimizer, backend) combination: the
-//! model file decides the dtype, the update step is a kernel with its own
-//! dtype table, and each backend reimplements that kernel. A row records the
-//! evidence that admitted it, and a lane reads its tolerances from the row
-//! instead of restating them.
+//! Anything wider is admitted per (dtype, optimizer, backend, master)
+//! combination: the model file decides the dtype, the update kernel has its
+//! own dtype table, each backend reimplements it, and the master copy decides
+//! whether the step that runs is the half-precision one at all. A row records
+//! the measurement that admitted the combination, and a lane reads its
+//! tolerances from the row.
+//!
+//! The master column is what lets a backend be admitted without a
+//! half-precision update kernel: with a master copy the step is the F32 one
+//! and a cast writes the store, and both exist on every backend.
 //!
 //! The backend column names the ggml registry ("CPU", "MTL", "CUDA",
 //! "Vulkan", as `ggml_backend_reg_name` spells them), not a device name. The
@@ -17,7 +22,8 @@
 use crate::optimizer::OptimizerKind;
 use crate::trainable::TensorDtype;
 
-/// One admitted (dtype, optimizer, backend) combination, with its evidence.
+/// One admitted (dtype, optimizer, backend, master) combination, with its
+/// evidence.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BaseDtypeCapability {
     /// The dtype as [`TensorDtype::name`] spells it. Never `"F32"`.
@@ -26,6 +32,12 @@ pub struct BaseDtypeCapability {
     pub optimizer: OptimizerKind,
     /// The ggml registry the kernel belongs to.
     pub backend: &'static str,
+    /// Whether this row was measured with an F32 master copy in the loop.
+    ///
+    /// Two rows per (dtype, optimizer, backend) are the rule, not a duplicate:
+    /// without a master the update kernel rounds back onto the grid it read,
+    /// with one the F32 step runs on the copy and a cast writes the store.
+    pub master: bool,
     /// Largest relative per-element difference the parity lane allows between
     /// this combination's gradient and the F32 run's on the fixture.
     /// Gradients are F32 in both runs; the weights the forward read differ.
@@ -36,6 +48,12 @@ pub struct BaseDtypeCapability {
     /// the storage allows; a relative error would count a correct rounding
     /// near zero as an error of one. Being in grid units is what lets one
     /// value stand for every dtype.
+    ///
+    /// A master row keeps the same one grid point, not the cast's half: the
+    /// gap left with the F32 run is the forward's difference, which a master
+    /// copy does not touch. What it removes is the in-place rounding, and the
+    /// assertion for that is an equality: `tests/f16_base_training.rs`
+    /// compares the store against the run's own master copy.
     pub update_tolerance: f32,
     /// Fraction of elements allowed to exceed [`Self::update_tolerance`].
     ///
@@ -52,6 +70,11 @@ pub struct BaseDtypeCapability {
     /// [`Self::stability_steps`] steps and the F32 run's on the same data. Not
     /// a bit-parity bound, which a long normalized run cannot have: it bounds
     /// the outcome, so a run that quietly stopped training is caught.
+    ///
+    /// A master row's lane runs at the same rate as the in-place row beside
+    /// it, so at this fixture's scale the two paths differ by the fixture's
+    /// own noise. A master copy buys the rates below the in-place floor,
+    /// which the in-place path refuses and therefore has no row.
     pub stability_loss_tolerance: f32,
 }
 
@@ -63,6 +86,7 @@ pub const BASE_DTYPE_TABLE: &[BaseDtypeCapability] = &[
         dtype: "F16",
         optimizer: OptimizerKind::AdamW,
         backend: "CPU",
+        master: false,
         // The F16 forward differs from F32 by ~5e-4 per operand; the bound
         // sits an order of magnitude above that.
         gradient_tolerance: 5.0e-2,
@@ -76,6 +100,7 @@ pub const BASE_DTYPE_TABLE: &[BaseDtypeCapability] = &[
         dtype: "F16",
         optimizer: OptimizerKind::AdamW,
         backend: "CUDA",
+        master: false,
         // Measured 1.7e-3, three times the CPU row's 5.5e-4: the forward
         // reduction order differs. The bound is set by the dtype, not the
         // backend.
@@ -92,6 +117,7 @@ pub const BASE_DTYPE_TABLE: &[BaseDtypeCapability] = &[
         dtype: "BF16",
         optimizer: OptimizerKind::AdamW,
         backend: "CPU",
+        master: false,
         // BF16 carries 8 significant bits, so an operand costs about eight
         // times more than F16. Measured 5.5e-3.
         gradient_tolerance: 4.0e-1,
@@ -108,6 +134,7 @@ pub const BASE_DTYPE_TABLE: &[BaseDtypeCapability] = &[
         dtype: "BF16",
         optimizer: OptimizerKind::AdamW,
         backend: "CUDA",
+        master: false,
         // Same bound as the CPU row. Measured 4.9e-3 against 5.5e-3 there: at
         // this grid the storage error dominates the reduction-order one.
         gradient_tolerance: 4.0e-1,
@@ -122,6 +149,7 @@ pub const BASE_DTYPE_TABLE: &[BaseDtypeCapability] = &[
         dtype: "F16",
         optimizer: OptimizerKind::Sgd,
         backend: "CPU",
+        master: false,
         // Same bound as AdamW: the gradient comes out of the forward, which
         // does not know which optimizer will read it. Measured 5.5e-4.
         gradient_tolerance: 5.0e-2,
@@ -137,6 +165,7 @@ pub const BASE_DTYPE_TABLE: &[BaseDtypeCapability] = &[
         dtype: "BF16",
         optimizer: OptimizerKind::Sgd,
         backend: "CPU",
+        master: false,
         // The BF16 operand cost, as in the AdamW row. Measured 5.5e-3.
         gradient_tolerance: 4.0e-1,
         update_tolerance: 1.0,
@@ -151,6 +180,7 @@ pub const BASE_DTYPE_TABLE: &[BaseDtypeCapability] = &[
         dtype: "F16",
         optimizer: OptimizerKind::Sgd,
         backend: "CUDA",
+        master: false,
         // The F16 bound. Measured 1.7e-3, the AdamW CUDA number exactly: the
         // forward does not know which optimizer will read it.
         gradient_tolerance: 5.0e-2,
@@ -167,6 +197,7 @@ pub const BASE_DTYPE_TABLE: &[BaseDtypeCapability] = &[
         dtype: "BF16",
         optimizer: OptimizerKind::Sgd,
         backend: "CUDA",
+        master: false,
         // The BF16 bound. Measured 4.9e-3, the AdamW CUDA number.
         gradient_tolerance: 4.0e-1,
         update_tolerance: 1.0,
@@ -176,6 +207,129 @@ pub const BASE_DTYPE_TABLE: &[BaseDtypeCapability] = &[
         update_outlier_fraction: 2.5e-3,
         stability_steps: 2000,
         // Measured 5.0e-3 after 2000 steps.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "F16",
+        optimizer: OptimizerKind::AdamW,
+        backend: "CPU",
+        master: true,
+        // The forward still reads the F16 store, so the gradient bound is the
+        // store's, as in the in-place row.
+        gradient_tolerance: 5.0e-2,
+        update_tolerance: 1.0,
+        // Measured 1.1e-3 against the in-place row's 1.2e-3.
+        update_outlier_fraction: 2.0e-3,
+        stability_steps: 2000,
+        // Measured 7.4e-4 after 2000 steps, against the in-place row's 2.1e-4.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "BF16",
+        optimizer: OptimizerKind::AdamW,
+        backend: "CPU",
+        master: true,
+        // The forward still reads the BF16 store, so the gradient bound is the
+        // store's, as in the in-place row.
+        gradient_tolerance: 4.0e-1,
+        update_tolerance: 1.0,
+        // Measured 2.2e-3 against the in-place row's 2.3e-3.
+        update_outlier_fraction: 5.0e-3,
+        stability_steps: 2000,
+        // Measured 4.0e-3 after 2000 steps, against the in-place row's 5.9e-3.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "F16",
+        optimizer: OptimizerKind::Sgd,
+        backend: "CPU",
+        master: true,
+        // The forward still reads the F16 store, so the gradient bound is the
+        // store's, as in the in-place row.
+        gradient_tolerance: 5.0e-2,
+        update_tolerance: 1.0,
+        // Measured 3.3e-4, half the in-place row's 5.7e-4: the in-place
+        // rounding is gone.
+        update_outlier_fraction: 1.0e-3,
+        stability_steps: 2000,
+        // Measured 4.9e-3 after 2000 steps, against the in-place row's 2.2e-3.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "BF16",
+        optimizer: OptimizerKind::Sgd,
+        backend: "CPU",
+        master: true,
+        // The forward still reads the BF16 store, so the gradient bound is the
+        // store's, as in the in-place row.
+        gradient_tolerance: 4.0e-1,
+        update_tolerance: 1.0,
+        // Measured 6.1e-4 against the in-place row's 8.5e-4.
+        update_outlier_fraction: 2.0e-3,
+        stability_steps: 2000,
+        // Measured 1.8e-3 after 2000 steps, against the in-place row's 6.2e-3.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "F16",
+        optimizer: OptimizerKind::AdamW,
+        backend: "CUDA",
+        master: true,
+        // The store's bound, as on every master row: measured 1.7e-3, as the
+        // in-place CUDA row measures.
+        gradient_tolerance: 5.0e-2,
+        update_tolerance: 1.0,
+        // Measured 1.9e-3 against the in-place CUDA row's 2.1e-3.
+        update_outlier_fraction: 4.0e-3,
+        stability_steps: 2000,
+        // Measured 1.9e-4 after 2000 steps, against the in-place row's 7.9e-4.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "BF16",
+        optimizer: OptimizerKind::AdamW,
+        backend: "CUDA",
+        master: true,
+        // The store's bound, as on every master row. Measured 4.9e-3, the
+        // in-place CUDA row's number.
+        gradient_tolerance: 4.0e-1,
+        update_tolerance: 1.0,
+        // Measured 2.0e-3 against the in-place CUDA row's 2.2e-3.
+        update_outlier_fraction: 5.0e-3,
+        stability_steps: 2000,
+        // Measured 2.0e-3 after 2000 steps, against the in-place row's 1.5e-3.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "F16",
+        optimizer: OptimizerKind::Sgd,
+        backend: "CUDA",
+        master: true,
+        // The F16 bound, measured 1.7e-3, the in-place CUDA row's number.
+        gradient_tolerance: 5.0e-2,
+        update_tolerance: 1.0,
+        // Measured 2.6e-3 against the in-place CUDA row's 3.3e-3: an SGD step
+        // here is about one grid point wide, so removing the in-place rounding
+        // moves some elements back off the wrong side of one.
+        update_outlier_fraction: 6.0e-3,
+        stability_steps: 2000,
+        // Measured 5.8e-3 after 2000 steps, against the in-place row's 2.3e-5.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "BF16",
+        optimizer: OptimizerKind::Sgd,
+        backend: "CUDA",
+        master: true,
+        // The BF16 bound, measured 4.9e-3, the in-place CUDA row's number.
+        gradient_tolerance: 4.0e-1,
+        update_tolerance: 1.0,
+        // Measured 7.3e-4 against the in-place CUDA row's 6.5e-4: the step is
+        // well inside one grid point, so the forward's own difference puts
+        // these elements a grid point away, not the rounding.
+        update_outlier_fraction: 2.5e-3,
+        stability_steps: 2000,
+        // Measured 5.2e-3 after 2000 steps, against the in-place row's 5.0e-3.
         stability_loss_tolerance: 2.0e-1,
     },
 ];
@@ -234,33 +388,47 @@ pub fn base_dtype_is_tabled(dtype: &TensorDtype) -> bool {
 
 /// The row for one full combination, or `None` when nothing here has measured
 /// it. F32 has no row by construction.
+///
+/// `master` is part of the key: the two paths take different steps, so a row
+/// measured on one says nothing about the other.
 pub fn base_dtype_capability(
     dtype: &TensorDtype,
     optimizer: OptimizerKind,
     backend: &str,
+    master: bool,
 ) -> Option<&'static BaseDtypeCapability> {
     BASE_DTYPE_TABLE.iter().find(|row| {
-        row.dtype == dtype.name() && row.optimizer == optimizer && row.backend == backend
+        row.dtype == dtype.name()
+            && row.optimizer == optimizer
+            && row.backend == backend
+            && row.master == master
     })
 }
 
 /// Whether this build admits marking a base tensor of `dtype` under
-/// `optimizer` on `backend`. F32 is admitted everywhere; everything else
-/// needs a row.
-pub fn base_dtype_admits(dtype: &TensorDtype, optimizer: OptimizerKind, backend: &str) -> bool {
-    matches!(dtype, TensorDtype::F32) || base_dtype_capability(dtype, optimizer, backend).is_some()
+/// `optimizer` on `backend`, with or without a master copy. F32 is admitted
+/// everywhere; everything else needs a row.
+pub fn base_dtype_admits(
+    dtype: &TensorDtype,
+    optimizer: OptimizerKind,
+    backend: &str,
+    master: bool,
+) -> bool {
+    matches!(dtype, TensorDtype::F32)
+        || base_dtype_capability(dtype, optimizer, backend, master).is_some()
 }
 
-/// The backends a refusal can name for a (dtype, optimizer) pair, in table
-/// order.
+/// The backends a refusal can name for a (dtype, optimizer, master) triple, in
+/// table order.
 pub fn base_dtype_backends(
     dtype: &TensorDtype,
     optimizer: OptimizerKind,
+    master: bool,
 ) -> impl Iterator<Item = &'static str> {
     let name = dtype.name().to_string();
     BASE_DTYPE_TABLE
         .iter()
-        .filter(move |row| row.dtype == name && row.optimizer == optimizer)
+        .filter(move |row| row.dtype == name && row.optimizer == optimizer && row.master == master)
         .map(|row| row.backend)
 }
 
@@ -277,7 +445,8 @@ mod tests {
         assert!(base_dtype_admits(
             &TensorDtype::F32,
             OptimizerKind::Muon,
-            "a-backend-with-no-row"
+            "a-backend-with-no-row",
+            false
         ));
     }
 
@@ -286,36 +455,74 @@ mod tests {
         assert!(base_dtype_admits(
             &TensorDtype::F16,
             OptimizerKind::AdamW,
-            "CPU"
+            "CPU",
+            false
         ));
         // Same dtype and optimizer, a backend no lane has run.
         assert!(!base_dtype_admits(
             &TensorDtype::F16,
             OptimizerKind::AdamW,
-            "MTL"
+            "MTL",
+            false
         ));
         // Same dtype and backend, an optimizer whose kernel is F32-only.
         assert!(!base_dtype_admits(
             &TensorDtype::F16,
             OptimizerKind::Muon,
-            "CPU"
+            "CPU",
+            false
         ));
         // And one whose kernel writes it, on the backend that measured it.
         assert!(base_dtype_admits(
             &TensorDtype::F16,
             OptimizerKind::Sgd,
-            "CPU"
+            "CPU",
+            false
         ));
         assert!(base_dtype_admits(
             &TensorDtype::BF16,
             OptimizerKind::AdamW,
-            "CPU"
+            "CPU",
+            false
         ));
         // A backend that carries the kernel and has no lane behind it.
         assert!(!base_dtype_admits(
             &TensorDtype::BF16,
             OptimizerKind::AdamW,
-            "Vulkan"
+            "Vulkan",
+            false
+        ));
+    }
+
+    /// A row measured on the master path admits only that path.
+    #[test]
+    fn a_master_row_admits_only_the_master_path() {
+        assert!(base_dtype_admits(
+            &TensorDtype::BF16,
+            OptimizerKind::AdamW,
+            "CPU",
+            true
+        ));
+        assert!(base_dtype_admits(
+            &TensorDtype::BF16,
+            OptimizerKind::AdamW,
+            "CUDA",
+            true
+        ));
+        // No lane has run the master path on Metal, so no row.
+        assert!(!base_dtype_admits(
+            &TensorDtype::BF16,
+            OptimizerKind::AdamW,
+            "MTL",
+            true
+        ));
+        // F32-only kernels stay F32-only: the master copy changes what the
+        // step writes, not which dtypes the kernel accepts.
+        assert!(!base_dtype_admits(
+            &TensorDtype::BF16,
+            OptimizerKind::Muon,
+            "CPU",
+            true
         ));
     }
 
@@ -356,13 +563,13 @@ mod tests {
 
     #[test]
     fn a_combination_appears_at_most_once() {
-        let mut seen: Vec<(&str, OptimizerKind, &str)> = BASE_DTYPE_TABLE
+        let mut seen: Vec<(&str, OptimizerKind, &str, bool)> = BASE_DTYPE_TABLE
             .iter()
-            .map(|row| (row.dtype, row.optimizer, row.backend))
+            .map(|row| (row.dtype, row.optimizer, row.backend, row.master))
             .collect();
         let before = seen.len();
-        seen.sort_unstable_by_key(|(dtype, optimizer, backend)| {
-            (*dtype, optimizer.as_str(), *backend)
+        seen.sort_unstable_by_key(|(dtype, optimizer, backend, master)| {
+            (*dtype, optimizer.as_str(), *backend, *master)
         });
         seen.dedup();
         assert_eq!(seen.len(), before, "two rows for one combination");
@@ -371,17 +578,21 @@ mod tests {
     #[test]
     fn a_refusal_can_name_the_backends_that_do_carry_it() {
         let backends: Vec<&str> =
-            base_dtype_backends(&TensorDtype::F16, OptimizerKind::AdamW).collect();
+            base_dtype_backends(&TensorDtype::F16, OptimizerKind::AdamW, false).collect();
         assert_eq!(backends, vec!["CPU", "CUDA"]);
         let backends: Vec<&str> =
-            base_dtype_backends(&TensorDtype::BF16, OptimizerKind::AdamW).collect();
+            base_dtype_backends(&TensorDtype::BF16, OptimizerKind::AdamW, false).collect();
         assert_eq!(backends, vec!["CPU", "CUDA"]);
         let backends: Vec<&str> =
-            base_dtype_backends(&TensorDtype::F16, OptimizerKind::Sgd).collect();
+            base_dtype_backends(&TensorDtype::F16, OptimizerKind::Sgd, false).collect();
+        assert_eq!(backends, vec!["CPU", "CUDA"]);
+        // The master path has its own list of measured backends.
+        let backends: Vec<&str> =
+            base_dtype_backends(&TensorDtype::BF16, OptimizerKind::AdamW, true).collect();
         assert_eq!(backends, vec!["CPU", "CUDA"]);
         // An optimizer that writes F32 only has no backend to name, ever.
         assert_eq!(
-            base_dtype_backends(&TensorDtype::F16, OptimizerKind::Muon).count(),
+            base_dtype_backends(&TensorDtype::F16, OptimizerKind::Muon, false).count(),
             0
         );
     }

@@ -120,6 +120,7 @@ and the planner budgets the vocabulary buffer the dense path allocates.
 | `gradient_checkpointing` | `false` | Recompute transformer activations to reduce the activation peak. |
 | `checkpoint_every_n_layers` | `4` | Retained activation checkpoint stride when checkpointing is enabled. |
 | `checkpoint_dtype` | `f32` | Retained activation precision: `f32`, `f16`, or `bf16`. Non-F32 values require gradient checkpointing. |
+| `master_weights` | `auto` | F32 master copy of every half-precision base weight: `auto`, `f32`, or `off`. `auto` keeps one exactly when a marked base tensor is half precision. Costs four bytes per trained element and is what makes a rate below one unit in the last place of the store trainable rather than refused. |
 | `require_gpu_resident` | `false` | Fail preflight if a training-graph operation would fall back to CPU. |
 | `max_gpu_duty_cycle` | `1.0` | Upper bound on the fraction of wall time the trainer waits on GPU work it submitted, so another workload gets regular compute windows. Finite, in `(0, 1]`. Releases compute, not VRAM. Accepted but inactive on a CPU device. |
 

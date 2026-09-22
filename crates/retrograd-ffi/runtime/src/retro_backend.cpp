@@ -1338,6 +1338,14 @@ retro_memory_report memory_totals(const trainer_state & state) {
             bytes += static_cast<uint64_t>(ggml_opt_slot_n_elements(&slots[i], ggml_nelements(tensor)))
                     * ggml_type_size(slots[i].type);
         }
+        // The master copy is not in the optimizer's tables; account for it
+        // with the same slot function the allocator uses.
+        ggml_opt_slot_def master = {};
+        if (ggml_opt_master_slot(&layout, tensor->type, &master)) {
+            bytes += static_cast<uint64_t>(
+                            ggml_opt_slot_n_elements(&master, ggml_nelements(tensor)))
+                    * ggml_type_size(master.type);
+        }
         return bytes;
     };
     uint64_t adapter_state_bytes = 0;
@@ -1725,6 +1733,9 @@ std::string backend_report(const trainer_state & state) {
                                         : format_significant(state.base_step_ulps))
         << "\n";
     out << "  base_step_min_ulps: " << format_significant(base_step_min_ulps()) << "\n";
+    // With a master copy the update sum is formed in F32 and cast once into
+    // the store, so the store grid is no longer a floor on the rate.
+    out << "  base_master_copy: " << (master_weights_enabled(state) ? "f32" : "off") << "\n";
     // Every byte figure in this report comes from `memory_totals`, the same computation
     // `retro_trainer_memory_report` hands to callers as data. The report renders
     // it; it does not recompute it.
@@ -1734,7 +1745,13 @@ std::string backend_report(const trainer_state & state) {
     out << "  optimizer_state_bytes: " << totals.optimizer_state_bytes << "\n";
     out << "  trainable_parameters_are_model_subset: "
         << (totals.trainable_parameters_are_model_subset ? 1 : 0) << "\n";
-    out << "  lora_f32_master_copy: false\n";
+    // The adapter's factors are a separate case: they need no master copy at
+    // their own grid unless the run forced one on.
+    out << "  lora_f32_master_copy: "
+        << ((state.lora_dtype == RETRO_LORA_DTYPE_F16 && master_weights_enabled(state))
+                    ? "true"
+                    : "false")
+        << "\n";
 
     // Byte-accurate breakdown per backend buffer type, kept for the per-buffer
     // detail block at the end of the report.

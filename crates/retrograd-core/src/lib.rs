@@ -43,9 +43,9 @@ pub use json_pointer::{PointerPath, escape_json_pointer};
 pub use optimizer::{
     GEFEN_CODEBOOK_LEVELS, GEFEN_DEFAULT_BLOCK_SIZE, GEFEN_DEFAULT_MIN_NUMEL,
     GEFEN_ZERO_BLOCK_INDEX, GefenLayout, GefenVariant, HyperparameterBound,
-    HyperparameterDefinition, HyperparameterValue, HyperparameterVector, OptimizerDescriptor,
-    OptimizerKind, OptimizerPlan, PlannedParameter, PlannedSlot, SharedSlot, SlotDefinition,
-    SlotDtype, SlotInit, SlotShape,
+    HyperparameterDefinition, HyperparameterValue, HyperparameterVector, MASTER_SLOT,
+    OptimizerDescriptor, OptimizerKind, OptimizerPlan, PlannedParameter, PlannedSlot, SharedSlot,
+    SlotDefinition, SlotDtype, SlotInit, SlotShape, master_slot_definition,
 };
 /// The catalogue schema, declared in `rir-core` and re-exported for the
 /// applicative side that reads it.
@@ -63,8 +63,8 @@ pub use types::{
     ArtifactPolicy, CheckpointDtype, CheckpointMetadata, DEFAULT_CE_SEQ_CHUNK,
     DEFAULT_CHECKPOINT_STRIDE, DEFAULT_REWARD_TIMEOUT_SECONDS, Dataset, Device, EvalMetrics,
     FUSED_CE_K_MAX, FeatureDtype, FusedCeProbe, FusedCeWeightType, Generation, KernelImpl,
-    KernelReject, KernelRunInfo, KvDtype, LoraConfig, LoraDtype, LrScheduler, MemoryReport,
-    ModelInfo, ProbeOp, Progress, ResumeInfo, RewardMode, RewardProtocol, RirCounters, RirMode,
-    SamplingParams, SharedPrefixFanout, TargetSet, TrainConfig, TrainMetrics, WeightedBatch,
-    checkpoint_stride_for,
+    KernelReject, KernelRunInfo, KvDtype, LoraConfig, LoraDtype, LrScheduler, MasterWeights,
+    MemoryReport, ModelInfo, ProbeOp, Progress, ResumeInfo, RewardMode, RewardProtocol,
+    RirCounters, RirMode, SamplingParams, SharedPrefixFanout, TargetSet, TrainConfig, TrainMetrics,
+    WeightedBatch, checkpoint_stride_for,
 };

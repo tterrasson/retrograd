@@ -99,7 +99,9 @@ fn compatibility(trainer: &mut Trainer, model: &Path) -> checkpoint::Compatibili
         warmup_steps: 0,
         total_steps: None,
         optimizer_kind: config().trainable.optimizer.to_string(),
-        optimizer_layout_version: hyperparameters.optimizer().layout_version(),
+        optimizer_layout_version: trainer
+            .optimizer_layout_version()
+            .expect("the layout version"),
         optimizer_hyperparameters: hyperparameters.lines(),
         weight_decay: config().weight_decay,
         max_grad_norm: config().max_grad_norm,

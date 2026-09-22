@@ -153,6 +153,7 @@ def test_configs_coerce_sequences_paths_and_preserve_native_options(tmp_path: Pa
         "chunked_ce_seq_chunk": 512,
         "gradient_checkpointing": True,
         "checkpoint_every_n_layers": 4,
+        "master_weights": "auto",
         "shuffle": True,
         "shuffle_seed": 42,
         "max_gpu_duty_cycle": 1.0,
