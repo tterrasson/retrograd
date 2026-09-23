@@ -642,7 +642,7 @@ class DistillConfig:
     #: The teacher already anchors the policy, so the base-model reference pass
     #: is skipped at zero. Above zero it is added back on top.
     kl_coefficient: float = 0.0
-    mask_truncated: bool = True
+    mask_truncated: bool = False
     max_new_tokens: int = 128
     seed: int = 42
 

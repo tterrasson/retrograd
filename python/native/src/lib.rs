@@ -1387,7 +1387,7 @@ impl PyTrainer {
         clip_range_high=0.28,
         weight_clip=5.0,
         kl_coefficient=0.0,
-        mask_truncated=true,
+        mask_truncated=false,
         max_new_tokens=128,
         seed=42,
         callback=None

@@ -433,6 +433,10 @@ def test_distill_refuses_an_unusable_weight_clip() -> None:
             DistillConfig("teacher.gguf", "prompts.jsonl", weight_clip=clip)
 
 
+def test_distill_keeps_truncated_completions_by_default_as_the_toml_does() -> None:
+    assert DistillConfig("teacher.gguf", "prompts.jsonl").mask_truncated is False
+
+
 def test_a_trainable_policy_reaches_the_binding_as_its_own_keywords() -> None:
     selection = TrainableConfig(policy="partial", layers="last:2", modules=["attn", "ffn_up"])
     sent = TrainingConfig(trainable=selection).native_kwargs()
