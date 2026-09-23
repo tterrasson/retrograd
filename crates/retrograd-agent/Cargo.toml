@@ -18,12 +18,10 @@ retrograd-metrics.workspace = true
 retrograd-observe.workspace = true
 retrograd-tools.workspace = true
 retrograd-training.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "process", "rt", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
-toml.workspace = true
 
 [features]
 default = ["mcp", "http-env"]
