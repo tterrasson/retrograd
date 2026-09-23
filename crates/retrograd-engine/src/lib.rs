@@ -336,12 +336,6 @@ impl TopLogprobs {
     pub fn argmax(&self) -> impl Iterator<Item = (i32, f32)> + '_ {
         self.iter().map(|(ids, logprobs)| (ids[0], logprobs[0]))
     }
-
-    /// The flat backing arrays, `rows() * k` entries each, for a caller writing
-    /// them out unchanged.
-    pub fn as_flat(&self) -> (&[i32], &[f32]) {
-        (&self.ids, &self.logprobs)
-    }
 }
 
 /// Monotonic counters of the shared-prefix behavior scorer. Like
@@ -650,11 +644,6 @@ impl Trainer {
     /// The optimizer this run's configuration named.
     pub fn chosen_optimizer(&self) -> retrograd_core::OptimizerKind {
         self.chosen_optimizer
-    }
-
-    /// What this run asked for, as the document spelled it.
-    pub fn master_weights(&self) -> retrograd_core::MasterWeights {
-        self.master_weights
     }
 
     /// Whether this run keeps an F32 master copy, for the set it is about to

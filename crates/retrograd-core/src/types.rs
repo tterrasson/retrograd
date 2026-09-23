@@ -147,16 +147,6 @@ pub enum FeatureDtype {
     Bf16,
 }
 
-impl FeatureDtype {
-    /// Bytes one stored feature occupies.
-    pub fn element_bytes(self) -> usize {
-        match self {
-            Self::F32 => 4,
-            Self::F16 | Self::Bf16 => 2,
-        }
-    }
-}
-
 impl Device {
     pub fn as_ffi(self) -> i32 {
         match self {

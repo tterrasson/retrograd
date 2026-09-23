@@ -21,7 +21,7 @@
 //! conditional distribution "given the teacher's top `k`". That is a modelling
 //! choice the sidecar's `k` makes, not an approximation this module introduces.
 
-use retrograd_config::{DistillConfig, OfflineDistillConfig};
+use retrograd_config::OfflineDistillConfig;
 use retrograd_core::{Error, Result, TrainConfig, TrainMetrics, WeightedBatch};
 use retrograd_dataset::topk::{TopKSidecar, corpus_fingerprint, tokenizer_fingerprint};
 use retrograd_dataset::{self as dataset, DataFormat, IGNORE_LABEL, PreparedDataset};
@@ -236,11 +236,6 @@ fn batch_window(training: &TrainConfig) -> Result<u64> {
         ));
     }
     Ok(training.n_batch as u64)
-}
-
-/// The offline half of a `[distill]` document, or `None` for an on-policy one.
-pub fn config_of(config: &DistillConfig) -> Option<&OfflineDistillConfig> {
-    config.mode.offline()
 }
 
 #[cfg(test)]

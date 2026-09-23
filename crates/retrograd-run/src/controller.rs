@@ -289,14 +289,6 @@ impl RunController {
         self.checkpoint_requested = true;
     }
 
-    pub fn has_evaluation(&self) -> bool {
-        self.evaluation.is_some()
-    }
-
-    pub fn has_checkpoint(&self) -> bool {
-        self.checkpoint.is_some()
-    }
-
     /// Changes the evaluation cadence. Takes effect at the next iteration the
     /// new cadence selects.
     pub fn set_evaluation_every(&mut self, every_iterations: u32) -> Result<()> {
