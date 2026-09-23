@@ -53,7 +53,9 @@ assert_cpu_graph "${root_cpu[@]}"
 assert_cpu_graph "${python_cpu[@]}"
 
 timed_step compile cargo test "${workspace_cpu[@]}" --lib --bins --no-run
-timed_step compile:root cargo test "${root_cpu[@]}" --lib --bins --no-run
+# `profile_cli` exits before any model is loaded: it only needs the `profile`
+# binary, which this selection builds.
+timed_step compile:root cargo test "${root_cpu[@]}" --lib --bins --test profile_cli --no-run
 timed_step compile:python cargo test "${python_cpu[@]}" --lib --bins --no-run
 timed_step compile:plan cargo test -p retrograd-plan --tests --no-run
 timed_step compile:mcp cargo test -p retrograd-tools --test mcp_stdio --no-run
@@ -81,7 +83,7 @@ timed_step compile:contracts cargo test \
   --no-run
 
 timed_step run cargo test "${workspace_cpu[@]}" --lib --bins
-timed_step run:root cargo test "${root_cpu[@]}" --lib --bins
+timed_step run:root cargo test "${root_cpu[@]}" --lib --bins --test profile_cli
 timed_step run:python cargo test "${python_cpu[@]}" --lib --bins
 timed_step run:plan cargo test -p retrograd-plan --tests
 # The stdio MCP transport end to end: the test re-executes this same binary as

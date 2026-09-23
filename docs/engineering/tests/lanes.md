@@ -61,7 +61,7 @@ Three CPU-only package selections compile and run library and binary tests:
 
 ```sh
 cargo test --workspace --exclude retrograd --exclude retrograd-python --lib --bins
-cargo test -p retrograd --no-default-features --features agent --lib --bins
+cargo test -p retrograd --no-default-features --features agent,cli --lib --bins --test profile_cli
 cargo test -p retrograd-python --no-default-features --lib --bins
 ```
 
@@ -113,6 +113,9 @@ regresses silently.
   `retrograd-agent`'s `train_sequences`, `retrograd-engine`'s
   `chat_parser_roundtrip` (on chat-template fixtures), `retrograd-judge`'s
   `reward_batch` and `retrograd-training`'s `value_head`.
+
+- The root package's `tests/profile_cli.rs`: the `profile` binary's argument
+  handling, whose cases all exit before a model is loaded.
 
 `rir-runtime`'s `tests/device_parity.rs` and `tests/family_parity.rs` are
 **compiled but not run** here: they run in `rir-parity` below. The fast lane
