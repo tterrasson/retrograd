@@ -1129,7 +1129,7 @@ mod budget;
 mod fingerprint;
 
 pub use budget::{CHECKPOINT_METADATA_BYTES, CheckpointFootprint, DiskBudget, free_space};
-pub use fingerprint::{fingerprint, fingerprint_file, fingerprint_file_cached};
+pub use fingerprint::{Fingerprinter, fingerprint, fingerprint_file, fingerprint_file_cached};
 
 #[cfg(test)]
 mod tests;

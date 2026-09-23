@@ -654,10 +654,13 @@ pub(crate) fn grpo_chunk_step(
         // three context-sized vectors, so the packed path never pays for it.
         scratch.begin(chunk.len());
         for (slot, member) in chunk.iter().enumerate() {
-            scratch.token_weights.clear();
-            scratch
-                .token_weights
-                .extend_from_slice(&scratch.member_weights[slot]);
+            // A swap, not a copy: the member's weights are read once, here, and
+            // the buffer handed back is refilled by the next chunk's
+            // `grpo_token_weights_into` before anything reads it.
+            std::mem::swap(
+                &mut scratch.token_weights,
+                &mut scratch.member_weights[slot],
+            );
             scratch.pack_row(
                 slot,
                 member.rollout,

@@ -584,8 +584,8 @@ fn run_distill_offline(
             version: checkpoint::FORMAT_VERSION,
             path: offline.data.display().to_string(),
             fingerprint: dataset_fingerprint(&prepared.batch.tokens, &prepared.batch.labels),
-            examples: prepared.prepared.examples as u64,
-            row_width: prepared.prepared.n_ctx as u64,
+            examples: prepared.batch.n_rows as u64,
+            row_width: prepared.batch.n_ctx as u64,
             format: format!("topk_offline_k{}", prepared.k),
             permutation: Vec::new(),
             cursor: 0,
@@ -593,21 +593,21 @@ fn run_distill_offline(
         checked_total_steps(
             "offline distillation",
             &[
-                prepared.prepared.examples as u64,
+                prepared.batch.n_rows as u64,
                 steps_per_row(config),
                 offline.epochs as u64,
             ],
         )?,
     )?;
     ctx.datasets_prepared(
-        prepared.prepared.examples,
+        prepared.batch.n_rows,
         prepared.supervised_positions,
         vec![MetricValue {
             name: "distill/topk_entries".into(),
             value: prepared.k as f32,
         }],
     )?;
-    let steps_per_epoch = prepared.prepared.examples as u64 * steps_per_row(config);
+    let steps_per_epoch = prepared.batch.n_rows as u64 * steps_per_row(config);
     let epochs = offline.epochs;
     let training_config = config.training.clone();
     // No evaluation dataset: the forward-pass loss of an SFT evaluation is

@@ -32,9 +32,12 @@ use crate::{Boundary, Progress};
 
 /// The corpus and the teacher's distribution over it, checked against each
 /// other and against the student.
+///
+/// The prepared corpus is not kept: its tokens move into `batch`, and its
+/// labels are spent once the sidecar is turned into weighted targets. Rows and
+/// width are `batch.n_rows` and `batch.n_ctx`.
 #[derive(Debug)]
 pub struct OfflineBatch {
-    pub prepared: PreparedDataset,
     pub batch: WeightedBatch,
     /// Entries per position, as the sidecar declared them.
     pub k: usize,
@@ -73,20 +76,21 @@ pub fn prepare(trainer: &Trainer, config: &OfflineDistillConfig) -> Result<Offli
     )?;
 
     let (labels, weights) = sidecar.weighted_targets(&prepared)?;
+    let k = sidecar.k();
+    drop(sidecar);
     let batch = WeightedBatch {
-        tokens: prepared.tokens.clone(),
+        tokens: prepared.tokens,
         labels,
         weights,
         n_rows: prepared.examples,
         n_ctx: prepared.n_ctx,
-        n_topk: sidecar.k(),
+        n_topk: k,
     };
     batch.validate()?;
     Ok(OfflineBatch {
-        k: sidecar.k(),
+        k,
         supervised_positions: prepared.supervised_tokens,
         batch,
-        prepared,
     })
 }
 

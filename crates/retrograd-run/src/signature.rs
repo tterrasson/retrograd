@@ -265,12 +265,16 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
 /// Fingerprints an SFT dataset over its prepared rows rather than the source
 /// file: tokenization and the label mask are part of what a resume must find
 /// unchanged, and both are already materialized here.
+///
+/// Hashed in place: the rows are the run's largest host buffer (and `labels`
+/// holds `k` entries per position under offline distillation), so serializing
+/// them first would double it at startup for a 32-byte answer.
 pub fn dataset_fingerprint(tokens: &[i32], labels: &[i32]) -> String {
-    let mut bytes = Vec::with_capacity((tokens.len() + labels.len()) * 4);
+    let mut fingerprinter = checkpoint::Fingerprinter::new();
     for value in tokens.iter().chain(labels) {
-        bytes.extend_from_slice(&value.to_le_bytes());
+        fingerprinter.update(&value.to_le_bytes());
     }
-    checkpoint::fingerprint(&bytes)
+    fingerprinter.finish()
 }
 
 /// Dataset descriptor of a rollout run: the prompts file, fingerprinted by
@@ -351,6 +355,22 @@ mod tests {
         assert_eq!(checked_total_steps("test", &[2, 3, 4]).unwrap(), 24);
         assert!(checked_total_steps("test", &[u64::MAX, 2]).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn dataset_fingerprint_matches_the_serialized_rows_it_replaced() {
+        // A checkpoint written before hashing moved in place must still resume.
+        let tokens = [1, -2, 300_000, i32::MAX];
+        let labels = [-100, 7, i32::MIN];
+        let bytes = tokens
+            .iter()
+            .chain(&labels)
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            dataset_fingerprint(&tokens, &labels),
+            checkpoint::fingerprint(&bytes)
+        );
     }
 
     #[test]

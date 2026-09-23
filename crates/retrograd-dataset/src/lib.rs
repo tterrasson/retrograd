@@ -503,8 +503,15 @@ fn prepare_chat_jsonl(
 ) -> Result<PreparedDataset> {
     let records = read_chat_jsonl(path)?;
     let eos = trainer.eos_token()?;
-    let mut tokens = Vec::new();
-    let mut labels = Vec::new();
+    // Every record becomes exactly one `n_ctx` row, and the runtime trains on a
+    // zero-copy view of these buffers for the whole run: reserving the exact
+    // size keeps doubling growth from leaving up to half of it as dead capacity.
+    let capacity = records
+        .len()
+        .checked_mul(n_ctx)
+        .ok_or_else(|| Error::overflow("prepared chat dataset size overflows usize"))?;
+    let mut tokens = Vec::with_capacity(capacity);
+    let mut labels = Vec::with_capacity(capacity);
     let mut supervised_tokens = 0;
     let mut examples = 0;
 

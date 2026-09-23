@@ -15,13 +15,44 @@ use sha2::{Digest as _, Sha256};
 /// lanes do not trivially agree. Used for the dataset identity in a manifest,
 /// where a cryptographic digest would be overkill and an extra dependency.
 pub fn fingerprint(bytes: &[u8]) -> String {
-    let mut low: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut high: u64 = 0x9dcf_1a8b_4c37_5f11;
-    for byte in bytes {
-        low = (low ^ *byte as u64).wrapping_mul(0x0000_0100_0000_01b3);
-        high = (high ^ !*byte as u64).wrapping_mul(0x0000_0100_0000_01b3);
+    let mut fingerprinter = Fingerprinter::new();
+    fingerprinter.update(bytes);
+    fingerprinter.finish()
+}
+
+/// [`fingerprint`] fed in pieces: the result depends only on the concatenated
+/// bytes, never on where they were split. Lets a caller hash a prepared dataset
+/// in place instead of first serializing a copy the size of the dataset.
+#[derive(Clone, Debug)]
+pub struct Fingerprinter {
+    low: u64,
+    high: u64,
+}
+
+impl Default for Fingerprinter {
+    fn default() -> Self {
+        Self::new()
     }
-    format!("{low:016x}{high:016x}")
+}
+
+impl Fingerprinter {
+    pub fn new() -> Self {
+        Self {
+            low: 0xcbf2_9ce4_8422_2325,
+            high: 0x9dcf_1a8b_4c37_5f11,
+        }
+    }
+
+    pub fn update(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.low = (self.low ^ *byte as u64).wrapping_mul(0x0000_0100_0000_01b3);
+            self.high = (self.high ^ !*byte as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    pub fn finish(&self) -> String {
+        format!("{:016x}{:016x}", self.low, self.high)
+    }
 }
 
 /// [`fingerprint_file`] behind a process-wide cache keyed by path, size and
