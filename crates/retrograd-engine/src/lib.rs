@@ -127,7 +127,7 @@ fn train_config_to_ffi(config: &TrainConfig) -> Result<ffi::RetroTrainConfig> {
         require_gpu_resident: config.require_gpu_resident,
         generation_batch: config.generation_batch,
         shuffle_dataset: config.shuffle_dataset,
-        optimizer: config.trainable.optimizer.as_ffi()?,
+        optimizer: config.trainable.optimizer.as_ffi(),
         shuffle_seed: config.shuffle_seed,
         trainable: config.trainable.policy.as_ffi(),
         // One declared row per wire field. The runtime treats zero as "the

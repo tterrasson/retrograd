@@ -185,18 +185,10 @@ fn parse_scheduler(value: &str) -> PyResult<LrScheduler> {
     }
 }
 
-/// The optimizer the run's update step builds. Unimplemented names are refused
-/// by their own name rather than substituted: a run that asked for one
-/// optimizer and got another would publish a trajectory nobody configured, and
-/// a checkpoint recording an optimizer it never used.
+/// The optimizer the run's update step builds. An unknown name is refused
+/// rather than substituted.
 fn parse_optimizer(value: &str) -> PyResult<OptimizerKind> {
-    let kind = OptimizerKind::parse(value).map_err(python_error)?;
-    if !kind.is_implemented() {
-        return Err(PyValueError::new_err(format!(
-            "optimizer '{kind}' is not available in this build"
-        )));
-    }
-    Ok(kind)
+    OptimizerKind::parse(value).map_err(python_error)
 }
 
 /// One `[optimizer.<name>]` section, as a dict of TOML keys. Unknown keys

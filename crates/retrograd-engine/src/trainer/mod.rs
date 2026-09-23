@@ -5,16 +5,6 @@ impl Trainer {
     /// adapter is created yet; call [`Trainer::create_lora`] or
     /// [`Trainer::load_lora`] before the first optimizer step.
     pub fn new(model_path: impl AsRef<Path>, config: TrainConfig) -> Result<Self> {
-        // Quiet today: every declared optimizer has an update step. It stays
-        // because the next one will be declared before its kernel exists, and
-        // a *device* that cannot run the chosen step is a different refusal,
-        // raised by the runtime once it knows which device it got.
-        if !config.trainable.optimizer.is_implemented() {
-            return Err(Error::invalid(format!(
-                "optimizer {} is not available in this build",
-                config.trainable.optimizer
-            )));
-        }
         let started = Instant::now();
         let model_path = path_to_cstring(model_path.as_ref())?;
         let ffi_config = train_config_to_ffi(&config)?;
@@ -167,7 +157,7 @@ impl Trainer {
         let optimizers = assignment
             .iter()
             .map(|(_, optimizer)| optimizer.as_ffi())
-            .collect::<Result<Vec<i32>>>()?;
+            .collect::<Vec<i32>>();
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
         self.check(unsafe {
             ffi::retro_trainer_set_optimizer_assignment(

@@ -703,7 +703,7 @@ impl Trainer {
         let state_dir = checkpoint::state_dir_for(state_dir.as_ref());
         let record = checkpoint::Checkpoint::read(&state_dir)?;
         record.check_compatible(expected)?;
-        let optimizer = OptimizerKind::parse(&record.optimizer.kind)?.as_ffi()?;
+        let optimizer = OptimizerKind::parse(&record.optimizer.kind)?.as_ffi();
 
         let adapter = checkpoint::adapter_for(&state_dir, &record.manifest);
         if let Some(adapter) = &adapter {

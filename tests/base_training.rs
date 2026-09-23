@@ -25,9 +25,9 @@ use std::path::{Path, PathBuf};
 
 use retrograd::checkpoint::{self, Checkpoint};
 use retrograd::{
-    CheckpointMetadata, Device, GefenLayout, GefenVariant, LoraConfig, LoraDtype, OptimizerKind,
-    TargetSet, TensorDtype, TrainConfig, TrainableEntry, TrainablePolicy, TrainableRunConfig,
-    TrainableSelector, TrainableSet, Trainer, resolve_base, tensor_inventory,
+    CheckpointMetadata, Device, LoraConfig, LoraDtype, OptimizerKind, TargetSet, TensorDtype,
+    TrainConfig, TrainableEntry, TrainablePolicy, TrainableRunConfig, TrainableSelector,
+    TrainableSet, Trainer, resolve_base, tensor_inventory,
 };
 
 const TEXT: &str = concat!(
@@ -603,36 +603,6 @@ fn sgd_marks_the_default_f16_adapter() {
     trainer
         .prepare_optimizer()
         .expect("sgd writes an f16 adapter");
-}
-
-/// Every declared optimizer now has an update step, so the refusal that used
-/// to greet Muon and Gefen before the model was opened is gone: what remains is
-/// the model error, and the *device* refusal, which cannot be answered without
-/// one. A name this build cannot honour would still be refused by `parse`.
-#[test]
-fn every_declared_optimizer_reaches_the_model_load() {
-    for optimizer in [
-        OptimizerKind::AdamW,
-        OptimizerKind::Sgd,
-        OptimizerKind::Muon,
-        OptimizerKind::Gefen(GefenLayout::default()),
-        OptimizerKind::Gefen(GefenLayout {
-            variant: GefenVariant::QuantizedM,
-            ..GefenLayout::default()
-        }),
-    ] {
-        assert!(optimizer.is_implemented(), "{optimizer}");
-        let result = Trainer::new(
-            "missing-model.gguf",
-            base_config(TrainablePolicy::Lora, optimizer),
-        );
-        let error = result.err().expect("a missing model is still a failure");
-        let message = error.to_string();
-        assert!(
-            !message.contains("not available"),
-            "{optimizer} was refused for itself rather than for the model: {message}"
-        );
-    }
 }
 
 #[test]
@@ -2284,8 +2254,8 @@ fn an_assignment_row_that_names_no_trained_parameter_is_refused() {
     assert!(error.to_string().contains("attn_q"), "{error}");
     drop(trainer);
 
-    // Every declared optimizer now has an update step, so a row naming one is
-    // a row the allocator can honour; the refusal above is about the
+    // Every declared optimizer has an update step, so a row naming one is a
+    // row the allocator can honour; the refusal above is about the
     // *parameter*, which is the only thing an assignment can get wrong.
     let mut trainer = Trainer::new(
         &model,

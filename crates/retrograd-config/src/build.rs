@@ -379,11 +379,6 @@ fn build_training(
 /// The rule this enforces first, and the reason the function exists: a selector
 /// a policy ignores is a selector the user believes is in effect. `lora` with a
 /// `[trainable]` section is refused rather than silently trained as LoRA.
-///
-/// Modes and optimizers this build cannot honour are refused here too.
-/// Parsing a name and then running something else
-/// would produce a trajectory nobody asked for and a checkpoint that records
-/// the wrong optimizer.
 fn build_trainable(
     training: &TrainingToml,
     selector: Option<&TrainableToml>,
@@ -396,15 +391,6 @@ fn build_trainable(
         Some(value) => OptimizerKind::parse(value)?,
         None => OptimizerKind::default(),
     };
-    // Kept for the next optimizer, which will be declared before its kernel
-    // exists: accepting the name would record an optimizer the run never used.
-    if !optimizer.is_implemented() {
-        return Err(Error::config(format!(
-            "training.optimizer = '{optimizer}' is not available in this build: \
-             it has no update step here, and accepting the name would write a \
-             checkpoint that records an optimizer the run never used"
-        )));
-    }
 
     if policy == TrainablePolicy::Lora {
         if selector.is_some() {

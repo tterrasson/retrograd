@@ -152,33 +152,14 @@ impl OptimizerKind {
         }
     }
 
-    /// Whether this build can actually run it.
-    ///
-    /// A name the schema parses but the runtime cannot honour must be refused
-    /// at load time: accepting a name and silently running AdamW would publish
-    /// a trajectory nobody asked for, and a checkpoint that records the wrong
-    /// optimizer.
-    ///
-    /// All four have an update step: AdamW's and SGD's kernels, Muon's graph
-    /// and Gefen's two-phase pair. What is still refused is a *device* - the
-    /// Gefen phases are written for the CPU and for Metal; a state mutation
-    /// answered on a fallback backend would update a copy and leave the real
-    /// slot stale, so the runtime asks the device at preflight.
-    pub fn is_implemented(self) -> bool {
-        true
-    }
-
-    /// The integer the C `retro_train_config.optimizer` carries, and with it
-    /// `ggml_opt_optimizer_type`: `0` AdamW, `1` SGD. Refusing to widen past
-    /// what [`Self::is_implemented`] admits is deliberate - a value the runtime
-    /// would read as AdamW is exactly the silent substitution that predicate
-    /// exists to prevent.
-    pub fn as_ffi(self) -> Result<i32> {
+    /// The integer the C `retro_train_config.optimizer` carries: `0` AdamW,
+    /// `1` SGD, `2` Muon, `3` Gefen. Gefen's variant travels in its own field.
+    pub fn as_ffi(self) -> i32 {
         match self {
-            Self::AdamW => Ok(0),
-            Self::Sgd => Ok(1),
-            Self::Muon => Ok(2),
-            Self::Gefen(_) => Ok(3),
+            Self::AdamW => 0,
+            Self::Sgd => 1,
+            Self::Muon => 2,
+            Self::Gefen(_) => 3,
         }
     }
 
@@ -1419,10 +1400,7 @@ mod tests {
     }
 
     #[test]
-    fn every_declared_optimizer_has_an_update_step() {
-        for kind in ALL {
-            assert!(kind.is_implemented(), "{kind}");
-        }
+    fn the_default_optimizer_is_adamw() {
         assert_eq!(OptimizerKind::default(), OptimizerKind::AdamW);
     }
 
@@ -1434,7 +1412,7 @@ mod tests {
                 .map(|layout| layout.variant.as_ffi())
                 .unwrap_or(0);
             assert_eq!(
-                OptimizerKind::from_ffi(kind.as_ffi().unwrap(), variant).unwrap(),
+                OptimizerKind::from_ffi(kind.as_ffi(), variant).unwrap(),
                 kind
             );
         }
