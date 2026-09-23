@@ -46,13 +46,7 @@ impl ValueHead {
     /// `V(s)` for one feature row.
     pub fn predict(&self, features: &[f32]) -> f32 {
         debug_assert_eq!(features.len(), self.dim);
-        self.bias
-            + self
-                .weights
-                .iter()
-                .zip(features)
-                .map(|(&w, &x)| w * x)
-                .sum::<f32>()
+        self.bias + dot(&self.weights, features)
     }
 
     /// `V(s)` for `features.len() / dim` row-major feature rows.
@@ -166,10 +160,48 @@ impl ValueHead {
     }
 }
 
+/// Independent partial sums of [`dot`]: enough to fill one 256-bit register,
+/// or two NEON ones.
+const DOT_LANES: usize = 8;
+
+/// `a · b` over `DOT_LANES` independent accumulators.
+///
+/// A single running `f32` sum is a serial dependency chain the compiler may
+/// not reorder, so it runs one add per FP latency; the critic evaluates this
+/// once per completion state per epoch, over the full hidden width, which makes
+/// it the fit's inner loop. Fixed lanes and a fixed reduction tree keep the
+/// result deterministic - it rounds differently from the serial sum, not
+/// differently from run to run.
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    let (a_chunks, a_tail) = a.as_chunks::<DOT_LANES>();
+    let (b_chunks, b_tail) = b.as_chunks::<DOT_LANES>();
+    let tail = a_tail.iter().zip(b_tail).map(|(&x, &y)| x * y).sum::<f32>();
+    let mut lanes = [0.0_f32; DOT_LANES];
+    for (x, y) in a_chunks.iter().zip(b_chunks) {
+        for lane in 0..DOT_LANES {
+            lanes[lane] += x[lane] * y[lane];
+        }
+    }
+    ((lanes[0] + lanes[4]) + (lanes[1] + lanes[5]))
+        + ((lanes[2] + lanes[6]) + (lanes[3] + lanes[7]))
+        + tail
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use retrograd_core::FeatureDtype;
+
+    #[test]
+    fn dot_covers_the_lanes_and_the_tail() {
+        // Integers are exact in f32, so any dropped or doubled term shows.
+        for len in [0, 1, 7, 8, 9, 16, 4099] {
+            let a = (0..len).map(|i| (i % 13) as f32 - 6.0).collect::<Vec<_>>();
+            let b = (0..len).map(|i| (i % 5) as f32 + 1.0).collect::<Vec<_>>();
+            let expected = a.iter().zip(&b).map(|(x, y)| x * y).sum::<f32>();
+            assert_eq!(dot(&a, &b), expected, "len {len}");
+        }
+    }
 
     #[test]
     fn a_narrow_store_fits_identically_on_values_it_represents_exactly() {
