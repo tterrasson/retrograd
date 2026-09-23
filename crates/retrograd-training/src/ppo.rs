@@ -17,7 +17,7 @@ use super::rollout::{
 use super::value::ValueHead;
 use super::{Boundary, Progress};
 use retrograd_config::{CriticConfig, PpoConfig};
-use retrograd_core::{Result, TrainConfig, TrainMetrics};
+use retrograd_core::{Error, Result, TrainConfig, TrainMetrics};
 use retrograd_engine::Trainer;
 use retrograd_metrics::MetricValue;
 use retrograd_observe::{ObserveBatch, RolloutBatch, TrajectoryObserver};
@@ -159,7 +159,7 @@ fn batch_advantages(
         // feature rows straight into the buffer the store lends it.
         let n_prompt = rollout.first_train_index()?;
         if rollout.train_mask[n_prompt..].iter().any(|&train| !train) {
-            return Err(retrograd_core::Error::invalid(
+            return Err(Error::invalid(
                 "the PPO critic requires a contiguous completion mask",
             ));
         }
@@ -236,7 +236,7 @@ pub fn run_resumed(
     let _entered = span.enter();
     let start_update = resume.map_or(0, |boundary| boundary.completed_iterations);
     if start_update >= config.updates as u64 {
-        return Err(retrograd_core::Error::checkpoint(format!(
+        return Err(Error::checkpoint(format!(
             "the checkpoint has {start_update} completed updates, at or past ppo.updates ({})",
             config.updates
         )));
@@ -251,10 +251,11 @@ pub fn run_resumed(
     // short completion skips its trailing ubatches and costs less than
     // `steps_per_row`. Re-sized after every update on the steps actually
     // taken, so a decaying schedule still lands on zero.
-    let total_steps = config.updates as u64
-        * config.ppo_epochs as u64
-        * config.rollout_batch_size as u64
-        * layout.steps_per_row;
+    let total_steps = u64::from(config.updates)
+        .checked_mul(u64::from(config.ppo_epochs))
+        .and_then(|value| value.checked_mul(config.rollout_batch_size as u64))
+        .and_then(|value| value.checked_mul(layout.steps_per_row))
+        .ok_or_else(|| Error::overflow("PPO optimizer step count overflows u64"))?;
     let mut horizon = SchedulerHorizon::new(total_steps, training.warmup_steps);
 
     let mut final_metrics = TrainMetrics::default();
