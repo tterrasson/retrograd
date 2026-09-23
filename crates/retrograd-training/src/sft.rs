@@ -23,18 +23,10 @@ pub fn prepare_eval(trainer: &Trainer, path: &Path, format: DataFormat) -> Resul
     Ok(data)
 }
 
-pub fn run_controlled(
-    trainer: &mut Trainer,
-    train: &PreparedDataset,
-    on_progress: &mut dyn FnMut(&mut Trainer, Progress) -> Result<bool>,
-) -> Result<retrograd_core::TrainMetrics> {
-    run_resumed(trainer, train, None, on_progress)
-}
-
-/// [`run_controlled`], restarting at the epoch boundary restored from a
-/// checkpoint. The epoch is the resume unit for SFT: within an epoch the
-/// runtime owns the row cursor, so restarting mid-epoch would replay or skip
-/// rows. The learning-rate horizon stays the full configured run.
+/// Runs SFT, restarting at the epoch boundary `resume` restores, if any. The
+/// epoch is the resume unit for SFT: within an epoch the runtime owns the row
+/// cursor, so restarting mid-epoch would replay or skip rows. The
+/// learning-rate horizon stays the full configured run.
 pub fn run_resumed(
     trainer: &mut Trainer,
     train: &PreparedDataset,

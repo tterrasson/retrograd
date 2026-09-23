@@ -238,31 +238,22 @@ pub fn run(
     training: &TrainConfig,
     on_progress: &mut dyn FnMut(Progress),
 ) -> Result<TrainMetrics> {
-    run_controlled(trainer, config, training, &mut |_, progress| {
-        if progress.metrics.epoch_complete {
-            on_progress(progress);
-        }
-        Ok(true)
-    })
-}
-
-pub fn run_controlled(
-    trainer: &mut Trainer,
-    config: &DistillConfig,
-    training: &TrainConfig,
-    on_progress: &mut dyn FnMut(&mut Trainer, Progress) -> Result<bool>,
-) -> Result<TrainMetrics> {
     run_resumed(
         trainer,
         config,
         training,
         &SharedTeacher::new(),
         None,
-        on_progress,
+        &mut |_, progress| {
+            if progress.metrics.epoch_complete {
+                on_progress(progress);
+            }
+            Ok(true)
+        },
     )
 }
 
-/// [`run_controlled`], restarting at a boundary restored from a checkpoint.
+/// [`run`], restarting at a boundary restored from a checkpoint.
 /// The update is the unit of resume and the cursor advances by exactly
 /// `prompts_per_update` per update, so the two agree by construction; the
 /// cursor is still what the boundary carries, for the reason `RunState` gives.

@@ -209,7 +209,7 @@ pub fn run(
     training: &TrainConfig,
     on_progress: &mut dyn FnMut(Progress),
 ) -> Result<TrainMetrics> {
-    run_controlled(trainer, config, training, &mut |_, progress| {
+    run_resumed(trainer, config, training, None, None, &mut |_, progress| {
         if progress.metrics.epoch_complete {
             on_progress(progress);
         }
@@ -217,16 +217,7 @@ pub fn run(
     })
 }
 
-pub fn run_controlled(
-    trainer: &mut Trainer,
-    config: &PpoConfig,
-    training: &TrainConfig,
-    on_progress: &mut dyn FnMut(&mut Trainer, Progress) -> Result<bool>,
-) -> Result<TrainMetrics> {
-    run_resumed(trainer, config, training, None, None, on_progress)
-}
-
-/// [`run_controlled`], restarting at a boundary restored from a checkpoint.
+/// [`run`], restarting at a boundary restored from a checkpoint.
 /// The prompt cursor is a pure function of the update index here, so only the
 /// completed-update count is used; the critic is rebuilt from scratch, which
 /// is why a PPO checkpoint marks its value head recreatable.

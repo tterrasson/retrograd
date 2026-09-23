@@ -444,21 +444,12 @@ pub fn run(
     training: &TrainConfig,
     on_progress: &mut dyn FnMut(Progress),
 ) -> Result<TrainMetrics> {
-    run_controlled(trainer, config, training, &mut |_, progress| {
+    run_resumed(trainer, config, training, None, None, &mut |_, progress| {
         if progress.metrics.epoch_complete {
             on_progress(progress);
         }
         Ok(true)
     })
-}
-
-pub fn run_controlled(
-    trainer: &mut Trainer,
-    config: &GrpoConfig,
-    training: &TrainConfig,
-    on_progress: &mut dyn FnMut(&mut Trainer, Progress) -> Result<bool>,
-) -> Result<TrainMetrics> {
-    run_resumed(trainer, config, training, None, None, on_progress)
 }
 
 /// Everything a GRPO run establishes before its first update, plus the state
@@ -601,7 +592,7 @@ fn resume_state(
     })
 }
 
-/// [`run_controlled`], restarting at a boundary restored from a checkpoint.
+/// [`run`], restarting at a boundary restored from a checkpoint.
 /// `resume` carries the number of completed updates and the prompt cursor;
 /// both are needed because dynamic sampling makes the cursor independent of
 /// the update index. The learning-rate horizon is unchanged, so a resumed run
