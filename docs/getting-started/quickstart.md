@@ -1,43 +1,48 @@
 # Quickstart
 
-This guide runs a small supervised fine-tuning (SFT) job. You need a local GGUF
-model, Rust with Cargo, and a writable directory for the adapter and checkpoints.
-Run the commands from the repository root. Retrograd does not download or
-convert models for you.
+This page trains a small LoRA adapter with supervised fine-tuning (SFT). You
+need Rust with Cargo, a local GGUF model, and the repository cloned with its
+submodule. Retrograd does not download or convert models.
 
-## 1. Build the CLI
+## 1. Build
 
 ```bash
+git clone --recurse-submodules https://github.com/tterrasson/retrograd.git
+cd retrograd
 cargo build --release
 ```
 
-The binary is written to `target/release/retrograd`. Check that it can load the
-model before training:
+The binary is `target/release/retrograd`. On macOS the default build includes
+Metal; elsewhere it is CPU-only. See [Build variants](../reference/builds) for
+CUDA and Vulkan.
+
+Check that the model loads:
 
 ```bash
-./target/release/retrograd inspect --model /path/to/base.gguf --device auto
+./target/release/retrograd inspect --model /path/to/base.gguf
 ```
 
-Use `--device cpu` for a CPU-only run, or `--device gpu` to require an available
-compiled GPU backend. `auto` uses an available compiled GPU backend and otherwise
-falls back to CPU. See [Build variants](../reference/builds) to enable a backend.
+::: tip Smoke test
+`examples/smoke_tiny_sft.toml` trains a rank-1 adapter in seconds. Run it with
+`--model /path/to/base.gguf`, or run `scripts/fetch-cpu-fixture.sh` first to
+use the bundled tiny test model.
 
-## 2. Create a dataset
+```bash
+./target/release/retrograd train examples/smoke_tiny_sft.toml --model /path/to/base.gguf
+```
+:::
 
-For a first run, use a plain text file such as `data/train.txt`:
+## 2. Write a dataset
 
-```text
-Question: ping
-Answer: pong
+Save a few examples as `data/train.jsonl`, one conversation per line:
 
-Question: red
-Answer: blue
-
-Question: small
-Answer: tiny
+```jsonl
+{"messages":[{"role":"user","content":"ping"},{"role":"assistant","content":"pong"}]}
+{"messages":[{"role":"user","content":"red"},{"role":"assistant","content":"blue"}]}
 ```
 
-See [Datasets and paths](./datasets) for chat JSONL and validation rules.
+Only assistant messages are trained. See [Datasets](./datasets) for plain text
+and validation rules.
 
 ## 3. Write a configuration
 
@@ -46,102 +51,61 @@ Save this as `configs/quickstart.toml`:
 ```toml
 [run]
 algorithm = "sft"
-verbose = true
 
 [model]
 path = "/path/to/base.gguf"
-device = "auto"
 
 [output]
-path = "../artifacts/quickstart-adapter.gguf"
+path = "../artifacts/adapter.gguf"
 
 [lora]
 rank = 8
 alpha = 16.0
-seed = 42
-dtype = "f16"
 
 [training]
 ctx = 256
-micro_batch = 32
-gradient_accumulation = 1
 epochs = 2
 lr = 0.0001
-lr_scheduler = "constant"
-warmup_steps = 0
-weight_decay = 0.0
-max_grad_norm = 1.0
 
 [sft]
-data = "../data/train.txt"
-data_format = "text"
-shuffle = true
-
-[checkpoint]
-directory = "../artifacts/quickstart-checkpoints"
-mode = "steps"
-every_steps = 50
+data = "../data/train.jsonl"
 ```
 
-Relative paths in the TOML file resolve against the directory containing that
-file. `[output].path` and `[checkpoint].directory` must point to writable
-locations.
+Relative paths resolve against the directory of the TOML file. Unknown keys
+are errors, so a typo never goes unnoticed.
 
-The configuration is strict. Unknown keys are rejected, and only the section
-matching `[run].algorithm` may be present. For example, an SFT file must contain
-`[sft]` and must not also contain `[ppo]` or `[grpo]`.
-
-## 4. Run training
+## 4. Train
 
 ```bash
 ./target/release/retrograd train configs/quickstart.toml
 ```
 
-The CLI reports the selected model, output adapter, progress, loss, and
-throughput. At the end, the adapter is available at the configured
-`[output].path`. Interrupting a run does not create a resumable checkpoint
-unless `[checkpoint]` is configured.
+The adapter is written to `[output].path` at the end of the run. Add a
+[`[checkpoint]`](../operations/checkpoints) section to make a run resumable.
 
-## 5. Test the adapter
+## 5. Try the adapter
 
-Run a benchmark against a compatible evaluation file:
-
-```bash
-./target/release/retrograd bench configs/quickstart.toml \
-  --data data/eval.txt \
-  --adapter artifacts/quickstart-adapter.gguf
-```
-
-Or start an interactive session:
+Chat with the base model and the adapter side by side:
 
 ```bash
 ./target/release/retrograd chat configs/quickstart.toml \
-  --adapter artifacts/quickstart-adapter.gguf \
-  --compare
+  --adapter artifacts/adapter.gguf --compare
 ```
 
-The `chat` command uses the model's GGUF chat template. A text SFT dataset is
-not automatically a chat template; use chat JSONL when the model expects
-role-tagged conversations.
-
-The adapter is a standalone LoRA GGUF. It works with the base model it was
-trained on - same architecture and tensor names - for example through
-`llama-cli`:
+The adapter is a standard LoRA GGUF, so llama.cpp loads it as well:
 
 ```bash
-llama-cli -m /path/to/base.gguf --lora artifacts/quickstart-adapter.gguf \
-  -p "Question: ping\nAnswer:" -n 64
-llama-cli -m /path/to/base.gguf --lora-scaled artifacts/quickstart-adapter.gguf:0.5 \
-  -p "Question: ping\nAnswer:" -n 64
+llama-cli -m /path/to/base.gguf --lora artifacts/adapter.gguf -p "ping"
 ```
 
-## Choosing an algorithm
+## Next steps
 
-Use SFT when each training example includes the response that should be
-learned. Use PPO when an external program can return one scalar reward for each
-sampled response. Use GRPO when each prompt can be sampled several times and
-the reward is most useful as a ranking within that group.
+Pick the algorithm that matches the signal you have:
 
-- [SFT training](../training/sft)
-- [PPO training](../training/ppo)
-- [GRPO training](../training/grpo)
+| You have | Use |
+| --- | --- |
+| Example answers | [SFT](../training/sft) |
+| A program that scores one answer | [PPO](../training/ppo) |
+| A program that scores and ranks several answers to the same prompt | [GRPO](../training/grpo) |
+| Tasks that need tool calls over several turns | [Agentic GRPO](../training/agent) |
+| A larger model that already behaves well | [Distillation](../training/distill) |

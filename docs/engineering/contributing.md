@@ -116,8 +116,7 @@ tests](./tests/notice) before changing a schedule, an emitter or a registry.
 
 - An option, a default or a command: the [Reference](/reference/configuration)
   or [CLI](/reference/cli) documentation.
-- A training behavior: the [SFT](/training/sft), [PPO](/training/ppo) or
-  [GRPO](/training/grpo) guides.
+- A training behavior: the guide of that algorithm under [Training](/training/sft).
 - An HTTP contract: [server errors](./server/ERRORS).
 - A hardware compatibility state: [support](./SUPPORT) or
   [CUDA](./cuda/STATUS).

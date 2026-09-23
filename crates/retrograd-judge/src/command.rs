@@ -5,7 +5,7 @@
 //! backend is reached through `&self` from an async runtime, whereas a
 //! persistent worker is a mutable session with a lifetime; the trainer's own
 //! `reward_command`, which owns one for the length of its loop, is where the
-//! spawn is worth amortizing (`docs/engineering/GRPO.md`).
+//! spawn is worth amortizing (`docs/training/ppo.md`, "Reward program").
 
 use std::time::Duration;
 

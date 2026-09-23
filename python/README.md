@@ -236,15 +236,17 @@ validated Python value object.
 `Trainer.fit_agentic_grpo()` keeps multi-turn collection, MCP calls, RULER
 scoring and the GRPO update in Rust. `Trainer.train_grpo_batch()` is the
 lower-level convergence point for externally collected `TrainSequence`
-objects. See [`../docs/engineering/AGENTIC_GRPO.md`](../docs/engineering/AGENTIC_GRPO.md) for the
-configuration, safety invariants and complete examples.
+objects; calling it once per update needs `scheduler_total_rollouts`, the number
+of sequences the whole run will train, unless `scheduler="constant"`. See
+[`../docs/training/agent.md`](../docs/training/agent.md) for the configuration,
+tools and environments.
 
 See [`examples/sft.py`](examples/sft.py) for a complete training lifecycle.
 
 ## Offline sequence-KD
 
 `scripts/sequence_kd.py` samples a teacher over a prompt-only chat JSONL, filters
-the candidates, and writes an ordinary chat corpus — so training on a teacher's
+the candidates, and writes an ordinary chat corpus, so training on a teacher's
 answers is a plain `sft` run and needs nothing new anywhere:
 
 ```sh

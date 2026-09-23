@@ -1,69 +1,62 @@
-# Datasets and paths
+# Datasets
 
-Retrograd reads files from the machine running the CLI. A relative path is
-resolved against the TOML file's directory, not against the current shell
-directory.
-
-## Plain text
-
-Set `data_format = "text"` for an SFT text file. The file is tokenized as a
-stream and split into overlapping context windows. Text mode does not identify
-prompts and answers, so every token is a training target.
-
-```toml
-[sft]
-data = "data/train.txt"
-data_format = "text"
-```
-
-For SFT, `.txt` and `.md` paths are inferred as text when `data_format` is
-omitted.
+Paths in a configuration resolve against the directory of the TOML file, not
+the shell's working directory. Paths passed on the command line (`--model`,
+`--data`, …) resolve against the working directory.
 
 ## Chat JSONL
 
-Each non-empty line is one JSON object with a `messages` array. Every message
-has a `role` and `content`. The accepted roles are `system`, `user`, and
-`assistant`.
+One JSON object per line, with a `messages` array. Roles are `system`, `user`
+and `assistant`:
 
 ```jsonl
 {"messages":[{"role":"system","content":"Answer briefly."},{"role":"user","content":"What is 2 + 2?"},{"role":"assistant","content":"4"}]}
 {"messages":[{"role":"user","content":"Name a primary color."},{"role":"assistant","content":"Blue."}]}
 ```
 
-Chat JSONL is used for SFT data, PPO prompts, GRPO prompts, and evaluation
-files. Its role determines the final-message requirement:
+Rules:
 
-- `messages` is not empty.
-- Content is not empty.
-- Roles are only `system`, `user`, or `assistant`.
-- User and assistant turns alternate after optional system messages.
-- An SFT record must contain at least one assistant message.
-- A PPO or GRPO prompt record must end in a non-empty user message.
+- No empty `messages` array and no empty `content`.
+- After optional system messages, user and assistant turns alternate.
+- **SFT** data needs at least one assistant message. Only assistant content is
+  trained; system and user content is context.
+- **PPO, GRPO and distillation** prompts must end with a user message. The
+  model generates the assistant reply.
 
-During SFT, only assistant content becomes a training target. System and user
-content provides context and is masked from the loss. During PPO and GRPO, the
-assistant turn is generated after the final user message.
+Conversations are rendered with the model's own GGUF chat template. A malformed
+line is reported with its file and line number.
 
-For SFT, `.jsonl` and `.json` paths are inferred as chat JSONL. For another
-extension, set `data_format = "jsonl"` explicitly; if no format is given, the
-loader can also recognize a file whose first non-empty line starts with `{`.
-PPO and GRPO prompts are always chat JSONL.
+## Plain text
 
-## Training and evaluation files
+SFT also accepts plain text. The file is tokenized as one stream and split into
+context windows; every token is trained.
 
-The optional `[evaluation]` section points to a held-out file. Keep it separate
-from training data. For SFT, evaluation measures loss on assistant tokens. For
-PPO and GRPO, evaluation generates responses and sends them through the same
-reward path or evaluation configuration used by the run.
+```toml
+[sft]
+data = "data/train.txt"
+```
+
+## Format detection
+
+For `[sft].data`, `.jsonl` and `.json` are read as chat JSONL, `.txt` and `.md`
+as text. For any other extension, a file whose first non-empty line starts with
+`{` is read as JSONL; set `data_format = "jsonl"` or `"text"` to be explicit.
+Prompt files for PPO, GRPO and distillation are always chat JSONL.
+
+## Evaluation data
+
+`[evaluation]` points to a held-out file in the same format as the training
+data. Keep it separate from the training set.
 
 ```toml
 [evaluation]
 data = "data/eval.jsonl"
-every_iterations = 1
-max_examples = 100
-patience = 3
-min_delta = 0.0
+every_iterations = 1   # every SFT epoch, or every rollout update
+max_examples = 100     # rollout algorithms: cap on generated examples
+patience = 3           # stop after 3 evaluations without improvement
 ```
 
-The loader reports the file and line number for malformed JSONL records. Fix
-the source record rather than deleting the error from the dataset.
+SFT measures loss on assistant tokens. PPO and GRPO generate one answer per
+held-out prompt and report the mean reward. See
+[Checkpoints](../operations/checkpoints#keep-the-best-evaluation) to keep the
+best result.

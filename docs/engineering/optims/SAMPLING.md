@@ -8,9 +8,8 @@ total sampling-phase time 116.4 → 42.3 s, now of the same order as the
 optimizer (20.4 s), which becomes the dominant cost again.
 
 This document describes the current architecture of the sampling path and the
-invariants that justify it. For optimizer-step memory and performance, see the
-documents linked from
-[`GRPO.md`](../GRPO.md#fast-sampling-context-default); for test lanes, see
+invariants that justify it. For the user-facing memory controls, see
+[Performance and memory](/operations/performance); for test lanes, see
 [`../tests/notice.md`](../tests/notice.md).
 
 ## Original finding: prefill dominates, not decoding

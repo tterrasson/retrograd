@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: Retrograd
-  text: LoRA and full-weight training from GGUF models
-  tagline: Train a LoRA adapter, or full/partial base weights, on a GGUF model with SFT, PPO, or GRPO. One TOML file, no Python training stack.
+  text: Fine-tune GGUF models directly
+  tagline: Train a LoRA adapter or the model's own weights with SFT, PPO, GRPO, agentic GRPO or distillation. One TOML file, one binary, no Python stack.
   image:
     src: /logo.png
     alt: Retrograd
@@ -17,58 +17,32 @@ hero:
       link: /reference/configuration
 
 features:
-  - title: SFT - Supervised fine-tuning
-    details: Train against known assistant responses in chat JSONL or plain text. The direct choice when the dataset already contains the behavior the model should reproduce.
+  - title: SFT
+    details: Learn from example answers in chat JSONL or plain text.
     link: /training/sft
-    linkText: SFT guide
-  - title: PPO - Proximal policy optimization
-    details: Sample one completion per prompt, score it with an external reward command, and update with an exact clipped-surrogate gradient. An optional critic estimates per-token values and lowers variance.
-    link: /training/ppo
-    linkText: PPO guide
-  - title: GRPO - Group-relative policy optimization
-    details: Sample a group of completions per prompt and center rewards within the group. Best when rewards rank alternatives without a stable absolute scale. Supports an optional judge and container-backed agentic rollouts.
+  - title: PPO and GRPO
+    details: Learn from a reward program that scores the model's own answers.
     link: /training/grpo
-    linkText: GRPO guide
-  - title: Distillation - on-policy and offline top-k
-    details: Train a small student to match a larger teacher's policy. On-policy, the student samples and the teacher scores the same tokens; offline, the teacher's truncated distribution over a fixed corpus is computed once and trained against. The choice when you have a model that already behaves well and no way to score an answer.
+  - title: Agentic GRPO
+    details: Multi-turn training with tool calls, MCP servers and sandboxed environments.
+    link: /training/agent
+  - title: Distillation
+    details: Make a small model behave like a larger one, with no reward needed.
     link: /training/distill
-    linkText: Distillation guide
 ---
 
-## Start here
+## How it works
 
-1. [Build Retrograd and run a small SFT job](/getting-started/quickstart).
-2. [Prepare text or chat JSONL data](/getting-started/datasets).
-3. Choose [SFT](/training/sft), [PPO](/training/ppo), [GRPO](/training/grpo) or
-   [distillation](/training/distill) for the learning signal you have.
-
-## What Retrograd changes
-
-By default the base model stays frozen: training updates the LoRA tensors and
-writes them to the path in `[output]`. Setting `training.trainable` to
-`full`, `partial`, or `hybrid` instead trains base weight tensors directly,
-either every one of them, a named subset (by layer, module, norms, biases,
-output head), or a subset alongside an adapter, and writes the changed
-tensors to `[output]`. The default optimizer is AdamW; `training.optimizer`
-also accepts `sgd`, `muon`, and `gefen`. The training binary reads a GGUF
-model and a TOML configuration; it does not require a Python training
-framework.
-
-The main CLI commands are:
+Retrograd loads a GGUF model as is, with no conversion, and trains it with
+`ggml` on CPU, Metal, Vulkan or CUDA. By default it trains a LoRA adapter,
+written as a standard GGUF that llama.cpp loads with `--lora`. It can also
+train some or all of the model's weights.
 
 ```text
-retrograd train CONFIG.toml
-retrograd bench CONFIG.toml
-retrograd chat CONFIG.toml
-retrograd inspect --model MODEL.gguf
-retrograd preflight --model MODEL.gguf
+retrograd inspect --model base.gguf    # check the model and pick LoRA targets
+retrograd train run.toml               # train
+retrograd bench run.toml --adapter adapter.gguf   # compare base and adapter
+retrograd chat run.toml --compare      # try it interactively
 ```
 
-## Reference and operations
-
-- [Configuration reference](/reference/configuration) - every supported TOML setting.
-- [CLI reference](/reference/cli) - commands, overrides, and runtime environment variables.
-- [Build variants](/reference/builds) - CPU, CUDA, Vulkan, Metal, and container-enabled builds.
-- [Checkpoints and monitoring](/operations/checkpoints) - save, resume, and inspect runs.
-- [Profiling](/operations/profiling) - measure GRPO and agentic-GRPO phases.
-- [Engineering documentation](/engineering/) - implementation contracts, RIR notes, backend status, and test lanes.
+Start with the [quickstart](/getting-started/quickstart).

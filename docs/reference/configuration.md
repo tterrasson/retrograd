@@ -1,406 +1,404 @@
 # Configuration reference
 
-Retrograd uses one strict TOML document per run. The `[run].algorithm` value
-selects exactly one algorithm section: `[sft]`, `[ppo]`, `[grpo]`, `[distill]`,
-or `[agent]` when the value is `agent_grpo`. Unknown keys and unrelated
-algorithm sections are rejected.
+A run is described by one TOML file. `[run].algorithm` selects the algorithm
+and its section: `[sft]`, `[ppo]`, `[grpo]`, `[distill]`, or `[agent]` for
+`agent_grpo`. Unknown keys, and sections that do not apply to the run, are
+errors. Relative paths resolve against the directory of the TOML file.
 
-## Shared sections
+## Common sections
 
 ### `[run]`
 
 | Key | Default | Description |
 | --- | ---: | --- |
-| `algorithm` | required | `sft`, `ppo`, `grpo`, `distill`, or `agent_grpo`. |
-| `verbose` | `false` | Enable additional runtime logging. |
+| `algorithm` | required | `sft`, `ppo`, `grpo`, `distill` or `agent_grpo`. |
+| `verbose` | `false` | Extra runtime logging. |
 
 ### `[model]`
 
 | Key | Default | Description |
 | --- | ---: | --- |
-| `path` | required after overrides | Base GGUF model. Relative paths use the TOML directory. |
-| `device` | `auto` | `auto`, `cpu`, or `gpu`. `gpu` fails if no compiled GPU backend is available. |
-
-The CLI `--model` and `--device` flags override these values. A model path must
-come from either the document or the CLI.
-
-### `[lora]`
-
-Required when the run trains an adapter (`training.trainable = "lora"`, the
-default, or `"hybrid"`). Refused for `"full"` and `"partial"`, which train base
-tensors and create no adapter.
-
-| Key | Default | Description |
-| --- | ---: | --- |
-| `rank` | `8` | LoRA rank. Higher values add trainable parameters. |
-| `alpha` | `16.0` | LoRA scaling; the effective scale is `alpha / rank`. |
-| `seed` | `42` | Adapter initialization and SFT shuffle seed. |
-| `targets` | seven common targets | Aliases: `q`, `k`, `v`, `o`, `ffn_up`, `ffn_down`, `ffn_gate`. Patterns containing `*` or `.weight` are used as literal tensor patterns. `auto` asks the runtime to select architecture-specific targets. |
-| `dtype` | `f16` | Adapter matrix storage: `f16` or `f32`. Optimizer moments remain F32. |
-| `init_adapter` | none | Load an existing adapter GGUF as a cold adapter start. Cannot be combined with rank, alpha, seed, dtype, targets, or `checkpoint.resume_from`. |
+| `path` | required | Base GGUF model. Can be given with `--model` instead. |
+| `device` | `auto` | `auto` (GPU if available, else CPU), `cpu`, or `gpu` (fail without a GPU). |
 
 ### `[output]`
 
-Where the run writes its result, and which kind of result it is. A run that
-does not name `[output].path` is rejected.
+| Key | Default | Description |
+| --- | ---: | --- |
+| `path` | required | Where the result is written. |
+| `kind` | see below | `adapter`, `trainable` or `model`. |
+
+| `kind` | Contents | Allowed with |
+| --- | --- | --- |
+| `adapter` | A standard LoRA GGUF, loadable by llama.cpp. Default for `lora`. | `lora` |
+| `trainable` | The trained base tensors (and the adapter for `hybrid`). Needs the base model and Retrograd to load. Default otherwise. | `full`, `partial`, `hybrid` |
+| `model` | A complete standalone GGUF with the trained weights. | `full`, `partial` |
+
+### `[lora]`
+
+Required when `training.trainable` is `lora` (the default) or `hybrid`;
+refused otherwise.
 
 | Key | Default | Description |
 | --- | ---: | --- |
-| `path` | required | Destination file. |
-| `kind` | `adapter` for `lora`, `trainable` otherwise | `adapter` is a portable LoRA GGUF. `trainable` is a Retrograd bundle: the trained base tensors by absolute value, plus the adapter beside it for a hybrid run; it requires the matching base model and this loader. `model` is a standalone GGUF that needs neither the source model nor this loader: the file the model was loaded from, with the trained weights in it. |
+| `rank` | `8` | Adapter rank. |
+| `alpha` | `16.0` | Scale; the effective scale is `alpha / rank`. |
+| `seed` | `42` | Initialization seed, also used to shuffle SFT data. |
+| `targets` | `q, k, v, o, ffn_up, ffn_down, ffn_gate` | Aliases, tensor patterns (`blk.*.attn_q.weight`), or `auto` for architecture-specific targets. `retrograd inspect` lists the candidates. |
+| `dtype` | `f16` | Adapter storage: `f16` or `f32`. |
+| `init_adapter` | none | Start from an existing adapter GGUF (weights only, no optimizer state). Excludes the other keys and `--resume`. |
 
-A kind the policy does not produce is rejected rather than defaulted: `adapter`
-for a run that trains no adapter would be an empty file, `adapter` for a hybrid
-run would drop its trained base tensors, and `trainable` for a LoRA run has no
-base tensor to carry.
+### `[trainable]` {#trainable}
 
-`model` belongs to `full` and `partial`, the two policies whose whole result is
-in the weights. `lora` and `hybrid` are rejected: folding an adapter into the
-weights it multiplies is a merge with no parity coverage here, and a model
-written around it would load and not be the run. Two further checks run before
-the first step rather than after the last one - the architecture must be one
-this build has written and loaded back, and the filesystem under
-`[output].path` must have room for a file the size of the model.
-
-### `[trainable]`
-
-Which base tensors a `partial` or `hybrid` run trains. Required by those two,
-rejected beside `training.trainable = "lora"` (a selector the policy ignores is
-a selector you believe is in effect) and beside `"full"`, which derives every
-supported eligible tensor and takes no narrowing selector.
+Selects base tensors for `training.trainable = "partial"` or `"hybrid"`.
+Refused for `lora` and `full`.
 
 | Key | Default | Description |
 | --- | ---: | --- |
-| `layers` | all blocks | `all`, `last:<count>`, or an inclusive `<first>..<last>`. Bounds-checked against the model. |
-| `modules` | none | Module aliases (`attn`, `ffn`), individual stems (`attn_q`), or explicit tensor patterns. Norms are not modules: they follow `norms`. |
-| `norms` | `false` | Every norm: the in-range block norms, and every norm carrying no block index. |
-| `biases` | `false` | The `.bias` tensors of the selected modules. |
-| `output_head` | `false` | The output projection **and its bias**, independently of the layer range. A head sharing the input-embedding storage stays frozen and asking for it is an error. |
+| `layers` | all | `all`, `last:<n>`, or `<first>..<last>` (inclusive). |
+| `modules` | none | `attn`, `ffn`, a single projection (`attn_q`), or a tensor pattern. |
+| `norms` | `false` | Train normalization weights. |
+| `biases` | `false` | Train the biases of the selected modules. |
+| `output_head` | `false` | Train the output projection. Not possible when it shares storage with the input embedding. |
 
-At least one of `modules`, `norms`, `biases` or `output_head` must select
-something. `hybrid` initially permits only `norms` and `biases` beside the
-adapter. Quantized tensors are never selected; a quantized model may still
-carry trainable F32 norms, and selection validates the *selected* tensors
-rather than the model's dominant dtype. The resolved exclusions - input
-embedding, rotary constants (wherever they sit, including inside a block), a
-tied head, unsupported dtypes, duplicate storage - are reported at the start of
-the run.
-
-Selecting the output head changes the loss graph. The fused cross-entropy
-folds the projection into the loss and differentiates only its input, so a run
-that trains the head takes the dense path instead: `training.chunked_cross_entropy`
-is honoured for every other selection and resolved off for this one. The
-backend report and the training preflight both name the result as `loss_path`,
-and the planner budgets the vocabulary buffer the dense path allocates.
+At least one selector must match something. `hybrid` allows only `norms` and
+`biases` next to the adapter. Quantized tensors, the input embedding and
+rotary constants are never trained; the run lists what it excluded at start-up.
 
 ### `[training]`
 
 | Key | Default | Description |
 | --- | ---: | --- |
-| `trainable` | `lora` | Which family of parameters this run trains: `lora`, `full`, `partial`, or `hybrid`. A base weight is trained at the precision its file stores it at - nothing is converted - so which precisions a run may select depends on the optimizer and the device: see [Base-weight storage precision](../engineering/SUPPORT#base-weight-storage-precision). A selected tensor in a precision no row admits is refused before the graph, by name. |
-| `optimizer` | `adamw` | `adamw`, `sgd`, `muon` or `gefen`. Each has its own knobs under `[optimizer.<name>]`. AdamW and SGD write a half-precision parameter (F16 or BF16); Muon and Gefen write F32 only, so either is rejected beside the default F16 adapter. Gefen's update has a CPU and a Metal implementation and is refused at preflight where the live device carries neither, because its state mutations must not run on a fallback backend. `cap_opt_step_device` in the backend report is that answer. |
-| `ctx` | `128` | Trained context window in tokens. |
-| `micro_batch` | `32` | Physical forward/backward width and primary activation-memory control. |
-| `gradient_accumulation` | `1` for SFT; derived for rollout | Micro-batches per optimizer step. Its product with `micro_batch` must divide `ctx`. Rollout algorithms default to `ctx / micro_batch`. |
-| `shared_prefix_fanout` | `auto` | GRPO physical fanout for completions sharing a prompt: `auto`, `off`, `max`, or an integer of at least `2`. |
-| `threads` | `0` | CPU worker threads; `0` selects automatically. `RETRO_THREADS` overrides it. |
-| `epochs` | `1` | SFT passes. PPO and GRPO use their own epoch counters. |
-| `lr` | `0.0001` | Base learning rate of the chosen optimizer. |
-| `weight_decay` | `0.0` | Decoupled weight decay, applied to the old weights. |
-| `max_grad_norm` | `1.0` | Global L2 gradient clipping threshold. |
-| `lr_scheduler` | `constant` | `constant`, `linear`, or `cosine`. |
-| `warmup_steps` | `0` | Learning-rate warmup steps. |
-| `fast_sampling_context` | `true` | Use F16 KV storage and flash attention in the dedicated generation context. Set `false` for bit-exact sampling context behavior. |
-| `kv_dtype` | `f16` | Optimizer-context KV storage: `f16` or `f32`. The runtime may fall back to F32 when the device cannot use the requested path. |
-| `generation_concurrency` | derived for GRPO | Live rollout sequences. Supported for GRPO and agent GRPO; bounded by the optimizer window, rollout count, and `256`. |
-| `generation_batch` | derived | Generation batch size. The runtime derives a value within its output-logits memory budget. |
-| `chunked_cross_entropy` | `true` | Stream vocabulary tiles for packed GRPO/agent training. Resolved off for a run that trains the output head, which needs the dense loss path. |
-| `chunked_ce_tiles` | `8` | Number of vocabulary tiles when chunked cross entropy is enabled. |
-| `chunked_ce_seq_chunk` | `512` | Flattened token chunk size for the tiled intermediate; `0` processes all tokens at once. |
-| `gradient_checkpointing` | `false` | Recompute transformer activations to reduce the activation peak. |
-| `checkpoint_every_n_layers` | `4` | Retained activation checkpoint stride when checkpointing is enabled. |
-| `checkpoint_dtype` | `f32` | Retained activation precision: `f32`, `f16`, or `bf16`. Non-F32 values require gradient checkpointing. |
-| `master_weights` | `auto` | F32 master copy of every half-precision base weight: `auto`, `f32`, or `off`. `auto` keeps one exactly when a marked base tensor is half precision. Costs four bytes per trained element and is what makes a rate below one unit in the last place of the store trainable rather than refused. |
-| `require_gpu_resident` | `false` | Fail preflight if a training-graph operation would fall back to CPU. |
-| `max_gpu_duty_cycle` | `1.0` | Upper bound on the fraction of wall time the trainer waits on GPU work it submitted, so another workload gets regular compute windows. Finite, in `(0, 1]`. Releases compute, not VRAM. Accepted but inactive on a CPU device. |
+| `trainable` | `lora` | `lora`, `full`, `partial` or `hybrid`. See [SFT](../training/sft#training-base-weights). |
+| `optimizer` | `adamw` | `adamw`, `sgd`, `muon` or `gefen`. |
+| `lr` | `0.0001` | Learning rate. |
+| `lr_scheduler` | `constant` | `constant`, `linear` or `cosine`. `linear` and `cosine` decay to zero by the end of the run. |
+| `warmup_steps` | `0` | Warm-up steps. |
+| `weight_decay` | `0.0` | Decoupled weight decay. |
+| `max_grad_norm` | `1.0` | Global gradient-norm clipping. |
+| `epochs` | `1` | Passes over the SFT dataset. Rollout algorithms use their own counters. |
+| `ctx` | `128` | Context length in tokens. |
+| `micro_batch` | `32` | Tokens per forward/backward pass. The main memory knob. |
+| `gradient_accumulation` | `1` | Passes per optimizer step; `micro_batch × gradient_accumulation` must divide `ctx`. Fixed to `ctx / micro_batch` for rollout algorithms: leave it out. |
+| `threads` | `0` | CPU threads; `0` is automatic. |
+| `generation_concurrency` | derived | Answers generated at once (GRPO, agentic GRPO, distillation). Lower to save memory. |
+| `generation_batch` | derived | Generation batch size. |
+| `shared_prefix_fanout` | `auto` | GRPO packing of answers that share a prompt: `auto`, `off`, `max`, or an integer ≥ 2. |
+| `fast_sampling_context` | `true` | F16 KV cache and flash attention for generation. `false` for bit-exact sampling. |
+| `kv_dtype` | `f16` | KV cache type for training: `f16` or `f32`. Falls back to F32 when the device requires it. |
+| `gradient_checkpointing` | `false` | Recompute activations to save memory. |
+| `checkpoint_every_n_layers` | `4` | Checkpoint stride when gradient checkpointing is on. |
+| `checkpoint_dtype` | `f32` | Stored activation precision: `f32`, `f16` or `bf16`. Needs gradient checkpointing. |
+| `chunked_cross_entropy` | `true` | Compute the loss in vocabulary tiles to save memory (rollout algorithms). |
+| `chunked_ce_tiles` | `8` | Number of vocabulary tiles. |
+| `chunked_ce_seq_chunk` | `512` | Tokens per tile chunk; `0` for all at once. |
+| `master_weights` | `auto` | F32 master copy for F16/BF16 base weights: `auto`, `f32` or `off`. Costs 4 bytes per trained parameter. |
+| `require_gpu_resident` | `false` | Fail if any training operation would run on the CPU. |
+| `max_gpu_duty_cycle` | `1.0` | Cap on the share of time spent on the GPU, in `(0, 1]`. See [Performance](../operations/performance#sharing-a-gpu). |
+
+**Optimizers.** AdamW and SGD can update F16 and BF16 weights. Muon and Gefen
+update F32 weights only, so they need `lora.dtype = "f32"` for an adapter. The
+last two read their settings from `[optimizer.<name>]`; parameters they do not
+handle are updated with AdamW.
 
 ### `[optimizer.muon]`
 
-Present only when `training.optimizer = "muon"`. Muon orthogonalizes the
-momentum of eligible **hidden base matrices** - tensors with exactly two
-non-trivial logical dimensions, excluding embeddings, the output head, norms
-and biases by role. Everything else, including LoRA factors, is updated by
-AdamW at `fallback_learning_rate`. Eligibility is fixed policy and has no key.
+Muon applies to 2-D hidden weight matrices; everything else, including LoRA
+factors, uses AdamW at `fallback_learning_rate`.
 
 | Key | Default | Description |
 | --- | ---: | --- |
-| `momentum` | `0.95` | EMA coefficient of the first moment, in `[0, 1]`. |
-| `nesterov` | `true` | Use the updated momentum in the direction. |
-| `ns_steps` | `5` | Newton-Schulz iterations; at least `1`. Structural: it decides the size of the update graph. |
-| `ns_epsilon` | `1e-7` | Added to the Frobenius norm before normalizing. |
-| `fallback_learning_rate` | `0.001` | Rate for the parameters Muon declines. Its own value, not a ratio of `training.lr`: an orthogonalized update and an AdamW one are not in the same units. The schedule scales both. |
-
-Muon keeps one F32 momentum per eligible parameter (`4N`) and AdamW's pair for
-the rest. Its weights are F32 only.
+| `momentum` | `0.95` | Momentum coefficient, in `[0, 1]`. |
+| `nesterov` | `true` | Nesterov momentum. |
+| `ns_steps` | `5` | Newton-Schulz iterations. |
+| `ns_epsilon` | `1e-7` | Normalization epsilon. |
+| `fallback_learning_rate` | `0.001` | AdamW learning rate for parameters Muon does not handle. |
 
 ### `[optimizer.gefen]`
 
-Present only when `training.optimizer = "gefen"`. Fixed-block second moments,
-with an optional quantized first moment. Experimental: `variant` selects a slot
-layout, so a checkpoint written under one is not readable as the other.
+Experimental. Block-wise second moments to reduce optimizer memory.
 
 | Key | Default | Description |
 | --- | ---: | --- |
-| `variant` | `shared_v` | `shared_v` keeps an F32 first moment and one F32 second moment per block (`4N + 4K`). `quantized_m` stores the first moment as one unsigned byte per element against a shared 256-entry codebook, with an F32 scale and second moment per block (`N + 8K`). |
-| `block_size` | `1024` | Elements per block; a positive power of two. A partial trailing block still costs a row. |
-| `min_numel` | `4096` | Below this element count a selected parameter falls back to AdamW, and its fallback state is part of the reported total. |
-| `codebook` | `uniform` | Only `uniform` exists. A learned codebook needs a pinned algorithm and checkpointed learning state, so it is rejected rather than accepted and ignored. |
-| `codebook_levels` | `256` | `quantized_m` only, and exactly `256`: the index is one unsigned byte. |
-| `partition` | `fixed` | Only `fixed` exists, for the same reason as `codebook`. |
+| `variant` | `shared_v` | `shared_v`, or `quantized_m` (8-bit first moment). Checkpoints are not interchangeable between variants. |
+| `block_size` | `1024` | Elements per block; a power of two. |
+| `min_numel` | `4096` | Smaller parameters use AdamW. |
 | `beta1` | `0.9` | First-moment coefficient. |
-| `beta2` | `0.999` | Per-block second-moment coefficient. |
-| `eps` | `1e-8` | Epsilon in the update denominator. |
+| `beta2` | `0.999` | Second-moment coefficient. |
+| `eps` | `1e-8` | Update epsilon. |
 
-At `block_size = 1`, `shared_v` keeps AdamW's own second moment, which is the
-cheapest available correctness anchor. Gefen's weights are F32 only, and its
-two update phases exist on the CPU and on Metal; CUDA and Vulkan have no
-dispatch, so a Gefen run is refused there rather than falling back.
-
-The optimizer window is `micro_batch × gradient_accumulation`. Lower
-`micro_batch` when memory is constrained. It is a geometry setting, not a
-replacement for the rollout group size.
-
-`constant` holds the learning rate. `linear` and `cosine` warm up over
-`warmup_steps` updates, then decay to zero over the rest of the run. For SFT the
-horizon is the real row count; for PPO and GRPO it is re-sized after each update
-on the steps actually taken, so the decay still ends at zero.
-
-### `[metrics]`
-
-| Key | Default | Description |
-| --- | ---: | --- |
-| `tensorboard_dir` | none | Directory for TensorBoard event files. |
-| `wandb_export_dir` | none | Directory for W&B-importable exports. |
+`codebook = "uniform"`, `codebook_levels = 256` and `partition = "fixed"` are
+the only accepted values of the remaining keys.
 
 ### `[evaluation]`
 
 | Key | Default | Description |
 | --- | ---: | --- |
-| `data` | required | Held-out text or chat JSONL file. |
-| `every_iterations` | `1` | Evaluate every SFT epoch or rollout update. |
-| `patience` | none | Stop after this many evaluations without improvement. |
-| `min_delta` | `0.0` | Minimum improvement counted by patience. |
-| `max_examples` | all | Maximum evaluation examples for rollout evaluation. |
-
-### `[observe]`
-
-PPO, GRPO and agentic GRPO only. See [Observing rollouts](../training/observe).
-
-| Key | Default | Description |
-| --- | ---: | --- |
-| `directory` | required | Export directory: `observe.jsonl`, the viewer and its feed. |
-| `every` | `1` | Positive interval: export rollouts for updates N, 2N, …; summaries for every update. |
-| `max_text_chars` | `0` | Keep this many characters per text, plus a truncation marker; `0` keeps full texts. |
-
-### `[reference]`
-
-The frozen model used by the KL penalty in GRPO, agentic GRPO and on-policy
-distillation. PPO takes its KL against the rollout policy and does not use
-this section.
-
-Without it, the reference policy is this model with its adapter disabled -
-which is the original policy only while the base weights are frozen. A run that
-trains base weights and carries a KL term needs this section; a run that
-carries no KL term may not declare it.
-
-| Key | Default | Description |
-| --- | ---: | --- |
-| `model` | required | GGUF the anchor is loaded from. |
-| `ctx` | `training.ctx` | Context width of the anchor. Never narrower than `training.ctx`. |
-
-The anchor's precision is the one in its file. There is no conversion knob: a
-setting that re-quantized it on load would make the penalty depend on a number
-the document chose rather than on the model the path names.
-
-The anchor's tokenizer is compared with the trained model's before it is used,
-and its file's content fingerprint is recorded in every checkpoint, so a resume
-refuses an anchor that is not the one the first half of the run measured
-against.
+| `data` | required | Held-out file, in the training data format. |
+| `every_iterations` | `1` | Evaluate every N epochs (SFT) or updates (rollout algorithms). |
+| `max_examples` | all | Rollout algorithms: cap on evaluated prompts, spread evenly across the file. |
+| `patience` | none | Stop after N evaluations without improvement. |
+| `min_delta` | `0.0` | Smallest change counted as an improvement. |
 
 ### `[checkpoint]`
 
 | Key | Default | Description |
 | --- | ---: | --- |
 | `directory` | required | Checkpoint directory. |
-| `mode` | required | `steps`, `best_eval`, or `steps_and_best_eval`. |
-| `every_steps` | required for step modes | Positive optimizer-step interval. Do not set it for `best_eval` alone. |
-| `resume_from` | none | A complete `.state` checkpoint, or an adapter path whose sibling state directory resolves unambiguously. Mutually exclusive with `lora.init_adapter`. |
+| `mode` | required | `steps`, `best_eval` or `steps_and_best_eval`. The last two need `[evaluation]`. |
+| `every_steps` | required for step modes | Save every N optimizer steps. |
+| `resume_from` | none | Checkpoint to resume from; same as `train --resume`. |
 
-## SFT section
+See [Checkpoints](../operations/checkpoints).
 
-| Key | Default | Description |
-| --- | ---: | --- |
-| `sft.data` | required | Training file. |
-| `sft.data_format` | inferred | `text`/`txt` or `jsonl`/`chat`/`chat-jsonl`. |
-| `sft.shuffle` | `true` | Shuffle training rows between epochs using `lora.seed`. |
-
-See [SFT training](../training/sft) for the data contract and a complete file.
-
-## PPO sections
-
-### `[ppo]`
+### `[metrics]`
 
 | Key | Default | Description |
 | --- | ---: | --- |
-| `prompts` | required | Chat JSONL prompts ending in a user message. |
-| `reward_command` | required | Executable argv array. |
+| `tensorboard_dir` | none | TensorBoard log directory. |
+| `wandb_export_dir` | none | Offline export for Weights & Biases. |
+
+### `[observe]`
+
+PPO, GRPO and agentic GRPO. See [Observing rollouts](../training/observe).
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `directory` | required | Output directory. |
+| `every` | `1` | Record rollouts every N updates. |
+| `max_text_chars` | `0` | Truncate texts to N characters; `0` keeps them whole. |
+
+### `[reference]`
+
+The frozen model used by the KL penalty (`kl_coefficient > 0`) in GRPO,
+agentic GRPO and on-policy distillation. Without it, the reference is the base
+model without its adapter, which only works while base weights are frozen: a
+run that trains base weights with a KL penalty requires this section.
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `model` | required | Reference GGUF. Must share the model's tokenizer. |
+| `ctx` | `training.ctx` | Context length; at least `training.ctx`. |
+
+## `[sft]`
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `data` | required | Training file. |
+| `data_format` | inferred | `text` or `jsonl`. See [Datasets](../getting-started/datasets#format-detection). |
+| `shuffle` | `true` | Shuffle rows at each epoch. |
+
+## `[ppo]` {#ppo}
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `prompts` | required | Chat JSONL prompts. |
+| `reward_command` | required | Reward program, as an argument list. |
+| `reward_mode` | `persistent` | `persistent` or `oneshot`. See [reward program](../training/ppo#reward-program). |
+| `reward_timeout_seconds` | `300` | Deadline for one batch of rewards. |
+| `updates` | required | Number of rollout batches. |
+| `rollout_batch_size` | required | Answers per update. |
+| `ppo_epochs` | required | Optimizer passes per batch. |
+| `clip_range` | required | In `(0, 1)`, typically `0.2`. |
+| `kl_coefficient` | required | Penalty toward the policy that generated the batch; `≥ 0`. |
+
+`[ppo.critic]`:
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `enabled` | `true` | Use a value head and GAE advantages. |
+| `gamma` | `1.0` | Discount, in `(0, 1]`. |
+| `gae_lambda` | `0.95` | GAE λ, in `[0, 1]`. |
+| `value_lr` | `0.01` | Value head learning rate. |
+| `value_epochs` | `8` | Value head passes per update. |
+| `feature_dtype` | `f32` | Stored feature precision: `f32`, `f16` or `bf16`. |
+
+`[ppo.sampling]` (all required): `temperature`, `top_p` (in `(0, 1]`),
+`max_new_tokens`, `seed`.
+
+## `[grpo]` {#grpo}
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `prompts` | required | Chat JSONL prompts. |
+| `reward_command` | required | Reward program, as an argument list. |
 | `reward_mode` | `persistent` | `persistent` or `oneshot`. |
-| `reward_timeout_seconds` | `300` | Deadline for one reward batch. |
-| `updates` | required | Fresh rollout batches. |
-| `rollout_batch_size` | required | Rollouts per update. |
-| `ppo_epochs` | required | Policy passes over one rollout batch. |
-| `clip_range` | required | Strictly between `0` and `1`. |
-| `kl_coefficient` | required | Non-negative KL penalty against the policy that generated the rollout. |
-
-### `[ppo.critic]`
-
-| Key | Default | Description |
-| --- | ---: | --- |
-| `enabled` | `true` | Enable the value head and GAE. |
-| `gamma` | `1.0` | Per-token discount in `(0, 1]`. |
-| `gae_lambda` | `0.95` | GAE setting in `[0, 1]`. |
-| `value_lr` | `0.01` | Value-head Adam learning rate. |
-| `value_epochs` | `8` | Full-batch value-head passes per update. |
-| `feature_dtype` | `f32` | Host feature storage: `f32`, `f16`, or `bf16`. Requires the critic. |
-
-### `[ppo.sampling]`
-
-| Key | Default | Description |
-| --- | ---: | --- |
-| `temperature` | required | Sampling temperature. |
-| `top_p` | required | Nucleus threshold in `(0, 1]`. |
-| `max_new_tokens` | required | Completion token budget. |
-| `seed` | required | Sampling seed. |
-
-## GRPO sections
-
-### `[grpo]`
-
-| Key | Default | Description |
-| --- | ---: | --- |
-| `prompts` | required | Chat JSONL prompts ending in a user message. |
-| `reward_command` | required | Executable argv array. |
-| `reward_mode` | `persistent` | `persistent` or `oneshot`. |
-| `reward_timeout_seconds` | `300` | Deadline for one reward batch. |
-| `updates` | required | Grouped rollout updates. |
-| `prompts_per_update` | required | Distinct prompts per update. |
-| `group_size` | required | Completions per prompt; `2..256`, and no larger than the optimizer window. |
-| `grpo_epochs` | required | Optimizer passes over one grouped batch. |
-| `clip_range_low` | required | Lower ratio clip in `(0, 1)`. |
-| `clip_range_high` | required | Upper ratio clip in `(0, 1)` and at least the lower range. |
-| `kl_coefficient` | required | Non-negative fixed-base KL coefficient. |
-| `mask_truncated` | `false` | Exclude completions that consume their generation budget from the group baseline and optimizer. |
-| `baseline` | `mean` | `mean` or `leave_one_out`/`rloo`. |
+| `reward_timeout_seconds` | `300` | Deadline for one batch of rewards. |
+| `updates` | required | Number of updates. |
+| `prompts_per_update` | required | Prompts per update. |
+| `group_size` | required | Answers per prompt, `2` to `256`. |
+| `grpo_epochs` | required | Optimizer passes per update. |
+| `clip_range_low` | required | Lower clip, in `(0, 1)`, e.g. `0.2`. |
+| `clip_range_high` | required | Upper clip, at least the lower one, e.g. `0.28`. |
+| `kl_coefficient` | required | KL penalty toward the reference; `0` disables it. |
+| `mask_truncated` | `false` | Ignore answers cut at `max_new_tokens`. |
+| `baseline` | `mean` | `mean` or `leave_one_out`. |
 | `prompt_order` | `sequential` | `sequential` or `shuffled`. |
-| `max_stalled_updates` | `25` | Consecutive zero-signal updates before stopping; `0` disables the stop. |
-| `sampling` | required | See the sampling table below; GRPO requires temperature and top-p of `1.0`. |
+| `max_stalled_updates` | `25` | Stop after N updates in a row without signal; `0` never stops. |
+| `judge_weight` | required with a judge | Weight of the judge's verdict. |
+| `judge_failure` | `drop_group` | `drop_group` or `fail`. |
+| `max_judge_dropped_fraction` | `0.5` | Largest share of groups an update may lose to judge failures. |
 
-### Optional GRPO tables
+`[grpo.sampling]` (all required): `temperature = 1.0`, `top_p = 1.0` (both
+enforced), `max_new_tokens`, `seed`.
 
-| Section | Keys | Description |
+Optional tables:
+
+| Table | Keys | Description |
 | --- | --- | --- |
-| `[grpo.overlong_penalty]` | `buffer_tokens`, `max_penalty` | Soft penalty near the end of the generation budget. `buffer_tokens` must be below `max_new_tokens`. |
-| `[grpo.kl_schedule]` | `warmup_updates`, `target` | KL warmup and optional adaptive target; requires `kl_coefficient > 0`. |
-| `[grpo.dynamic_sampling]` | `max_resample_factor` | Replacement groups after zero-signal filtering; must be at least `2`. |
-| `[grpo.judge]` | judge config plus `judge_weight`, `judge_failure`, `max_judge_dropped_fraction` | Adds a group-relative judge verdict to the reward command score. |
+| `[grpo.overlong_penalty]` | `buffer_tokens`, `max_penalty` | Penalty over the last `buffer_tokens` of the budget. |
+| `[grpo.kl_schedule]` | `warmup_updates`, `target` | KL warm-up and adaptive target; needs `kl_coefficient > 0`. |
+| `[grpo.dynamic_sampling]` | `max_resample_factor` | Replace zero-signal groups, up to this multiple of `prompts_per_update` (≥ 2). |
+| `[grpo.judge]` | see [Judge](#judge) | LLM or command judge. |
 
-### `[grpo.sampling]`
-
-| Key | Default | Description |
-| --- | ---: | --- |
-| `temperature` | required, must be `1.0` | On-policy sampling requirement. |
-| `top_p` | required, must be `1.0` | On-policy sampling requirement. |
-| `max_new_tokens` | required | Completion budget and constant loss denominator. |
-| `seed` | required | Sampling seed. |
-
-### `[distill]`
-
-Distillation against a frozen teacher, in one of two modes. See
-[the distillation guide](../training/distill.md) for what the objectives are;
-this table is the schema.
+## `[distill]` {#distill}
 
 | Key | Default | Description |
 | --- | ---: | --- |
-| `mode` | `on_policy` | `on_policy` (the student samples, the teacher scores its tokens) or `topk_offline` (the teacher's precomputed truncated distribution over a fixed corpus). |
-| `teacher_path` | required | Teacher GGUF. Must share the student's tokenizer; the run refuses the pair otherwise. Read by the run itself in `on_policy`, and by `retrograd distill-teacher` in `topk_offline`. |
+| `mode` | `on_policy` | `on_policy` or `topk_offline`. |
+| `teacher_path` | required | Teacher GGUF, with the student's tokenizer. |
 
-**`mode = "topk_offline"` only.** The three keys below are required in that mode
-and refused in the other, rather than ignored: a document that names a sidecar
-expects it to be read.
+On-policy only:
 
 | Key | Default | Description |
 | --- | ---: | --- |
-| `data` | required | Chat JSONL, the same shape `[sft].data` reads. |
-| `sidecar` | required | The `.topk` file `retrograd distill-teacher` produced for `data`. Its header carries the fingerprints of the corpus and of the tokenizer, and a mismatched pair is refused before the first step. |
-| `offline_epochs` | `1` | Passes over the corpus, and the resume unit. |
-
-**`mode = "on_policy"` only.** Required there and optional in the schema, so an
-offline document does not have to write keys nothing will read.
-
-| Key | Default | Description |
-| --- | ---: | --- |
-| `prompts` | required | Chat JSONL prompts ending in a user message - the same format `[grpo]` reads. |
-| `updates` | required | Rollout updates. |
-| `prompts_per_update` | required | Distinct prompts per update. |
-| `samples_per_prompt` | `1` | Completions per prompt; `1..256`. Unlike `grpo.group_size`, one is admissible: the advantage is per-token, so a group of one carries signal. |
-| `distill_epochs` | `1` | Optimizer passes over one batch. `1` is strictly on-policy - the ratio is exactly `1` and the token weight is the advantage itself. |
-| `clip_range_low` | `0.2` | Lower ratio clip in `(0, 1)`; read only when `distill_epochs > 1`. |
-| `clip_range_high` | `0.28` | Upper ratio clip in `(0, 1)` and at least the lower range. |
-| `weight_clip` | `5.0` | Bound on `\|A_t\|`, in nats. Finite and above zero. |
-| `kl_coefficient` | `0.0` | Fixed-base KL coefficient. Zero skips the reference pass entirely: the teacher is already the anchor. |
-| `mask_truncated` | `true` | Exclude completions that consume their generation budget from the optimizer. |
+| `prompts` | required | Chat JSONL prompts. |
+| `updates` | required | Number of updates. |
+| `prompts_per_update` | required | Prompts per update. |
+| `samples_per_prompt` | `1` | Answers per prompt, `1` to `256`. |
+| `distill_epochs` | `1` | Optimizer passes per update. |
+| `clip_range_low` / `clip_range_high` | `0.2` / `0.28` | Used only when `distill_epochs > 1`. |
+| `weight_clip` | `5.0` | Cap on a single token's weight, in nats. |
+| `kl_coefficient` | `0.0` | Extra KL penalty toward the base model. |
+| `mask_truncated` | `false` | Ignore answers cut at `max_new_tokens`. |
 | `prompt_order` | `sequential` | `sequential` or `shuffled`. |
-| `sampling` | required | Same table as `[grpo.sampling]`, with the same temperature and top-p requirement of `1.0`. |
+| `[distill.sampling]` | required | As `[grpo.sampling]`. |
 
-An **on-policy** `distill` run holds **two models**: the student with its adapter and optimizer
-state, and the teacher, which never gets an adapter and therefore costs its
-weights plus its KV cache and nothing else. The planner's memory estimate only
-carries the teacher when it was given the teacher's geometry, and says so
-otherwise (`teacher_absent_from_the_memory_budget`).
+Offline only:
 
-An **offline** `distill` run holds one model. It never opens the teacher - the
-sidecar is what the teacher left behind - so it is sized as an SFT run is, and
-neither the co-residency term nor that warning applies to it.
+| Key | Default | Description |
+| --- | ---: | --- |
+| `data` | required | Chat JSONL corpus. |
+| `sidecar` | required | The `.topk` file written by `retrograd distill-teacher`. |
+| `offline_epochs` | `1` | Passes over the corpus. |
 
-## Agentic GRPO
+Keys of one mode are refused in the other.
 
-`run.algorithm = "agent_grpo"` selects `[agent]`. It uses multi-turn
-trajectories rather than one completion and requires either an environment or a
-judge to provide a score. The required field is:
+## Agentic GRPO {#agentic-grpo}
 
-```toml
-[agent]
-scenarios = "scenarios.jsonl"
-```
+`run.algorithm = "agent_grpo"` reads `[agent]`. See the
+[agentic GRPO guide](../training/agent). A run needs `[agent.judge]`,
+`[agent.environment]`, or both.
 
-Agentic runs also use the shared model, LoRA, training, evaluation, checkpoint,
-and metrics sections. Their additional fields cover rollout limits, tools,
-environments, judges, and optional scenario generation. Treat them as a
-separate integration surface; a simple SFT, PPO, or GRPO run does not need
-`[agent]`.
+### `[agent]`
 
-Optional prompt settings apply to both training and evaluation:
+| Key | Default | Description |
+| --- | ---: | --- |
+| `scenarios` | required | Scenario JSONL file. |
+| `updates` | `1` | Number of updates. |
+| `scenarios_per_update` | `1` | Scenarios per update. |
+| `group_size` | `8` | Trajectories per scenario (≥ 2). |
+| `epochs_per_update` | `4` | Optimizer passes per update. |
+| `max_turns` | `6` | Assistant turns per trajectory. |
+| `max_new_tokens_per_turn` | `512` | Tokens per turn. |
+| `max_trajectory_tokens` | model context | Token budget for a whole trajectory. |
+| `max_rollout_secs` | `300` | Time budget per trajectory; `0` disables it. |
+| `end_on_no_tool_call` | `true` | End the trajectory on a turn without a tool call. |
+| `max_failed_turns` | `0` | Cut a trajectory after N turns in a row without a valid call; `0` never cuts. |
+| `truncation` | `drop` | `drop` or `min_reward` for trajectories that hit a limit. |
+| `max_dropped_fraction` | `0.5` | Stop when more than this share of an update is lost. |
+| `skip_empty_updates` | `false` | Skip, rather than fail, an update with fewer than two usable trajectories. |
+| `judge_failure` | `drop_group` | `drop_group` or `fail`. |
+| `drop_degenerate_groups` | `false` | Drop groups the judge scored identically. |
+| `clip_range_low` / `clip_range_high` | `0.2` / `0.28` | Clip range. |
+| `kl_coefficient` | `0.0` | KL penalty toward the reference. |
+| `system_suffix` | `""` | Text appended to every system message. |
+| `template_variables` | `{}` | Chat template variables, e.g. `{ enable_thinking = false }`. |
+| `seed` | `42` | Seed. |
+| `mcp_config` | none | Path, or list of paths, to `mcp.json` files. |
 
-```toml
-[agent]
-scenarios = "scenarios.jsonl"
-system_suffix = "Answer with one tool call and nothing else."
-template_variables = { enable_thinking = false }
-```
+### `[[agent.mcp_servers]]`
 
-- `system_suffix` appends an instruction to each scenario's system message,
-  creating one if absent. Default: `""`.
-- `template_variables` passes values to the model's chat template. Supported
-  names depend on the template; `enable_thinking` is an example. Default: `{}`.
+| Key | Default | Description |
+| --- | ---: | --- |
+| `name` | required | Server name. |
+| `command` / `url` | one required | Local server command (with optional `env`), or remote URL (with optional `headers`). |
+| `allowed_tools` / `denied_tools` | all / none | Tool name filters; `*` is a wildcard and deny wins. |
+| `required` | `true` | Fail the run if the server cannot connect. |
+| `stateless` | `false` | Must be `true` when an environment is declared. |
+| `tool_timeout_secs` | `30` | Per-call timeout. |
+| `max_tool_result_bytes` | `65536` | Cap on a tool result. |
 
-Changing either option prevents resuming a checkpoint from the previous configuration.
+### `[agent.environment]`
+
+`type` is `container`, `http` or `local`.
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| **container** | | Requires the `container` build feature. |
+| `profile` | `python` | `python`, `typescript` or `custom`. |
+| `image` | profile's | Container image; prefer a digest. |
+| `tools` / `deny_tools` | profile's / none | Built-in tools to expose or hide. |
+| `allow_network` | `false` | Allow outbound network. |
+| `setup_timeout_secs` | `300` | Timeout for a scenario's `setup`. |
+| `verify_timeout_secs` | none | Timeout for a scenario's `verify`. |
+| `limits` | | `cpus = 1.0`, `memory_mb = 1024`, `pids = 256`, `exec_timeout_secs = 30`, `max_output_bytes = 65536`. |
+| `pool` | | `max_live = 8`, `min_idle = 0`, `reuse = "never"` (or `"workspace"`), `max_leases_per_container = 32`. |
+| **http** | | |
+| `base_url` | required | Environment server URL. |
+| `request_timeout_secs` | `60` | Timeout per request. |
+| `connect_timeout_secs` | `10` | Connection timeout. |
+| `pool_size` | `16` | Concurrent connections; keep at least `group_size`. |
+| `max_result_bytes` | `65536` | Cap on an observation. |
+| `headers` | none | Headers added to every request. |
+| **local** | | Runs tools on the host, without isolation. |
+| `allow_unsandboxed` | `false` | Must be `true`. |
+| `profile`, `tools`, `deny_tools`, `setup_timeout_secs`, `verify_timeout_secs` | | As for containers. |
+
+### `[agent.scenario_generation]`
+
+Used by `retrograd scenarios generate`. `model`, `base_url` and `api_key_env`
+are required; `count` (`24`), `batch_size` (`12`), `min_difficulty` /
+`max_difficulty` (`1` / `5`, between 1 and 5), `custom_instructions`, `seed`,
+`shuffle` (`true`), `timeout_secs` (`120`), `max_retries` (`2`) and
+`max_catalog_bytes` (`262144`) are optional.
+
+## Judge {#judge}
+
+`[grpo.judge]` and `[agent.judge]` share the same format.
+
+`type = "command"`: `command` (required, argument list), `timeout_secs`
+(`30`).
+
+`type = "ruler"`, an OpenAI-compatible LLM judge:
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `base_url`, `model` | required | Endpoint and model. |
+| `api_key_env` | `OPENAI_API_KEY` | Environment variable holding the API key. |
+| `rubric` | built-in | Grading criteria. A prompt or scenario can set its own. |
+| `pairwise_rubric` | built-in | Criteria for pairwise comparisons. |
+| `temperature` | endpoint default | `0.0` for the most repeatable verdicts. |
+| `max_concurrency` | `4` | Parallel requests. |
+| `timeout_secs` | `120` | Request timeout. |
+| `max_retries` | `2` | Retries on transient errors. |
+| `cache_path` | none | Verdict cache file. |
+
+`[<section>.judge.strategy]`:
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `mode` | `auto` | `auto` (one request per group, split into chunks if too long), `listwise` (always one request), `chunked` (always split), `pairwise` (two answers per request, most reliable, most requests). |
+| `anchor` | `true` | Chunked: repeat one answer in every chunk to keep scores on one scale. |
+| `max_pairs` | all pairs | Pairwise: comparisons per group. |
+| `both_orders` | `true` | Pairwise: judge each pair in both orders to cancel position bias (doubles requests). |
+| `aggregation` | `win_rate` | Pairwise: `win_rate` or `bradley_terry` (better when `max_pairs` limits comparisons). |
+
+`[<section>.judge.context]`, budgets in characters: `max_request_chars`
+(`60000`), `max_trajectory_chars` (`8000`), `max_message_chars` (`2000`),
+`head_ratio` (`0.4`, share of an elided message kept from its start),
+`include_env_state` (`true`, show the environment's final state to the judge).
+
+`[<section>.judge.compaction]`, optional: summarize the middle of long
+transcripts with the judge model. `trigger_chars`, `target_chars` and
+`keep_last` are required.

@@ -8,7 +8,7 @@ const base = `${(process.env.DOCS_BASE_PATH ?? '').replace(/\/+$/, '')}/`
 
 export default defineConfig({
   title: 'Retrograd',
-  description: 'User and engineering documentation for Retrograd LoRA training',
+  description: 'Fine-tune GGUF models with LoRA or full weights: SFT, PPO, GRPO, agentic GRPO and distillation',
   base,
   cleanUrls: true,
   srcExclude: ['**/README.md', '**/CLAUDE.md'],
@@ -31,7 +31,6 @@ export default defineConfig({
     nav: [
       { text: 'Getting started', link: '/getting-started/quickstart' },
       { text: 'Training', link: '/training/sft' },
-      { text: 'Operations', link: '/operations/checkpoints' },
       { text: 'Reference', link: '/reference/configuration' },
       { text: 'Engineering', link: '/engineering/' },
       // The rustdoc the deploy workflow copies under `api/`, not a VitePress
@@ -40,103 +39,32 @@ export default defineConfig({
       { text: 'API', link: '/api/retrograd/', target: '_self' },
     ],
     sidebar: {
-      '/getting-started/': [
+      '/': [
         {
           text: 'Getting started',
           items: [
-            {
-              text: 'Quickstart',
-              link: '/getting-started/quickstart',
-              items: [
-                { text: 'Build the CLI', link: '/getting-started/quickstart#_1-build-the-cli' },
-                { text: 'Create a dataset', link: '/getting-started/quickstart#_2-create-a-dataset' },
-                { text: 'Write a configuration', link: '/getting-started/quickstart#_3-write-a-configuration' },
-                { text: 'Run training', link: '/getting-started/quickstart#_4-run-training' },
-                { text: 'Test the adapter', link: '/getting-started/quickstart#_5-test-the-adapter' },
-                { text: 'Choosing an algorithm', link: '/getting-started/quickstart#choosing-an-algorithm' },
-              ],
-            },
-            {
-              text: 'Datasets and paths',
-              link: '/getting-started/datasets',
-              items: [
-                { text: 'Plain text', link: '/getting-started/datasets#plain-text' },
-                { text: 'Chat JSONL', link: '/getting-started/datasets#chat-jsonl' },
-                { text: 'Training and evaluation files', link: '/getting-started/datasets#training-and-evaluation-files' },
-              ],
-            },
+            { text: 'Quickstart', link: '/getting-started/quickstart' },
+            { text: 'Datasets', link: '/getting-started/datasets' },
           ],
         },
-      ],
-      '/training/': [
         {
-          text: 'Training algorithms',
+          text: 'Training',
           items: [
-            {
-              text: 'SFT',
-              link: '/training/sft',
-              items: [
-                { text: 'Minimal configuration', link: '/training/sft#minimal-configuration' },
-                { text: 'What is trained', link: '/training/sft#what-is-trained' },
-                { text: 'Context and batch geometry', link: '/training/sft#context-and-batch-geometry' },
-                { text: 'Evaluation and output', link: '/training/sft#evaluation-and-output' },
-                { text: 'SFT parameters', link: '/training/sft#sft-parameters' },
-              ],
-            },
-            {
-              text: 'PPO',
-              link: '/training/ppo',
-              items: [
-                { text: 'Configuration', link: '/training/ppo#configuration' },
-                { text: 'Update sequence', link: '/training/ppo#update-sequence' },
-                { text: 'Reward command protocol', link: '/training/ppo#reward-command-protocol' },
-                { text: 'Critic settings', link: '/training/ppo#critic-settings' },
-                { text: 'Observing rollouts', link: '/training/ppo#observing-rollouts' },
-                { text: 'PPO parameters', link: '/training/ppo#ppo-parameters' },
-              ],
-            },
-            {
-              text: 'GRPO',
-              link: '/training/grpo',
-              items: [
-                { text: 'Configuration', link: '/training/grpo#configuration' },
-                { text: 'On-policy sampling', link: '/training/grpo#on-policy-sampling' },
-                { text: 'Update sequence', link: '/training/grpo#update-sequence' },
-                { text: 'Judge configuration', link: '/training/grpo#optional-group-judge' },
-                { text: 'Optional GRPO controls', link: '/training/grpo#optional-grpo-controls' },
-                { text: 'Observing rollouts', link: '/training/grpo#observing-rollouts' },
-                { text: 'Container-backed agentic GRPO', link: '/training/grpo#container-backed-agentic-grpo' },
-                { text: 'GRPO parameters', link: '/training/grpo#grpo-parameters' },
-              ],
-            },
-            {
-              text: 'Distillation',
-              link: '/training/distill',
-              items: [
-                { text: 'What the objective is', link: '/training/distill#what-the-objective-is' },
-                { text: 'Configuration', link: '/training/distill#configuration' },
-                { text: 'Update sequence', link: '/training/distill#update-sequence' },
-                { text: 'What a run reports', link: '/training/distill#what-a-run-reports' },
-                { text: 'Held-out evaluation', link: '/training/distill#held-out-evaluation' },
-                { text: 'Measuring against a baseline', link: '/training/distill#measuring-against-a-baseline' },
-                { text: 'Distillation parameters', link: '/training/distill#distillation-parameters' },
-                { text: 'Offline top-k distillation', link: '/training/distill#offline-top-k-distillation' },
-              ],
-            },
-            {
-              text: 'Observing rollouts',
-              link: '/training/observe',
-              items: [
-                { text: 'Viewing a run', link: '/training/observe#viewing-a-run' },
-                { text: 'Directory layout', link: '/training/observe#directory-layout' },
-                { text: 'Record schema', link: '/training/observe#record-schema' },
-                { text: 'Resuming', link: '/training/observe#resuming' },
-              ],
-            },
+            { text: 'SFT', link: '/training/sft' },
+            { text: 'PPO', link: '/training/ppo' },
+            { text: 'GRPO', link: '/training/grpo' },
+            { text: 'Agentic GRPO', link: '/training/agent' },
+            { text: 'Distillation', link: '/training/distill' },
+            { text: 'Observing rollouts', link: '/training/observe' },
           ],
         },
-      ],
-      '/reference/': [
+        {
+          text: 'Operations',
+          items: [
+            { text: 'Checkpoints and metrics', link: '/operations/checkpoints' },
+            { text: 'Performance and memory', link: '/operations/performance' },
+          ],
+        },
         {
           text: 'Reference',
           items: [
@@ -146,21 +74,12 @@ export default defineConfig({
           ],
         },
       ],
-      '/operations/': [
-        {
-          text: 'Operations',
-          items: [
-            { text: 'Checkpoints and monitoring', link: '/operations/checkpoints' },
-            { text: 'Profiling', link: '/operations/profiling' },
-          ],
-        },
-      ],
       '/engineering/': [
         {
-          text: 'Engineering documentation',
+          text: 'Contributing',
           items: [
             { text: 'Overview', link: '/engineering/' },
-            { text: 'Contributing', link: '/engineering/contributing' },
+            { text: 'Contribution principles', link: '/engineering/contributing' },
             { text: 'Numeric conversions', link: '/engineering/CONVERSIONS' },
             { text: 'Tests and validation', link: '/engineering/tests/notice' },
             { text: 'Test lanes in detail', link: '/engineering/tests/lanes' },
@@ -171,19 +90,15 @@ export default defineConfig({
         {
           text: 'Backends and RIR',
           items: [
-            { text: 'RIR kernel families', link: '/engineering/rir/KERNELS' },
-            { text: 'RIR kernel promotion', link: '/engineering/rir/PROMOTION' },
             { text: 'Support matrix', link: '/engineering/SUPPORT' },
             { text: 'CUDA status', link: '/engineering/cuda/STATUS' },
+            { text: 'RIR kernel families', link: '/engineering/rir/KERNELS' },
+            { text: 'RIR kernel promotion', link: '/engineering/rir/PROMOTION' },
           ],
         },
         {
-          text: 'Implementation notes',
+          text: 'Performance notes',
           items: [
-            { text: 'The configuration document', link: '/engineering/CONFIG' },
-            { text: 'PPO', link: '/engineering/PPO' },
-            { text: 'GRPO', link: '/engineering/GRPO' },
-            { text: 'Agentic GRPO', link: '/engineering/AGENTIC_GRPO' },
             { text: 'GRPO sampling path', link: '/engineering/optims/SAMPLING' },
             { text: 'Optimizer cost and quality', link: '/engineering/optims/OPTIMIZERS' },
           ],

@@ -1,14 +1,9 @@
-# SFT training
+# SFT
 
-Supervised fine-tuning trains against known assistant responses. It is the
-direct choice when the dataset contains the behavior the model should
-reproduce. This guide walks through the default LoRA path; setting
-`training.trainable` to `full`, `partial`, or `hybrid` trains base weight
-tensors instead of, or beside, an adapter. See
-[Configuration reference](../reference/configuration) for the `[trainable]`
-selector and `[output]` kinds.
+Supervised fine-tuning trains the model to reproduce known answers. Use it when
+your dataset already contains the responses you want.
 
-## Minimal configuration
+## Configuration
 
 ```toml
 [run]
@@ -16,7 +11,6 @@ algorithm = "sft"
 
 [model]
 path = "base.gguf"
-device = "auto"
 
 [output]
 path = "sft-adapter.gguf"
@@ -24,116 +18,82 @@ path = "sft-adapter.gguf"
 [lora]
 rank = 8
 alpha = 16.0
-seed = 42
 
 [training]
 ctx = 512
-micro_batch = 32
-gradient_accumulation = 1
 epochs = 3
 lr = 0.0001
 lr_scheduler = "cosine"
 warmup_steps = 10
-weight_decay = 0.0
-max_grad_norm = 1.0
 
 [sft]
 data = "train.jsonl"
-data_format = "jsonl"
-shuffle = true
 ```
-
-Run it with:
 
 ```bash
 retrograd train sft.toml
 ```
 
-`training.epochs` is the number of full passes over the SFT dataset. The
-default is `1`. Rows are shuffled at the beginning of each epoch by default;
-the permutation is derived from `lora.seed`.
+With chat JSONL, only assistant turns are trained. With plain text, every token
+is. Rows are shuffled at each epoch (`sft.shuffle = false` keeps file order).
+See [Datasets](../getting-started/datasets).
 
-## What is trained
+## Batch size and memory
 
-For chat JSONL, Retrograd formats each conversation using the GGUF chat
-template and masks every token except assistant responses. A record can have
-multiple assistant turns; each assistant span is a target. For plain text, the
-file is treated as a continuous token stream and all next-token labels are
-active.
+| Key | Default | Meaning |
+| --- | ---: | --- |
+| `training.ctx` | `128` | Longest sequence, in tokens. |
+| `training.micro_batch` | `32` | Tokens per forward/backward pass. The main memory knob. |
+| `training.gradient_accumulation` | `1` | Passes accumulated per optimizer step. |
 
-With the default `lora` policy, the base model weights remain frozen: the
-adapter is initialized from the LoRA settings and written as a standalone
-GGUF file after training.
+`micro_batch × gradient_accumulation` must divide `ctx`. If the run runs out
+of memory, lower `micro_batch` and raise `gradient_accumulation` to keep the
+same step size. More options are in [Performance and memory](../operations/performance).
 
-## Context and batch geometry
-
-`training.ctx` is the maximum token window. `micro_batch` is the physical number
-of tokens processed by one forward/backward pass and is the primary activation
-memory control. `gradient_accumulation` combines micro-batches before one
-optimizer step.
-
-The product must divide `ctx`:
-
-```text
-micro_batch × gradient_accumulation divides ctx
-```
-
-If a run does not fit in memory, lower `micro_batch` first. Keep the effective
-optimizer window stable by increasing `gradient_accumulation` when appropriate.
-
-## Sharing the GPU
-
-`training.max_gpu_duty_cycle` bounds the fraction of wall time the trainer
-spends waiting on GPU work it submitted, leaving the rest to another workload:
-
-```toml
-[training]
-max_gpu_duty_cycle = 0.5
-```
-
-Both loops of an epoch are covered - the training passes and the evaluation
-split - so a large held-out set does not escape the limit at the epoch
-boundary.
-
-It frees **compute time, not device memory**: everything the run has allocated
-stays allocated while it sleeps. Enabling it also costs the decode pipelining
-once, before any sleep, so it is worth its overhead at `0.75` and below. See
-[Configuration reference](../reference/configuration) for the full contract.
-
-## Evaluation and output
-
-Add a held-out set to measure loss during training:
+## Evaluation
 
 ```toml
 [evaluation]
 data = "eval.jsonl"
-every_iterations = 1
 patience = 3
-min_delta = 0.0
 ```
 
-For SFT, one evaluation iteration is one epoch. `patience` counts consecutive
-evaluations without an improvement of at least `min_delta`.
+Evaluation runs after every epoch and reports held-out loss and perplexity.
+`patience` stops the run after that many evaluations without improvement.
+After training, compare the base model and the adapter on the same data:
 
-Use `bench` after training to compare an adapter on a fixed dataset, or `chat`
-to inspect responses interactively. See [Checkpoints and monitoring](../operations/checkpoints)
-for saving the best evaluation result and resuming a run.
+```bash
+retrograd bench sft.toml --data eval.jsonl --adapter sft-adapter.gguf
+```
 
-## SFT parameters
+## Training base weights
 
-| Parameter | Default | Description |
-| --- | ---: | --- |
-| `sft.data` | required | Text or chat JSONL training file. |
-| `sft.data_format` | inferred | `text`/`txt` or `jsonl`/`chat`/`chat-jsonl`. |
-| `sft.shuffle` | `true` | Shuffle training rows between epochs using `lora.seed`. |
-| `training.epochs` | `1` | Complete passes over the dataset. |
-| `training.ctx` | `128` | Training context length in tokens. |
-| `training.micro_batch` | `32` | Physical forward/backward width. |
-| `training.gradient_accumulation` | `1` | Micro-batches per optimizer step. |
-| `training.lr` | `0.0001` | Base learning rate of the chosen optimizer (`training.optimizer`, default `adamw`). |
-| `training.lr_scheduler` | `constant` | `constant`, `linear`, or `cosine`. |
-| `training.warmup_steps` | `0` | Scheduler warmup steps. |
-| `training.weight_decay` | `0.0` | Decoupled weight decay. |
-| `training.max_grad_norm` | `1.0` | Global gradient norm limit. |
-| `training.optimizer` | `adamw` | `adamw`, `sgd`, `muon`, or `gefen`. See [Configuration reference](../reference/configuration#optimizer-muon) for per-optimizer hyperparameters. |
-| `training.trainable` | `lora` | `lora`, `full`, `partial`, or `hybrid`. See [Configuration reference](../reference/configuration#trainable). |
+By default only a LoRA adapter is trained. `training.trainable` trains the
+model's own weights instead, and works the same way for every algorithm:
+
+| `trainable` | Trains | Needs |
+| --- | --- | --- |
+| `lora` (default) | A LoRA adapter | `[lora]` |
+| `full` | Every trainable base tensor | nothing else |
+| `partial` | The base tensors selected in `[trainable]` | `[trainable]` |
+| `hybrid` | An adapter plus norms and biases | `[lora]` and `[trainable]` |
+
+```toml
+[training]
+trainable = "partial"
+
+[trainable]
+layers = "last:4"
+modules = ["attn", "ffn"]
+norms = true
+
+[output]
+path = "tuned.gguf"
+kind = "model"   # a standalone GGUF, usable without Retrograd
+```
+
+Quantized tensors are never trained, so the selected tensors must be stored in
+F32, F16 or BF16; which of these each backend accepts is in the
+[support matrix](../engineering/SUPPORT#base-weight-storage-precision). See
+[`[trainable]`](../reference/configuration#trainable) and
+[`[output]`](../reference/configuration#output) for every option.
