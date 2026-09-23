@@ -175,11 +175,7 @@ pub(super) fn assemble_batch(
             &candidate_inputs,
             &config.sampling,
             &layout,
-            if training.generation_concurrency == 0 {
-                training.n_seq_max as usize
-            } else {
-                training.generation_concurrency as usize
-            },
+            training.effective_generation_concurrency() as usize,
         )?;
         let mut candidates: Vec<Candidate> = Vec::with_capacity(round);
         for ((prompt_slot, (_, seed_offsets)), group) in candidate_slots

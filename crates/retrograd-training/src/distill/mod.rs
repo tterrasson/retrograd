@@ -395,11 +395,7 @@ fn assemble_batch(
         &prompt_inputs,
         &config.sampling,
         &layout,
-        if training.generation_concurrency == 0 {
-            training.n_seq_max as usize
-        } else {
-            training.generation_concurrency as usize
-        },
+        training.effective_generation_concurrency() as usize,
     )?;
     let mut rollouts: Vec<Rollout> = Vec::with_capacity(state.rollouts_per_update);
     for group in sampled_groups {

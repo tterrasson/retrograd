@@ -329,12 +329,7 @@ pub async fn run_agentic_grpo(
         };
     }
 
-    let sequence_capacity = if training.generation_concurrency == 0 {
-        training.n_seq_max
-    } else {
-        training.generation_concurrency
-    }
-    .max(1) as usize;
+    let sequence_capacity = training.effective_generation_concurrency().max(1) as usize;
     let actor = match PolicyActor::spawn_local(
         trainer,
         64,

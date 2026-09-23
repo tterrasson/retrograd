@@ -248,9 +248,10 @@ pub struct TrainConfig {
     pub shared_prefix_fanout: SharedPrefixFanout,
     /// Maximum number of rollout sequences decoded concurrently. This is
     /// independent from `n_seq_max`: GRPO groups may be sampled over several
-    /// waves without changing their statistical meaning. Zero preserves the
-    /// legacy programmatic API by inheriting `n_seq_max`; TOML configs always
-    /// resolve this to a positive value.
+    /// waves without changing their statistical meaning. Zero (the default)
+    /// inherits `n_seq_max`: read it through
+    /// [`TrainConfig::effective_generation_concurrency`]. TOML configs always
+    /// resolve it to a positive value.
     pub generation_concurrency: u32,
     /// Fast sampling context: builds the dedicated generation context with an
     /// F16 KV cache and flash-attention instead of the optimizer context's exact
@@ -459,6 +460,15 @@ impl Default for TrainConfig {
 }
 
 impl TrainConfig {
+    /// `generation_concurrency`, with zero resolved to `n_seq_max`.
+    pub fn effective_generation_concurrency(&self) -> u32 {
+        if self.generation_concurrency == 0 {
+            self.n_seq_max
+        } else {
+            self.generation_concurrency
+        }
+    }
+
     /// One declared row of the chosen optimizer's vector, or `None` when this
     /// optimizer does not declare it or the vector belongs to another one.
     ///

@@ -79,11 +79,6 @@ fn validate_suffix(tokens: &[i32], n_prompt: usize) -> Result<()> {
 }
 
 fn train_config_to_ffi(config: &TrainConfig) -> Result<ffi::RetroTrainConfig> {
-    let generation_concurrency = if config.generation_concurrency == 0 {
-        config.n_seq_max
-    } else {
-        config.generation_concurrency
-    };
     let gefen_layout = config.trainable.optimizer.gefen_layout();
     // AdamW declares `beta1`, `beta2` and `eps` too, and they are not Gefen's:
     // the wire fields are read only under Gefen, so they are sent only then.
@@ -99,7 +94,7 @@ fn train_config_to_ffi(config: &TrainConfig) -> Result<ffi::RetroTrainConfig> {
         n_batch: config.n_batch,
         n_ubatch: config.n_ubatch,
         n_seq_max: config.n_seq_max,
-        generation_concurrency,
+        generation_concurrency: config.effective_generation_concurrency(),
         fast_generation_context: config.fast_generation_context,
         kv_dtype: config.kv_dtype.as_ffi(),
         threads: config.threads,
