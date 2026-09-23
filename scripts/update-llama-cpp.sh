@@ -48,7 +48,9 @@ git -C "${SOURCE_DIR}" rev-parse --verify --quiet "${UPSTREAM_REF}^{commit}" >/d
 }
 
 echo "rebasing ${BRANCH} ($(git -C "${SOURCE_DIR}" rev-parse --short HEAD)) onto ${UPSTREAM_REF}..."
-git -C "${SOURCE_DIR}" rebase "${UPSTREAM_REF}"
+# --autosquash folds the `fixup! retro(<family>)` commits made since the last
+# sync into their family, so the series is one commit per family again.
+git -C "${SOURCE_DIR}" rebase --autosquash "${UPSTREAM_REF}"
 
 # Reuse before writing. A rebase is the only moment
 # where a local patch can have become redundant - upstream gains ops over time,

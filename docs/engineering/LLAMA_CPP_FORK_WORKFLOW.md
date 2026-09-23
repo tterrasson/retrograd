@@ -36,19 +36,25 @@ instead requires a clean checkout at the pinned commit.
 
 ## Committing and publishing a fork change
 
-One functional delta = **one targeted commit** in the fork (with its test),
-to stay proposable upstream as is.
+The fork is a linear series with **one commit per patch family**, named
+`retro(<family>): <what>` after its `[upstream_status]` key in
+`crates/retrograd-ffi/runtime/llama.cpp.lock` (see `RETRO_FORK.md` at the root
+of the fork). A change to an existing family is a fixup of its commit, folded
+in at the next upstream sync; a new family is a new commit and a new lockfile
+entry.
 
 ```sh
-# 1. commit in the fork
+# 1a. change an existing family: a fixup, folded at the next sync
 git -C crates/retrograd-ffi/runtime/vendor/llama.cpp add -p
-git -C crates/retrograd-ffi/runtime/vendor/llama.cpp commit -m "metal: ..."
+git -C crates/retrograd-ffi/runtime/vendor/llama.cpp commit \
+    --fixup="$(git -C crates/retrograd-ffi/runtime/vendor/llama.cpp log -1 --format=%H \
+               --grep '^retro(<family>)' upstream/master..HEAD)"
 
-# 2. document the delta
-#    - crates/retrograd-ffi/runtime/llama.cpp.lock: [upstream_status] entry
-#    - crates/retrograd-ffi/runtime/third_party_notes/LLAMA_CPP_SOURCE.md: commit list
+# 1b. or a new family: a new commit ...
+git -C crates/retrograd-ffi/runtime/vendor/llama.cpp commit -m "retro(<family>): ..."
+#     ... and its [upstream_status] entry in crates/retrograd-ffi/runtime/llama.cpp.lock
 
-# 3. publish the fork + bump the pointer in one command
+# 2. publish the fork + bump the pointer in one command
 scripts/push-llama-cpp-fork.sh
 ```
 
@@ -69,6 +75,9 @@ git commit -m "chore: pin llama.cpp fork to $(git -C crates/retrograd-ffi/runtim
 scripts/update-llama-cpp.sh                  # rebase onto upstream/master
 scripts/update-llama-cpp.sh upstream/b1234   # or a specific revision
 ```
+
+The rebase folds pending `fixup!` commits into their family (`--autosquash`),
+so the series comes out with one commit per family again.
 
 In case of conflicts: resolve them in `crates/retrograd-ffi/runtime/vendor/llama.cpp`, then
 `git add` + `git rebase --continue` (or `git rebase --abort` to back out).

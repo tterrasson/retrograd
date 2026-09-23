@@ -7,7 +7,8 @@ set -euo pipefail
 #
 # It also verifies that every patch family in [upstream_status] declares where
 # it is going: the goal is not "no patch left", which would aim wrong, but no
-# family without a written disposition.
+# family without a written disposition, and that the fork history is a linear
+# series with exactly one `retro(<family>)` commit per declared family.
 #
 # With --upstream-status it additionally runs each family's `probe` against the
 # upstream base: a symbol the fork introduces and upstream now has too is a
@@ -158,6 +159,57 @@ git -C "${SOURCE_DIR}" merge-base --is-ancestor "${upstream_commit}" HEAD || {
 
 check_upstream_status || {
   echo "every patch family must declare where it is going" >&2
+  exit 1
+}
+
+# The series and the lockfile name the same families: a linear history on top
+# of upstream_commit, one `retro(<family>): <what>` commit per family, and one
+# [upstream_status] entry per commit. `fixup! retro(<family>): ...` commits are
+# allowed between two syncs; the next rebase folds them with --autosquash.
+check_series() {
+  local failed=0 subject family families="" dups
+  if [[ -n "$(git -C "${SOURCE_DIR}" rev-list --merges "${upstream_commit}..HEAD")" ]]; then
+    echo "series: merge commits on top of ${upstream_commit}; the fork is rebased, never merged" >&2
+    failed=1
+  fi
+  local fixups=""
+  while IFS= read -r subject; do
+    # a fixup of a family waits for the next sync, where --autosquash folds it
+    if [[ "${subject}" =~ ^(fixup|squash|amend)!\ retro\(([a-z0-9_]+)\):\  ]]; then
+      fixups+="${BASH_REMATCH[2]}"$'\n'
+      continue
+    fi
+    if [[ ! "${subject}" =~ ^retro\(([a-z0-9_]+)\):\  ]]; then
+      echo "series: commit outside the naming contract: ${subject}" >&2
+      failed=1
+      continue
+    fi
+    families+="${BASH_REMATCH[1]}"$'\n'
+  done < <(git -C "${SOURCE_DIR}" log --reverse --format=%s "${upstream_commit}..HEAD")
+  for family in $(comm -23 <(printf '%s' "${fixups}" | sort -u) <(printf '%s' "${families}" | sort -u)); do
+    echo "series: a fixup names ${family}, which has no commit to fold into" >&2
+    failed=1
+  done
+  dups="$(printf '%s' "${families}" | sort | uniq -d)"
+  for family in ${dups}; do
+    echo "series: family ${family} has more than one commit; fold the fixups into it" >&2
+    failed=1
+  done
+  local declared
+  declared="$(status_entries | sed -E 's/ = .*//')"
+  for family in $(comm -23 <(printf '%s\n' ${declared} | sort -u) <(printf '%s' "${families}" | sort -u)); do
+    echo "series: ${family} is in the lockfile but has no commit" >&2
+    failed=1
+  done
+  for family in $(comm -13 <(printf '%s\n' ${declared} | sort -u) <(printf '%s' "${families}" | sort -u)); do
+    echo "series: ${family} has a commit but no [upstream_status] entry" >&2
+    failed=1
+  done
+  return "${failed}"
+}
+
+check_series || {
+  echo "the fork history and ${LOCKFILE} must name the same patch families" >&2
   exit 1
 }
 
