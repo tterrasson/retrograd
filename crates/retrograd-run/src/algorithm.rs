@@ -27,6 +27,60 @@ pub(crate) struct Context<'a> {
     pub control: &'a mut dyn RunControl,
 }
 
+impl Context<'_> {
+    /// Reports what the prepared datasets added to memory, then publishes the
+    /// dataset series, plus `extra`, at step zero.
+    fn datasets_prepared(
+        &mut self,
+        examples: usize,
+        supervised_tokens: usize,
+        extra: Vec<MetricValue>,
+    ) -> Result<()> {
+        if let Some(line) = self.memory.phase("datasets") {
+            self.observer.info(&line);
+        }
+        let mut values = vec![
+            MetricValue {
+                name: "data/train_examples".into(),
+                value: examples as f32,
+            },
+            MetricValue {
+                name: "data/train_supervised_tokens".into(),
+                value: supervised_tokens as f32,
+            },
+        ];
+        values.extend(extra);
+        self.bus.emit(&MetricEvent::Step {
+            epoch: 0,
+            global_step: 0,
+            values,
+        })
+    }
+}
+
+/// Optimizer steps per prepared row: the runtime advances `n_batch` tokens per
+/// step over an `n_ctx`-token row.
+fn steps_per_row(config: &RunConfig) -> u64 {
+    (config.training.n_ctx / config.training.n_batch) as u64
+}
+
+/// Appends the host and device memory series to `values`, and passes a
+/// significant move on to the observer.
+fn observe_memory(
+    memory: &mut MemoryTracker,
+    observer: &mut dyn RunObserver,
+    values: &mut Vec<MetricValue>,
+) {
+    let (snapshot, note) = memory.observe();
+    if let Some(snapshot) = snapshot {
+        values.extend(memory::metric_values(snapshot));
+    }
+    values.extend(memory.device_metric_values());
+    if let Some(note) = note {
+        observer.memory_note(&note);
+    }
+}
+
 /// How an algorithm answers an out-of-schedule evaluation.
 ///
 /// A closure rather than a method on [`RunController`] because the dataset an
@@ -141,7 +195,7 @@ pub(crate) fn run_sft(
             "SFT",
             &[
                 train.examples as u64,
-                (config.training.n_ctx / config.training.n_batch) as u64,
+                steps_per_row(config),
                 config.training.epochs as u64,
             ],
         )?,
@@ -151,28 +205,9 @@ pub(crate) fn run_sft(
         .as_ref()
         .map(|evaluation| training::sft::prepare_eval(trainer, &evaluation.data, sft.data_format))
         .transpose()?;
-    if let Some(line) = ctx.memory.phase("datasets") {
-        ctx.observer.info(&line);
-    }
-    ctx.bus.emit(&MetricEvent::Step {
-        epoch: 0,
-        global_step: 0,
-        values: vec![
-            MetricValue {
-                name: "data/train_examples".into(),
-                value: train.examples as f32,
-            },
-            MetricValue {
-                name: "data/train_supervised_tokens".into(),
-                value: train.supervised_tokens as f32,
-            },
-        ],
-    })?;
-    // The window the runtime advances per optimizer step is `n_batch` tokens,
-    // so one row is `n_ctx / n_batch` steps - the same product
-    // `checked_total_steps` validated above, minus the epoch factor.
-    let steps_per_epoch =
-        train.examples as u64 * (config.training.n_ctx / config.training.n_batch) as u64;
+    ctx.datasets_prepared(train.examples, train.supervised_tokens, Vec::new())?;
+    // The product `checked_total_steps` validated above, minus the epoch factor.
+    let steps_per_epoch = train.examples as u64 * steps_per_row(config);
     let total_epochs = config.training.epochs;
     run_supervised_epochs(
         trainer,
@@ -300,14 +335,7 @@ fn run_supervised_epochs(
             )?;
         }
         if event.metrics.epoch_complete {
-            let (snapshot, note) = memory.observe();
-            if let Some(snapshot) = snapshot {
-                event.values.extend(memory::metric_values(snapshot));
-            }
-            event.values.extend(memory.device_metric_values());
-            if let Some(note) = note {
-                observer.memory_note(&note);
-            }
+            observe_memory(memory, &mut **observer, &mut event.values);
         }
         bus.emit(&MetricEvent::Step {
             epoch: event.metrics.epoch,
@@ -364,7 +392,7 @@ pub(crate) fn run_ppo(
                 ppo.updates as u64,
                 ppo.ppo_epochs as u64,
                 ppo.rollout_batch_size as u64,
-                (config.training.n_ctx / config.training.n_batch) as u64,
+                steps_per_row(config),
             ],
         )?,
     )?;
@@ -425,7 +453,7 @@ pub(crate) fn run_grpo(
                 grpo.grpo_epochs as u64,
                 grpo.prompts_per_update as u64,
                 grpo.group_size as u64,
-                (config.training.n_ctx / config.training.n_batch) as u64,
+                steps_per_row(config),
             ],
         )?,
     )?;
@@ -493,7 +521,7 @@ pub(crate) fn run_distill(
                 distill.distill_epochs as u64,
                 distill.prompts_per_update as u64,
                 distill.samples_per_prompt as u64,
-                (config.training.n_ctx / config.training.n_batch) as u64,
+                steps_per_row(config),
             ],
         )?,
     )?;
@@ -569,34 +597,20 @@ fn run_distill_offline(
             "offline distillation",
             &[
                 prepared.prepared.examples as u64,
-                (config.training.n_ctx / config.training.n_batch) as u64,
+                steps_per_row(config),
                 offline.epochs as u64,
             ],
         )?,
     )?;
-    if let Some(line) = ctx.memory.phase("datasets") {
-        ctx.observer.info(&line);
-    }
-    ctx.bus.emit(&MetricEvent::Step {
-        epoch: 0,
-        global_step: 0,
-        values: vec![
-            MetricValue {
-                name: "data/train_examples".into(),
-                value: prepared.prepared.examples as f32,
-            },
-            MetricValue {
-                name: "data/train_supervised_tokens".into(),
-                value: prepared.supervised_positions as f32,
-            },
-            MetricValue {
-                name: "distill/topk_entries".into(),
-                value: prepared.k as f32,
-            },
-        ],
-    })?;
-    let steps_per_epoch = prepared.prepared.examples as u64
-        * (config.training.n_ctx / config.training.n_batch) as u64;
+    ctx.datasets_prepared(
+        prepared.prepared.examples,
+        prepared.supervised_positions,
+        vec![MetricValue {
+            name: "distill/topk_entries".into(),
+            value: prepared.k as f32,
+        }],
+    )?;
+    let steps_per_epoch = prepared.prepared.examples as u64 * steps_per_row(config);
     let epochs = offline.epochs;
     let training_config = config.training.clone();
     // No evaluation dataset: the forward-pass loss of an SFT evaluation is
@@ -811,14 +825,7 @@ fn run_rollout_updates(
                 &mut |path| observer.checkpoint_written(path),
             )?;
         }
-        let (memory_snapshot, memory_note) = memory.observe();
-        if let Some(snapshot) = memory_snapshot {
-            event.values.extend(memory::metric_values(snapshot));
-        }
-        event.values.extend(memory.device_metric_values());
-        if let Some(note) = memory_note {
-            observer.memory_note(&note);
-        }
+        observe_memory(memory, &mut **observer, &mut event.values);
         if let Some(sink) = &sink {
             observe::report(sink, &mut **observer, &mut event.values);
             if policy_epoch == epochs_per_update as u64 {

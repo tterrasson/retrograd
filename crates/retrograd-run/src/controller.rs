@@ -69,13 +69,21 @@ struct CheckpointContext {
     seeds: BTreeMap<String, u64>,
 }
 
+/// The first multiple of `frequency` strictly after `step`.
+fn next_multiple_after(step: u64, frequency: u64) -> u64 {
+    (step / frequency + 1) * frequency
+}
+
+/// The step cadence of `checkpoint`, when its mode writes on one.
+fn step_cadence(checkpoint: Option<&CheckpointConfig>) -> Option<u64> {
+    checkpoint
+        .filter(|checkpoint| checkpoint.mode.includes_steps())
+        .and_then(|checkpoint| checkpoint.every_steps)
+}
+
 impl RunController {
     pub fn new(config: &RunConfig) -> Result<Self> {
-        let next_checkpoint_step = config
-            .checkpoint
-            .as_ref()
-            .filter(|checkpoint| checkpoint.mode.includes_steps())
-            .and_then(|checkpoint| checkpoint.every_steps);
+        let next_checkpoint_step = step_cadence(config.checkpoint.as_ref());
         let (algorithm, seeds) = match &config.algorithm {
             Algorithm::Sft(_) => ("sft", BTreeMap::new()),
             Algorithm::Ppo(ppo) => (
@@ -122,7 +130,7 @@ impl RunController {
                 warmup_steps: config.training.warmup_steps,
                 model_path: config.model.clone(),
                 dataset: checkpoint::Dataset::default(),
-                seeds: BTreeMap::from_iter(seeds),
+                seeds,
             },
         })
     }
@@ -202,14 +210,8 @@ impl RunController {
         self.stale_evaluations = info.progress.stale_evaluations;
         // Restart the step schedule from where the checkpoint left off, so the
         // next checkpoint is one interval away rather than immediate.
-        if let Some(frequency) = self
-            .checkpoint
-            .as_ref()
-            .filter(|checkpoint| checkpoint.mode.includes_steps())
-            .and_then(|checkpoint| checkpoint.every_steps)
-        {
-            let step = info.global_step();
-            self.next_checkpoint_step = Some((step / frequency + 1) * frequency);
+        if let Some(frequency) = step_cadence(self.checkpoint.as_ref()) {
+            self.next_checkpoint_step = Some(next_multiple_after(info.global_step(), frequency));
         }
         Ok(Some(training::Boundary {
             completed_iterations: info.epoch(),
@@ -266,7 +268,7 @@ impl RunController {
                 .as_ref()
                 .and_then(|checkpoint| checkpoint.every_steps)
         {
-            self.next_checkpoint_step = Some((global_step / frequency + 1) * frequency);
+            self.next_checkpoint_step = Some(next_multiple_after(global_step, frequency));
         }
         self.checkpoint_due = false;
         self.checkpoint_requested = false;
@@ -331,7 +333,7 @@ impl RunController {
         let mode = checkpoint.mode;
         self.next_checkpoint_step = mode
             .includes_steps()
-            .then(|| (self.last_global_step / every_steps + 1) * every_steps);
+            .then(|| next_multiple_after(self.last_global_step, every_steps));
         Ok(())
     }
 
@@ -350,7 +352,7 @@ impl RunController {
         checkpoint.mode = mode;
         let every_steps = checkpoint.every_steps;
         self.next_checkpoint_step = match (mode.includes_steps(), every_steps) {
-            (true, Some(frequency)) => Some((self.last_global_step / frequency + 1) * frequency),
+            (true, Some(frequency)) => Some(next_multiple_after(self.last_global_step, frequency)),
             // Dropping the step schedule also disarms a checkpoint that was
             // already due: the client just said it does not want those.
             _ => {
