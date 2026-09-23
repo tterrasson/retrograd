@@ -1,13 +1,8 @@
-//! The PPO critic's public contract, exercised from outside the crate.
-//!
-//! `retrograd-training` had no `tests/` directory at all: everything was an
-//! inline module, where access to private state hides a broken public API
-//!  This file sees exactly what a caller sees,
-//! `new`, `predict`, `predict_rows`, `fit` - and nothing else.
+//! The PPO critic's public contract, exercised from outside the crate: `new`,
+//! `predict`, `predict_rows` and `fit`, and nothing else.
 //!
 //! `ValueHead` is the one part of the crate that needs neither a model nor a
-//! device, which is what lets it run in the fast lane. The rest needs a model, and is
-//! covered by the model lanes; it is not an oversight here.
+//! device, which is what lets it run in the fast lane.
 
 use retrograd_training::value::ValueHead;
 
@@ -53,6 +48,9 @@ fn a_fit_that_cannot_mean_anything_is_refused_rather_than_run() {
     // nothing recognizable.
     assert!(head.fit(&features, &[1.0, 2.0], 0.1, 1).is_err());
     assert!(head.fit(&features, &[], 0.1, 1).is_err());
+    // Features that do not tile the head's width, and an empty batch.
+    assert!(head.fit(&[1.0, 2.0, 3.0], &[1.0], 0.1, 1).is_err());
+    assert!(head.fit(&[], &[], 0.1, 1).is_err());
     assert!(head.fit(&features, &[1.0], 0.0, 1).is_err());
     assert!(head.fit(&features, &[1.0], f32::NAN, 1).is_err());
 }

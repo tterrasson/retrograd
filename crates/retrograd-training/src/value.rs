@@ -172,39 +172,6 @@ mod tests {
     use retrograd_core::FeatureDtype;
 
     #[test]
-    fn zero_initialized_head_predicts_zero() {
-        let head = ValueHead::new(4);
-        assert_eq!(head.predict(&[1.0, -2.0, 3.0, 0.5]), 0.0);
-    }
-
-    #[test]
-    fn fit_recovers_a_known_linear_function() {
-        // Target: V(x) = 2*x0 - x1 + 0.5, learnable exactly by the probe.
-        let mut head = ValueHead::new(2);
-        let mut features = Vec::new();
-        let mut targets = Vec::new();
-        for i in 0..16 {
-            let x0 = (i % 4) as f32 * 0.5 - 1.0;
-            let x1 = (i / 4) as f32 * 0.5 - 1.0;
-            features.extend_from_slice(&[x0, x1]);
-            targets.push(2.0 * x0 - x1 + 0.5);
-        }
-        let mse = head.fit(&features, &targets, 0.05, 2000).unwrap();
-        assert!(mse < 1e-4, "mse {mse}");
-        assert!((head.predict(&[0.25, -0.5]) - (2.0 * 0.25 + 0.5 + 0.5)).abs() < 0.05);
-    }
-
-    #[test]
-    fn fit_reduces_the_loss_monotonically_enough() {
-        let mut head = ValueHead::new(1);
-        let features = vec![1.0, 2.0, 3.0];
-        let targets = vec![2.0, 4.0, 6.0];
-        let first = head.fit(&features, &targets, 0.05, 10).unwrap();
-        let second = head.fit(&features, &targets, 0.05, 200).unwrap();
-        assert!(second < first, "loss went {first} -> {second}");
-    }
-
-    #[test]
     fn a_narrow_store_fits_identically_on_values_it_represents_exactly() {
         // Halves and quarters are exact in binary16, so the only thing left that
         // could differ between the two stores is the chunked accumulation - and
@@ -248,13 +215,5 @@ mod tests {
         let mse = head.fit_store(&mut narrow, &targets, 0.05, 2000).unwrap();
         assert!(mse < 1e-4, "mse {mse}");
         assert!((head.predict(&[0.25, -0.5]) - (2.0 * 0.25 + 0.5 + 0.5)).abs() < 0.05);
-    }
-
-    #[test]
-    fn fit_rejects_shape_mismatch_and_bad_lr() {
-        let mut head = ValueHead::new(2);
-        assert!(head.fit(&[1.0, 2.0, 3.0], &[1.0], 0.1, 1).is_err());
-        assert!(head.fit(&[1.0, 2.0], &[1.0], 0.0, 1).is_err());
-        assert!(head.fit(&[], &[], 0.1, 1).is_err());
     }
 }

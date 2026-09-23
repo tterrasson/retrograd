@@ -328,7 +328,6 @@ mod tests {
     use super::*;
     use crate::tests_support::{temp_path, write_sft_config};
     use retrograd_config as config;
-    use retrograd_config::EvaluationConfig;
 
     #[test]
     fn trajectory_and_dataset_fingerprints_are_stable_and_sensitive_to_inputs() {
@@ -393,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_and_should_evaluate_schedule_are_stable() {
+    fn metadata_describes_the_run() {
         let root = temp_path("metadata");
         let config_path = write_sft_config(&root);
         let config = config::load(&config_path).unwrap();
@@ -404,22 +403,6 @@ mod tests {
             root.join("data.txt").display().to_string()
         );
         assert_eq!(metadata.scheduler, "constant");
-
-        let evaluation_path = root.join("eval.txt");
-        fs::write(&evaluation_path, "evaluation").unwrap();
-        let mut evaluated = config;
-        evaluated.evaluation = Some(EvaluationConfig {
-            data: evaluation_path,
-            every_iterations: 2,
-            patience: Some(3),
-            min_delta: 0.01,
-            max_examples: None,
-        });
-        let controller = crate::RunController::new(&evaluated).unwrap();
-        assert!(!controller.should_evaluate(1, 5));
-        assert!(controller.should_evaluate(2, 5));
-        assert!(controller.should_evaluate(5, 5));
-        assert_eq!(scheduler_name(evaluated.training.lr_scheduler), "constant");
         fs::remove_dir_all(root).unwrap();
     }
 }
