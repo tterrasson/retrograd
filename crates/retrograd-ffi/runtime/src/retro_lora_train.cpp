@@ -10,9 +10,6 @@ namespace {
 // Applies the versioned runtime policy before any backend context exists.
 // Returns false with an error when the requested policy cannot be honored.
 bool apply_runtime_config(const retro_runtime_config * cfg) {
-    if (!cfg) {
-        return true;
-    }
     // struct_size is the evolution key: anything shorter than the prefix a field
     // lives in was compiled before that field existed and must not be read.
     const uint32_t need = offsetof(retro_runtime_config, rir_mode) + sizeof(int32_t);
@@ -32,16 +29,13 @@ bool apply_runtime_config(const retro_runtime_config * cfg) {
     }
     return true;
 }
+} // namespace
 
-retro_trainer * trainer_new_impl(
+extern "C" retro_trainer * retro_trainer_new(
         const char * model_path,
-        const retro_train_config * train_config,
-        const retro_runtime_config * runtime_config) {
+        const retro_train_config * train_config) {
     try {
         retro::clear_error();
-        if (!apply_runtime_config(runtime_config)) {
-            return nullptr;
-        }
         if (retro::is_blank(model_path)) {
             retro::set_error("model_path is required");
             return nullptr;
@@ -71,20 +65,6 @@ retro_trainer * trainer_new_impl(
         retro::set_error("unknown C++ exception");
         return nullptr;
     }
-}
-} // namespace
-
-extern "C" retro_trainer * retro_trainer_new(
-        const char * model_path,
-        const retro_train_config * train_config) {
-    return trainer_new_impl(model_path, train_config, nullptr);
-}
-
-extern "C" retro_trainer * retro_trainer_new_ex(
-        const char * model_path,
-        const retro_train_config * train_config,
-        const retro_runtime_config * runtime_config) {
-    return trainer_new_impl(model_path, train_config, runtime_config);
 }
 
 extern "C" int retro_runtime_config_apply(const retro_runtime_config * config) {

@@ -1180,26 +1180,15 @@ typedef enum retro_rir_mode {
     RETRO_RIR_MODE_REQUIRE = 3,  // like prefer, and the preflight fails if it did not apply
 } retro_rir_mode;
 
-// retro_trainer_new plus the runtime policy. `runtime_config` may be NULL, in
-// which case this is exactly retro_trainer_new.
-// Fails, rather than silently ignoring the request, when a policy differs from
-// one already in force: the backends have then already built (or not built) the
-// pipelines it asks for, and a mode that disagrees with what was compiled is the
-// one way retro_kernel_run_info.executed_impl could become untrustworthy.
-// Requesting the policy already in force always succeeds.
-retro_trainer * retro_trainer_new_ex(
-    const char * model_path,
-    const retro_train_config * train_config,
-    const retro_runtime_config * runtime_config);
-
 // The policy actually in force, and whether it can still be changed. A caller
 // that passed a runtime_config can check what it got rather than assume.
 int retro_runtime_config_effective(retro_runtime_config * out, bool * out_latched);
 
-// Applies the policy on its own, without creating a trainer. Same rules as
-// retro_trainer_new_ex: idempotent for the value already in force, an error for
-// a different one once the policy has been read. Exists so a host can set the
-// policy at startup, and so the refusal is testable without a model.
+// Applies the policy before the first trainer is created. Idempotent for the
+// value already in force; an error for a different one once the policy has been
+// read: the backends have then already built (or not built) the pipelines it
+// asks for, and a mode that disagrees with what was compiled would make
+// retro_kernel_run_info.executed_impl untrustworthy.
 int retro_runtime_config_apply(const retro_runtime_config * config);
 
 int retro_trainer_create_lora(

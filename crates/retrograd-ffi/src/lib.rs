@@ -675,16 +675,6 @@ unsafe extern "C" {
         train_config: *const RetroTrainConfig,
     ) -> *mut RetroTrainer;
 
-    /// [`retro_trainer_new`] plus the process-wide runtime policy, which must be
-    /// fixed before any backend context exists. Fails
-    /// rather than silently ignoring a policy that disagrees with one already in
-    /// force. `runtime_config` may be null.
-    pub fn retro_trainer_new_ex(
-        model_path: *const c_char,
-        train_config: *const RetroTrainConfig,
-        runtime_config: *const RetroRuntimeConfig,
-    ) -> *mut RetroTrainer;
-
     /// The policy in force, and whether it can still be changed. `struct_size`
     /// must be set by the caller.
     pub fn retro_runtime_config_effective(
