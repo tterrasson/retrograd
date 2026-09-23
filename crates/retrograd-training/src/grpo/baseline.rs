@@ -82,7 +82,7 @@ pub(super) fn build_baseline(
     );
     let (verifiable_reward_mean, judge_reward_mean) = reward_split(mean_reward_f64, &judge_terms);
     let raw_rewards = observer.map(|_| rewards.clone());
-    // DAPO soft overlong punishment (item 8): a progressive penalty over
+    // DAPO soft overlong punishment: a progressive penalty over
     // the last `buffer_tokens` of the budget, applied to the reward before
     // the group baseline so the policy learns to conclude rather than run
     // to the truncation limit. Reported reward stats above stay raw.
@@ -113,8 +113,6 @@ pub(super) fn build_baseline(
         .collect::<Vec<_>>();
     let (advantages, group_diagnostics) =
         group_advantages(&rewards, &group_ids, &mut live, config.baseline)?;
-    // Fraction of unique completions per group (item 7): a precursor to
-    // deduplication. Averaged over groups.
     let distinct_fraction = distinct_completion_fraction(&completions, &group_ids);
     match (observer, &raw_rewards) {
         (Some(observer), Some(raw_rewards)) => {
@@ -224,7 +222,7 @@ pub(super) fn build_baseline(
         .filter(|rollout| is_truncated(rollout.completion_len(), loss_denominator))
         .count() as f32
         / rollouts.len() as f32;
-    // Mean sampled-token entropy proxy (item 7): `-mean(log pi)` over live
+    // Mean sampled-token entropy proxy: `-mean(log pi)` over live
     // rollouts, read straight off the behavior logprobs. This is the
     // entropy-collapse symptom Clip-Higher is meant to fight.
     let entropy = if trainable.is_empty() {

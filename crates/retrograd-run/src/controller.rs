@@ -1,9 +1,8 @@
 //! Checkpoint policy, evaluation cadence and early stopping.
 //!
-//! Extracted verbatim from `src/train.rs` so the CLI and the HTTP server share
-//! one definition of when a checkpoint is written and when a run stops early.
-//! Two implementations would diverge, and the divergence would only show up as
-//! a resume that replays or skips work.
+//! One definition, shared by the CLI and the HTTP server, of when a checkpoint
+//! is written and when a run stops early: two would diverge, and the divergence
+//! would only show up as a resume that replays or skips work.
 
 use std::collections::BTreeMap;
 use std::fs;

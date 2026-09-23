@@ -1027,7 +1027,8 @@ fn refused_by_muon(storage: &Storage, device: Device) {
         "{message}"
     );
     assert!(message.contains("F32 only"), "{message}");
-    // The refusal is the dtype one, not rule 6's "declared but not marked".
+    // The refusal is the dtype one, not the marked-set check's "declared but not
+    // marked".
     assert!(
         !message.contains("marked"),
         "the refusal arrived after the marking: {message}"

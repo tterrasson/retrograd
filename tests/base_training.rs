@@ -237,7 +237,7 @@ fn a_resolved_norm_set_is_marked_and_moves_the_model_without_touching_the_gguf()
         .train_preflight()
         .expect("preflight supports base weights");
 
-    // Rule 6: the graph build compares what it marked with what was resolved,
+    // The graph build compares what it marked with what was resolved,
     // and fails here rather than by training a quietly smaller set.
     trainer
         .prepare_optimizer()

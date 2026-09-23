@@ -1,5 +1,5 @@
 //! Per-algorithm wiring: `prepare → begin → run_resumed → eval → checkpoint →
-//! bus.emit`, with every former `print` turned into a [`RunObserver`] call.
+//! bus.emit`, with progress reported through [`RunObserver`].
 
 use retrograd_checkpoint as checkpoint;
 use retrograd_config::{self as config, EvaluationConfig, RunConfig};
@@ -224,10 +224,7 @@ pub(crate) fn run_sft(
 ///
 /// They differ in what a target *is* - one token or `k` of them - and in
 /// nothing else this function can see: the same prepared corpus, the same epoch
-/// resume unit, the same forward-pass evaluation, the same control plane. It is
-/// extracted rather than duplicated because a second copy is where the two
-/// would start to diverge on pauses, checkpoints and eval scheduling, which is
-/// exactly the machinery a new objective should inherit rather than reimplement.
+/// resume unit, the same forward-pass evaluation, the same control plane.
 fn run_supervised_epochs(
     trainer: &mut Trainer,
     ctx: &mut Context<'_>,

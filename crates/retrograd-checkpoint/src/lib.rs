@@ -233,13 +233,10 @@ impl Optimizer {
         Ok(())
     }
 
-    /// The `(m, v)` pair of one parameter, for a reader that still thinks in
-    /// AdamW momenta.
+    /// The `(m, v)` pair of one parameter of an AdamW checkpoint.
     ///
-    /// Temporary, and deliberately narrow: it refuses any other optimizer
-    /// rather than handing back slots 0 and 1 of whatever is there. Reading an
-    /// arbitrary layout as moments is the exact confusion the slot table
-    /// replaced.
+    /// Refuses any other optimizer rather than handing back slots 0 and 1 of
+    /// whatever is there.
     pub fn adamw_moments(&self, parameter: &str) -> Result<(&StateSlot, &StateSlot)> {
         if self.kind != "adamw" {
             return Err(Error::checkpoint(format!(

@@ -380,9 +380,8 @@ fn a_slot_table_that_does_not_tile_its_payload_is_refused() {
     assert!(error.to_string().contains("covers 256 bytes"), "{error}");
 }
 
-/// The temporary AdamW accessor exists for callers that still think in
-/// momenta, and refuses every other optimizer rather than reading slots 0
-/// and 1 of an unknown layout as a pair.
+/// The AdamW accessor refuses every other optimizer rather than reading slots
+/// 0 and 1 of an unknown layout as a pair.
 #[test]
 fn the_adamw_accessor_refuses_another_optimizers_slots() {
     let checkpoint = sample();

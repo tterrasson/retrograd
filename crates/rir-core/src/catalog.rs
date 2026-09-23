@@ -4,10 +4,8 @@
 //! `rir-gen` writes `generated/rir/catalog/catalog.json`; `retrograd-server`
 //! reads it and `retrograd-plan` reasons about it. Those two ends share no
 //! dependency but this crate, so the schema lives here - the same reason the
-//! manifest does. Before that, the schema lived in
-//! `retrograd-core` and the *producer* had to depend on it, which is the one
-//! place `CLAUDE.md`'s rule - a `rir-*` crate never depends on `retrograd-core`
-//! - was broken.
+//! manifest does: a `rir-*` crate never depends on `retrograd-core`
+//! (`AGENTS.md`).
 //!
 //! This module is the exception to "the semantic IR knows nothing about ggml",
 //! and it is a deliberate one: the catalogue is by definition what RIR publishes

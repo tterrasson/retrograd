@@ -77,7 +77,7 @@ pub(super) struct BatchMetrics {
 /// Phase 1 of an update - assemble the training batch.
 ///
 /// Sample `group_size` completions per prompt - each member with its own
-/// derived seed - and score them. With dynamic sampling (item 3), groups
+/// derived seed - and score them. With dynamic sampling, groups
 /// without reward spread are discarded and replaced by the next prompts in the
 /// round-robin, up to `max_resample_factor * prompts_per_update` candidates, so
 /// the trained batch stays full of informative groups as the policy converges.
@@ -187,12 +187,9 @@ pub(super) fn assemble_batch(
             let mut group_completions = Vec::with_capacity(config.group_size);
             let mut group_seeds = Vec::with_capacity(config.group_size);
             for (seed_offset, (rollout, completion_text)) in seed_offsets.into_iter().zip(group) {
-                // Truncating, and deliberately so: the offset is a bit pattern
-                // feeding a seed, not a size. `wrapping_add` already says the
-                // sum may go round, and the run that reaches 2^32 draws is the
-                // one where the sampler repeats a seed - not one that should
-                // refuse to continue. The `checked_mul` above guards the index
-                // arithmetic, which is a size.
+                // Truncating on purpose: the offset only feeds a seed, and a
+                // run past 2^32 draws should repeat a seed, not stop. The
+                // `checked_mul` above guards the index arithmetic.
                 group_seeds.push(config.sampling.seed.wrapping_add(seed_offset as u32));
                 group_completions.push(completion_text);
                 group_rollouts.push(rollout);
@@ -316,8 +313,8 @@ pub(super) fn assemble_batch(
             let group_judge_terms = &round_judge_terms[offset..offset + config.group_size];
             offset += config.group_size;
             // Without dynamic sampling every group is kept; zero-signal
-            // groups are marked dead later by `group_advantages`, exactly as
-            // before. With it, only informative groups are kept and the rest
+            // groups are marked dead later by `group_advantages`. With it,
+            // only informative groups are kept and the rest
             // become potential padding. A group the judge dropped is never
             // *chosen*: its reward is missing the term every other group
             // carries, so resampling has a real one to prefer.
@@ -379,8 +376,8 @@ pub(super) fn assemble_batch(
         }
     }
     // Behavior-policy logprobs for the assembled batch, teacher-forced under
-    // the current policy. Order-independent (no optimizer step happened), so
-    // this matches the previous per-group timing; counted as sampling.
+    // the current policy. No optimizer step has happened yet, so the order the
+    // groups are scored in does not matter.
     let old_logprobs_started = Instant::now();
     let scoring_stats_before = trainer.scoring_stats()?;
     for group in rollouts.chunks_mut(config.group_size) {

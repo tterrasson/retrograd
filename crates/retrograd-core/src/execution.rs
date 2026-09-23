@@ -40,7 +40,7 @@ crate::wire_enum! {
     }
 }
 
-/// Kept, and not a candidate for the rule `CLAUDE.md` states: `Contract` is not
+/// Kept, and not a candidate for the `thiserror` rule `AGENTS.md` states: `Contract` is not
 /// an error, it is a noun interpolated into one (`#[error("unsupported
 /// {contract} schema …")]`), and `thiserror` needs the `Display` to do it.
 impl std::fmt::Display for Contract {

@@ -550,9 +550,9 @@ bool nan_scan_eval_callback(ggml_tensor * t, bool ask, void * /*user_data*/) {
 }
 
 // --- packed-sequence and finiteness probes ---------------------------------
-// Both answer a question that used to be answered by an architecture name.
-// llama_model_supports_packed_seq() states what the *graph* can be built on,
-// which is a property of llama.cpp and belongs there. Neither it nor any name
+// Both are measured on the device rather than inferred from an architecture
+// name. llama_model_supports_packed_seq() states what the *graph* can be built
+// on, which is a property of llama.cpp and belongs there. Neither it nor any name
 // states what the *driver* then computes, and a driver is exactly where a
 // supported graph shape still comes back as NaN. So the declaration is checked
 // on the device at hand, once per load, and may only ever be downgraded.
@@ -601,12 +601,9 @@ void clear_probe_memory(llama_context * ctx) {
 }
 
 // Decodes one physical micro-batch of `n_tokens` and reports how many of the
-// logits it produced are not finite.
-// This replaces a workaround keyed on (architecture name, macOS, Vulkan,
-// n_batch >= 16). What that rule encoded is a graph shape a driver evaluates to
-// NaN for a short micro-batch; that is a property of the (model, driver,
-// micro-batch) triple and of nothing else, so it is measured on the triple at
-// hand and the rule follows from the measurement.
+// logits it produced are not finite. A driver can evaluate a supported graph
+// shape to NaN for a short micro-batch; that is a property of the (model,
+// driver, micro-batch) triple, so it is measured on the triple at hand.
 bool decode_logits_are_finite(
         llama_context * ctx, const llama_model & model,
         uint32_t n_tokens, uint64_t & out_nonfinite) {
@@ -787,10 +784,10 @@ bool packed_forward_keeps_sequences_apart(
 }
 
 // The recurrent-state rollback depth this training context needs, in tokens.
-// It used to be a hardwired zero for every model. The need behind it is narrow
-// but real: the shared-prefix behavior scorer evicts each scored branch, and on
-// a recurrent memory llama_memory_seq_rm only accepts that eviction when it
-// drops a whole sequence or rolls back at most n_rs_seq tokens. With two
+// The need is narrow but real: the shared-prefix behavior scorer evicts each
+// scored branch, and on a recurrent memory llama_memory_seq_rm only accepts
+// that eviction when it drops a whole sequence or rolls back at most n_rs_seq
+// tokens. With two
 // sequence slots the scorer drops a whole sequence and no snapshot buys
 // anything; with one it rolls back to the end of the prompt, and a refused
 // rollback costs a full prompt re-prefill per branch (counted by
@@ -895,10 +892,9 @@ bool load_model_and_context(trainer_state & state) {
             : "CPU";
 
     llama_model_params model_params = llama_model_default_params();
-    // Upstream replaced the use_mmap/use_mlock booleans with llama_load_mode.
-    // Same intent as before: mmap the weights when they stay on the host, and
-    // skip it for a GPU load where every tensor is copied into device memory
-    // anyway and the mapping only costs page cache.
+    // mmap the weights when they stay on the host, and skip it for a GPU load
+    // where every tensor is copied into device memory anyway and the mapping
+    // only costs page cache.
     //
     // A base-weight policy takes the same path for a different reason: the
     // mapping is PROT_READ (llama-mmap.cpp), so the first optimizer step would
@@ -1024,11 +1020,10 @@ bool load_model_and_context(trainer_state & state) {
             && supports_flash_attn_back(gpu_device, *model, fa_probe_tokens, GGML_TYPE_F16);
     ctx_params.type_k = candidate_f16_kv ? GGML_TYPE_F16 : GGML_TYPE_F32;
     ctx_params.type_v = candidate_f16_kv ? GGML_TYPE_F16 : GGML_TYPE_F32;
-    // The fused Gated Delta Net kernel (Qwen3-Next / Qwen3.5) now has a real
-    // analytic backward (ggml_gated_delta_net_back), so training keeps the
-    // fast, rollback-capable fused path like generation does. no_fused_gdn
-    // stays available as an escape hatch (and exercises the differentiable
-    // chunking graph in delta-net-base.cpp) but training no longer needs it.
+    // The fused Gated Delta Net kernel (Qwen3-Next / Qwen3.5) has an analytic
+    // backward (ggml_gated_delta_net_back), so training keeps the fused path
+    // generation uses. RETRO_GDN_UNFUSED selects the differentiable chunking
+    // graph in delta-net-base.cpp instead, as an escape hatch.
     ctx_params.no_fused_gdn = std::getenv("RETRO_GDN_UNFUSED") != nullptr;
     ctx_params.no_perf = true;
     ctx_params.offload_kqv = use_gpu;
@@ -1680,7 +1675,7 @@ std::string backend_report(const trainer_state & state) {
     out << "  generation_concurrency: " << (state.generation_ctx
             ? llama_n_seq_max(state.generation_ctx.get()) : 1) << "\n";
     // Reported separately from effective_batch: the generation context no
-    // longer inherits the optimizer's geometry (docs/engineering/optims/SAMPLING.md, S3).
+    // longer inherits the optimizer's geometry (docs/engineering/optims/SAMPLING.md).
     out << "  generation_batch: " << (state.generation_ctx
             ? llama_n_batch(state.generation_ctx.get())
             : llama_n_batch(state.ctx.get())) << "\n";

@@ -613,8 +613,7 @@ static std::vector<std::string> base_dtype_backends(
 
 // The same admission over the declared base set, before llama_opt_init.
 // A dtype llama_set_param does not admit is never marked, so the marked-set
-// check above would never see it and rule 6 would report it as "declared but
-// not marked". This check names the tensor, its dtype, its owner and the
+// check would report it only as "declared but not marked". This check names the tensor, its dtype, its owner and the
 // backend, which is the message that says what to change.
 bool declared_base_dtypes_are_admitted(const trainer_state & state) {
     if (!trains_base_weights(state) || state.trainable_base.empty()) {

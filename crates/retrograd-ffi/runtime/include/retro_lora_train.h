@@ -864,7 +864,7 @@ typedef struct retro_train_config {
     bool chunked_ce_offload_logsoftmax;
     // Recompute forward activations in the packed-sequence backward graph.
     // Selected layer outputs remain live as segment boundaries. The
-    // legacy micro-batch accumulation path is intentionally unchanged.
+    // micro-batch accumulation path does not checkpoint.
     bool gradient_checkpointing;
     // Retain one transformer-layer output every N layers (>= 1).
     uint32_t checkpoint_every_n_layers;

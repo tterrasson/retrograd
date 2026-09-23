@@ -527,7 +527,7 @@ bool create_trainable_lora_adapter(trainer_state & state, uint32_t seed);
 // optimizer params. Idempotent; must run before llama_opt_init.
 bool promote_loaded_lora_to_trainable(trainer_state & state);
 bool resolve_lora_targets(trainer_state & state, std::vector<const ggml_tensor *> & targets);
-// Rule 6 of the trainable-set contract: after llama_opt_init, the tensors
+// The marked-set check: after llama_opt_init, the tensors
 // actually carrying GGML_TENSOR_FLAG_PARAM must be exactly the resolved set -
 // the adapter's A/B pairs plus `trainable_base`, and nothing else. A filter
 // that returned true for a tensor `opt_init` never visits, or a name that does
@@ -544,8 +544,8 @@ bool optimizer_supports_dtype(const trainer_state & state, int32_t optimizer, gg
 // The kernel's dtype table alone, no device in it.
 bool optimizer_kernel_writes_dtype(int32_t optimizer, ggml_type type);
 // The same admission over the declared base set, before llama_opt_init marks
-// anything: a dtype the mark step skips would otherwise surface as rule 6's
-// "declared but not marked".
+// anything: a dtype the mark step skips would otherwise surface only as the
+// marked-set check's "declared but not marked".
 bool declared_base_dtypes_are_admitted(const trainer_state & state);
 // Whether the per-element update this run intends is large enough for the
 // half-precision stores it is written to. Records the run's own step, in

@@ -21,11 +21,8 @@ pub(super) fn run_epochs(
     observer: Option<&dyn TrajectoryObserver>,
     on_progress: &mut dyn FnMut(&mut Trainer, Progress) -> Result<bool>,
 ) -> Result<bool> {
-    // Destructured rather than read through `baseline.metrics.…`, and the field
-    // names are the ones the update loop used before the split: the `metric!`
-    // block below is forty series long and it is the *names* that pair each one
-    // with its value. Renaming them here to save this pattern would move that
-    // pairing off the page.
+    // Destructured so the forty-series `metric!` block below pairs each series
+    // with a local of the same name.
     let UpdateBaseline {
         update,
         effective_kl,
@@ -68,7 +65,7 @@ pub(super) fn run_epochs(
     } = *baseline;
     let layout = state.layout;
     let judge = state.judge.as_ref();
-    // Historical aggregate retained for dashboards and existing exports.
+    // `timing/sampling_seconds`: generation plus behavior scoring.
     let sampling_seconds = generation_seconds + behavior_scoring_seconds;
     let step_params = GrpoStepParams {
         objective: GrpoObjective {
@@ -231,14 +228,14 @@ pub(super) fn run_epochs(
                     // Shared-prefix decodes per scored group: 1.0 when the
                     // prefix is decoded once and every branch is taken from
                     // it, group_size when the scorer degraded to one prompt
-                    // prefill per completion (docs/engineering/optims/SAMPLING.md H4).
+                    // prefill per completion.
                     metric!(
                         "scoring/prefix_decodes_per_group",
                         ratio_or_zero(scoring_stats.prefix_decodes, scoring_stats.calls)
                     ),
                     // Share of scored positions whose target log-probability
                     // was gathered on the device instead of reduced from a
-                    // full n_vocab row on the host (SAMPLING.md H5).
+                    // full n_vocab row on the host.
                     metric!(
                         "scoring/device_logprob_fraction",
                         ratio_or_zero(

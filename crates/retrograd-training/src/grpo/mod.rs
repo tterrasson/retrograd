@@ -14,6 +14,8 @@
 //! truncated at the generation budget are excluded from both the baseline and
 //! the epochs, since their reward judges an incomplete response.
 
+use std::time::Instant;
+
 use super::observe::{GrpoSlots, grpo_rollouts, observed_prompts, outcome};
 use super::rollout::prompts::Prompt;
 use super::rollout::{
@@ -122,8 +124,6 @@ pub fn benchmark_rewards(
     )
 }
 
-use std::time::Instant;
-
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct GroupDiagnostics {
     /// Mean within-group reward std (over live members) - the group-collapse
@@ -175,8 +175,6 @@ pub(crate) fn group_advantages(
     }
     let mut live_members = Vec::new();
     for indices in groups.values() {
-        // Collected once rather than re-derived from a cloned iterator for each
-        // of the three reductions below.
         live_members.clear();
         live_members.extend(
             indices
@@ -301,10 +299,10 @@ pub(crate) fn shuffled_indices(len: usize, seed: u64) -> Vec<usize> {
     indices
 }
 
-/// Resolves the prompt-file slot for a global draw index. Sequential is the
-/// unchanged round-robin; shuffled re-draws a seeded permutation each full
-/// pass over the dataset (item 10), so correlated adjacent prompts do not
-/// always land in the same update. The permutation is stable within a pass.
+/// Resolves the prompt-file slot for a global draw index. Sequential is a
+/// round-robin; shuffled re-draws a seeded permutation each full pass over the
+/// dataset, so correlated adjacent prompts do not always land in the same
+/// update. The permutation is stable within a pass.
 #[cfg(test)]
 fn prompt_slot_for(
     order: &retrograd_config::PromptOrder,
@@ -322,10 +320,8 @@ fn pass_seed(seed: u32, pass: u64) -> u64 {
 
 /// Prompt draws with the current pass's permutation held between calls.
 ///
-/// The permutation is a function of the pass alone, so recomputing it per draw
-/// meant a full Fisher-Yates over the whole prompt file - and one allocation of
-/// its size - for a single index. Caching it changes nothing observable: the
-/// drawn slots are identical, bit for bit.
+/// The permutation is a function of the pass alone, so it is shuffled once per
+/// pass rather than once per draw.
 pub(crate) struct PromptDraws {
     order: retrograd_config::PromptOrder,
     len: usize,
@@ -360,9 +356,8 @@ impl PromptDraws {
     }
 }
 
-/// Mean over groups of the fraction of distinct completions in each group
-/// (item 7). 1.0 means every member differs; low values flag degenerate
-/// sampling and the payoff of deduplication (item 15).
+/// Mean over groups of the fraction of distinct completions in each group.
+/// 1.0 means every member differs; low values flag degenerate sampling.
 fn distinct_completion_fraction(completions: &[String], group_ids: &[u64]) -> f32 {
     if completions.is_empty() {
         return 0.0;
@@ -383,7 +378,7 @@ fn distinct_completion_fraction(completions: &[String], group_ids: &[u64]) -> f3
     (sum / groups.len() as f64) as f32
 }
 
-/// DAPO soft overlong punishment (item 8): the reward reduction for a
+/// DAPO soft overlong punishment: the reward reduction for a
 /// completion of `length` tokens under a `loss_denominator`-token budget. Zero
 /// until the last `buffer_tokens`, then ramps linearly to `max_penalty`.
 /// Shared by the batch penalty loop and dynamic sampling's signal test so the
@@ -406,7 +401,7 @@ fn overlong_shaped_penalty(
 /// Whether a single group carries a learning signal: at least two live members
 /// with non-identical rewards, evaluated on the same penalized rewards and
 /// truncation mask the optimizer sees. Mirrors the zero-signal test in
-/// `group_advantages` so dynamic sampling (item 3) keeps exactly the groups the
+/// `group_advantages` so dynamic sampling keeps exactly the groups the
 /// epochs would train.
 fn group_has_signal(
     rollouts: &[Rollout],
@@ -480,13 +475,13 @@ struct RunState {
     loss_denominator: usize,
     rollouts_per_update: usize,
     horizon: SchedulerHorizon,
-    /// Adaptive-KL state (item 18): a running multiplier on the base
+    /// Adaptive-KL state: a running multiplier on the base
     /// coefficient, chased toward `kl_schedule.target` between updates. Stays 1
     /// when no target is configured.
     kl_multiplier: f32,
     /// Global round-robin cursor over prompt draws. Advances by the number of
     /// *candidate* groups sampled each update - exactly `prompts_per_update`
-    /// without dynamic sampling (item 3), more when zero-signal groups are
+    /// without dynamic sampling, more when zero-signal groups are
     /// resampled. Sampling seeds derive from this cursor, so the extra draws
     /// stay deterministic.
     prompt_cursor: usize,
@@ -618,7 +613,7 @@ pub fn run_resumed(
         // adaptive multiplier. With no `kl_schedule` this is just
         // `config.kl_coefficient`. When the base coefficient is zero, the
         // fixed-reference term is identically zero and the reference forward
-        // pass is skipped entirely (item 1).
+        // pass is skipped entirely.
         let warmup_factor = match &config.kl_schedule {
             Some(schedule) if schedule.warmup_updates > 0 => {
                 (update as f32 / schedule.warmup_updates as f32).min(1.0)

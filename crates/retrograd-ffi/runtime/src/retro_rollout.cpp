@@ -382,7 +382,7 @@ void clear_generation_memory(trainer_state & state, llama_context * ctx) {
 enum class score_pass { ok, needs_host_reduction, failed };
 
 // Whether the active device can gather log softmax(logits)[target] inside the
-// decode graph (docs/engineering/optims/SAMPLING.md S6). Read per call rather than cached:
+// decode graph (docs/engineering/optims/SAMPLING.md). Read per call rather than cached:
 // RETRO_DEVICE_LOGPROBS=0 is both the escape hatch and how the two reductions
 // are compared on a given model, including from a test that flips it.
 bool device_logprob_gather_enabled(const trainer_state & state) {

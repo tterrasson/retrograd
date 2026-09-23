@@ -1,4 +1,4 @@
-//! `CLAUDE.md`'s rule for the RIR chain, checked rather than intended:
+//! `AGENTS.md`'s rule for the RIR chain, checked rather than intended:
 //!
 //! > A `rir-*` crate never depends on `retrograd-core`.
 //!

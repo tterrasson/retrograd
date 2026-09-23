@@ -500,7 +500,7 @@ bool ensure_opt_context(trainer_state & state) {
     // the context has no optimizer yet, so a caller retrying after a refusal
     // would abort the process instead of getting the same error twice.
     state.opt_created = true;
-    // Rule 6 of the trainable-set contract: a flag without a gradient is not a
+    // The marked-set check: a flag without a gradient is not a
     // successful selection, so the marked set is compared with the resolved one
     // here rather than assumed to follow from the filter.
     if (!assert_marked_set_is_resolved(state)) {
@@ -1153,9 +1153,8 @@ int train_tokens_impl(
             std::memcpy(data.data() + row*n_ctx, tokens + offset, n_ctx*sizeof(int32_t));
             std::memcpy(labels.data() + row*n_ctx, tokens + offset + 1, n_ctx*sizeof(int32_t));
         }
-        // Preserve the legacy API's implicit final-row validation split. The
-        // structured SFT API deliberately does not do this: it only evaluates
-        // when the caller supplies an explicit dataset.
+        // The last row is held out for evaluation. The structured SFT API does
+        // not do this: it only evaluates when the caller supplies a dataset.
         const size_t train_rows = rows > 1 ? rows - 1 : rows;
         const retro_sft_dataset train { data.data(), labels.data(), train_rows, n_ctx };
         const retro_sft_dataset eval {

@@ -90,10 +90,8 @@ pub(crate) fn surrogate_step(
 /// The four numbers that define the Dr. GRPO loss, as opposed to the schedule
 /// it is stepped on.
 ///
-/// Named because they always travel together: they arrive as four fields of
-/// [`GrpoStepParams`] and leave as the last four arguments of
-/// [`grpo_token_weights_into`], which is the whole reason that function needed
-/// an `allow(too_many_arguments)`.
+/// Named because they always travel together, from [`GrpoStepParams`] to
+/// [`grpo_token_weights_into`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GrpoObjective {
     /// Clip-Higher band: the surrogate ratio is clipped to

@@ -328,7 +328,7 @@ pub struct Trainer {
     /// Kept because a checkpoint's trainable signature has to be available
     /// *before* the optimizer graph exists - a resume compares it while
     /// deciding whether to restore at all - while the marked set only exists
-    /// after. Rule 6 is what makes the two interchangeable once both do.
+    /// after. Once both exist, the runtime's marked-set check proves them equal.
     declared_trainable: Option<retrograd_core::TrainableSet>,
     /// Which optimizer owns each marked parameter, when an assignment was
     /// declared; empty for a single-optimizer run.

@@ -49,11 +49,7 @@ impl TensorDesc {
 /// Why a compiled kernel variant refuses the tensors it was handed.
 ///
 /// It is the `Err` of [`supports_op`], so it derives `thiserror::Error` and
-/// carries its sentence in `#[error(…)]` - the rule `CLAUDE.md` states, and the
-/// one this type was the last in the workspace to break: it had a
-/// forty-five-line hand-written `Display` and no `std::error::Error` at all,
-/// which made it an error type a caller could print but not propagate.
-/// The wordings below are unchanged.
+/// carries its sentence in `#[error(…)]`, as `AGENTS.md` requires.
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum RejectReason {
     #[error("{got} tensors, expected {expected}")]

@@ -85,10 +85,9 @@ pub struct RunOutcome {
 
 /// Runs `config` to completion, reporting progress to `observer`.
 ///
-/// This is the body of the former `src/train.rs::train`, minus the terminal
-/// chrome: the frontend prints its own header before the call and its own
-/// summary after it. Nothing interrupts it and its metrics go where the
-/// configuration says - which is exactly what the CLI wants.
+/// The frontend prints its own header before the call and its own summary
+/// after it. Nothing interrupts the run and its metrics go where the
+/// configuration says.
 pub fn execute(config: &RunConfig, observer: &mut dyn RunObserver) -> Result<RunOutcome> {
     execute_controlled(config, observer, &mut FreeRunning, Vec::new())
 }

@@ -1,5 +1,6 @@
-//! Algorithm boundary. Each algorithm owns its dataset and objective while the
-//! binary owns model/LoRA lifecycle, logging, and output persistence.
+//! The training algorithms: SFT, PPO, GRPO and distillation. Each owns its
+//! dataset and its objective; `retrograd-run` owns the model and adapter
+//! lifecycle, checkpoints, metrics sinks and the output.
 
 pub mod batch;
 pub mod distill;

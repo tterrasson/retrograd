@@ -124,7 +124,8 @@ impl Trainer {
     ///
     /// Read from the runtime rather than from the selector that produced it:
     /// this is what the update step actually writes, and the two are equal only
-    /// because rule 6 compares them. Empty before the optimizer graph exists.
+    /// because the runtime's marked-set check compares them. Empty before the
+    /// optimizer graph exists.
     pub fn marked_trainable_set(&mut self) -> Result<TrainableSet> {
         let mut count = 0_usize;
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
@@ -236,7 +237,7 @@ impl Trainer {
         }
         // The declared set first: a resume compares this signature before the
         // optimizer graph exists, so the marked set is not available yet. Once
-        // it is, rule 6 has already proved the two agree.
+        // it is, the marked-set check has already proved the two agree.
         if let Some(declared) = self.declared_trainable_set() {
             return Ok(set_signature(declared));
         }
