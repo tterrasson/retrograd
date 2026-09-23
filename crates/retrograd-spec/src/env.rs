@@ -1,11 +1,11 @@
 //! What a configuration file says about the world a trajectory acts on.
 //!
 //! ```toml
-//! [grpo.agent.environment]
+//! [agent.environment]
 //! type = "container"        # "http" | "container" | "local"
 //! profile = "python"        # or image = "…@sha256:…"
 //!
-//! [grpo.agent.environment.pool]
+//! [agent.environment.pool]
 //! max_live = 8
 //! reuse = "workspace"
 //! ```

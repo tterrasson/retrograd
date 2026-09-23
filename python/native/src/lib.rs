@@ -554,7 +554,7 @@ impl PyTrainer {
         n_seq_max=1,
         generation_concurrency=0,
         generation_batch=0,
-        fast_generation_context=false,
+        fast_generation_context=true,
         kv_dtype="f16",
         threads=0,
         epochs=1,
@@ -737,7 +737,7 @@ impl PyTrainer {
         })
     }
 
-    #[pyo3(signature = (*, rank=8, alpha=16.0, dropout=0.0, seed=42, targets=None, dtype="f32"))]
+    #[pyo3(signature = (*, rank=8, alpha=16.0, dropout=0.0, seed=42, targets=None, dtype="f16"))]
     fn create_lora(
         &mut self,
         rank: u32,

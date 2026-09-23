@@ -249,7 +249,7 @@ class HttpEnvironment:
     """An environment server speaking reset/step/state/close - the OpenEnv shape."""
 
     base_url: str
-    request_timeout: int = 120
+    request_timeout: int = 60
     #: Deadline of the connection itself, distinct from the request deadline: a
     #: server that is not listening should fail the rollout in seconds rather
     #: than hold it for the full request budget.
@@ -257,7 +257,8 @@ class HttpEnvironment:
     #: Sent with every call - an authorization header, a tenant id. The value is
     #: an operator secret: it belongs in the configuration, never in a scenario.
     headers: Mapping[str, str] = field(default_factory=dict)
-    pool_size: int = 8
+    #: Connections kept alive to the server; keep it at least ``group_size``.
+    pool_size: int = 16
     max_result_bytes: int = 64 * 1024
 
     def __post_init__(self) -> None:

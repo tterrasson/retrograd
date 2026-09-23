@@ -176,8 +176,8 @@ A `reward` returned by `/step` is a step reward; `done: true` ends the episode.
 | `truncation` | `"drop"` | What to do with a trajectory that ran out of budget: drop it, or keep it with the group's lowest reward (`"min_reward"`). |
 | `max_dropped_fraction` | `0.5` | Stop if more than this share of an update's trajectories is lost. |
 
-The loss is divided by the token budget (`max_turns × max_new_tokens_per_turn`),
-so changing these limits scales the gradient: re-tune `lr` when you change
+The loss is divided by the token budget (`max_turns × max_new_tokens_per_turn`,
+capped at `max_trajectory_tokens`), so changing these limits scales the gradient: re-tune `lr` when you change
 them. Every key is listed in the
 [configuration reference](../reference/configuration#agentic-grpo).
 

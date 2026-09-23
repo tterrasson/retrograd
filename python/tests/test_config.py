@@ -118,7 +118,7 @@ def test_configs_coerce_sequences_paths_and_preserve_native_options(tmp_path: Pa
         gradient_accumulation=2,
         max_sequences=2,
         generation_concurrency=2,
-        fast_generation_context=True,
+        fast_generation_context=False,
         kv_dtype="f16",
         scheduler="cosine",
         chunked_cross_entropy=True,
@@ -132,7 +132,7 @@ def test_configs_coerce_sequences_paths_and_preserve_native_options(tmp_path: Pa
         "n_seq_max": 2,
         "generation_concurrency": 2,
         "generation_batch": 0,
-        "fast_generation_context": True,
+        "fast_generation_context": False,
         "kv_dtype": "f16",
         "threads": 0,
         "epochs": 1,
@@ -185,6 +185,7 @@ def test_configs_coerce_sequences_paths_and_preserve_native_options(tmp_path: Pa
         (lambda: LoraConfig(dropout=1), "dropout"),
         (lambda: SamplingConfig(temperature=0), "temperature"),
         (lambda: CriticConfig(gamma=2), "gamma"),
+        (lambda: CriticConfig(gamma=0), "gamma"),
         (lambda: PPOConfig("p", ("r",), clip_range=1), "clip_range"),
         (lambda: PPOConfig("p", ("r",), reward_mode="pipe"), "reward_mode"),
         (lambda: GRPOConfig("p", ("r",), reward_timeout_seconds=0), "reward_timeout_seconds"),
@@ -293,7 +294,7 @@ def test_environments_serialize_into_the_native_tagged_shape() -> None:
             scenario, judge, environment=HttpEnvironment("http://127.0.0.1:8099")
         ).environment_json()
     )
-    assert http["type"] == "http" and http["request_timeout_secs"] == 120
+    assert http["type"] == "http" and http["request_timeout_secs"] == 60
 
     # No environment is the tool-only case, and it stays absent rather than
     # becoming an empty object the native side would have to interpret.

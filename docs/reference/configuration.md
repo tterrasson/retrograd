@@ -80,7 +80,7 @@ rotary constants are never trained; the run lists what it excluded at start-up.
 | `ctx` | `128` | Context length in tokens. |
 | `micro_batch` | `32` | Tokens per forward/backward pass. The main memory knob. |
 | `gradient_accumulation` | `1` | Passes per optimizer step; `micro_batch × gradient_accumulation` must divide `ctx`. Fixed to `ctx / micro_batch` for rollout algorithms: leave it out. |
-| `threads` | `0` | CPU threads; `0` is automatic. |
+| `threads` | automatic | CPU threads. Leave it out for automatic; `0` is refused. |
 | `generation_concurrency` | derived | Answers generated at once (GRPO, agentic GRPO, distillation). Lower to save memory. |
 | `generation_batch` | derived | Generation batch size. |
 | `shared_prefix_fanout` | `auto` | GRPO packing of answers that share a prompt: `auto`, `off`, `max`, or an integer ≥ 2. |
@@ -328,6 +328,8 @@ Keys of one mode are refused in the other.
 | `stateless` | `false` | Must be `true` when an environment is declared. |
 | `tool_timeout_secs` | `30` | Per-call timeout. |
 | `max_tool_result_bytes` | `65536` | Cap on a tool result. |
+| `cwd` | inherited | Working directory of a local server. |
+| `env_passthrough` | all | Names of the environment variables a local server inherits; `PATH` and `HOME` always are. |
 
 ### `[agent.environment]`
 
@@ -340,6 +342,7 @@ Keys of one mode are refused in the other.
 | `image` | profile's | Container image; prefer a digest. |
 | `tools` / `deny_tools` | profile's / none | Built-in tools to expose or hide. |
 | `allow_network` | `false` | Allow outbound network. |
+| `cache_volume` | none | Volume mounted read-only on the profile's package cache, so `reuse = "workspace"` installs once per run. |
 | `setup_timeout_secs` | `300` | Timeout for a scenario's `setup`. |
 | `verify_timeout_secs` | none | Timeout for a scenario's `verify`. |
 | `limits` | | `cpus = 1.0`, `memory_mb = 1024`, `pids = 256`, `exec_timeout_secs = 30`, `max_output_bytes = 65536`. |

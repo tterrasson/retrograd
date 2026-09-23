@@ -97,16 +97,19 @@ for what each key means; the names are the ones the TOML sections use.
 ## Full and partial base-weight training
 
 By default `Trainer` trains a LoRA adapter and leaves the base model frozen.
-Passing `trainable=` instead of (or alongside) `lora=` trains base weight
-tensors directly:
+Setting `TrainingConfig.trainable` trains base weight tensors directly, instead
+of (or, with `hybrid`, alongside) the adapter:
 
 ```python
 from retrograd import Trainer, TrainableConfig, TrainingConfig
 
 with Trainer(
     "model.gguf",
-    training=TrainingConfig(epochs=1, learning_rate=1e-5),
-    trainable=TrainableConfig(policy="partial", layers="last:4", norms=True),
+    training=TrainingConfig(
+        epochs=1,
+        learning_rate=1e-5,
+        trainable=TrainableConfig(policy="partial", layers="last:4", norms=True),
+    ),
 ) as trainer:
     train = trainer.prepare_dataset("train.jsonl")
     trainer.fit(train)
@@ -141,7 +144,7 @@ trainer.save_checkpoint(
 ```
 
 ```python
-with Trainer("model.gguf", training=same_config, trainable=same_selection) as trainer:
+with Trainer("model.gguf", training=same_config) as trainer:
     train = trainer.prepare_dataset("train.jsonl")
     state = trainer.load_checkpoint("runs/state", train, algorithm="sft")
     # continue from state.global_step

@@ -244,7 +244,9 @@ class TrainingConfig:
     max_sequences: int = 1
     generation_concurrency: int = 0
     generation_batch: int = 0
-    fast_generation_context: bool = False
+    #: F16 KV cache and flash attention for the sampling context. ``False``
+    #: trades that speed for bit-exact sampling.
+    fast_generation_context: bool = True
     #: KV-cache precision for the differentiable optimizer context. The runtime
     #: falls back to ``f32`` when the device lacks compatible flash attention.
     kv_dtype: KvDtype = "f16"
@@ -484,8 +486,8 @@ class CriticConfig:
     feature_dtype: Literal["f32", "f16", "bf16"] = "f32"
 
     def __post_init__(self) -> None:
-        if not 0 <= self.gamma <= 1:
-            raise ValueError("gamma must be in [0, 1]")
+        if not 0 < self.gamma <= 1:
+            raise ValueError("gamma must be in (0, 1]")
         if not 0 <= self.gae_lambda <= 1:
             raise ValueError("gae_lambda must be in [0, 1]")
         if self.learning_rate <= 0 or self.epochs <= 0:

@@ -68,7 +68,7 @@ Commands:
   bench <config.toml> [--data eval.jsonl] [--model base.gguf]
         [--adapter adapter.gguf] [--device auto|cpu|gpu]
         [--format auto|text|jsonl] [--ctx N] [--limit N]
-  chat <config.toml> [--compare] [--base_only] [--adapter adapter.gguf]
+  chat <config.toml> [--compare] [--base-only] [--adapter adapter.gguf]
        [--model base.gguf] [--device auto|cpu|gpu] [--ctx N] [--system PROMPT]
        [--temp T] [--top-p P] [--max-new-tokens N] [--seed N]
   inspect --model base.gguf [--device auto|cpu|gpu]
@@ -81,7 +81,7 @@ Commands:
 
 Compatibility aliases:
   bench: --dataset --eval-data
-  chat: --base-only --temperature --top_p --max_new_tokens --max-tokens";
+  chat: --base_only --temperature --top_p --max_new_tokens --max-tokens";
 
 #[cfg(test)]
 mod help_tests {

@@ -47,7 +47,7 @@ defaults to `[evaluation].data`.
 
 ```text
 retrograd chat CONFIG.toml [--adapter ADAPTER.gguf] [--compare] [--base-only]
-               [--system PROMPT] [--temperature T] [--top-p P]
+               [--system PROMPT] [--temp T] [--top-p P]
                [--max-new-tokens N] [--seed N] [--ctx N] [--model M] [--device D]
 ```
 
