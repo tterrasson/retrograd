@@ -249,8 +249,9 @@ pub const BASE_DTYPE_TABLE: &[BaseDtypeCapability] = &[
         gradient_tolerance: 5.0e-2,
         update_tolerance: 1.0,
         // Measured 3.3e-4, half the in-place row's 5.7e-4: the in-place
-        // rounding is gone.
-        update_outlier_fraction: 1.0e-3,
+        // rounding is gone. 1.3e-3 on an Apple M5, whose CPU forward differs
+        // from the one this row was first measured on.
+        update_outlier_fraction: 2.0e-3,
         stability_steps: 2000,
         // Measured 4.9e-3 after 2000 steps, against the in-place row's 2.2e-3.
         stability_loss_tolerance: 2.0e-1,
@@ -330,6 +331,66 @@ pub const BASE_DTYPE_TABLE: &[BaseDtypeCapability] = &[
         update_outlier_fraction: 2.5e-3,
         stability_steps: 2000,
         // Measured 5.2e-3 after 2000 steps, against the in-place row's 5.0e-3.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "F16",
+        optimizer: OptimizerKind::AdamW,
+        backend: "MTL",
+        master: false,
+        // The F16 bound. Measured 0: on this backend the F16 fixture and its
+        // F32 twin give the same gradient.
+        gradient_tolerance: 5.0e-2,
+        update_tolerance: 1.0,
+        // Measured 0: no element lands more than one grid point from the F32
+        // trajectory.
+        update_outlier_fraction: 2.0e-3,
+        stability_steps: 2000,
+        // Measured 2.9e-3 after 2000 steps.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "F16",
+        optimizer: OptimizerKind::AdamW,
+        backend: "MTL",
+        master: true,
+        // The store's bound, as on every master row. Measured 0, as in place.
+        gradient_tolerance: 5.0e-2,
+        update_tolerance: 1.0,
+        // Measured 0, as in place.
+        update_outlier_fraction: 2.0e-3,
+        stability_steps: 2000,
+        // Measured 2.7e-3 after 2000 steps, against the in-place row's 2.9e-3.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "F16",
+        optimizer: OptimizerKind::Sgd,
+        backend: "MTL",
+        master: false,
+        // The F16 bound. Measured 0, the AdamW number: the forward does not
+        // know which optimizer will read it.
+        gradient_tolerance: 5.0e-2,
+        update_tolerance: 1.0,
+        // Measured 0, where CUDA's forward difference puts 3.3e-3 of an SGD
+        // step on the wrong side of a grid point.
+        update_outlier_fraction: 2.0e-3,
+        stability_steps: 2000,
+        // Measured 3.3e-3 after 2000 steps.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "F16",
+        optimizer: OptimizerKind::Sgd,
+        backend: "MTL",
+        master: true,
+        // The store's bound, as on every master row. Measured 0, as in place.
+        gradient_tolerance: 5.0e-2,
+        update_tolerance: 1.0,
+        // Measured 0, as in place.
+        update_outlier_fraction: 2.0e-3,
+        stability_steps: 2000,
+        // Measured 2.0e-3 after 2000 steps, against the in-place row's 3.3e-3.
         stability_loss_tolerance: 2.0e-1,
     },
 ];
@@ -462,7 +523,7 @@ mod tests {
         assert!(!base_dtype_admits(
             &TensorDtype::F16,
             OptimizerKind::AdamW,
-            "MTL",
+            "Vulkan",
             false
         ));
         // Same dtype and backend, an optimizer whose kernel is F32-only.
@@ -509,7 +570,8 @@ mod tests {
             "CUDA",
             true
         ));
-        // No lane has run the master path on Metal, so no row.
+        // Metal has F16 master rows, not BF16 ones: its OUT_PROD does not
+        // decode a BF16 weight, so the backward cannot stay on the device.
         assert!(!base_dtype_admits(
             &TensorDtype::BF16,
             OptimizerKind::AdamW,
@@ -579,13 +641,13 @@ mod tests {
     fn a_refusal_can_name_the_backends_that_do_carry_it() {
         let backends: Vec<&str> =
             base_dtype_backends(&TensorDtype::F16, OptimizerKind::AdamW, false).collect();
-        assert_eq!(backends, vec!["CPU", "CUDA"]);
+        assert_eq!(backends, vec!["CPU", "CUDA", "MTL"]);
         let backends: Vec<&str> =
             base_dtype_backends(&TensorDtype::BF16, OptimizerKind::AdamW, false).collect();
         assert_eq!(backends, vec!["CPU", "CUDA"]);
         let backends: Vec<&str> =
             base_dtype_backends(&TensorDtype::F16, OptimizerKind::Sgd, false).collect();
-        assert_eq!(backends, vec!["CPU", "CUDA"]);
+        assert_eq!(backends, vec!["CPU", "CUDA", "MTL"]);
         // The master path has its own list of measured backends.
         let backends: Vec<&str> =
             base_dtype_backends(&TensorDtype::BF16, OptimizerKind::AdamW, true).collect();

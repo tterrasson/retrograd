@@ -495,9 +495,8 @@ fn the_dtype_screen_is_a_screen_and_the_row_is_the_admission() {
     assert!(!BASE_DTYPE_TABLE.is_empty(), "the widening has no row");
 }
 
-/// The declared table and the running backend answer the same question in
-/// both directions: a row means the marking succeeds, no row means it is
-/// refused by name. Only the backend this process runs on can be asked, which
+/// The declared table and the running backend agree on the marking in both
+/// directions: a row means it succeeds, no row means it is refused by name. Only the backend this process runs on can be asked, which
 /// is also why a row is written per measured backend.
 #[test]
 fn the_row_and_the_running_backend_agree_on_whether_a_storage_is_admitted() {
@@ -525,12 +524,16 @@ fn table_agrees_with_backend(
     // in-place path; with a master copy the step that runs is the F32 one and
     // the store is written by a cast, which is why a backend can be admitted
     // there while this probe says no.
+    //
+    // A row needs the probe, but the probe does not make a row: it asks about
+    // the update alone, and the backward can still be missing - Metal carries
+    // the BF16 update step and cannot run a BF16 weight through OUT_PROD.
     let probed = device_probe_admits(&mut trainer, &storage.dtype, optimizer);
     if !master {
-        assert_eq!(
-            tabled, probed,
-            "{registry}: the table says {tabled} and the device's {optimizer} {} probe \
-             says {probed}",
+        assert!(
+            !tabled || probed,
+            "{registry}: the table admits {} under {optimizer} and the device's probe \
+             refuses it",
             storage.dtype
         );
     }
@@ -1915,18 +1918,23 @@ fn checkpoint_restores(storage: &Storage, optimizer: OptimizerKind, device: Devi
 fn an_interrupted_run_lands_bit_for_bit_where_an_uninterrupted_one_does() {
     per_device(|device| {
         eprintln!("--- F32, no master copy ---");
-        interrupted_run_continuity(f32_fixture!(), device, false);
+        interrupted_run_continuity(f32_fixture!(), None, device, false);
         for storage in storages() {
             let Some((model, _)) = storage.pair() else {
                 continue;
             };
             eprintln!("--- {} with a master copy ---", storage.dtype);
-            interrupted_run_continuity(model, device, true);
+            interrupted_run_continuity(model, Some(&storage.dtype), device, true);
         }
     });
 }
 
-fn interrupted_run_continuity(model: PathBuf, device: Device, master: bool) {
+fn interrupted_run_continuity(
+    model: PathBuf,
+    dtype: Option<&TensorDtype>,
+    device: Device,
+    master: bool,
+) {
     let _guard = common::serialize_models();
     let root = scratch("continuity");
     let set = resolved_set(&model, device);
@@ -1955,6 +1963,12 @@ fn interrupted_run_continuity(model: PathBuf, device: Device, master: bool) {
     // The reference: every step in one process.
     let mut straight =
         Trainer::new(&model, config(OptimizerKind::AdamW, device, master)).expect("load trainer");
+    if let Some(dtype) = dtype
+        && row_for(&mut straight, dtype, OptimizerKind::AdamW, master).is_none()
+    {
+        eprintln!("skipping: no row for this combination");
+        return;
+    }
     straight
         .declare_trainable_set(&set)
         .expect("the selected projections");

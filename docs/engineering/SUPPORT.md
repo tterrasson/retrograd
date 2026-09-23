@@ -70,9 +70,9 @@ trained parameter takes a step under its own store's floor.
 | Stored as | CPU | Metal | Vulkan | CUDA |
 |---|---|---|---|---|
 | F32 | ✅ | ✅ | ✅ | ✅ |
-| F16, under AdamW or SGD, in place | ✅ | ❌ [c] | ❌ [c] | ✅ |
-| BF16, under AdamW or SGD, in place | ✅ | ❌ [c] [e] | ❌ [c] [e] | ✅ |
-| F16 or BF16, under AdamW or SGD, master copy | ✅ | ❌ [f] | ❌ [g] | ✅ |
+| F16, under AdamW or SGD, in place | ✅ | ✅ | ❌ [c] | ✅ |
+| BF16, under AdamW or SGD, in place | ✅ | ❌ [e] | ❌ [c] [e] | ✅ |
+| F16 or BF16, under AdamW or SGD, master copy | ✅ | 🟡 [f] | ❌ [g] | ✅ |
 | F16 or BF16, under Muon or Gefen | ❌ [d] | ❌ [d] | ❌ [d] | ❌ [d] |
 
 A cell is a measured combination of (dtype, optimizer, backend, master), run
@@ -80,18 +80,19 @@ with tolerances read from the row; a combination with no row is refused before
 the graph is built. The live device is also asked each step whether it can run
 the update, and either the table or the device can refuse.
 
-- **[c]** The update kernel exists on both and an exact CPU-against-device
-  equality test holds it to the CPU's rounding, but no lane has run a model on
-either, so no row admits them. The Metal test has not been run at all, for
-  want of a machine.
+- **[c]** The update kernel exists and an exact CPU-against-device equality
+  test holds it to the CPU's rounding, but no lane has run a model on it, so no
+  row admits it.
 - **[d]** Both steps write F32 parameters only: Muon's ends in a
   Newton-Schulz orthogonalization, Gefen's already approximates the first
   moment, and a rounded store would stack a second approximation on the
   first. The refusal says that, not an empty list of backends.
 - **[e]** Neither backend decodes a BF16 weight in `OUT_PROD`, which an
-  activation gradient needs; the CPU and CUDA do. A row needs that too.
-- **[f]** The path is supported there; the verification lanes have not been
-  run, for want of a machine.
+  activation gradient needs; the CPU and CUDA do. A row needs that too. On
+  Metal the fused cross-entropy does not read a BF16 head either, so a BF16
+  model sends both to the CPU, which `RETRO_REQUIRE_GPU_RESIDENT=1` refuses.
+- **[f]** F16 only. BF16 is refused there for the reason in [e]: the master
+  copy changes the update, not the backward that feeds it.
 - **[g]** Measured, and refused on the resume lane: the loss of the step after
   a restore differs from the uninterrupted run's by one ulp of F32 while the
   restored weights are bit-identical - a difference in how the reported loss is
@@ -108,7 +109,8 @@ lands on the same grid point whichever backend computed the gradient; an SGD
 step is the gradient itself, about one grid point wide, so a small difference
 between backends decides which side of a point each element lands on. That is
 why the SGD rows' outlier fractions move more between CPU and CUDA than
-AdamW's do.
+AdamW's do. Metal is the limit case: on the fixture its F16 gradient equals the
+F32 twin's, so no element lands a grid point away under either optimizer.
 
 ## Kernels and execution
 
