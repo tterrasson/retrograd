@@ -48,22 +48,25 @@ kernel void rir_add_repeat_vec4(
     if (plane_v2 >= pc.n_plane) {
         return;
     }
+    const uint base_v22 = row_v1 * pc.a_nb1 + plane_v2 * pc.a_nb2;
     const uint rep_v14 = row_v1 % pc.n_row_b;
     const uint rep_v15 = plane_v2 % pc.n_plane_b;
-    const uint base_v22 = col_v0 * pc.a_nb0 + row_v1 * pc.a_nb1 + plane_v2 * pc.a_nb2;
+    const uint base_v23 = rep_v14 * pc.b_nb1 + rep_v15 * pc.b_nb2;
+    const uint base_v24 = row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
+    const uint base_v25 = col_v0 * pc.a_nb0 + row_v1 * pc.a_nb1 + plane_v2 * pc.a_nb2;
     const uint rep_v5 = col_v0 % pc.n_col_b;
-    const uint base_v23 = rep_v5 * pc.b_nb0 + rep_v14 * pc.b_nb1 + rep_v15 * pc.b_nb2;
-    const uint base_v24 = col_v0 * pc.dst_nb0 + row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
+    const uint base_v26 = rep_v5 * pc.b_nb0 + rep_v14 * pc.b_nb1 + rep_v15 * pc.b_nb2;
+    const uint base_v27 = col_v0 * pc.dst_nb0 + row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
     for (uint batch_v3 = 0u; batch_v3 < pc.n_batch; ++batch_v3) {
-        const uint base_v19 = row_v1 * pc.a_nb1 + plane_v2 * pc.a_nb2 + batch_v3 * pc.a_nb3;
+        const uint base_v19 = batch_v3 * pc.a_nb3 + base_v22;
         const uint rep_v16 = batch_v3 % pc.n_batch_b;
-        const uint base_v20 = rep_v14 * pc.b_nb1 + rep_v15 * pc.b_nb2 + rep_v16 * pc.b_nb3;
-        const uint base_v21 = row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2 + batch_v3 * pc.dst_nb3;
+        const uint base_v20 = rep_v16 * pc.b_nb3 + base_v23;
+        const uint base_v21 = batch_v3 * pc.dst_nb3 + base_v24;
         if (col_v0 + 4u <= pc.n_col) {
-            const float4 t_v4 = *(device const packed_float4 *)(a + (batch_v3 * pc.a_nb3 + base_v22));
-            const float4 t_v9 = *(device const packed_float4 *)(b + (rep_v16 * pc.b_nb3 + base_v23));
+            const float4 t_v4 = *(device const packed_float4 *)(a + (batch_v3 * pc.a_nb3 + base_v25));
+            const float4 t_v9 = *(device const packed_float4 *)(b + (rep_v16 * pc.b_nb3 + base_v26));
             const float4 t_v10 = t_v4 + t_v9;
-            *(device packed_float4 *)(dst + (batch_v3 * pc.dst_nb3 + base_v24)) = packed_float4(t_v10);
+            *(device packed_float4 *)(dst + (batch_v3 * pc.dst_nb3 + base_v27)) = packed_float4(t_v10);
         } else {
             for (uint col_tail_v11 = col_v0; col_tail_v11 < pc.n_col; ++col_tail_v11) {
                 const float t_v12 = *(device const float *)(a + (col_tail_v11 * pc.a_nb0 + base_v19));

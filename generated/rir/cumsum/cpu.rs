@@ -24,10 +24,12 @@ pub fn cumsum(
 ) {
     for row_v0 in 0..n_row {
         for plane_v1 in 0..n_plane {
+            let base_v9 = row_v0 * x.nb[1] + plane_v1 * x.nb[2];
+            let base_v10 = row_v0 * y.nb[1] + plane_v1 * y.nb[2];
             for batch_v2 in 0..n_batch {
                 let mut scan5_v3 = 0.0f32;
-                let base_v7 = row_v0 * x.nb[1] + plane_v1 * x.nb[2] + batch_v2 * x.nb[3];
-                let base_v8 = row_v0 * y.nb[1] + plane_v1 * y.nb[2] + batch_v2 * y.nb[3];
+                let base_v7 = batch_v2 * x.nb[3] + base_v9;
+                let base_v8 = batch_v2 * y.nb[3] + base_v10;
                 for col_v4 in 0..n_col {
                     let t_v5 = x.data[(col_v4 * x.nb[0] + base_v7) / 4];
                     scan5_v3 += t_v5;

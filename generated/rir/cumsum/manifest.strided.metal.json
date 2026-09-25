@@ -1,0 +1,157 @@
+{
+  "schema_version": 9,
+  "name": "cumsum",
+  "entrypoint": "rir_cumsum_strided",
+  "ggml_op": "GGML_OP_CUMSUM",
+  "variant_id": "cumsum_f32_4d_subgroup_tree_strided",
+  "production": true,
+  "assumed_domain": [],
+  "backend": "metal",
+  "bindings": [
+    {
+      "name": "x",
+      "binding": 0,
+      "source": "src[0]",
+      "dtype": "f32",
+      "access": "read",
+      "extents": [
+        "col",
+        "row",
+        "plane",
+        "batch"
+      ]
+    },
+    {
+      "name": "y",
+      "binding": 1,
+      "source": "dst",
+      "dtype": "f32",
+      "access": "write",
+      "extents": [
+        "col",
+        "row",
+        "plane",
+        "batch"
+      ]
+    }
+  ],
+  "params": [],
+  "push_constants": [
+    {
+      "name": "n_row",
+      "type": "u32",
+      "offset": 0
+    },
+    {
+      "name": "n_plane",
+      "type": "u32",
+      "offset": 4
+    },
+    {
+      "name": "n_batch",
+      "type": "u32",
+      "offset": 8
+    },
+    {
+      "name": "n_col",
+      "type": "u32",
+      "offset": 12
+    },
+    {
+      "name": "x_nb0",
+      "type": "u32",
+      "offset": 16
+    },
+    {
+      "name": "x_nb1",
+      "type": "u32",
+      "offset": 20
+    },
+    {
+      "name": "x_nb2",
+      "type": "u32",
+      "offset": 24
+    },
+    {
+      "name": "x_nb3",
+      "type": "u32",
+      "offset": 28
+    },
+    {
+      "name": "y_nb0",
+      "type": "u32",
+      "offset": 32
+    },
+    {
+      "name": "y_nb1",
+      "type": "u32",
+      "offset": 36
+    },
+    {
+      "name": "y_nb2",
+      "type": "u32",
+      "offset": 40
+    },
+    {
+      "name": "y_nb3",
+      "type": "u32",
+      "offset": 44
+    }
+  ],
+  "packed_output": null,
+  "constraints": [
+    "dtype(x)=f32",
+    "rank(x)<=4"
+  ],
+  "determinism": "deterministic",
+  "reduction": "subgroup_tree",
+  "scan": "strided_lanes",
+  "variant": "strided",
+  "priority": 95,
+  "vector_width": 1,
+  "linear_addr": false,
+  "eligible_when": [
+    {
+      "axes": [
+        "row",
+        "plane",
+        "batch"
+      ],
+      "min": 129,
+      "max": 4294967295
+    },
+    {
+      "axes": [
+        "col"
+      ],
+      "min": 256,
+      "max": 4294967295
+    }
+  ],
+  "features": [
+    "metal>=2.1",
+    "simdgroup_reduction",
+    "simdgroup_size>=32"
+  ],
+  "parallel_mapping": "workgroup",
+  "dispatch": [
+    {
+      "axis": "row",
+      "per_workgroup": 1
+    },
+    {
+      "axis": "plane",
+      "per_workgroup": 1
+    },
+    {
+      "axis": "batch",
+      "per_workgroup": 1
+    }
+  ],
+  "flat": [],
+  "workgroup": [
+    32,
+    1,
+    1
+  ]
+}

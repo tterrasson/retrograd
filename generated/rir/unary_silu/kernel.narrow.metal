@@ -39,20 +39,22 @@ kernel void rir_unary_silu_narrow(
     if (plane_v2 >= pc.n_plane) {
         return;
     }
+    const uint base_v21 = row_v1 * pc.x_nb1 + plane_v2 * pc.x_nb2;
     const float c_v13 = 1.0;
     const float c_v14 = 0.0;
-    const uint base_v21 = col_v0 * pc.x_nb0 + row_v1 * pc.x_nb1 + plane_v2 * pc.x_nb2;
-    const uint base_v22 = col_v0 * pc.dst_nb0 + row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
+    const uint base_v22 = row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
+    const uint base_v23 = col_v0 * pc.x_nb0 + row_v1 * pc.x_nb1 + plane_v2 * pc.x_nb2;
+    const uint base_v24 = col_v0 * pc.dst_nb0 + row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
     for (uint batch_v3 = 0u; batch_v3 < pc.n_batch; ++batch_v3) {
-        const uint base_v19 = row_v1 * pc.x_nb1 + plane_v2 * pc.x_nb2 + batch_v3 * pc.x_nb3;
-        const uint base_v20 = row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2 + batch_v3 * pc.dst_nb3;
+        const uint base_v19 = batch_v3 * pc.x_nb3 + base_v21;
+        const uint base_v20 = batch_v3 * pc.dst_nb3 + base_v22;
         if (col_v0 + 4u <= pc.n_col) {
-            const float4 t_v4 = *(device const packed_float4 *)(x + (batch_v3 * pc.x_nb3 + base_v21));
+            const float4 t_v4 = *(device const packed_float4 *)(x + (batch_v3 * pc.x_nb3 + base_v23));
             const float4 t_v7 = c_v14 - t_v4;
             const float4 t_v8 = exp(t_v7);
             const float4 t_v9 = c_v13 + t_v8;
             const float4 t_v10 = t_v4 / t_v9;
-            *(device packed_float4 *)(dst + (batch_v3 * pc.dst_nb3 + base_v22)) = packed_float4(t_v10);
+            *(device packed_float4 *)(dst + (batch_v3 * pc.dst_nb3 + base_v24)) = packed_float4(t_v10);
         } else {
             for (uint col_tail_v11 = col_v0; col_tail_v11 < pc.n_col; ++col_tail_v11) {
                 const float t_v12 = *(device const float *)(x + (col_tail_v11 * pc.x_nb0 + base_v19));

@@ -27,17 +27,17 @@ kernel void rir_sum_rows_q4_1(
     const uint lane_v1 = simd_lane_id;
     float acc4_v2 = 0.0f;
     const uint seg_start_v3 = lane_v1 * 4u;
-    const uint base_v23 = row_v0 * pc.x_nb1 + 2u;
+    const uint base_v23 = row_v0 * pc.x_nb1;
     for (uint col_seg_v4 = seg_start_v3; col_seg_v4 < pc.n_col; col_seg_v4 += 128u) {
         const uint blk_v5 = col_seg_v4 / 32u;
         const uint inb0_v6 = col_seg_v4 % 32u;
         const float scale_v7 = float(*(device const half *)(x + (blk_v5 * pc.x_nb0 + row_v0 * pc.x_nb1)));
-        const float min_v8 = float(*(device const half *)(x + (blk_v5 * pc.x_nb0 + base_v23)));
-        const uint base_v22 = blk_v5 * pc.x_nb0 + row_v0 * pc.x_nb1 + 4u;
+        const float min_v8 = float(*(device const half *)(x + (blk_v5 * pc.x_nb0 + base_v23 + 2u)));
+        const uint base_v22 = blk_v5 * pc.x_nb0 + row_v0 * pc.x_nb1;
         for (uint col_e_v9 = 0u; col_e_v9 < 4u; ++col_e_v9) {
             const uint inb_v11 = inb0_v6 + col_e_v9;
             const uint q_inp_v12 = inb_v11 % 16u;
-            const uint q_byte_v13 = uint(*(device const uchar *)(x + (q_inp_v12 + base_v22)));
+            const uint q_byte_v13 = uint(*(device const uchar *)(x + (q_inp_v12 + base_v22 + 4u)));
             const uint q_sel_v14 = inb_v11 / 16u;
             const uint q_sh_v15 = q_sel_v14 * 4u;
             const uint q_shr_v16 = q_byte_v13 >> q_sh_v15;

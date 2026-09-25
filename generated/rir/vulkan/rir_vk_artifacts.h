@@ -12,6 +12,7 @@
     X(l2_norm_back) \
     X(cumsum) \
     X(cumsum_blocked) \
+    X(cumsum_strided) \
     X(cumsum_tiled) \
     X(out_prod) \
     X(out_prod_q4_0) \

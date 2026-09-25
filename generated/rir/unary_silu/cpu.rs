@@ -26,9 +26,11 @@ pub fn unary_silu(
         let c_v5 = 1.0f32;
         let c_v6 = 0.0f32;
         for row_v1 in 0..n_row {
+            let base_v13 = col_v0 * x.nb[0] + row_v1 * x.nb[1];
+            let base_v14 = col_v0 * dst.nb[0] + row_v1 * dst.nb[1];
             for plane_v2 in 0..n_plane {
-                let base_v11 = col_v0 * x.nb[0] + row_v1 * x.nb[1] + plane_v2 * x.nb[2];
-                let base_v12 = col_v0 * dst.nb[0] + row_v1 * dst.nb[1] + plane_v2 * dst.nb[2];
+                let base_v11 = plane_v2 * x.nb[2] + base_v13;
+                let base_v12 = plane_v2 * dst.nb[2] + base_v14;
                 for batch_v3 in 0..n_batch {
                     let t_v4 = x.data[(batch_v3 * x.nb[3] + base_v11) / 4];
                     let t_v7 = c_v6 - t_v4;

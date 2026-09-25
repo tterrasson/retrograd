@@ -28,9 +28,11 @@ pub fn scale(
         let p_v5 = scale;
         let p_v7 = bias;
         for row_v1 in 0..n_row {
+            let base_v11 = col_v0 * a.nb[0] + row_v1 * a.nb[1];
+            let base_v12 = col_v0 * dst.nb[0] + row_v1 * dst.nb[1];
             for plane_v2 in 0..n_plane {
-                let base_v9 = col_v0 * a.nb[0] + row_v1 * a.nb[1] + plane_v2 * a.nb[2];
-                let base_v10 = col_v0 * dst.nb[0] + row_v1 * dst.nb[1] + plane_v2 * dst.nb[2];
+                let base_v9 = plane_v2 * a.nb[2] + base_v11;
+                let base_v10 = plane_v2 * dst.nb[2] + base_v12;
                 for batch_v3 in 0..n_batch {
                     let t_v4 = a.data[(batch_v3 * a.nb[3] + base_v9) / 4];
                     let t_v6 = t_v4 * p_v5;

@@ -43,9 +43,12 @@ pub enum LowerError {
     /// lowering, that one is a deliberate policy.
     #[error("{}: block shape without Loop IR expansion",.format.desc().name)]
     UnsupportedQuantShape { format: rir_core::QuantType },
-    /// A scan met a collective reduction strategy without asking for the
-    /// blocked scan that goes with it.
-    #[error("scan: Serial or ScanStrategy::BlockedLanes strategy required")]
+    /// A scan met a collective reduction strategy without asking for one of
+    /// the lane scans that go with it.
+    #[error(
+        "scan under a collective reduction strategy: a lane scan (blocked, tiled or strided) \
+         required, or a Serial reduction"
+    )]
     ScanRequiresSerial,
     /// The blocked scan needs lanes to recombine chunk totals; a schedule
     /// without a collective cannot run it.
@@ -122,6 +125,10 @@ pub enum LowerError {
     /// blocked scan - the manifest would go on publishing `tiled_lanes`.
     #[error("tiled_lanes: {why}")]
     TiledScanUnsupported { why: &'static str },
+    /// `ScanStrategy::StridedLanes` outside the one geometry it has: a single
+    /// subgroup, on a kernel that scans.
+    #[error("strided_lanes: {why}")]
+    StridedScanUnsupported { why: &'static str },
     /// A dense argument whose element type has no memory access type.
     /// F32 and F16 do; `BF16`, `I32` and the rest are
     /// declarable in `rir_core::DType` and are not lowered, so a kernel that

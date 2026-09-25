@@ -64,20 +64,25 @@ pub fn out_prod_iq4_nl(
         let blk_v6 = i_v0 / 32;
         let inb_v7 = i_v0 % 32;
         let q_inp_v9 = inb_v7 % 16;
+        let base_v26 = blk_v6 * a.nb[0] + q_inp_v9;
         let q_sel_v11 = inb_v7 / 16;
         let q_sh_v12 = q_sel_v11 * 4;
         for j_v1 in 0..n_j {
+            let base_v27 = i_v0 * dst.nb[0] + j_v1 * dst.nb[1];
             for plane_v2 in 0..n_plane {
-                let base_v22 = i_v0 * dst.nb[0] + j_v1 * dst.nb[1] + plane_v2 * dst.nb[2];
+                let base_v22 = blk_v6 * a.nb[0] + plane_v2 * a.nb[2];
+                let base_v23 = plane_v2 * a.nb[2] + base_v26;
+                let base_v24 = j_v1 * b.nb[0] + plane_v2 * b.nb[2];
+                let base_v25 = plane_v2 * dst.nb[2] + base_v27;
                 for batch_v3 in 0..n_batch {
                     let mut acc9_v4 = 0.0f32;
-                    let base_v19 = blk_v6 * a.nb[0] + plane_v2 * a.nb[2] + batch_v3 * a.nb[3];
-                    let base_v20 = blk_v6 * a.nb[0] + plane_v2 * a.nb[2] + batch_v3 * a.nb[3] + 2 + q_inp_v9;
-                    let base_v21 = j_v1 * b.nb[0] + plane_v2 * b.nb[2] + batch_v3 * b.nb[3];
+                    let base_v19 = batch_v3 * a.nb[3] + base_v22;
+                    let base_v20 = batch_v3 * a.nb[3] + base_v23;
+                    let base_v21 = batch_v3 * b.nb[3] + base_v24;
                     for k_v5 in 0..n_k {
                         let scale_v8_a = k_v5 * a.nb[1] + base_v19;
                         let scale_v8 = f16_to_f32(u16::from_le_bytes([a.data[scale_v8_a], a.data[scale_v8_a + 1]]));
-                        let q_byte_v10 = a.data[k_v5 * a.nb[1] + base_v20] as usize;
+                        let q_byte_v10 = a.data[k_v5 * a.nb[1] + base_v20 + 2] as usize;
                         let q_shr_v13 = q_byte_v10 >> q_sh_v12;
                         let q_v14 = q_shr_v13 & 15;
                         let q_lut_v15 = RIR_LUT_IQ4NL[q_v14];
@@ -86,7 +91,7 @@ pub fn out_prod_iq4_nl(
                         let t_v18 = t_v16 * t_v17;
                         acc9_v4 += t_v18;
                     }
-                    dst.data[(batch_v3 * dst.nb[3] + base_v22) / 4] = acc9_v4;
+                    dst.data[(batch_v3 * dst.nb[3] + base_v25) / 4] = acc9_v4;
                 }
             }
         }

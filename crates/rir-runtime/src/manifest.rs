@@ -162,6 +162,7 @@ pub trait ManifestReader: Sized {
     fn push_bytes(&self, values: &Values) -> Result<Vec<u8>, RuntimeError> {
         let mut out = vec![0u8; self.push_size() as usize];
         for p in &self.as_manifest().push_constants {
+            values.representable(&p.name)?;
             let v = values
                 .get(&p.name)
                 .ok_or_else(|| RuntimeError::MissingValue {
@@ -436,8 +437,14 @@ pub enum Scalar {
 
 /// Push-constant values by name. The manifest says which and where;
 /// the caller says how many.
+///
+/// `unrepresentable` holds the strides `strides` was handed that do not fit the
+/// 32-bit slot the shader reads. They are kept aside rather than truncated: a
+/// wrapped stride would address the wrong element *and* pass the bounds check,
+/// which reads the same wrapped value, so the only honest place to say so is
+/// where the value is read.
 #[derive(Clone, Debug, Default)]
-pub struct Values(HashMap<String, Scalar>);
+pub struct Values(HashMap<String, Scalar>, HashMap<String, usize>);
 
 impl Values {
     pub fn new() -> Self {
@@ -463,9 +470,31 @@ impl Values {
     /// the manifest (`<arg>_nb<d>`) - the common-case shortcut.
     pub fn strides(&mut self, arg: &str, nb: &[usize]) -> &mut Self {
         for (d, &v) in nb.iter().enumerate() {
-            self.u32(&format!("{arg}_nb{d}"), v as u32);
+            let name = format!("{arg}_nb{d}");
+            match u32::try_from(v) {
+                Ok(v) => {
+                    self.1.remove(&name);
+                    self.u32(&name, v);
+                }
+                Err(_) => {
+                    self.0.remove(&name);
+                    self.1.insert(name, v);
+                }
+            }
         }
         self
+    }
+
+    /// Refuses a value that was supplied but does not fit its slot, so that
+    /// the caller reads *that* rather than a missing value.
+    fn representable(&self, name: &str) -> Result<(), RuntimeError> {
+        match self.1.get(name) {
+            Some(&value) => Err(RuntimeError::UnrepresentableValue {
+                name: name.to_string(),
+                value,
+            }),
+            None => Ok(()),
+        }
     }
 
     pub fn get(&self, name: &str) -> Option<Scalar> {
@@ -475,6 +504,7 @@ impl Values {
     /// An unsigned integer value (axis extent or stride), named in the error if
     /// missing or of the wrong type.
     fn extent(&self, name: &str) -> Result<u32, RuntimeError> {
+        self.representable(name)?;
         match self.get(name) {
             Some(Scalar::U32(n)) => Ok(n),
             _ => Err(RuntimeError::MissingValue {
@@ -701,6 +731,30 @@ mod tests {
             Manifest::from_json(&bad),
             Err(RuntimeError::BadManifest(_))
         ));
+    }
+
+    /// A stride past 32 bits is refused by name, by both readers of it, rather
+    /// than wrapped into a value that would pass the bounds check.
+    #[test]
+    fn a_stride_past_u32_is_refused_rather_than_wrapped() {
+        let m = Manifest::from_json(SUM_ROWS).unwrap();
+        let mut v = Values::new();
+        v.u32("n_row", 7)
+            .u32("n_col", 128)
+            .strides("x", &[34, (1usize << 32) + 136])
+            .strides("y", &[4]);
+        for result in [
+            m.push_bytes(&v).map(|_| ()),
+            m.required_bytes(&m.bindings[0], &v).map(|_| ()),
+        ] {
+            assert!(
+                matches!(
+                    &result,
+                    Err(RuntimeError::UnrepresentableValue { name, .. }) if name == "x_nb1"
+                ),
+                "{result:?}"
+            );
+        }
     }
 
     /// A missing value is a named error, not a silent zero.

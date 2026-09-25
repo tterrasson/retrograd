@@ -51,12 +51,11 @@ void main() {
     const uint org_v8 = blk_v7 * 16u;
     const uint loc_v9 = j_v1 % 16u;
     const float q_off_v44 = 32.0;
-    const uint base_v69 = i_v0 * pc.dst_nb0 + j_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
+    const uint base_v67 = i_v0 * pc.dst_nb0 + j_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
     for (uint batch_v3 = 0u; batch_v3 < pc.n_batch; ++batch_v3) {
         vec4 acc9_v10 = vec4(0.0);
-        const uint base_v66 = plane_v2 * pc.a_nb2 + batch_v3 * pc.a_nb3 + 208u;
-        const uint base_v67 = plane_v2 * pc.a_nb2 + batch_v3 * pc.a_nb3 + 192u;
-        const uint base_v68 = plane_v2 * pc.b_nb2 + batch_v3 * pc.b_nb3;
+        const uint base_v65 = plane_v2 * pc.a_nb2 + batch_v3 * pc.a_nb3;
+        const uint base_v66 = plane_v2 * pc.b_nb2 + batch_v3 * pc.b_nb3;
         for (uint k0_v11 = 0u; k0_v11 < pc.n_k; k0_v11 += 16u) {
             barrier();
             for (uint l_tile_a_v12 = gl_LocalInvocationIndex * 4u; l_tile_a_v12 < 1024u; l_tile_a_v12 += 1024u) {
@@ -68,11 +67,10 @@ void main() {
                 if (a_m_v15 < pc.n_i && a_k_v16 < pc.n_k) {
                     const uint blk_v18 = a_m_v15 / 256u;
                     const uint inb0_v19 = a_m_v15 % 256u;
-                    const float scale_v20 = float(a_f16[(blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + base_v66) / 2u]);
+                    const float scale_v20 = float(a_f16[(blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + base_v65 + 208u) / 2u]);
                     const uint sub_is_v21 = inb0_v19 / 16u;
-                    const float sub_sc_f_v22 = float(a_i8[blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + sub_is_v21 + base_v67]);
-                    const uint base_v64 = blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + plane_v2 * pc.a_nb2 + batch_v3 * pc.a_nb3;
-                    const uint base_v65 = blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + plane_v2 * pc.a_nb2 + batch_v3 * pc.a_nb3 + 128u;
+                    const float sub_sc_f_v22 = float(a_i8[blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + sub_is_v21 + base_v65 + 192u]);
+                    const uint base_v64 = blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + base_v65;
                     const float dl_v46 = scale_v20 * sub_sc_f_v22;
                     for (uint a_e_v23 = 0u; a_e_v23 < 4u; ++a_e_v23) {
                         const uint inb_v24 = inb0_v19 + a_e_v23;
@@ -85,7 +83,7 @@ void main() {
                         const uint q_shr_v31 = q_byte_v27 >> q_sh_v30;
                         const uint q_v32 = q_shr_v31 & 15u;
                         const uint qh_inp_v34 = inb_v24 % 32u;
-                        const uint qh_byte_v35 = uint(a_u8[q_grp_v25 * 32u + qh_inp_v34 + base_v65]);
+                        const uint qh_byte_v35 = uint(a_u8[q_grp_v25 * 32u + qh_inp_v34 + base_v64 + 128u]);
                         const uint qh_sel_v37 = q_ing_v28 / 32u;
                         const uint qh_sh_v38 = qh_sel_v37 * 2u;
                         const uint qh_shr_v39 = qh_byte_v35 >> qh_sh_v38;
@@ -112,7 +110,7 @@ void main() {
                 const uint b_m_v52 = org_v8 + b_r_v50;
                 const uint b_k_v53 = k0_v11 + b_d_v51;
                 if (b_m_v52 < pc.n_j && b_k_v53 < pc.n_k) {
-                    const float t_v55 = b[(b_m_v52 * pc.b_nb0 + b_k_v53 * pc.b_nb1 + base_v68) / 4u];
+                    const float t_v55 = b[(b_m_v52 * pc.b_nb0 + b_k_v53 * pc.b_nb1 + base_v66) / 4u];
                     rir_shared_tile_b_v49[b_at_v54] = t_v55;
                 } else {
                     rir_shared_tile_b_v49[l_tile_b_v49] = 0.0;
@@ -131,7 +129,7 @@ void main() {
             }
         }
         if (j_v1 < pc.n_j) {
-            const uint acc9_v10_o = (batch_v3 * pc.dst_nb3 + base_v69) / 4u;
+            const uint acc9_v10_o = (batch_v3 * pc.dst_nb3 + base_v67) / 4u;
             if (i_v0 + 4u <= pc.n_i) {
                 dst[acc9_v10_o + 0u] = acc9_v10.x;
                 dst[acc9_v10_o + 1u] = acc9_v10.y;

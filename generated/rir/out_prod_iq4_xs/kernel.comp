@@ -51,13 +51,11 @@ void main() {
     const uint org_v8 = blk_v7 * 16u;
     const uint loc_v9 = j_v1 % 16u;
     const float sub_bias_v37 = 32.0;
-    const uint base_v73 = i_v0 * pc.dst_nb0 + j_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
+    const uint base_v71 = i_v0 * pc.dst_nb0 + j_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
     for (uint batch_v3 = 0u; batch_v3 < pc.n_batch; ++batch_v3) {
         vec4 acc9_v10 = vec4(0.0);
         const uint base_v69 = plane_v2 * pc.a_nb2 + batch_v3 * pc.a_nb3;
-        const uint base_v70 = plane_v2 * pc.a_nb2 + batch_v3 * pc.a_nb3 + 4u;
-        const uint base_v71 = plane_v2 * pc.a_nb2 + batch_v3 * pc.a_nb3 + 2u;
-        const uint base_v72 = plane_v2 * pc.b_nb2 + batch_v3 * pc.b_nb3;
+        const uint base_v70 = plane_v2 * pc.b_nb2 + batch_v3 * pc.b_nb3;
         for (uint k0_v11 = 0u; k0_v11 < pc.n_k; k0_v11 += 16u) {
             barrier();
             for (uint l_tile_a_v12 = gl_LocalInvocationIndex * 4u; l_tile_a_v12 < 1024u; l_tile_a_v12 += 1024u) {
@@ -73,13 +71,13 @@ void main() {
                     const uint sub_is_v21 = inb0_v19 / 32u;
                     const uint sub_lo_b_v22 = sub_is_v21 >> 1u;
                     const uint sub_lo_s_v23 = sub_is_v21 & 1u;
-                    const uint sub_lo_raw_v24 = uint(a_u8[blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + sub_lo_b_v22 + base_v70]);
+                    const uint sub_lo_raw_v24 = uint(a_u8[blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + sub_lo_b_v22 + base_v69 + 4u]);
                     const uint sub_lo_sh_v25 = sub_lo_s_v23 * 4u;
                     const uint sub_lo_shr_v26 = sub_lo_raw_v24 >> sub_lo_sh_v25;
                     const uint sub_lo4_v27 = sub_lo_shr_v26 & 15u;
                     const uint sub_hi_b_v28 = sub_is_v21 >> 2u;
                     const uint sub_hi_s_v29 = sub_is_v21 & 3u;
-                    const uint sub_hi_raw_v30 = uint(a_u8[blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + sub_hi_b_v28 + base_v71]);
+                    const uint sub_hi_raw_v30 = uint(a_u8[blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + sub_hi_b_v28 + base_v69 + 2u]);
                     const uint sub_hi_sh_v31 = sub_hi_s_v29 * 2u;
                     const uint sub_hi_shr_v32 = sub_hi_raw_v30 >> sub_hi_sh_v31;
                     const uint sub_hi2_v33 = sub_hi_shr_v32 & 3u;
@@ -87,13 +85,13 @@ void main() {
                     const uint sub_sc_v35 = sub_lo4_v27 | sub_hi_up_v34;
                     const float sub_sc_f_v36 = float(sub_sc_v35);
                     const float sub_sc_b_v38 = sub_sc_f_v36 - sub_bias_v37;
-                    const uint base_v68 = blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + plane_v2 * pc.a_nb2 + batch_v3 * pc.a_nb3 + 8u;
+                    const uint base_v68 = blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + base_v69;
                     const float dl_v50 = scale_v20 * sub_sc_b_v38;
                     for (uint a_e_v39 = 0u; a_e_v39 < 4u; ++a_e_v39) {
                         const uint inb_v40 = inb0_v19 + a_e_v39;
                         const uint q_grp_v41 = inb_v40 / 32u;
                         const uint q_inp_v42 = inb_v40 % 16u;
-                        const uint q_byte_v43 = uint(a_u8[q_grp_v41 * 16u + q_inp_v42 + base_v68]);
+                        const uint q_byte_v43 = uint(a_u8[q_grp_v41 * 16u + q_inp_v42 + base_v68 + 8u]);
                         const uint q_ing_v44 = inb_v40 % 32u;
                         const uint q_sel_v45 = q_ing_v44 / 16u;
                         const uint q_sh_v46 = q_sel_v45 * 4u;
@@ -118,7 +116,7 @@ void main() {
                 const uint b_m_v56 = org_v8 + b_r_v54;
                 const uint b_k_v57 = k0_v11 + b_d_v55;
                 if (b_m_v56 < pc.n_j && b_k_v57 < pc.n_k) {
-                    const float t_v59 = b[(b_m_v56 * pc.b_nb0 + b_k_v57 * pc.b_nb1 + base_v72) / 4u];
+                    const float t_v59 = b[(b_m_v56 * pc.b_nb0 + b_k_v57 * pc.b_nb1 + base_v70) / 4u];
                     rir_shared_tile_b_v53[b_at_v58] = t_v59;
                 } else {
                     rir_shared_tile_b_v53[l_tile_b_v53] = 0.0;
@@ -137,7 +135,7 @@ void main() {
             }
         }
         if (j_v1 < pc.n_j) {
-            const uint acc9_v10_o = (batch_v3 * pc.dst_nb3 + base_v73) / 4u;
+            const uint acc9_v10_o = (batch_v3 * pc.dst_nb3 + base_v71) / 4u;
             if (i_v0 + 4u <= pc.n_i) {
                 dst[acc9_v10_o + 0u] = acc9_v10.x;
                 dst[acc9_v10_o + 1u] = acc9_v10.y;

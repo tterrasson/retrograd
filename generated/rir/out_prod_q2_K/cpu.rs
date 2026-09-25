@@ -63,30 +63,36 @@ pub fn out_prod_q2_K(
         let inb_v7 = i_v0 % 256;
         let q_grp_v10 = inb_v7 / 128;
         let q_inp_v11 = inb_v7 % 32;
+        let base_v40 = blk_v6 * a.nb[0] + q_grp_v10 * 32 + q_inp_v11;
         let q_ing_v13 = inb_v7 % 128;
         let q_sel_v14 = q_ing_v13 / 32;
         let q_sh_v15 = q_sel_v14 * 2;
         let sub_is_v19 = inb_v7 / 16;
+        let base_v41 = blk_v6 * a.nb[0] + sub_is_v19;
         for j_v1 in 0..n_j {
+            let base_v42 = i_v0 * dst.nb[0] + j_v1 * dst.nb[1];
             for plane_v2 in 0..n_plane {
-                let base_v36 = i_v0 * dst.nb[0] + j_v1 * dst.nb[1] + plane_v2 * dst.nb[2];
+                let base_v35 = blk_v6 * a.nb[0] + plane_v2 * a.nb[2];
+                let base_v36 = plane_v2 * a.nb[2] + base_v40;
+                let base_v37 = plane_v2 * a.nb[2] + base_v41;
+                let base_v38 = j_v1 * b.nb[0] + plane_v2 * b.nb[2];
+                let base_v39 = plane_v2 * dst.nb[2] + base_v42;
                 for batch_v3 in 0..n_batch {
                     let mut acc9_v4 = 0.0f32;
-                    let base_v31 = blk_v6 * a.nb[0] + plane_v2 * a.nb[2] + batch_v3 * a.nb[3] + 80;
-                    let base_v32 = blk_v6 * a.nb[0] + plane_v2 * a.nb[2] + batch_v3 * a.nb[3] + 82;
-                    let base_v33 = blk_v6 * a.nb[0] + plane_v2 * a.nb[2] + batch_v3 * a.nb[3] + 16 + q_grp_v10 * 32 + q_inp_v11;
-                    let base_v34 = blk_v6 * a.nb[0] + plane_v2 * a.nb[2] + batch_v3 * a.nb[3] + sub_is_v19;
-                    let base_v35 = j_v1 * b.nb[0] + plane_v2 * b.nb[2] + batch_v3 * b.nb[3];
+                    let base_v31 = batch_v3 * a.nb[3] + base_v35;
+                    let base_v32 = batch_v3 * a.nb[3] + base_v36;
+                    let base_v33 = batch_v3 * a.nb[3] + base_v37;
+                    let base_v34 = batch_v3 * b.nb[3] + base_v38;
                     for k_v5 in 0..n_k {
-                        let scale_v8_a = k_v5 * a.nb[1] + base_v31;
+                        let scale_v8_a = k_v5 * a.nb[1] + base_v31 + 80;
                         let scale_v8 = f16_to_f32(u16::from_le_bytes([a.data[scale_v8_a], a.data[scale_v8_a + 1]]));
-                        let dmin_v9_a = k_v5 * a.nb[1] + base_v32;
+                        let dmin_v9_a = k_v5 * a.nb[1] + base_v31 + 82;
                         let dmin_v9 = f16_to_f32(u16::from_le_bytes([a.data[dmin_v9_a], a.data[dmin_v9_a + 1]]));
-                        let q_byte_v12 = a.data[k_v5 * a.nb[1] + base_v33] as usize;
+                        let q_byte_v12 = a.data[k_v5 * a.nb[1] + base_v32 + 16] as usize;
                         let q_shr_v16 = q_byte_v12 >> q_sh_v15;
                         let q_v17 = q_shr_v16 & 3;
                         let q_f_v18 = q_v17 as f32;
-                        let sub_raw_v20 = a.data[k_v5 * a.nb[1] + base_v34] as usize;
+                        let sub_raw_v20 = a.data[k_v5 * a.nb[1] + base_v33] as usize;
                         let sub_sc_v21 = sub_raw_v20 & 15;
                         let sub_mm_v22 = sub_raw_v20 >> 4;
                         let sub_sc_f_v23 = sub_sc_v21 as f32;
@@ -95,11 +101,11 @@ pub fn out_prod_q2_K(
                         let t_v26 = dl_v25 * q_f_v18;
                         let ml_v27 = dmin_v9 * sub_mm_f_v24;
                         let t_v28 = t_v26 - ml_v27;
-                        let t_v29 = b.data[(k_v5 * b.nb[1] + base_v35) / 4];
+                        let t_v29 = b.data[(k_v5 * b.nb[1] + base_v34) / 4];
                         let t_v30 = t_v28 * t_v29;
                         acc9_v4 += t_v30;
                     }
-                    dst.data[(batch_v3 * dst.nb[3] + base_v36) / 4] = acc9_v4;
+                    dst.data[(batch_v3 * dst.nb[3] + base_v39) / 4] = acc9_v4;
                 }
             }
         }

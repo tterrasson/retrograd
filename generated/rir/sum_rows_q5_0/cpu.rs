@@ -62,18 +62,17 @@ pub fn sum_rows_q5_0(
             let inb0_v4 = col_seg_v2 % 32;
             let scale_v5_a = blk_v3 * x.nb[0] + row_v0 * x.nb[1];
             let scale_v5 = f16_to_f32(u16::from_le_bytes([x.data[scale_v5_a], x.data[scale_v5_a + 1]]));
-            let base_v26 = blk_v3 * x.nb[0] + row_v0 * x.nb[1] + 6;
-            let base_v27 = blk_v3 * x.nb[0] + row_v0 * x.nb[1] + 2;
+            let base_v26 = blk_v3 * x.nb[0] + row_v0 * x.nb[1];
             for col_e_v6 in 0..4 {
                 let inb_v8 = inb0_v4 + col_e_v6;
                 let q_inp_v9 = inb_v8 % 16;
-                let q_byte_v10 = x.data[q_inp_v9 + base_v26] as usize;
+                let q_byte_v10 = x.data[q_inp_v9 + base_v26 + 6] as usize;
                 let q_sel_v11 = inb_v8 / 16;
                 let q_sh_v12 = q_sel_v11 * 4;
                 let q_shr_v13 = q_byte_v10 >> q_sh_v12;
                 let q_v14 = q_shr_v13 & 15;
                 let qh_grp_v15 = inb_v8 / 8;
-                let qh_byte_v16 = x.data[qh_grp_v15 + base_v27] as usize;
+                let qh_byte_v16 = x.data[qh_grp_v15 + base_v26 + 2] as usize;
                 let qh_ing_v17 = inb_v8 % 8;
                 let qh_shr_v18 = qh_byte_v16 >> qh_ing_v17;
                 let qh_v19 = qh_shr_v18 & 1;

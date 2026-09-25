@@ -56,14 +56,13 @@ pub fn sum_rows_q2_K(
 ) {
     for row_v0 in 0..n_row {
         let mut acc4_v1 = 0.0f32;
-        let base_v30 = row_v0 * x.nb[1] + 80;
-        let base_v31 = row_v0 * x.nb[1] + 82;
+        let base_v30 = row_v0 * x.nb[1];
         for col_seg_v2 in (0..n_col).step_by(4) {
             let blk_v3 = col_seg_v2 / 256;
             let inb0_v4 = col_seg_v2 % 256;
-            let scale_v5_a = blk_v3 * x.nb[0] + base_v30;
+            let scale_v5_a = blk_v3 * x.nb[0] + base_v30 + 80;
             let scale_v5 = f16_to_f32(u16::from_le_bytes([x.data[scale_v5_a], x.data[scale_v5_a + 1]]));
-            let dmin_v6_a = blk_v3 * x.nb[0] + base_v31;
+            let dmin_v6_a = blk_v3 * x.nb[0] + base_v30 + 82;
             let dmin_v6 = f16_to_f32(u16::from_le_bytes([x.data[dmin_v6_a], x.data[dmin_v6_a + 1]]));
             let sub_is_v7 = inb0_v4 / 16;
             let sub_raw_v8 = x.data[blk_v3 * x.nb[0] + row_v0 * x.nb[1] + sub_is_v7] as usize;
@@ -71,14 +70,14 @@ pub fn sum_rows_q2_K(
             let sub_mm_v10 = sub_raw_v8 >> 4;
             let sub_sc_f_v11 = sub_sc_v9 as f32;
             let sub_mm_f_v12 = sub_mm_v10 as f32;
-            let base_v29 = blk_v3 * x.nb[0] + row_v0 * x.nb[1] + 16;
+            let base_v29 = blk_v3 * x.nb[0] + row_v0 * x.nb[1];
             let dl_v25 = scale_v5 * sub_sc_f_v11;
             let ml_v27 = dmin_v6 * sub_mm_f_v12;
             for col_e_v13 in 0..4 {
                 let inb_v15 = inb0_v4 + col_e_v13;
                 let q_grp_v16 = inb_v15 / 128;
                 let q_inp_v17 = inb_v15 % 32;
-                let q_byte_v18 = x.data[q_grp_v16 * 32 + q_inp_v17 + base_v29] as usize;
+                let q_byte_v18 = x.data[q_grp_v16 * 32 + q_inp_v17 + base_v29 + 16] as usize;
                 let q_ing_v19 = inb_v15 % 128;
                 let q_sel_v20 = q_ing_v19 / 32;
                 let q_sh_v21 = q_sel_v20 * 2;

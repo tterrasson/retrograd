@@ -61,10 +61,10 @@ pub fn sum_rows_q8_0(
             let inb0_v4 = col_seg_v2 % 32;
             let scale_v5_a = blk_v3 * x.nb[0] + row_v0 * x.nb[1];
             let scale_v5 = f16_to_f32(u16::from_le_bytes([x.data[scale_v5_a], x.data[scale_v5_a + 1]]));
-            let base_v11 = blk_v3 * x.nb[0] + row_v0 * x.nb[1] + 2;
+            let base_v11 = blk_v3 * x.nb[0] + row_v0 * x.nb[1];
             for col_e_v6 in 0..4 {
                 let inb_v8 = inb0_v4 + col_e_v6;
-                let q_v9 = (x.data[inb_v8 + base_v11] as i8) as f32;
+                let q_v9 = (x.data[inb_v8 + base_v11 + 2] as i8) as f32;
                 let t_v10 = scale_v5 * q_v9;
                 acc4_v1 += t_v10;
             }

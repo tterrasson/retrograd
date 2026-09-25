@@ -26,19 +26,22 @@ pub fn out_prod(
 ) {
     for i_v0 in 0..n_i {
         for j_v1 in 0..n_j {
+            let base_v14 = i_v0 * dst.nb[0] + j_v1 * dst.nb[1];
             for plane_v2 in 0..n_plane {
-                let base_v11 = i_v0 * dst.nb[0] + j_v1 * dst.nb[1] + plane_v2 * dst.nb[2];
+                let base_v11 = i_v0 * a.nb[0] + plane_v2 * a.nb[2];
+                let base_v12 = j_v1 * b.nb[0] + plane_v2 * b.nb[2];
+                let base_v13 = plane_v2 * dst.nb[2] + base_v14;
                 for batch_v3 in 0..n_batch {
                     let mut acc8_v4 = 0.0f32;
-                    let base_v9 = i_v0 * a.nb[0] + plane_v2 * a.nb[2] + batch_v3 * a.nb[3];
-                    let base_v10 = j_v1 * b.nb[0] + plane_v2 * b.nb[2] + batch_v3 * b.nb[3];
+                    let base_v9 = batch_v3 * a.nb[3] + base_v11;
+                    let base_v10 = batch_v3 * b.nb[3] + base_v12;
                     for k_v5 in 0..n_k {
                         let t_v6 = a.data[(k_v5 * a.nb[1] + base_v9) / 4];
                         let t_v7 = b.data[(k_v5 * b.nb[1] + base_v10) / 4];
                         let t_v8 = t_v6 * t_v7;
                         acc8_v4 += t_v8;
                     }
-                    dst.data[(batch_v3 * dst.nb[3] + base_v11) / 4] = acc8_v4;
+                    dst.data[(batch_v3 * dst.nb[3] + base_v13) / 4] = acc8_v4;
                 }
             }
         }

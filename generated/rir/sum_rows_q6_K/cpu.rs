@@ -56,18 +56,16 @@ pub fn sum_rows_q6_K(
 ) {
     for row_v0 in 0..n_row {
         let mut acc4_v1 = 0.0f32;
-        let base_v36 = row_v0 * x.nb[1] + 208;
-        let base_v37 = row_v0 * x.nb[1] + 192;
+        let base_v35 = row_v0 * x.nb[1];
         let q_off_v30 = 32.0f32;
         for col_seg_v2 in (0..n_col).step_by(4) {
             let blk_v3 = col_seg_v2 / 256;
             let inb0_v4 = col_seg_v2 % 256;
-            let scale_v5_a = blk_v3 * x.nb[0] + base_v36;
+            let scale_v5_a = blk_v3 * x.nb[0] + base_v35 + 208;
             let scale_v5 = f16_to_f32(u16::from_le_bytes([x.data[scale_v5_a], x.data[scale_v5_a + 1]]));
             let sub_is_v6 = inb0_v4 / 16;
-            let sub_sc_f_v7 = (x.data[blk_v3 * x.nb[0] + sub_is_v6 + base_v37] as i8) as f32;
+            let sub_sc_f_v7 = (x.data[blk_v3 * x.nb[0] + sub_is_v6 + base_v35 + 192] as i8) as f32;
             let base_v34 = blk_v3 * x.nb[0] + row_v0 * x.nb[1];
-            let base_v35 = blk_v3 * x.nb[0] + row_v0 * x.nb[1] + 128;
             let dl_v32 = scale_v5 * sub_sc_f_v7;
             for col_e_v8 in 0..4 {
                 let inb_v10 = inb0_v4 + col_e_v8;
@@ -80,7 +78,7 @@ pub fn sum_rows_q6_K(
                 let q_shr_v17 = q_byte_v13 >> q_sh_v16;
                 let q_v18 = q_shr_v17 & 15;
                 let qh_inp_v20 = inb_v10 % 32;
-                let qh_byte_v21 = x.data[q_grp_v11 * 32 + qh_inp_v20 + base_v35] as usize;
+                let qh_byte_v21 = x.data[q_grp_v11 * 32 + qh_inp_v20 + base_v34 + 128] as usize;
                 let qh_sel_v23 = q_ing_v14 / 32;
                 let qh_sh_v24 = qh_sel_v23 * 2;
                 let qh_shr_v25 = qh_byte_v21 >> qh_sh_v24;

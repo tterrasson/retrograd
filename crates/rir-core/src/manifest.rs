@@ -96,6 +96,7 @@ pub enum Scan {
     Serial,
     BlockedLanes,
     TiledLanes,
+    StridedLanes,
 }
 
 /// How parallel axes map to hardware. Mirrors `rir_lower::ParallelMapping`.

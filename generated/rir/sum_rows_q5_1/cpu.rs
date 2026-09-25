@@ -56,26 +56,25 @@ pub fn sum_rows_q5_1(
 ) {
     for row_v0 in 0..n_row {
         let mut acc4_v1 = 0.0f32;
-        let base_v28 = row_v0 * x.nb[1] + 2;
+        let base_v27 = row_v0 * x.nb[1];
         for col_seg_v2 in (0..n_col).step_by(4) {
             let blk_v3 = col_seg_v2 / 32;
             let inb0_v4 = col_seg_v2 % 32;
             let scale_v5_a = blk_v3 * x.nb[0] + row_v0 * x.nb[1];
             let scale_v5 = f16_to_f32(u16::from_le_bytes([x.data[scale_v5_a], x.data[scale_v5_a + 1]]));
-            let min_v6_a = blk_v3 * x.nb[0] + base_v28;
+            let min_v6_a = blk_v3 * x.nb[0] + base_v27 + 2;
             let min_v6 = f16_to_f32(u16::from_le_bytes([x.data[min_v6_a], x.data[min_v6_a + 1]]));
-            let base_v26 = blk_v3 * x.nb[0] + row_v0 * x.nb[1] + 8;
-            let base_v27 = blk_v3 * x.nb[0] + row_v0 * x.nb[1] + 4;
+            let base_v26 = blk_v3 * x.nb[0] + row_v0 * x.nb[1];
             for col_e_v7 in 0..4 {
                 let inb_v9 = inb0_v4 + col_e_v7;
                 let q_inp_v10 = inb_v9 % 16;
-                let q_byte_v11 = x.data[q_inp_v10 + base_v26] as usize;
+                let q_byte_v11 = x.data[q_inp_v10 + base_v26 + 8] as usize;
                 let q_sel_v12 = inb_v9 / 16;
                 let q_sh_v13 = q_sel_v12 * 4;
                 let q_shr_v14 = q_byte_v11 >> q_sh_v13;
                 let q_v15 = q_shr_v14 & 15;
                 let qh_grp_v16 = inb_v9 / 8;
-                let qh_byte_v17 = x.data[qh_grp_v16 + base_v27] as usize;
+                let qh_byte_v17 = x.data[qh_grp_v16 + base_v26 + 4] as usize;
                 let qh_ing_v18 = inb_v9 % 8;
                 let qh_shr_v19 = qh_byte_v17 >> qh_ing_v18;
                 let qh_v20 = qh_shr_v19 & 1;

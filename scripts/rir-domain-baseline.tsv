@@ -5,7 +5,7 @@
 ADD/cuda	106	106
 ADD/metal	86	86
 ADD/vulkan	141	141
-CUMSUM/metal	15	15
+CUMSUM/metal	16	16
 CUMSUM/vulkan	15	15
 L2_NORM_BACK/cuda	60	60
 L2_NORM_BACK/metal	60	60

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "fingerprint": "sha256:b5bea18ac46f724b28f38bc49cdacdf69b526595328077277a7c95a309da50db",
+  "fingerprint": "sha256:a76013f200afb9fa8b2de63963ab5faca3c5aba5671713b7d0fd1e2f36c1bfcc",
   "kernels": [
     {
       "ggml_op": "GGML_OP_ADD",
@@ -726,6 +726,46 @@
           "scan": "tiled_lanes"
         },
         {
+          "variant_id": "cumsum_f32_4d_subgroup_tree_strided",
+          "kernel": "cumsum",
+          "priority": 95,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "row",
+                "plane",
+                "batch"
+              ],
+              "min": 129,
+              "max": 4294967295
+            },
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 256,
+              "max": 4294967295
+            }
+          ],
+          "features": [
+            "metal>=2.1",
+            "simdgroup_reduction",
+            "simdgroup_size>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "strided_lanes"
+        },
+        {
           "variant_id": "cumsum_f32_4d_subgroup_tree_blocked",
           "kernel": "cumsum",
           "priority": 90,
@@ -827,6 +867,46 @@
           "vector_width": 1,
           "reduction": "shared_tree",
           "scan": "tiled_lanes"
+        },
+        {
+          "variant_id": "cumsum_f32_4d_subgroup_tree_strided",
+          "kernel": "cumsum",
+          "priority": 95,
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "row",
+                "plane",
+                "batch"
+              ],
+              "min": 129,
+              "max": 4294967295
+            },
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 256,
+              "max": 4294967295
+            }
+          ],
+          "features": [
+            "vulkan>=1.1",
+            "subgroup_arithmetic",
+            "subgroup_size>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "strided_lanes"
         },
         {
           "variant_id": "cumsum_f32_4d_subgroup_tree_blocked",

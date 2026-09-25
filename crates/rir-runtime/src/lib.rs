@@ -143,6 +143,9 @@ pub enum RuntimeError {
     /// the wrong type.
     #[error("push constant '{name}' declared by the manifest but not supplied")]
     MissingValue { name: String },
+    /// A value supplied for a 32-bit push constant that does not fit in one.
+    #[error("push constant '{name}' = {value} does not fit the 32-bit slot the shader reads")]
+    UnrepresentableValue { name: String, value: usize },
     /// As many bound arguments as bindings, in the same order.
     #[error("{got} bound arguments, {expected} manifest bindings")]
     ArgCountMismatch { expected: usize, got: usize },

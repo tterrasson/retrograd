@@ -450,6 +450,16 @@ impl Schedule {
         .named(BLOCKED_SCAN)
     }
 
+    /// Strided scan: one row per single-subgroup workgroup, like the blocked
+    /// scan, walking the axis 32 consecutive elements per round.
+    pub fn gpu_strided_scan(gpu: GpuBackend) -> Self {
+        Self {
+            scan: ScanStrategy::StridedLanes,
+            ..Self::gpu_subgroup(gpu)
+        }
+        .named(STRIDED_SCAN)
+    }
+
     /// Coalesced tiled scan: `lanes` lanes walking the axis in tiles of
     /// `lanes · items`, staged and flushed interleaved through shared memory.
     /// The lane count comes from the block, so the same
@@ -698,6 +708,9 @@ pub const BLOCKED_SCAN: &str = "blocked";
 
 /// Variant name of the coalesced tiled scan.
 pub const TILED_SCAN: &str = "tiled";
+
+/// Variant name of the single-subgroup strided scan.
+pub const STRIDED_SCAN: &str = "strided";
 
 /// Variant name of the workgroup-wide shared-memory reduction. Distinct from
 /// the bench module's `SHARED_SCAN` only because the two never appear on the

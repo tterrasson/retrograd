@@ -27,11 +27,14 @@ pub fn l2_norm_back(
     for row_v0 in 0..n_row {
         let p_v12 = eps;
         for plane_v1 in 0..n_plane {
+            let base_v27 = row_v0 * x.nb[1] + plane_v1 * x.nb[2];
+            let base_v28 = row_v0 * dz.nb[1] + plane_v1 * dz.nb[2];
+            let base_v29 = row_v0 * dx.nb[1] + plane_v1 * dx.nb[2];
             for batch_v2 in 0..n_batch {
                 let mut acc9_v3 = 0.0f32;
                 let mut acc10_v4 = 0.0f32;
-                let base_v22 = row_v0 * x.nb[1] + plane_v1 * x.nb[2] + batch_v2 * x.nb[3];
-                let base_v23 = row_v0 * dz.nb[1] + plane_v1 * dz.nb[2] + batch_v2 * dz.nb[3];
+                let base_v22 = batch_v2 * x.nb[3] + base_v27;
+                let base_v23 = batch_v2 * dz.nb[3] + base_v28;
                 for col_v5 in 0..n_col {
                     let t_v6 = x.data[(col_v5 * x.nb[0] + base_v22) / 4];
                     let t_v7 = t_v6 * t_v6;
@@ -43,7 +46,7 @@ pub fn l2_norm_back(
                 let t_v11 = acc9_v3.sqrt();
                 let b_v13 = t_v11 > p_v12;
                 let t_v16 = acc10_v4 / acc9_v3;
-                let base_v26 = row_v0 * dx.nb[1] + plane_v1 * dx.nb[2] + batch_v2 * dx.nb[3];
+                let base_v26 = batch_v2 * dx.nb[3] + base_v29;
                 for col_v10 in 0..n_col {
                     let t_v14 = dz.data[(col_v10 * dz.nb[0] + base_v23) / 4];
                     let t_v15 = x.data[(col_v10 * x.nb[0] + base_v22) / 4];

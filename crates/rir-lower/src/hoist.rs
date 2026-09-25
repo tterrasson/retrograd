@@ -360,6 +360,13 @@ fn extract(
                     hoisted.push(s);
                     continue;
                 }
+                // A base an inner loop already named is itself an address, and
+                // its invariant half leaves this loop like any access's: the
+                // segment loader's payload base walks the block, but the row
+                // and the outer planes it adds do not.
+                if let LExpr::AddrSum { arg, terms } = &mut inst.expr {
+                    rewrite_addr(*arg, terms, &varying, hoisted, bases, ctx);
+                }
             }
             Stmt::Load { arg, addr, .. } | Stmt::Store { arg, addr, .. } => {
                 rewrite_addr(*arg, addr, &varying, hoisted, bases, ctx);
@@ -393,6 +400,13 @@ fn extract(
 /// already one multiply, so naming it would trade a multiply for a register
 /// and gain nothing. From two upward, `k` multiplies and `k-1` adds per access
 /// per iteration become one add.
+///
+/// A constant byte offset counts towards the threshold but stays on the access
+/// rather than in the base. The fields of one block header sit at fixed offsets
+/// from the same row (`d` at 0, `dmin` at 2, the scale bytes at 4, 8 and 12 in
+/// a K quant), and a base keyed with its offset was one register - and one
+/// stride product - per field. Keyed without it they are one base, and the
+/// offset is an immediate every backend's addressing absorbs.
 fn rewrite_addr(
     arg: rir_core::ArgId,
     addr: &mut Vec<AddrTerm>,
@@ -401,12 +415,16 @@ fn rewrite_addr(
     bases: &mut HashMap<BaseKey, VarId>,
     ctx: &mut Ctx,
 ) {
+    let is_invariant = |t: &AddrTerm| term_var(t).is_none_or(|v| !varying.contains(&v));
+    if addr.iter().filter(|t| is_invariant(t)).count() < 2 {
+        return;
+    }
     let invariant: Vec<AddrTerm> = addr
         .iter()
-        .filter(|t| term_var(t).is_none_or(|v| !varying.contains(&v)))
+        .filter(|t| is_invariant(t) && term_var(t).is_some())
         .cloned()
         .collect();
-    if invariant.len() < 2 {
+    if invariant.is_empty() {
         return;
     }
     let key = (arg, invariant.clone());
@@ -425,8 +443,14 @@ fn rewrite_addr(
             v
         }
     };
+    let offsets: Vec<AddrTerm> = addr
+        .iter()
+        .filter(|t| term_var(t).is_none())
+        .cloned()
+        .collect();
     addr.retain(|t| term_var(t).is_some_and(|v| varying.contains(&v)));
     addr.push(AddrTerm::VarConst { var: base, c: 1 });
+    addr.extend(offsets);
 }
 
 #[cfg(test)]
@@ -670,6 +694,51 @@ mod tests {
             }
         }
         check(&lk.body, &accs, false);
+    }
+
+    /// The fields of one block header differ only by a constant offset from the
+    /// same row, so they share **one** hoisted base: a `q4_K` header is read at
+    /// offsets 0, 2, 4, 8 and 12, and every one of those reads names the same
+    /// register, the offset staying on the access.
+    #[test]
+    fn header_fields_at_constant_offsets_share_one_base() {
+        let mut k = KernelBuilder::new("sum_rows_q4_K");
+        let x = k.input(
+            "x",
+            rir_core::TensorType {
+                dtype: rir_core::DType::Quant(rir_core::QuantType::Q4_K),
+                rank: 2,
+                layout: rir_core::Layout::Ggml,
+            },
+        );
+        let y = k.output("y", TensorType::f32(1));
+        let row = k.axis("row", Extent::Dim { arg: x, dim: 1 });
+        let col = k.axis("col", Extent::Dim { arg: x, dim: 0 });
+        let xv = k.read(x, &[col, row]);
+        let s = k.reduce(ReduceOp::Sum, col, xv, ReductionSemantics::Deterministic);
+        k.write(y, &[row], s);
+        let kernel = k.finish().unwrap();
+
+        for schedule in [Schedule::cpu_serial(), Schedule::vulkan_subgroup()] {
+            let lk = lower(&kernel, schedule.clone()).unwrap();
+            let mut sums = HashMap::new();
+            collect_sums(&lk.body, &mut sums);
+            let mut keys: Vec<&Vec<AddrTerm>> = sums.values().map(|(_, t)| t).collect();
+            keys.sort_by_key(|t| format!("{t:?}"));
+            keys.dedup();
+            assert_eq!(
+                keys.len(),
+                sums.len(),
+                "{:?}: two bases with the same terms",
+                schedule.backend
+            );
+            assert!(
+                sums.values()
+                    .all(|(_, t)| t.iter().all(|t| term_var(t).is_some())),
+                "{:?}: a hoisted base carries a constant offset",
+                schedule.backend
+            );
+        }
     }
 
     /// Nothing is lost on the way out: the pass moves statements, it does not

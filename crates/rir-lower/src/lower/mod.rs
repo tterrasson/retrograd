@@ -74,7 +74,7 @@ use crate::schedule::{ParallelMapping, ReductionStrategy, SUBGROUP_LANES, ScanSt
 use crate::schedule::check_schedule;
 use rir_core::ValidatedKernel;
 use strategies::reduction::lower_lanes;
-use strategies::scan::{lower_blocked_scan, lower_tiled_scan};
+use strategies::scan::{lower_blocked_scan, lower_strided_scan, lower_tiled_scan};
 use strategies::serial::lower_serial;
 use strategies::tiled::lower_tiled;
 use vectorize::lower_vectorized;
@@ -147,9 +147,9 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
         ScanStrategy::Serial => ReductionSemantics::ExactOrder,
         // Both lane strategies regroup the additions; what separates them is
         // where the elements are read from, not the order they are combined in.
-        ScanStrategy::BlockedLanes | ScanStrategy::TiledLanes { .. } => {
-            ReductionSemantics::Deterministic
-        }
+        ScanStrategy::BlockedLanes
+        | ScanStrategy::TiledLanes { .. }
+        | ScanStrategy::StridedLanes => ReductionSemantics::Deterministic,
     };
     semantics.extend(a.scans.iter().map(|_| scan_semantics));
 
@@ -347,6 +347,17 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
                     });
                 }
             }
+            // Both collectives of the strided scan are subgroup primitives: a
+            // wider workgroup would run several subgroups each scanning its
+            // own slice of the round with nothing to combine them.
+            if schedule.scan == ScanStrategy::StridedLanes
+                && (schedule.reduction != ReductionStrategy::SubgroupTree
+                    || lanes != SUBGROUP_LANES)
+            {
+                return Err(LowerError::StridedScanUnsupported {
+                    why: "one subgroup required: SubgroupTree over SUBGROUP_LANES lanes",
+                });
+            }
             match (a.scans.is_empty(), schedule.scan) {
                 // A scan strategy on a kernel with no scan is a field nothing
                 // honours - the same refusal `tile_depth` gets above.
@@ -355,14 +366,36 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
                         why: "kernel without a scan: nothing would honor the strategy",
                     });
                 }
+                (true, ScanStrategy::StridedLanes) => {
+                    return Err(LowerError::StridedScanUnsupported {
+                        why: "kernel without a scan: nothing would honor the strategy",
+                    });
+                }
                 (true, _) => lower_lanes(&mut lo, &a, lanes, schedule.reduction)?,
                 (false, ScanStrategy::TiledLanes { items }) => {
                     lower_tiled_scan(&mut lo, &a, lanes, items)?
                 }
+                (false, ScanStrategy::StridedLanes) => lower_strided_scan(&mut lo, &a, lanes)?,
                 (false, _) => lower_blocked_scan(&mut lo, &a, lanes, schedule.reduction)?,
             }
         }
     };
+
+    // A parallel axis past the grid becomes a sequential loop *around* the lane
+    // body, so the body is re-entered by the same workgroup. A shared-memory
+    // collective ends by reading its total out of shared storage, and nothing
+    // orders that read before the next round's first store into the same slot:
+    // lane 0 would overwrite `sh[0]` while another lane still reads the previous
+    // total. One trailing barrier closes the round. A staged contraction needs
+    // none - `StageTiles` opens every round with its own.
+    let mut innermost = innermost;
+    if !schedule.flatten && a.par_axes.len() > schedule.grid_dims && !lo.shared.is_empty() {
+        for s in &mut innermost {
+            if let Stmt::ParallelLane { body, .. } = s {
+                body.push(Stmt::Barrier);
+            }
+        }
+    }
 
     // The flattened dispatch: one linear index over the
     // whole parallel space instead of the three-dimensional nest below. It is a
@@ -537,7 +570,8 @@ fn check_linear_addressable(k: &Kernel, a: &Analysis) -> Result<(), LowerError> 
     }
     if a.par_axes.len() != k.axes().len() {
         return Err(LowerError::LinearAddrUnsupported {
-            why: "an axis outside the flattened space: its extent is a dimension the linear                   index does not count",
+            why: "an axis outside the flattened space: its extent is a dimension the linear \
+                  index does not count",
         });
     }
     for op in k.ops() {

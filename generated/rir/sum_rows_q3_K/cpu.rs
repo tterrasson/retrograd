@@ -56,26 +56,24 @@ pub fn sum_rows_q3_K(
 ) {
     for row_v0 in 0..n_row {
         let mut acc4_v1 = 0.0f32;
-        let base_v49 = row_v0 * x.nb[1] + 108;
-        let base_v50 = row_v0 * x.nb[1] + 96;
-        let base_v51 = row_v0 * x.nb[1] + 104;
+        let base_v48 = row_v0 * x.nb[1];
         let sub_bias_v22 = 32.0f32;
         let q_off_v43 = 4.0f32;
         for col_seg_v2 in (0..n_col).step_by(4) {
             let blk_v3 = col_seg_v2 / 256;
             let inb0_v4 = col_seg_v2 % 256;
-            let scale_v5_a = blk_v3 * x.nb[0] + base_v49;
+            let scale_v5_a = blk_v3 * x.nb[0] + base_v48 + 108;
             let scale_v5 = f16_to_f32(u16::from_le_bytes([x.data[scale_v5_a], x.data[scale_v5_a + 1]]));
             let sub_is_v6 = inb0_v4 / 16;
             let sub_t_v7 = sub_is_v6 & 3;
             let sub_g_v8 = sub_is_v6 >> 2;
             let sub_glo_v9 = sub_g_v8 & 1;
             let sub_ghi_v10 = sub_g_v8 >> 1;
-            let sub_lo_raw_v11 = x.data[blk_v3 * x.nb[0] + sub_glo_v9 * 4 + sub_t_v7 + base_v50] as usize;
+            let sub_lo_raw_v11 = x.data[blk_v3 * x.nb[0] + sub_glo_v9 * 4 + sub_t_v7 + base_v48 + 96] as usize;
             let sub_lo_sh_v12 = sub_ghi_v10 * 4;
             let sub_lo_shr_v13 = sub_lo_raw_v11 >> sub_lo_sh_v12;
             let sub_lo4_v14 = sub_lo_shr_v13 & 15;
-            let sub_hi_raw_v15 = x.data[blk_v3 * x.nb[0] + sub_t_v7 + base_v51] as usize;
+            let sub_hi_raw_v15 = x.data[blk_v3 * x.nb[0] + sub_t_v7 + base_v48 + 104] as usize;
             let sub_hi_sh_v16 = sub_g_v8 * 2;
             let sub_hi_shr_v17 = sub_hi_raw_v15 >> sub_hi_sh_v16;
             let sub_hi2_v18 = sub_hi_shr_v17 & 3;
@@ -83,20 +81,19 @@ pub fn sum_rows_q3_K(
             let sub_sc_v20 = sub_lo4_v14 | sub_hi_up_v19;
             let sub_sc_f_v21 = sub_sc_v20 as f32;
             let sub_sc_b_v23 = sub_sc_f_v21 - sub_bias_v22;
-            let base_v47 = blk_v3 * x.nb[0] + row_v0 * x.nb[1] + 32;
-            let base_v48 = blk_v3 * x.nb[0] + row_v0 * x.nb[1];
+            let base_v47 = blk_v3 * x.nb[0] + row_v0 * x.nb[1];
             let dl_v45 = scale_v5 * sub_sc_b_v23;
             for col_e_v24 in 0..4 {
                 let inb_v26 = inb0_v4 + col_e_v24;
                 let q_grp_v27 = inb_v26 / 128;
                 let q_inp_v28 = inb_v26 % 32;
-                let q_byte_v29 = x.data[q_grp_v27 * 32 + q_inp_v28 + base_v47] as usize;
+                let q_byte_v29 = x.data[q_grp_v27 * 32 + q_inp_v28 + base_v47 + 32] as usize;
                 let q_ing_v30 = inb_v26 % 128;
                 let q_sel_v31 = q_ing_v30 / 32;
                 let q_sh_v32 = q_sel_v31 * 2;
                 let q_shr_v33 = q_byte_v29 >> q_sh_v32;
                 let q_v34 = q_shr_v33 & 3;
-                let qh_byte_v36 = x.data[q_inp_v28 + base_v48] as usize;
+                let qh_byte_v36 = x.data[q_inp_v28 + base_v47] as usize;
                 let qh_sel_v37 = inb_v26 / 32;
                 let qh_shr_v38 = qh_byte_v36 >> qh_sel_v37;
                 let qh_v39 = qh_shr_v38 & 1;

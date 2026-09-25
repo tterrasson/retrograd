@@ -259,7 +259,9 @@ pub enum Stmt {
     },
     /// Collective reduction across the enclosing `ParallelLane`. `dst`
     /// receives the result in **every** lane (`subgroupAdd` semantics). Valid
-    /// only at the top level of a `ParallelLane` body.
+    /// only where every lane reaches it: the top level of a `ParallelLane`
+    /// body, or a loop there whose bounds are the same for every lane
+    /// (`ForTiled`, `ForConst`, `For`).
     LaneReduce {
         op: ReduceOp,
         src: VarId,
@@ -267,8 +269,8 @@ pub enum Stmt {
     },
     /// Collective **exclusive prefix** across the enclosing `ParallelLane`:
     /// lane `l` receives the combination of lanes `0..l`, and lane 0 the
-    /// identity (`subgroupExclusiveAdd` semantics). Valid only at the top level
-    /// of a `ParallelLane` body.
+    /// identity (`subgroupExclusiveAdd` semantics). Same placement rule as
+    /// `LaneReduce`.
     ///
     /// It is what turns per-lane chunk totals into per-lane scan offsets; its
     /// order is fixed by the lane count the schedule declares, not by the

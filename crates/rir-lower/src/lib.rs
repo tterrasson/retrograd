@@ -23,6 +23,6 @@ pub use lower::{LowerError, can_lower_dequant, lower};
 pub use schedule::{
     BLOCKED_SCAN, Backend, FALLBACK_PRIORITY, FAMILY_REFUSED, FLAT_LINEAR, FLAT_ROWS, Family,
     GPU_REFUSED, GPU_TARGETS, GpuBackend, HIER_REDUCE, ParallelMapping, ReductionStrategy,
-    SHARED_REDUCE, SUBGROUP_LANES, ScanStrategy, Schedule, ScheduleError, ShapeRule, TILED_SCAN,
-    check_schedule, check_schedule_table, family_refusal, schedules_for, targets_for,
+    SHARED_REDUCE, STRIDED_SCAN, SUBGROUP_LANES, ScanStrategy, Schedule, ScheduleError, ShapeRule,
+    TILED_SCAN, check_schedule, check_schedule_table, family_refusal, schedules_for, targets_for,
 };

@@ -43,20 +43,23 @@ void main() {
     if (plane_v2 >= pc.n_plane) {
         return;
     }
-    const uint base_v14 = col_v0 * pc.a_nb0 + row_v1 * pc.a_nb1 + plane_v2 * pc.a_nb2;
-    const uint base_v15 = col_v0 * pc.b_nb0 + row_v1 * pc.b_nb1 + plane_v2 * pc.b_nb2;
-    const uint base_v16 = col_v0 * pc.dst_nb0 + row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
+    const uint base_v14 = row_v1 * pc.a_nb1 + plane_v2 * pc.a_nb2;
+    const uint base_v15 = row_v1 * pc.b_nb1 + plane_v2 * pc.b_nb2;
+    const uint base_v16 = row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
+    const uint base_v17 = col_v0 * pc.a_nb0 + row_v1 * pc.a_nb1 + plane_v2 * pc.a_nb2;
+    const uint base_v18 = col_v0 * pc.b_nb0 + row_v1 * pc.b_nb1 + plane_v2 * pc.b_nb2;
+    const uint base_v19 = col_v0 * pc.dst_nb0 + row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
     for (uint batch_v3 = 0u; batch_v3 < pc.n_batch; ++batch_v3) {
-        const uint base_v11 = row_v1 * pc.a_nb1 + plane_v2 * pc.a_nb2 + batch_v3 * pc.a_nb3;
-        const uint base_v12 = row_v1 * pc.b_nb1 + plane_v2 * pc.b_nb2 + batch_v3 * pc.b_nb3;
-        const uint base_v13 = row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2 + batch_v3 * pc.dst_nb3;
+        const uint base_v11 = batch_v3 * pc.a_nb3 + base_v14;
+        const uint base_v12 = batch_v3 * pc.b_nb3 + base_v15;
+        const uint base_v13 = batch_v3 * pc.dst_nb3 + base_v16;
         if (col_v0 + 4u <= pc.n_col) {
-            const uint t_v4_i = (batch_v3 * pc.a_nb3 + base_v14) / 2u;
+            const uint t_v4_i = (batch_v3 * pc.a_nb3 + base_v17) / 2u;
             const vec4 t_v4 = vec4(a_f16[t_v4_i], a_f16[t_v4_i + 1u], a_f16[t_v4_i + 2u], a_f16[t_v4_i + 3u]);
-            const uint t_v5_i = (batch_v3 * pc.b_nb3 + base_v15) / 2u;
+            const uint t_v5_i = (batch_v3 * pc.b_nb3 + base_v18) / 2u;
             const vec4 t_v5 = vec4(b_f16[t_v5_i], b_f16[t_v5_i + 1u], b_f16[t_v5_i + 2u], b_f16[t_v5_i + 3u]);
             const vec4 t_v6 = t_v4 * t_v5;
-            const uint t_v6_o = (batch_v3 * pc.dst_nb3 + base_v16) / 2u;
+            const uint t_v6_o = (batch_v3 * pc.dst_nb3 + base_v19) / 2u;
             dst_f16[t_v6_o] = float16_t(t_v6.x);
             dst_f16[t_v6_o + 1u] = float16_t(t_v6.y);
             dst_f16[t_v6_o + 2u] = float16_t(t_v6.z);

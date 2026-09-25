@@ -57,17 +57,17 @@ static void rir_k_sum_rows_q4_1(
     const uint32_t lane_v1 = threadIdx.x;
     float acc4_v2 = 0.0f;
     const uint32_t seg_start_v3 = lane_v1 * 4u;
-    const uint32_t base_v23 = row_v0 * p.x_nb1 + 2u;
+    const uint32_t base_v23 = row_v0 * p.x_nb1;
     for (uint32_t col_seg_v4 = seg_start_v3; col_seg_v4 < p.n_col; col_seg_v4 += 128u) {
         const uint32_t blk_v5 = col_seg_v4 / 32u;
         const uint32_t inb0_v6 = col_seg_v4 % 32u;
         const float scale_v7 = __half2float(*(const __half *)(x + (blk_v5 * p.x_nb0 + row_v0 * p.x_nb1)));
-        const float min_v8 = __half2float(*(const __half *)(x + (blk_v5 * p.x_nb0 + base_v23)));
-        const uint32_t base_v22 = blk_v5 * p.x_nb0 + row_v0 * p.x_nb1 + 4u;
+        const float min_v8 = __half2float(*(const __half *)(x + (blk_v5 * p.x_nb0 + base_v23 + 2u)));
+        const uint32_t base_v22 = blk_v5 * p.x_nb0 + row_v0 * p.x_nb1;
         for (uint32_t col_e_v9 = 0u; col_e_v9 < 4u; ++col_e_v9) {
             const uint32_t inb_v11 = inb0_v6 + col_e_v9;
             const uint32_t q_inp_v12 = inb_v11 % 16u;
-            const uint32_t q_byte_v13 = uint32_t(*(const uint8_t *)(x + (q_inp_v12 + base_v22)));
+            const uint32_t q_byte_v13 = uint32_t(*(const uint8_t *)(x + (q_inp_v12 + base_v22 + 4u)));
             const uint32_t q_sel_v14 = inb_v11 / 16u;
             const uint32_t q_sh_v15 = q_sel_v14 * 4u;
             const uint32_t q_shr_v16 = q_byte_v13 >> q_sh_v15;

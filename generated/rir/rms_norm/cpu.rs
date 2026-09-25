@@ -28,9 +28,11 @@ pub fn rms_norm(
         let n_v10 = n_col as f32;
         let p_v12 = eps;
         for plane_v1 in 0..n_plane {
+            let base_v20 = row_v0 * x.nb[1] + plane_v1 * x.nb[2];
+            let base_v21 = row_v0 * dst.nb[1] + plane_v1 * dst.nb[2];
             for batch_v2 in 0..n_batch {
                 let mut acc7_v3 = 0.0f32;
-                let base_v17 = row_v0 * x.nb[1] + plane_v1 * x.nb[2] + batch_v2 * x.nb[3];
+                let base_v17 = batch_v2 * x.nb[3] + base_v20;
                 for col_v4 in 0..n_col {
                     let t_v5 = x.data[(col_v4 * x.nb[0] + base_v17) / 4];
                     let t_v6 = t_v5 * t_v5;
@@ -40,7 +42,7 @@ pub fn rms_norm(
                 let t_v13 = t_v11 + p_v12;
                 let t_v14 = t_v13.sqrt();
                 let t_v15 = c_v9 / t_v14;
-                let base_v19 = row_v0 * dst.nb[1] + plane_v1 * dst.nb[2] + batch_v2 * dst.nb[3];
+                let base_v19 = batch_v2 * dst.nb[3] + base_v21;
                 for col_v7 in 0..n_col {
                     let t_v8 = x.data[(col_v7 * x.nb[0] + base_v17) / 4];
                     let t_v16 = t_v8 * t_v15;

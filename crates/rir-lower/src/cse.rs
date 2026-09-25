@@ -41,7 +41,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::hoist::{child_blocks, defs_of_block};
-use crate::loop_ir::{AddrTerm, Inst, LExpr, Stmt, VarId};
+use crate::loop_ir::{AddrTerm, Inst, LExpr, Stmt, VarId, child_blocks_of};
 
 /// Structural key of a pure expression: the form, then its operands.
 ///
@@ -151,8 +151,7 @@ fn pinned_regs(body: &[Stmt]) -> HashSet<VarId> {
                     }
                 }
             }
-            let mut owned = s.clone();
-            for child in child_blocks(&mut owned) {
+            for child in child_blocks_of(s) {
                 walk(child, out);
             }
         }
@@ -206,8 +205,7 @@ fn cse_block(
         // survive the descent.
         let invalid: HashSet<VarId> = {
             let mut d = HashSet::new();
-            let mut owned = s.clone();
-            for child in child_blocks(&mut owned) {
+            for child in child_blocks_of(&s) {
                 defs_of_block(child, &mut d);
             }
             d

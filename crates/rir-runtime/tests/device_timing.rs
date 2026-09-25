@@ -298,6 +298,12 @@ fn cumsum_scan_cost_against_row_length() {
     for (tag, schedule) in [
         ("cumsum/grid64", Schedule::vulkan_grid([64, 1, 1])),
         ("cumsum/blocked32", Schedule::vulkan_blocked_scan()),
+        // Same subgroup and serial depth as the blocked scan, one coalesced
+        // read per element instead of two a chunk apart.
+        (
+            "cumsum/strided32",
+            Schedule::gpu_strided_scan(rir_lower::GpuBackend::Vulkan),
+        ),
         (
             "cumsum/shared256",
             rir_lower::schedule::bench::vulkan_shared_scan(),
@@ -314,7 +320,11 @@ fn cumsum_scan_cost_against_row_length() {
         };
 
         for &(n_col, n_row) in &[
-            (4096usize, 1usize),
+            // The few-row, mid-length class the blocked scan claims.
+            (1024usize, 1usize),
+            (1024, 16),
+            (2048, 80),
+            (4096, 1),
             (8192, 1),
             (16384, 1),
             (32768, 1),
@@ -355,8 +365,8 @@ fn cumsum_scan_cost_against_row_length() {
 
 /// Sweep deciding the **shape rule**: at what size the scan strategies cross.
 /// The lane table says "a few hundred rows"; a registry rule cannot stop there, so
-/// this test sweeps the (n_col, n_row) plane around the crossover and prints the
-/// blocked/sequential ratio shape by shape.
+/// this test sweeps the (n_col, n_row) plane around the crossover and prints each
+/// lane strategy against the sequential one, shape by shape.
 #[test]
 fn cumsum_strategy_crossover_sweep() {
     if !enabled() {
@@ -364,27 +374,35 @@ fn cumsum_strategy_crossover_sweep() {
     }
     let Some(gpu) = gpu() else { return };
     let kernel = rir_kernels::cumsum::build().unwrap();
-    let Some(serial) = build(&gpu, &kernel, Schedule::vulkan_grid([64, 1, 1]), "grid64") else {
-        return;
-    };
-    let Some(blocked) = build(&gpu, &kernel, Schedule::vulkan_blocked_scan(), "blocked32") else {
-        return;
-    };
+    let mut pipes = Vec::new();
+    for (tag, schedule) in [
+        ("grid64", Schedule::vulkan_grid([64, 1, 1])),
+        ("blocked32", Schedule::vulkan_blocked_scan()),
+        (
+            "strided32",
+            Schedule::gpu_strided_scan(rir_lower::GpuBackend::Vulkan),
+        ),
+    ] {
+        let Some(pipe) = build(&gpu, &kernel, schedule, tag) else {
+            return;
+        };
+        pipes.push(pipe);
+    }
 
     println!(
-        "{:<12} {:>8} {:>12} {:>12} {:>8}",
-        "n_col", "n_row", "grid64 µs", "blocked µs", "ratio"
+        "{:<12} {:>8} {:>12} {:>12} {:>12} {:>9} {:>9}",
+        "n_col", "n_row", "grid64 µs", "blocked µs", "strided µs", "blk/grid", "str/grid"
     );
     for &n_col in &[16usize, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192] {
-        for &n_row in &[1usize, 8, 32, 64, 128, 256, 512, 1024] {
+        for &n_row in &[1usize, 8, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192] {
             let len = n_col * n_row;
             if len > 16 * 1024 * 1024 {
                 continue;
             }
             let x = vec![1f32; len];
             let nb = [4usize, 4 * n_col, 4 * n_col * n_row, 4 * n_col * n_row];
-            let mut t = [0f64; 2];
-            for (i, pipe) in [&serial, &blocked].into_iter().enumerate() {
+            let mut t = [0f64; 3];
+            for (i, pipe) in pipes.iter().enumerate() {
                 let mut y = vec![0f32; len];
                 let mut values = Values::new();
                 values
@@ -406,10 +424,12 @@ fn cumsum_strategy_crossover_sweep() {
                 };
             }
             println!(
-                "{n_col:<12} {n_row:>8} {:>12.1} {:>12.1} {:>8.2}",
+                "{n_col:<12} {n_row:>8} {:>12.1} {:>12.1} {:>12.1} {:>9.2} {:>9.2}",
                 t[0],
                 t[1],
-                t[1] / t[0]
+                t[2],
+                t[1] / t[0],
+                t[2] / t[0]
             );
         }
     }

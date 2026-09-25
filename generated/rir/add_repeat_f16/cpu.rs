@@ -96,12 +96,15 @@ pub fn add_repeat_f16(
     for col_v0 in 0..n_col {
         let rep_v5 = col_v0 % n_col_b;
         for row_v1 in 0..n_row {
+            let base_v14 = col_v0 * a.nb[0] + row_v1 * a.nb[1];
             let rep_v6 = row_v1 % n_row_b;
+            let base_v15 = rep_v5 * b.nb[0] + rep_v6 * b.nb[1];
+            let base_v16 = col_v0 * dst.nb[0] + row_v1 * dst.nb[1];
             for plane_v2 in 0..n_plane {
-                let base_v11 = col_v0 * a.nb[0] + row_v1 * a.nb[1] + plane_v2 * a.nb[2];
+                let base_v11 = plane_v2 * a.nb[2] + base_v14;
                 let rep_v7 = plane_v2 % n_plane_b;
-                let base_v12 = rep_v5 * b.nb[0] + rep_v6 * b.nb[1] + rep_v7 * b.nb[2];
-                let base_v13 = col_v0 * dst.nb[0] + row_v1 * dst.nb[1] + plane_v2 * dst.nb[2];
+                let base_v12 = rep_v7 * b.nb[2] + base_v15;
+                let base_v13 = plane_v2 * dst.nb[2] + base_v16;
                 for batch_v3 in 0..n_batch {
                     let t_v4_a = batch_v3 * a.nb[3] + base_v11;
                     let t_v4 = f16_to_f32(u16::from_le_bytes([a.data[t_v4_a], a.data[t_v4_a + 1]]));

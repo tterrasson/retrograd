@@ -47,12 +47,11 @@ kernel void rir_out_prod_q5_1(
     const uint blk_v7 = j_v1 / 16u;
     const uint org_v8 = blk_v7 * 16u;
     const uint loc_v9 = j_v1 % 16u;
-    const uint base_v61 = i_v0 * pc.dst_nb0 + j_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
+    const uint base_v59 = i_v0 * pc.dst_nb0 + j_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
     for (uint batch_v3 = 0u; batch_v3 < pc.n_batch; ++batch_v3) {
         float4 acc9_v10 = float4(0.0f);
-        const uint base_v58 = plane_v2 * pc.a_nb2 + batch_v3 * pc.a_nb3;
-        const uint base_v59 = plane_v2 * pc.a_nb2 + batch_v3 * pc.a_nb3 + 2u;
-        const uint base_v60 = plane_v2 * pc.b_nb2 + batch_v3 * pc.b_nb3;
+        const uint base_v57 = plane_v2 * pc.a_nb2 + batch_v3 * pc.a_nb3;
+        const uint base_v58 = plane_v2 * pc.b_nb2 + batch_v3 * pc.b_nb3;
         for (uint k0_v11 = 0u; k0_v11 < pc.n_k; k0_v11 += 16u) {
             threadgroup_barrier(mem_flags::mem_threadgroup);
             for (uint l_tile_a_v12 = threadgroup_lane_id * 4u; l_tile_a_v12 < 1024u; l_tile_a_v12 += 1024u) {
@@ -64,20 +63,19 @@ kernel void rir_out_prod_q5_1(
                 if (a_m_v15 < pc.n_i && a_k_v16 < pc.n_k) {
                     const uint blk_v18 = a_m_v15 / 32u;
                     const uint inb0_v19 = a_m_v15 % 32u;
-                    const float scale_v20 = float(*(device const half *)(a + (blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + base_v58)));
-                    const float min_v21 = float(*(device const half *)(a + (blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + base_v59)));
-                    const uint base_v56 = blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + plane_v2 * pc.a_nb2 + batch_v3 * pc.a_nb3 + 8u;
-                    const uint base_v57 = blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + plane_v2 * pc.a_nb2 + batch_v3 * pc.a_nb3 + 4u;
+                    const float scale_v20 = float(*(device const half *)(a + (blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + base_v57)));
+                    const float min_v21 = float(*(device const half *)(a + (blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + base_v57 + 2u)));
+                    const uint base_v56 = blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + base_v57;
                     for (uint a_e_v22 = 0u; a_e_v22 < 4u; ++a_e_v22) {
                         const uint inb_v23 = inb0_v19 + a_e_v22;
                         const uint q_inp_v24 = inb_v23 % 16u;
-                        const uint q_byte_v25 = uint(*(device const uchar *)(a + (q_inp_v24 + base_v56)));
+                        const uint q_byte_v25 = uint(*(device const uchar *)(a + (q_inp_v24 + base_v56 + 8u)));
                         const uint q_sel_v26 = inb_v23 / 16u;
                         const uint q_sh_v27 = q_sel_v26 * 4u;
                         const uint q_shr_v28 = q_byte_v25 >> q_sh_v27;
                         const uint q_v29 = q_shr_v28 & 15u;
                         const uint qh_grp_v30 = inb_v23 / 8u;
-                        const uint qh_byte_v31 = uint(*(device const uchar *)(a + (qh_grp_v30 + base_v57)));
+                        const uint qh_byte_v31 = uint(*(device const uchar *)(a + (qh_grp_v30 + base_v56 + 4u)));
                         const uint qh_ing_v32 = inb_v23 % 8u;
                         const uint qh_shr_v33 = qh_byte_v31 >> qh_ing_v32;
                         const uint qh_v34 = qh_shr_v33 & 1u;
@@ -103,7 +101,7 @@ kernel void rir_out_prod_q5_1(
                 const uint b_m_v44 = org_v8 + b_r_v42;
                 const uint b_k_v45 = k0_v11 + b_d_v43;
                 if (b_m_v44 < pc.n_j && b_k_v45 < pc.n_k) {
-                    const float t_v47 = *(device const float *)(b + (b_m_v44 * pc.b_nb0 + b_k_v45 * pc.b_nb1 + base_v60));
+                    const float t_v47 = *(device const float *)(b + (b_m_v44 * pc.b_nb0 + b_k_v45 * pc.b_nb1 + base_v58));
                     rir_shared_tile_b_v41[b_at_v46] = t_v47;
                 } else {
                     rir_shared_tile_b_v41[l_tile_b_v41] = 0.0f;
@@ -123,10 +121,10 @@ kernel void rir_out_prod_q5_1(
         }
         if (j_v1 < pc.n_j) {
             if (i_v0 + 4u <= pc.n_i) {
-                *(device packed_float4 *)(dst + (batch_v3 * pc.dst_nb3 + base_v61)) = packed_float4(acc9_v10);
+                *(device packed_float4 *)(dst + (batch_v3 * pc.dst_nb3 + base_v59)) = packed_float4(acc9_v10);
             } else {
                 for (uint c = 0u; c + i_v0 < pc.n_i; ++c) {
-                    *(device float *)(dst + (batch_v3 * pc.dst_nb3 + base_v61) + c * pc.dst_nb0) = acc9_v10[c];
+                    *(device float *)(dst + (batch_v3 * pc.dst_nb3 + base_v59) + c * pc.dst_nb0) = acc9_v10[c];
                 }
             }
         }

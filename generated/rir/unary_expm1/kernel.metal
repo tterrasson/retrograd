@@ -39,17 +39,19 @@ kernel void rir_unary_expm1(
     if (plane_v2 >= pc.n_plane) {
         return;
     }
+    const uint base_v15 = row_v1 * pc.x_nb1 + plane_v2 * pc.x_nb2;
     const float c_v11 = 1.0;
-    const uint base_v15 = col_v0 * pc.x_nb0 + row_v1 * pc.x_nb1 + plane_v2 * pc.x_nb2;
-    const uint base_v16 = col_v0 * pc.dst_nb0 + row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
+    const uint base_v16 = row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
+    const uint base_v17 = col_v0 * pc.x_nb0 + row_v1 * pc.x_nb1 + plane_v2 * pc.x_nb2;
+    const uint base_v18 = col_v0 * pc.dst_nb0 + row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
     for (uint batch_v3 = 0u; batch_v3 < pc.n_batch; ++batch_v3) {
-        const uint base_v13 = row_v1 * pc.x_nb1 + plane_v2 * pc.x_nb2 + batch_v3 * pc.x_nb3;
-        const uint base_v14 = row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2 + batch_v3 * pc.dst_nb3;
+        const uint base_v13 = batch_v3 * pc.x_nb3 + base_v15;
+        const uint base_v14 = batch_v3 * pc.dst_nb3 + base_v16;
         if (col_v0 + 4u <= pc.n_col) {
-            const float4 t_v4 = *(device const packed_float4 *)(x + (batch_v3 * pc.x_nb3 + base_v15));
+            const float4 t_v4 = *(device const packed_float4 *)(x + (batch_v3 * pc.x_nb3 + base_v17));
             const float4 t_v5 = exp(t_v4);
             const float4 t_v7 = t_v5 - c_v11;
-            *(device packed_float4 *)(dst + (batch_v3 * pc.dst_nb3 + base_v16)) = packed_float4(t_v7);
+            *(device packed_float4 *)(dst + (batch_v3 * pc.dst_nb3 + base_v18)) = packed_float4(t_v7);
         } else {
             for (uint col_tail_v8 = col_v0; col_tail_v8 < pc.n_col; ++col_tail_v8) {
                 const float t_v9 = *(device const float *)(x + (col_tail_v8 * pc.x_nb0 + base_v13));

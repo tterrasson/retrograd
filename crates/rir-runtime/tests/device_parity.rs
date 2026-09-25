@@ -984,6 +984,18 @@ fn blocked_cumsum_on_gpu_against_the_oracle() {
     cumsum_variant_on_gpu_against_the_oracle("blocked", Schedule::vulkan_blocked_scan());
 }
 
+/// The **strided** scan (`ScanStrategy::StridedLanes`) against the oracle: its
+/// last round is the partial one, where lanes past the row contribute the
+/// identity to both collectives, so the lengths around 32 above are the ones
+/// that decide it.
+#[test]
+fn strided_cumsum_on_gpu_against_the_oracle() {
+    cumsum_variant_on_gpu_against_the_oracle(
+        "strided",
+        Schedule::gpu_strided_scan(rir_lower::GpuBackend::Vulkan),
+    );
+}
+
 /// The **tiled** scan (`ScanStrategy::TiledLanes`) against
 /// the oracle on the same shapes as its two predecessors. It adds an interleaved
 /// access plan and a **carry** passed from one tile to the next; shapes not

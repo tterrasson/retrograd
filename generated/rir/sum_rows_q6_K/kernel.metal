@@ -27,17 +27,15 @@ kernel void rir_sum_rows_q6_K(
     const uint lane_v1 = simd_lane_id;
     float acc4_v2 = 0.0f;
     const uint seg_start_v3 = lane_v1 * 4u;
-    const uint base_v39 = row_v0 * pc.x_nb1 + 208u;
-    const uint base_v40 = row_v0 * pc.x_nb1 + 192u;
+    const uint base_v38 = row_v0 * pc.x_nb1;
     const float q_off_v32 = 32.0;
     for (uint col_seg_v4 = seg_start_v3; col_seg_v4 < pc.n_col; col_seg_v4 += 128u) {
         const uint blk_v5 = col_seg_v4 / 256u;
         const uint inb0_v6 = col_seg_v4 % 256u;
-        const float scale_v7 = float(*(device const half *)(x + (blk_v5 * pc.x_nb0 + base_v39)));
+        const float scale_v7 = float(*(device const half *)(x + (blk_v5 * pc.x_nb0 + base_v38 + 208u)));
         const uint sub_is_v8 = inb0_v6 / 16u;
-        const float sub_sc_f_v9 = float(*(device const char *)(x + (blk_v5 * pc.x_nb0 + sub_is_v8 + base_v40)));
+        const float sub_sc_f_v9 = float(*(device const char *)(x + (blk_v5 * pc.x_nb0 + sub_is_v8 + base_v38 + 192u)));
         const uint base_v37 = blk_v5 * pc.x_nb0 + row_v0 * pc.x_nb1;
-        const uint base_v38 = blk_v5 * pc.x_nb0 + row_v0 * pc.x_nb1 + 128u;
         const float dl_v34 = scale_v7 * sub_sc_f_v9;
         for (uint col_e_v10 = 0u; col_e_v10 < 4u; ++col_e_v10) {
             const uint inb_v12 = inb0_v6 + col_e_v10;
@@ -50,7 +48,7 @@ kernel void rir_sum_rows_q6_K(
             const uint q_shr_v19 = q_byte_v15 >> q_sh_v18;
             const uint q_v20 = q_shr_v19 & 15u;
             const uint qh_inp_v22 = inb_v12 % 32u;
-            const uint qh_byte_v23 = uint(*(device const uchar *)(x + (q_grp_v13 * 32u + qh_inp_v22 + base_v38)));
+            const uint qh_byte_v23 = uint(*(device const uchar *)(x + (q_grp_v13 * 32u + qh_inp_v22 + base_v37 + 128u)));
             const uint qh_sel_v25 = q_ing_v16 / 32u;
             const uint qh_sh_v26 = qh_sel_v25 * 2u;
             const uint qh_shr_v27 = qh_byte_v23 >> qh_sh_v26;

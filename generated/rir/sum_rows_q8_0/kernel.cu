@@ -61,10 +61,10 @@ static void rir_k_sum_rows_q8_0(
         const uint32_t blk_v5 = col_seg_v4 / 32u;
         const uint32_t inb0_v6 = col_seg_v4 % 32u;
         const float scale_v7 = __half2float(*(const __half *)(x + (blk_v5 * p.x_nb0 + row_v0 * p.x_nb1)));
-        const uint32_t base_v14 = blk_v5 * p.x_nb0 + row_v0 * p.x_nb1 + 2u;
+        const uint32_t base_v14 = blk_v5 * p.x_nb0 + row_v0 * p.x_nb1;
         for (uint32_t col_e_v8 = 0u; col_e_v8 < 4u; ++col_e_v8) {
             const uint32_t inb_v10 = inb0_v6 + col_e_v8;
-            const float q_v11 = float(*(const int8_t *)(x + (inb_v10 + base_v14)));
+            const float q_v11 = float(*(const int8_t *)(x + (inb_v10 + base_v14 + 2u)));
             const float t_v12 = scale_v7 * q_v11;
             acc4_v2 += t_v12;
         }

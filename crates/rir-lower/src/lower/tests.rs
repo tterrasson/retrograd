@@ -31,7 +31,7 @@ fn kernel_cumsum(dir: ScanDirection) -> rir_core::ValidatedKernel {
 }
 
 /// The blocked scan is an *algorithm*, not a syntax rewrite: this test runs
-/// it through the oracle on lengths not divisible by lane count and compares
+/// it - and the strided scan beside it - through the oracle on lengths not divisible by lane count and compares
 /// it with the sequential scan. It checks decomposition - block geometry,
 /// exclusive prefix, reverse direction - independently of any GPU.
 ///
@@ -47,6 +47,9 @@ fn blocked_scan_matches_the_sequential_scan() {
         for blocked in [
             lower(&k, Schedule::vulkan_blocked_scan()).unwrap(),
             lower(&k, bench::vulkan_shared_scan()).unwrap(),
+            // Not blocked, but judged by the same property: a regrouped scan
+            // that must agree with the sequential one on every length.
+            lower(&k, Schedule::gpu_strided_scan(crate::GpuBackend::Vulkan)).unwrap(),
         ] {
             // Blocked scans give up exact order; sequential keeps it, and
             // the manifest must say so.
@@ -1045,5 +1048,57 @@ fn a_collective_flattens_its_rows_over_workgroups() {
             assert_eq!(*level, HwLevel::Grid(0), "one workgroup per row")
         }
         other => panic!("expected a single flattened nest: {other:?}"),
+    }
+}
+
+/// Four parallel axes and a reduction: the fourth axis has no grid dimension
+/// left, so it becomes a sequential loop around the lane body. A shared-memory
+/// collective read back from `sh[0]` must not be overwritten by the next round,
+/// so every re-entered lane body that uses shared storage ends on a barrier -
+/// and one that uses none (a subgroup reduction) is left alone.
+#[test]
+fn a_shared_collective_under_a_sequential_axis_closes_its_round() {
+    let mut k = KernelBuilder::new("scaled_sums");
+    let x = k.input("x", TensorType::f32(4));
+    let w = k.input("w", TensorType::f32(1));
+    let y = k.output("y", TensorType::f32(4));
+    let col = k.axis("col", Extent::Dim { arg: x, dim: 0 });
+    let row = k.axis("row", Extent::Dim { arg: x, dim: 1 });
+    let plane = k.axis("plane", Extent::Dim { arg: x, dim: 2 });
+    let batch = k.axis("batch", Extent::Dim { arg: x, dim: 3 });
+    let e = k.axis("e", Extent::Dim { arg: w, dim: 0 });
+    let xv = k.read(x, &[col, row, plane, batch]);
+    let wv = k.read(w, &[e]);
+    let p = k.mul(xv, wv);
+    let s = k.reduce(ReduceOp::Sum, col, p, ReductionSemantics::Deterministic);
+    k.write(y, &[row, plane, batch, e], s);
+    let k = k.finish().unwrap();
+
+    fn lane_body_under_loop(stmts: &[Stmt], in_loop: bool) -> Option<(bool, Vec<Stmt>)> {
+        stmts.iter().find_map(|s| match s {
+            Stmt::ParallelLane { body, .. } => Some((in_loop, body.clone())),
+            Stmt::For { body, .. } => lane_body_under_loop(body, true),
+            Stmt::Parallel { body, .. } => lane_body_under_loop(body, in_loop),
+            _ => None,
+        })
+    }
+    for (schedule, shared) in [
+        (Schedule::vulkan_shared_reduce(), true),
+        (Schedule::gpu_hier_reduce(crate::GpuBackend::Vulkan), true),
+        (Schedule::vulkan_subgroup(), false),
+    ] {
+        let lk = lower(&k, schedule.clone()).unwrap();
+        let (in_loop, body) = lane_body_under_loop(&lk.body, false).expect("a lane body");
+        assert!(
+            in_loop,
+            "{:?}: the fourth axis is not a loop",
+            schedule.reduction
+        );
+        assert_eq!(
+            matches!(body.last(), Some(Stmt::Barrier)),
+            shared,
+            "{:?}: a re-entered lane body closes its round exactly when it uses shared storage",
+            schedule.reduction
+        );
     }
 }

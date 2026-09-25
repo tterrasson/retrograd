@@ -61,24 +61,29 @@ pub fn out_prod_q8_0(
     for i_v0 in 0..n_i {
         let blk_v6 = i_v0 / 32;
         let inb_v7 = i_v0 % 32;
+        let base_v20 = blk_v6 * a.nb[0] + inb_v7;
         for j_v1 in 0..n_j {
+            let base_v21 = i_v0 * dst.nb[0] + j_v1 * dst.nb[1];
             for plane_v2 in 0..n_plane {
-                let base_v16 = i_v0 * dst.nb[0] + j_v1 * dst.nb[1] + plane_v2 * dst.nb[2];
+                let base_v16 = blk_v6 * a.nb[0] + plane_v2 * a.nb[2];
+                let base_v17 = plane_v2 * a.nb[2] + base_v20;
+                let base_v18 = j_v1 * b.nb[0] + plane_v2 * b.nb[2];
+                let base_v19 = plane_v2 * dst.nb[2] + base_v21;
                 for batch_v3 in 0..n_batch {
                     let mut acc9_v4 = 0.0f32;
-                    let base_v13 = blk_v6 * a.nb[0] + plane_v2 * a.nb[2] + batch_v3 * a.nb[3];
-                    let base_v14 = blk_v6 * a.nb[0] + plane_v2 * a.nb[2] + batch_v3 * a.nb[3] + 2 + inb_v7;
-                    let base_v15 = j_v1 * b.nb[0] + plane_v2 * b.nb[2] + batch_v3 * b.nb[3];
+                    let base_v13 = batch_v3 * a.nb[3] + base_v16;
+                    let base_v14 = batch_v3 * a.nb[3] + base_v17;
+                    let base_v15 = batch_v3 * b.nb[3] + base_v18;
                     for k_v5 in 0..n_k {
                         let scale_v8_a = k_v5 * a.nb[1] + base_v13;
                         let scale_v8 = f16_to_f32(u16::from_le_bytes([a.data[scale_v8_a], a.data[scale_v8_a + 1]]));
-                        let q_v9 = (a.data[k_v5 * a.nb[1] + base_v14] as i8) as f32;
+                        let q_v9 = (a.data[k_v5 * a.nb[1] + base_v14 + 2] as i8) as f32;
                         let t_v10 = scale_v8 * q_v9;
                         let t_v11 = b.data[(k_v5 * b.nb[1] + base_v15) / 4];
                         let t_v12 = t_v10 * t_v11;
                         acc9_v4 += t_v12;
                     }
-                    dst.data[(batch_v3 * dst.nb[3] + base_v16) / 4] = acc9_v4;
+                    dst.data[(batch_v3 * dst.nb[3] + base_v19) / 4] = acc9_v4;
                 }
             }
         }

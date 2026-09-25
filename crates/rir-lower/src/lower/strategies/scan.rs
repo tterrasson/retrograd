@@ -149,6 +149,201 @@ pub(crate) fn lower_blocked_scan(
     }])
 }
 
+/// Strided scan (`ScanStrategy::StridedLanes`): one subgroup walks the scanned
+/// axis `lanes` consecutive elements at a time, and every round is one lane
+/// prefix plus one lane total.
+///
+/// ```text
+/// carry = 0
+/// for base = 0; base < n; base += lanes:     // uniform: every lane, every round
+///   p = base + lane
+///   v = 0; if p < n { v = x[p] }             // the identity past the end
+///   off = lane_exclusive(v); tot = lane_total(v)
+///   s = (carry + off) + v
+///   if p < n { y[p] = s }
+///   carry += tot
+/// ```
+///
+/// What it changes against the blocked scan is the **access plan**, and nothing
+/// else: the blocked scan hands each lane a contiguous chunk, so the 32 lanes of
+/// one step read 32 addresses a chunk apart, and it reads every element twice -
+/// once to total the chunk, once to scan it. Here the lanes of one round read 32
+/// consecutive addresses, once. The serial depth is the same `n / lanes`, and
+/// the additions are regrouped in an order the lane count fixes, so the
+/// semantics is the blocked scan's: `Deterministic`.
+///
+/// The loop bound is the axis extent and not the lane's own position, which is
+/// what keeps both collectives in uniform control flow: a lane past the end of
+/// the row still takes part in the round, contributing the identity, and only
+/// its load and its store are guarded.
+pub(crate) fn lower_strided_scan(
+    lo: &mut Lowerer,
+    a: &Analysis,
+    lanes: u32,
+) -> Result<Vec<Stmt>, LowerError> {
+    let inner_axis = a.inner_axis.expect("strided scan: scan axis required");
+    let inner_name = lo.k.axes()[inner_axis.0 as usize].name.clone();
+    let reverse = a.scans[0].2 == ScanDirection::Backward;
+    let lane_var = lo.new_var("lane", VarKind::Idx);
+    let mut lane_body = Vec::new();
+
+    let scans: Vec<_> = a
+        .scans
+        .iter()
+        .map(|(sv, sop, _, sin)| {
+            let op = match sop {
+                rir_core::ScanOp::Sum => rir_core::ReduceOp::Sum,
+            };
+            (*sv, op, *sin)
+        })
+        .collect();
+    let mut carries = Vec::new();
+    for (sv, op, _) in &scans {
+        let carry = lo.new_var(&format!("carry{}", sv.0), VarKind::F32);
+        lane_body.push(Stmt::InitAcc {
+            acc: carry,
+            op: *op,
+        });
+        carries.push(carry);
+    }
+
+    let base = lo.new_var(&format!("{inner_name}_base"), VarKind::Idx);
+    let mut round = Vec::new();
+    // `p` is the position in scan order; the axis index is `p` itself or its
+    // mirror, so one traversal serves both directions and consecutive lanes
+    // always read consecutive addresses.
+    let p = push_expr(
+        lo,
+        &mut round,
+        "p",
+        VarKind::Idx,
+        LExpr::IAdd(base, lane_var),
+    );
+    let col = if reverse {
+        let n = push_expr(
+            lo,
+            &mut round,
+            "n",
+            VarKind::Idx,
+            LExpr::AxisExtentIdx(inner_axis),
+        );
+        let last = push_expr(lo, &mut round, "last", VarKind::Idx, LExpr::ISubC(n, 1));
+        push_expr(
+            lo,
+            &mut round,
+            &inner_name,
+            VarKind::Idx,
+            LExpr::ISub(last, p),
+        )
+    } else {
+        p
+    };
+    lo.axis_vars.insert(inner_axis, col);
+
+    // The element, or the identity past the end: an accumulator initialised
+    // outside the guard and fed inside it, because a register declared under
+    // the guard would not exist where the collectives read it.
+    let mut elems = Vec::new();
+    for (sv, op, _) in &scans {
+        let v = lo.new_var(&format!("elem{}", sv.0), VarKind::F32);
+        round.push(Stmt::InitAcc { acc: v, op: *op });
+        elems.push(v);
+    }
+    lo.begin_scope(true);
+    for ((_, op, sin), v) in scans.iter().zip(&elems) {
+        let x = lo.lower_value(*sin)?;
+        lo.body.push(Stmt::Accum {
+            acc: *v,
+            op: *op,
+            value: x,
+        });
+    }
+    let load = lo.take_body();
+    round.push(Stmt::InBounds {
+        bounds: vec![(p, inner_axis)],
+        body: load,
+    });
+
+    let mut totals = Vec::new();
+    for (((sv, op, _), v), carry) in scans.iter().zip(&elems).zip(&carries) {
+        let off = lo.new_var(&format!("off{}", sv.0), VarKind::F32);
+        round.push(Stmt::LaneScan {
+            op: *op,
+            src: *v,
+            dst: off,
+        });
+        let tot = lo.new_var(&format!("tot{}", sv.0), VarKind::F32);
+        round.push(Stmt::LaneReduce {
+            op: *op,
+            src: *v,
+            dst: tot,
+        });
+        let before = push_expr(
+            lo,
+            &mut round,
+            "pre",
+            VarKind::F32,
+            LExpr::Combine {
+                op: *op,
+                lhs: *carry,
+                rhs: off,
+            },
+        );
+        let s = push_expr(
+            lo,
+            &mut round,
+            &format!("s{}", sv.0),
+            VarKind::F32,
+            LExpr::Combine {
+                op: *op,
+                lhs: before,
+                rhs: *v,
+            },
+        );
+        lo.results_env.insert(*sv, s);
+        totals.push((*carry, *op, tot));
+    }
+
+    lo.begin_scope(true);
+    for (tensor, idx, value) in &a.inner_writes {
+        lo.lower_store(*tensor, idx, *value)?;
+    }
+    let store = lo.take_body();
+    round.push(Stmt::InBounds {
+        bounds: vec![(p, inner_axis)],
+        body: store,
+    });
+    for (carry, op, tot) in totals {
+        round.push(Stmt::Accum {
+            acc: carry,
+            op,
+            value: tot,
+        });
+    }
+    lo.axis_vars.remove(&inner_axis);
+
+    lane_body.push(Stmt::ForTiled {
+        var: base,
+        axis: inner_axis,
+        step: lanes,
+        body: round,
+    });
+
+    if !a.row_writes.is_empty() {
+        let stmts = lower_writes(lo, &a.row_writes)?;
+        lane_body.push(Stmt::LaneZero {
+            lane: lane_var,
+            body: stmts,
+        });
+    }
+
+    Ok(vec![Stmt::ParallelLane {
+        var: lane_var,
+        lanes,
+        body: lane_body,
+    }])
+}
+
 /// Coalesced tiled scan (`ScanStrategy::TiledLanes`): the workgroup walks the
 /// scanned axis in tiles of `lanes · items`, and everything that crosses lanes
 /// happens in shared memory.

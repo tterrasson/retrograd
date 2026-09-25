@@ -467,7 +467,7 @@ fn out_prod(v: &mut Vec<Schedule>) {
     }
 }
 
-/// Three variants per GPU backend, arbitrated by shape.
+/// Four variants per GPU backend, arbitrated by shape.
 ///
 /// The fallback is one invocation per row scanning it sequentially: it
 /// accepts every shape, at a cost linear in the row length. The blocked
@@ -481,11 +481,10 @@ fn out_prod(v: &mut Vec<Schedule>) {
 /// as `SharedTree` with coalesced access. It requires at least 4,096
 /// columns; at 1,024, most lanes are idle and the blocked scan ties it.
 ///
-/// Deliberately left unclaimed, as before: short rows (`n_col ≤ 256`),
-/// where the blocked scan also wins at any row count. Both variants are
-/// launch-dominated there, the absolute gain is tens of microseconds, and
-/// claiming it would need a disjunction in a rule the registry publishes
-/// as a conjunction. Not worth an ABI for that.
+/// The fourth is the **strided** scan: one subgroup, one coalesced read per
+/// element. It claims what the blocked scan leaves to the sequential one -
+/// more than 128 rows - as soon as rows reach 256 columns, so the sequential
+/// fallback keeps only the many short rows, a launch-dominated class.
 fn cumsum(v: &mut Vec<Schedule>) {
     let family = Family::Cumsum;
     for gpu in targets_for(family) {
@@ -494,6 +493,33 @@ fn cumsum(v: &mut Vec<Schedule>) {
     let few_rows = || vec![ShapeRule::at_most(&["row", "plane", "batch"], 128)];
     for gpu in targets_for(family) {
         v.push(Schedule::gpu_blocked_scan(gpu).claiming(90, few_rows()));
+    }
+    // The strided scan reads each element once, coalesced, where the blocked
+    // scan reads it twice a chunk apart and the sequential one walks a whole
+    // row per invocation. Past the blocked scan's 128 rows it beats the
+    // sequential scan on every row of 256 columns or more, to 8 192 rows
+    // (0.4-0.9 of its time on the shader alone; 0.18 against native Metal at
+    // 320 rows of 2 048). Below that row count it is not claimed: its rounds
+    // are dependent, and on a handful of rows the blocked scan's independent
+    // loads hide the latency better (Metal, 1 024 columns: 5.4 against
+    // 4.6 µs). At 128 columns the shader-alone measurement is mixed
+    // (0.6-1.0), so the rule starts at 256, where it is not.
+    let many_long_rows = || {
+        vec![
+            ShapeRule {
+                axes: &["row", "plane", "batch"],
+                min: 129,
+                max: u32::MAX,
+            },
+            ShapeRule {
+                axes: &["col"],
+                min: 256,
+                max: u32::MAX,
+            },
+        ]
+    };
+    for gpu in targets_for(family) {
+        v.push(Schedule::gpu_strided_scan(gpu).claiming(95, many_long_rows()));
     }
     let very_long_few_rows = || {
         vec![

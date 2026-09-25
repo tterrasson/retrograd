@@ -65,11 +65,11 @@ kernel void rir_out_prod_q4_0(
                     const uint blk_v18 = a_m_v15 / 32u;
                     const uint inb0_v19 = a_m_v15 % 32u;
                     const float scale_v20 = float(*(device const half *)(a + (blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + base_v50)));
-                    const uint base_v49 = blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + plane_v2 * pc.a_nb2 + batch_v3 * pc.a_nb3 + 2u;
+                    const uint base_v49 = blk_v18 * pc.a_nb0 + a_k_v16 * pc.a_nb1 + base_v50;
                     for (uint a_e_v21 = 0u; a_e_v21 < 4u; ++a_e_v21) {
                         const uint inb_v22 = inb0_v19 + a_e_v21;
                         const uint q_inp_v23 = inb_v22 % 16u;
-                        const uint q_byte_v24 = uint(*(device const uchar *)(a + (q_inp_v23 + base_v49)));
+                        const uint q_byte_v24 = uint(*(device const uchar *)(a + (q_inp_v23 + base_v49 + 2u)));
                         const uint q_sel_v25 = inb_v22 / 16u;
                         const uint q_sh_v26 = q_sel_v25 * 4u;
                         const uint q_shr_v27 = q_byte_v24 >> q_sh_v26;

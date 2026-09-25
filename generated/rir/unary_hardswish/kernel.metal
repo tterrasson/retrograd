@@ -39,17 +39,19 @@ kernel void rir_unary_hardswish(
     if (plane_v2 >= pc.n_plane) {
         return;
     }
+    const uint base_v31 = row_v1 * pc.x_nb1 + plane_v2 * pc.x_nb2;
     const float c_v18 = 3.0;
     const float c_v20 = 6.0;
     const float c_v22 = 0.0;
     const float c_v25 = 1.0;
-    const uint base_v31 = col_v0 * pc.x_nb0 + row_v1 * pc.x_nb1 + plane_v2 * pc.x_nb2;
-    const uint base_v32 = col_v0 * pc.dst_nb0 + row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
+    const uint base_v32 = row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
+    const uint base_v33 = col_v0 * pc.x_nb0 + row_v1 * pc.x_nb1 + plane_v2 * pc.x_nb2;
+    const uint base_v34 = col_v0 * pc.dst_nb0 + row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2;
     for (uint batch_v3 = 0u; batch_v3 < pc.n_batch; ++batch_v3) {
-        const uint base_v29 = row_v1 * pc.x_nb1 + plane_v2 * pc.x_nb2 + batch_v3 * pc.x_nb3;
-        const uint base_v30 = row_v1 * pc.dst_nb1 + plane_v2 * pc.dst_nb2 + batch_v3 * pc.dst_nb3;
+        const uint base_v29 = batch_v3 * pc.x_nb3 + base_v31;
+        const uint base_v30 = batch_v3 * pc.dst_nb3 + base_v32;
         if (col_v0 + 4u <= pc.n_col) {
-            const float4 t_v4 = *(device const packed_float4 *)(x + (batch_v3 * pc.x_nb3 + base_v31));
+            const float4 t_v4 = *(device const packed_float4 *)(x + (batch_v3 * pc.x_nb3 + base_v33));
             const float4 t_v6 = t_v4 + c_v18;
             const float4 t_v8 = t_v6 / c_v20;
             const bool4 b_v10 = t_v8 > c_v22;
@@ -57,7 +59,7 @@ kernel void rir_unary_hardswish(
             const bool4 b_v13 = t_v11 < c_v25;
             const float4 t_v14 = select(float4(c_v25), t_v11, b_v13);
             const float4 t_v15 = t_v4 * t_v14;
-            *(device packed_float4 *)(dst + (batch_v3 * pc.dst_nb3 + base_v32)) = packed_float4(t_v15);
+            *(device packed_float4 *)(dst + (batch_v3 * pc.dst_nb3 + base_v34)) = packed_float4(t_v15);
         } else {
             for (uint col_tail_v16 = col_v0; col_tail_v16 < pc.n_col; ++col_tail_v16) {
                 const float t_v17 = *(device const float *)(x + (col_tail_v16 * pc.x_nb0 + base_v29));

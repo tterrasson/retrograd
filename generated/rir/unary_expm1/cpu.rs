@@ -25,9 +25,11 @@ pub fn unary_expm1(
     for col_v0 in 0..n_col {
         let c_v6 = 1.0f32;
         for row_v1 in 0..n_row {
+            let base_v10 = col_v0 * x.nb[0] + row_v1 * x.nb[1];
+            let base_v11 = col_v0 * dst.nb[0] + row_v1 * dst.nb[1];
             for plane_v2 in 0..n_plane {
-                let base_v8 = col_v0 * x.nb[0] + row_v1 * x.nb[1] + plane_v2 * x.nb[2];
-                let base_v9 = col_v0 * dst.nb[0] + row_v1 * dst.nb[1] + plane_v2 * dst.nb[2];
+                let base_v8 = plane_v2 * x.nb[2] + base_v10;
+                let base_v9 = plane_v2 * dst.nb[2] + base_v11;
                 for batch_v3 in 0..n_batch {
                     let t_v4 = x.data[(batch_v3 * x.nb[3] + base_v8) / 4];
                     let t_v5 = t_v4.exp();

@@ -58,8 +58,7 @@ pub fn sum_rows_iq4_xs(
 ) {
     for row_v0 in 0..n_row {
         let mut acc4_v1 = 0.0f32;
-        let base_v39 = row_v0 * x.nb[1] + 4;
-        let base_v40 = row_v0 * x.nb[1] + 2;
+        let base_v39 = row_v0 * x.nb[1];
         let sub_bias_v22 = 32.0f32;
         for col_seg_v2 in (0..n_col).step_by(4) {
             let blk_v3 = col_seg_v2 / 256;
@@ -69,13 +68,13 @@ pub fn sum_rows_iq4_xs(
             let sub_is_v6 = inb0_v4 / 32;
             let sub_lo_b_v7 = sub_is_v6 >> 1;
             let sub_lo_s_v8 = sub_is_v6 & 1;
-            let sub_lo_raw_v9 = x.data[blk_v3 * x.nb[0] + sub_lo_b_v7 + base_v39] as usize;
+            let sub_lo_raw_v9 = x.data[blk_v3 * x.nb[0] + sub_lo_b_v7 + base_v39 + 4] as usize;
             let sub_lo_sh_v10 = sub_lo_s_v8 * 4;
             let sub_lo_shr_v11 = sub_lo_raw_v9 >> sub_lo_sh_v10;
             let sub_lo4_v12 = sub_lo_shr_v11 & 15;
             let sub_hi_b_v13 = sub_is_v6 >> 2;
             let sub_hi_s_v14 = sub_is_v6 & 3;
-            let sub_hi_raw_v15 = x.data[blk_v3 * x.nb[0] + sub_hi_b_v13 + base_v40] as usize;
+            let sub_hi_raw_v15 = x.data[blk_v3 * x.nb[0] + sub_hi_b_v13 + base_v39 + 2] as usize;
             let sub_hi_sh_v16 = sub_hi_s_v14 * 2;
             let sub_hi_shr_v17 = sub_hi_raw_v15 >> sub_hi_sh_v16;
             let sub_hi2_v18 = sub_hi_shr_v17 & 3;
@@ -83,13 +82,13 @@ pub fn sum_rows_iq4_xs(
             let sub_sc_v20 = sub_lo4_v12 | sub_hi_up_v19;
             let sub_sc_f_v21 = sub_sc_v20 as f32;
             let sub_sc_b_v23 = sub_sc_f_v21 - sub_bias_v22;
-            let base_v38 = blk_v3 * x.nb[0] + row_v0 * x.nb[1] + 8;
+            let base_v38 = blk_v3 * x.nb[0] + row_v0 * x.nb[1];
             let dl_v36 = scale_v5 * sub_sc_b_v23;
             for col_e_v24 in 0..4 {
                 let inb_v26 = inb0_v4 + col_e_v24;
                 let q_grp_v27 = inb_v26 / 32;
                 let q_inp_v28 = inb_v26 % 16;
-                let q_byte_v29 = x.data[q_grp_v27 * 16 + q_inp_v28 + base_v38] as usize;
+                let q_byte_v29 = x.data[q_grp_v27 * 16 + q_inp_v28 + base_v38 + 8] as usize;
                 let q_ing_v30 = inb_v26 % 32;
                 let q_sel_v31 = q_ing_v30 / 16;
                 let q_sh_v32 = q_sel_v31 * 4;

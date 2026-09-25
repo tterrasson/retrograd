@@ -150,6 +150,17 @@ pub enum ScanStrategy {
     /// rather than by a `Schedule` field because it means nothing for the other
     /// two - the mistake `vector_width` made once already.
     TiledLanes { items: u32 },
+    /// One subgroup walks the axis `block[0]` **consecutive** elements per
+    /// round: a lane prefix and a lane total per round, and a running carry
+    /// between rounds.
+    ///
+    /// Same serial depth and same regrouping as `BlockedLanes` - so the same
+    /// `Deterministic` semantics - but each element is read once, and the
+    /// lanes of one round read consecutive addresses, where the blocked scan
+    /// reads every element twice from addresses a chunk apart. No shared
+    /// memory and no barrier: both collectives are subgroup primitives, which
+    /// is also why it requires `SubgroupTree`.
+    StridedLanes,
 }
 
 impl ScanStrategy {
@@ -161,6 +172,7 @@ impl ScanStrategy {
             ScanStrategy::Serial => manifest::Scan::Serial,
             ScanStrategy::BlockedLanes => manifest::Scan::BlockedLanes,
             ScanStrategy::TiledLanes { .. } => manifest::Scan::TiledLanes,
+            ScanStrategy::StridedLanes => manifest::Scan::StridedLanes,
         }
     }
 
@@ -169,6 +181,7 @@ impl ScanStrategy {
             ScanStrategy::Serial => "serial",
             ScanStrategy::BlockedLanes => "blocked_lanes",
             ScanStrategy::TiledLanes { .. } => "tiled_lanes",
+            ScanStrategy::StridedLanes => "strided_lanes",
         }
     }
 }

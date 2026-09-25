@@ -59,8 +59,7 @@ static void rir_k_sum_rows_iq4_xs(
     const uint32_t lane_v1 = threadIdx.x;
     float acc4_v2 = 0.0f;
     const uint32_t seg_start_v3 = lane_v1 * 4u;
-    const uint32_t base_v42 = row_v0 * p.x_nb1 + 4u;
-    const uint32_t base_v43 = row_v0 * p.x_nb1 + 2u;
+    const uint32_t base_v42 = row_v0 * p.x_nb1;
     const float sub_bias_v24 = 32.0f;
     for (uint32_t col_seg_v4 = seg_start_v3; col_seg_v4 < p.n_col; col_seg_v4 += 128u) {
         const uint32_t blk_v5 = col_seg_v4 / 256u;
@@ -69,13 +68,13 @@ static void rir_k_sum_rows_iq4_xs(
         const uint32_t sub_is_v8 = inb0_v6 / 32u;
         const uint32_t sub_lo_b_v9 = sub_is_v8 >> 1u;
         const uint32_t sub_lo_s_v10 = sub_is_v8 & 1u;
-        const uint32_t sub_lo_raw_v11 = uint32_t(*(const uint8_t *)(x + (blk_v5 * p.x_nb0 + sub_lo_b_v9 + base_v42)));
+        const uint32_t sub_lo_raw_v11 = uint32_t(*(const uint8_t *)(x + (blk_v5 * p.x_nb0 + sub_lo_b_v9 + base_v42 + 4u)));
         const uint32_t sub_lo_sh_v12 = sub_lo_s_v10 * 4u;
         const uint32_t sub_lo_shr_v13 = sub_lo_raw_v11 >> sub_lo_sh_v12;
         const uint32_t sub_lo4_v14 = sub_lo_shr_v13 & 15u;
         const uint32_t sub_hi_b_v15 = sub_is_v8 >> 2u;
         const uint32_t sub_hi_s_v16 = sub_is_v8 & 3u;
-        const uint32_t sub_hi_raw_v17 = uint32_t(*(const uint8_t *)(x + (blk_v5 * p.x_nb0 + sub_hi_b_v15 + base_v43)));
+        const uint32_t sub_hi_raw_v17 = uint32_t(*(const uint8_t *)(x + (blk_v5 * p.x_nb0 + sub_hi_b_v15 + base_v42 + 2u)));
         const uint32_t sub_hi_sh_v18 = sub_hi_s_v16 * 2u;
         const uint32_t sub_hi_shr_v19 = sub_hi_raw_v17 >> sub_hi_sh_v18;
         const uint32_t sub_hi2_v20 = sub_hi_shr_v19 & 3u;
@@ -83,13 +82,13 @@ static void rir_k_sum_rows_iq4_xs(
         const uint32_t sub_sc_v22 = sub_lo4_v14 | sub_hi_up_v21;
         const float sub_sc_f_v23 = float(sub_sc_v22);
         const float sub_sc_b_v25 = sub_sc_f_v23 - sub_bias_v24;
-        const uint32_t base_v41 = blk_v5 * p.x_nb0 + row_v0 * p.x_nb1 + 8u;
+        const uint32_t base_v41 = blk_v5 * p.x_nb0 + row_v0 * p.x_nb1;
         const float dl_v38 = scale_v7 * sub_sc_b_v25;
         for (uint32_t col_e_v26 = 0u; col_e_v26 < 4u; ++col_e_v26) {
             const uint32_t inb_v28 = inb0_v6 + col_e_v26;
             const uint32_t q_grp_v29 = inb_v28 / 32u;
             const uint32_t q_inp_v30 = inb_v28 % 16u;
-            const uint32_t q_byte_v31 = uint32_t(*(const uint8_t *)(x + (q_grp_v29 * 16u + q_inp_v30 + base_v41)));
+            const uint32_t q_byte_v31 = uint32_t(*(const uint8_t *)(x + (q_grp_v29 * 16u + q_inp_v30 + base_v41 + 8u)));
             const uint32_t q_ing_v32 = inb_v28 % 32u;
             const uint32_t q_sel_v33 = q_ing_v32 / 16u;
             const uint32_t q_sh_v34 = q_sel_v33 * 4u;
