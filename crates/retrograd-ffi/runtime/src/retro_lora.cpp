@@ -585,6 +585,10 @@ static const base_dtype_row BASE_DTYPE_TABLE[] = {
     { GGML_TYPE_F16,  RETRO_OPTIMIZER_SGD,   "MTL",  false },
     { GGML_TYPE_F16,  RETRO_OPTIMIZER_ADAMW, "MTL",  true  },
     { GGML_TYPE_F16,  RETRO_OPTIMIZER_SGD,   "MTL",  true  },
+    { GGML_TYPE_BF16, RETRO_OPTIMIZER_ADAMW, "MTL",  false },
+    { GGML_TYPE_BF16, RETRO_OPTIMIZER_ADAMW, "MTL",  true  },
+    { GGML_TYPE_BF16, RETRO_OPTIMIZER_SGD,   "MTL",  false },
+    { GGML_TYPE_BF16, RETRO_OPTIMIZER_SGD,   "MTL",  true  },
 };
 
 static bool base_dtype_is_tabled(

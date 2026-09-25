@@ -799,14 +799,17 @@ pub fn deterministic_f32s(n: usize, seed: u64) -> Vec<f32> {
 /// backend aborts on the missing pipeline; checking that the id is a valid
 /// `ggml_type` is not enough.
 ///
-/// BF16 (id 30) is the sharpest case: a real type the CPU, Metal and Vulkan
-/// all decode, so nothing looks wrong until the GPU pipeline is missing.
+/// TQ1_0 (id 34) is a real type a GGUF can carry and that no backend decodes
+/// in `OUT_PROD`, so nothing looks wrong until the pipeline is missing.
 pub fn assert_out_prod_rejects_unlisted_type(use_gpu: bool) {
-    const GGML_TYPE_BF16: i32 = 30;
+    const GGML_TYPE_TQ1_0: i32 = 34;
     let types = retrograd::dequant_types();
     assert!(
-        !types.iter().any(|(id, _)| *id == GGML_TYPE_BF16),
-        "this test assumes BF16 is absent from the table; if it was added, pick \
+        !types.iter().any(|(id, _)| *id == GGML_TYPE_TQ1_0)
+            && !OUT_PROD_EXTRA_TYPES
+                .iter()
+                .any(|(id, _)| *id == GGML_TYPE_TQ1_0),
+        "this test assumes TQ1_0 is absent from the tables; if it was added, pick \
          another unlisted id"
     );
 
@@ -818,10 +821,10 @@ pub fn assert_out_prod_rejects_unlisted_type(use_gpu: bool) {
         retrograd::ProbeOp::OutProdQuant,
         use_gpu,
         retrograd::ProbeInputs::pair(ne_src0, &src0, ne_src1, &src1),
-        [GGML_TYPE_BF16 as f32, 0.0],
+        [GGML_TYPE_TQ1_0 as f32, 0.0],
         256 * 8,
     );
-    let err = result.expect_err("BF16 is not in the table, so the probe must refuse it");
+    let err = result.expect_err("TQ1_0 is not in the table, so the probe must refuse it");
     let message = err.to_string();
     assert!(
         message.contains("GGML_RETRO_OUT_PROD_TYPES"),

@@ -708,12 +708,17 @@ static int probe_op_run_locked(
                 const int type_id = static_cast<int>(param0);
                 // Membership in GGML_RETRO_OUT_PROD_TYPES, not merely "a valid enum
                 // value": an unlisted type reaches ggml_out_prod, where the CPU
-                // reference GGML_ABORTs (BF16 does exactly that) and a GPU backend
-                // aborts on the missing pipeline. An error return is something a
-                // test can assert on; an abort takes the process down.
+                // reference GGML_ABORTs and a GPU backend aborts on the missing
+                // pipeline. An error return is something a test can assert on; an
+                // abort takes the process down.
+                //
+                // BF16 is admitted beside the table: the CPU decodes it, and a GPU
+                // backend that declares it does so outside the table, so whether
+                // this backend carries it is asked of the backend itself below.
                 if (type_id <= GGML_TYPE_F32 || type_id >= GGML_TYPE_COUNT ||
-                        !is_retro_out_prod_type(static_cast<ggml_type>(type_id))) {
-                    set_error("OUT_PROD_QUANT: param0 is not a type in "
+                        (type_id != GGML_TYPE_BF16 &&
+                         !is_retro_out_prod_type(static_cast<ggml_type>(type_id)))) {
+                    set_error("OUT_PROD_QUANT: param0 is neither BF16 nor a type in "
                               "GGML_RETRO_OUT_PROD_TYPES");
                     return -1;
                 }
@@ -850,6 +855,10 @@ static int probe_op_run_locked(
                 // Not a quantized type, so ggml_quantize_chunk does not handle it.
                 ggml_fp32_to_fp16_row(src0, (ggml_fp16_t *) qdata.data(),
                         static_cast<int64_t>(ggml_nelements(a)));
+            } else if (quant_type == GGML_TYPE_BF16) {
+                // Round-to-nearest-even, the rounding a BF16 checkpoint carries.
+                ggml_fp32_to_bf16_row_ref(src0, (ggml_bf16_t *) qdata.data(),
+                        static_cast<int64_t>(ggml_nelements(a)));
             } else {
                 // A few IQ types assert on a null importance matrix. Uniform
                 // importance is the natural stand-in and keeps the probe
@@ -881,6 +890,14 @@ static int probe_op_run_locked(
         if (c && src2 && (op == RETRO_PROBE_OP_CROSS_ENTROPY_LOSS_BACK ||
                          op == RETRO_PROBE_OP_SSM_CONV_BACK)) {
             ggml_backend_tensor_set(c, src2, 0, ggml_nbytes(c));
+        }
+
+        // No scheduler here, so an op the backend does not carry would abort in
+        // its encoder. Only BF16 can get this far unsupported: every table row
+        // is carried by every GPU backend, BF16 by those that declare it.
+        if (quant_type == GGML_TYPE_BF16 && !ggml_backend_supports_op(backend.get(), out)) {
+            set_error("OUT_PROD_QUANT: the selected backend does not decode a BF16 src0");
+            return -1;
         }
 
         ggml_cgraph * gf = ggml_new_graph(ctx.get());

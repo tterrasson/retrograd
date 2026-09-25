@@ -1240,6 +1240,8 @@ pub enum ProbeOp {
     RepeatBack,
     /// Out-prod with a non-F32 `src0`, the type given by `params[0]` as a
     /// `ggml_type` id; enumerate the valid ids with `retrograd_engine::dequant_types`.
+    /// BF16 (30) is accepted beside them, and refused with an error on a backend
+    /// that does not decode it.
     /// Supersedes the `OutProd<T>` variants above, which remain for the
     /// existing targeted tests: one op parameterized by type rather than one
     /// variant per type, so a type added to `GGML_RETRO_DEQUANT_TYPES` needs no new

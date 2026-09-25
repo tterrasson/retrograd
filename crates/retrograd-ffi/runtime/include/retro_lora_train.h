@@ -150,7 +150,9 @@ typedef enum retro_probe_op {
     // so a type added to GGML_RETRO_DEQUANT_TYPES needs no new ABI. The caller
     // still passes F32 data; it is converted to the requested type internally, so
     // both backends decode identical bytes. ne_src0[0] must be a multiple of the
-    // type's block size. Enumerate the valid types with retro_dequant_types().
+    // type's block size. Enumerate the valid types with retro_dequant_types();
+    // BF16 is accepted beside them, and refused with an error on a backend that
+    // does not decode it.
     RETRO_PROBE_OP_OUT_PROD_QUANT = 26,
     // Inclusive prefix sum along ne0: src0 = x, output has the src0 shape.
     // src1 is ignored but must be non-null (the probe ABI always takes two

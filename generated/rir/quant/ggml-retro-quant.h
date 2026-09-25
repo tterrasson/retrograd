@@ -38,9 +38,10 @@
 //   NVFP4          Blackwell-oriented; now covered by OUT_PROD only.
 //   Q1_0, Q2_0     Very recent; now covered by OUT_PROD only.
 // Deliberately excluded from every table:
-//   BF16           CPU and CUDA decode it in OUT_PROD now. Metal and Vulkan
-//                  are what a row here would claim, and neither carries a
-//                  dequantize_bf16 tile loader yet.
+//   BF16           CPU, CUDA and Metal decode it in OUT_PROD, and Metal in
+//                  fused CE too; Metal declares it beside this table, as it
+//                  does F32. A row here would claim Vulkan as well, whose
+//                  dequant_funcs.glsl has no DATA_A_BF16 dequantize()/get_dm().
 //   TQ1_0, TQ2_0   CUDA and Vulkan expose no dequantize_tq* primitive to reuse.
 //
 // F32 is not a row: it needs no decoding and both ops give it a cheaper dedicated

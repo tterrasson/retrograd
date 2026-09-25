@@ -71,8 +71,8 @@ trained parameter takes a step under its own store's floor.
 |---|---|---|---|---|
 | F32 | ✅ | ✅ | ✅ | ✅ |
 | F16, under AdamW or SGD, in place | ✅ | ✅ | ❌ [c] | ✅ |
-| BF16, under AdamW or SGD, in place | ✅ | ❌ [e] | ❌ [c] [e] | ✅ |
-| F16 or BF16, under AdamW or SGD, master copy | ✅ | 🟡 [f] | ❌ [g] | ✅ |
+| BF16, under AdamW or SGD, in place | ✅ | ✅ | ❌ [c] [e] | ✅ |
+| F16 or BF16, under AdamW or SGD, master copy | ✅ | ✅ | ❌ [e] [f] | ✅ |
 | F16 or BF16, under Muon or Gefen | ❌ [d] | ❌ [d] | ❌ [d] | ❌ [d] |
 
 A cell is a measured combination of (dtype, optimizer, backend, master), run
@@ -87,13 +87,12 @@ the update, and either the table or the device can refuse.
   Newton-Schulz orthogonalization, Gefen's already approximates the first
   moment, and a rounded store would stack a second approximation on the
   first. The refusal says that, not an empty list of backends.
-- **[e]** Neither backend decodes a BF16 weight in `OUT_PROD`, which an
-  activation gradient needs; the CPU and CUDA do. A row needs that too. On
-  Metal the fused cross-entropy does not read a BF16 head either, so a BF16
-  model sends both to the CPU, which `RETRO_REQUIRE_GPU_RESIDENT=1` refuses.
-- **[f]** F16 only. BF16 is refused there for the reason in [e]: the master
-  copy changes the update, not the backward that feeds it.
-- **[g]** Measured, and refused on the resume lane: the loss of the step after
+- **[e]** Vulkan does not decode a BF16 weight in `OUT_PROD`, which an
+  activation gradient needs, nor a BF16 head in the fused cross-entropy; the
+  other three backends do. A BF16 model sends both to the CPU, which
+  `RETRO_REQUIRE_GPU_RESIDENT=1` refuses, and the master copy does not help:
+  it changes the update, not the backward that feeds it.
+- **[f]** F16: measured, and refused on the resume lane: the loss of the step after
   a restore differs from the uninterrupted run's by one ulp of F32 while the
   restored weights are bit-identical - a difference in how the reported loss is
   reduced in a fresh context, not in the master copy. The other lanes pass.

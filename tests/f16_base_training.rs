@@ -526,8 +526,8 @@ fn table_agrees_with_backend(
     // there while this probe says no.
     //
     // A row needs the probe, but the probe does not make a row: it asks about
-    // the update alone, and the backward can still be missing - Metal carries
-    // the BF16 update step and cannot run a BF16 weight through OUT_PROD.
+    // the update alone, and a backend can carry the update kernel while its
+    // backward cannot run a weight of that dtype through OUT_PROD.
     let probed = device_probe_admits(&mut trainer, &storage.dtype, optimizer);
     if !master {
         assert!(

@@ -393,6 +393,67 @@ pub const BASE_DTYPE_TABLE: &[BaseDtypeCapability] = &[
         // Measured 2.0e-3 after 2000 steps, against the in-place row's 3.3e-3.
         stability_loss_tolerance: 2.0e-1,
     },
+    BaseDtypeCapability {
+        dtype: "BF16",
+        optimizer: OptimizerKind::AdamW,
+        backend: "MTL",
+        master: false,
+        // The BF16 bound. Measured 2.6e-7: Metal decodes the BF16 weight
+        // exactly in the backward, so what is left is the reduction order.
+        gradient_tolerance: 4.0e-1,
+        update_tolerance: 1.0,
+        // Measured 0, where the CPU row has 2.3e-3.
+        update_outlier_fraction: 2.0e-3,
+        stability_steps: 2000,
+        // Measured 1.8e-3 after 2000 steps.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "BF16",
+        optimizer: OptimizerKind::AdamW,
+        backend: "MTL",
+        master: true,
+        // The store's bound, as on every master row. Measured 2.6e-7, as in
+        // place.
+        gradient_tolerance: 4.0e-1,
+        update_tolerance: 1.0,
+        // Measured 0, as in place.
+        update_outlier_fraction: 2.0e-3,
+        stability_steps: 2000,
+        // Measured 9.2e-4 after 2000 steps, against the in-place row's 1.8e-3.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "BF16",
+        optimizer: OptimizerKind::Sgd,
+        backend: "MTL",
+        master: false,
+        // The BF16 bound. Measured 2.6e-7, the AdamW number: the forward
+        // does not know which optimizer will read it.
+        gradient_tolerance: 4.0e-1,
+        update_tolerance: 1.0,
+        // Measured 0: with the gradient this close to the F32 twin's, no SGD
+        // step lands on the other side of a grid point.
+        update_outlier_fraction: 2.0e-3,
+        stability_steps: 2000,
+        // Measured 5.5e-3 after 2000 steps.
+        stability_loss_tolerance: 2.0e-1,
+    },
+    BaseDtypeCapability {
+        dtype: "BF16",
+        optimizer: OptimizerKind::Sgd,
+        backend: "MTL",
+        master: true,
+        // The store's bound, as on every master row. Measured 2.6e-7, as in
+        // place.
+        gradient_tolerance: 4.0e-1,
+        update_tolerance: 1.0,
+        // Measured 0, as in place.
+        update_outlier_fraction: 2.0e-3,
+        stability_steps: 2000,
+        // Measured 3.5e-3 after 2000 steps, against the in-place row's 5.5e-3.
+        stability_loss_tolerance: 2.0e-1,
+    },
 ];
 
 /// Smallest per-element update, in ulps of the store it is written to, a
@@ -570,12 +631,13 @@ mod tests {
             "CUDA",
             true
         ));
-        // Metal has F16 master rows, not BF16 ones: its OUT_PROD does not
-        // decode a BF16 weight, so the backward cannot stay on the device.
+        // Vulkan carries the BF16 update kernel and has no master row: its
+        // OUT_PROD does not decode a BF16 weight, so the backward cannot stay
+        // on the device.
         assert!(!base_dtype_admits(
             &TensorDtype::BF16,
             OptimizerKind::AdamW,
-            "MTL",
+            "Vulkan",
             true
         ));
         // F32-only kernels stay F32-only: the master copy changes what the
@@ -644,14 +706,14 @@ mod tests {
         assert_eq!(backends, vec!["CPU", "CUDA", "MTL"]);
         let backends: Vec<&str> =
             base_dtype_backends(&TensorDtype::BF16, OptimizerKind::AdamW, false).collect();
-        assert_eq!(backends, vec!["CPU", "CUDA"]);
+        assert_eq!(backends, vec!["CPU", "CUDA", "MTL"]);
         let backends: Vec<&str> =
             base_dtype_backends(&TensorDtype::F16, OptimizerKind::Sgd, false).collect();
         assert_eq!(backends, vec!["CPU", "CUDA", "MTL"]);
         // The master path has its own list of measured backends.
         let backends: Vec<&str> =
             base_dtype_backends(&TensorDtype::BF16, OptimizerKind::AdamW, true).collect();
-        assert_eq!(backends, vec!["CPU", "CUDA"]);
+        assert_eq!(backends, vec!["CPU", "CUDA", "MTL"]);
         // An optimizer that writes F32 only has no backend to name, ever.
         assert_eq!(
             base_dtype_backends(&TensorDtype::F16, OptimizerKind::Muon, false).count(),

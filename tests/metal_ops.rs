@@ -1337,6 +1337,19 @@ fn half_precision_sgd_metal_matches_cpu_across_chained_steps() {
 /// kernel, which differ only in how the tile is filled.
 #[cfg(retro_metal)]
 fn compare_out_prod_shapes(op: ProbeOp, ne_a: [i64; 4], ne_b: [i64; 4], tolerance: f32) {
+    compare_out_prod_with(op, [0.0, 0.0], ne_a, ne_b, tolerance);
+}
+
+/// [`compare_out_prod_shapes`] with the probe parameters spelled out, for
+/// `OutProdQuant`, whose `src0` type is `params[0]`.
+#[cfg(retro_metal)]
+fn compare_out_prod_with(
+    op: ProbeOp,
+    params: [f32; 2],
+    ne_a: [i64; 4],
+    ne_b: [i64; 4],
+    tolerance: f32,
+) {
     let a = pseudo_random(
         ne_a.iter().product::<i64>() as usize,
         0x0a11 ^ op as u64 ^ ne_a[0] as u64,
@@ -1352,7 +1365,7 @@ fn compare_out_prod_shapes(op: ProbeOp, ne_a: [i64; 4], ne_b: [i64; 4], toleranc
         op,
         false,
         ProbeInputs::pair(ne_a, &a, ne_b, &b),
-        [0.0, 0.0],
+        params,
         out_len,
     )
     .expect("cpu out_prod");
@@ -1360,7 +1373,7 @@ fn compare_out_prod_shapes(op: ProbeOp, ne_a: [i64; 4], ne_b: [i64; 4], toleranc
         op,
         true,
         ProbeInputs::pair(ne_a, &a, ne_b, &b),
-        [0.0, 0.0],
+        params,
         out_len,
     )
     .expect("metal out_prod");
@@ -1437,6 +1450,200 @@ fn out_prod_quant_metal_matches_cpu_on_tile_boundaries() {
         // factor), so a src0-broadcast case would abort in the oracle rather
         // than test the kernel.
         compare_out_prod_shapes(op, [2 * block, 33, 2, 1], [8, 33, 2, 1], 2.0e-3);
+    }
+}
+
+/// `ggml_type` id of BF16, the `params[0]` of an `OutProdQuant` probe.
+#[cfg(retro_metal)]
+const GGML_TYPE_BF16: f32 = 30.0;
+
+/// The boundary sweep on a BF16 `src0`: `dx = out_prod(W, dy)` for every
+/// projection of a BF16 checkpoint, frozen or trained.
+///
+/// BF16 decodes exactly - the stored word is the top half of the F32 - so the
+/// CPU and Metal sum the very same F32 operands and the bound is the F32
+/// kernel's, not a quantized one. Row widths are multiples of 16, the chunk a
+/// thread decodes; the batched case keeps `ne02 == ne12`, which the CPU's
+/// non-F32 `out_prod` asserts.
+#[cfg(retro_metal)]
+#[test]
+fn out_prod_bf16_metal_matches_cpu_on_tile_boundaries() {
+    if !common::gpu_device_present() {
+        eprintln!("skipping: no GPU device registered at runtime");
+        return;
+    }
+    let params = [GGML_TYPE_BF16, 0.0];
+    for (ne00, k, ne10) in [
+        (64, 16, 8),   // nominal ubatch: half the tile's columns are inactive
+        (144, 17, 8),  // dst rows unaligned to the 64-row tile, k unaligned to 16
+        (16, 1, 1),    // one chunk, reduction and dst of length one
+        (48, 5, 3),    // every dimension below its tile extent
+        (256, 129, 8), // several full row tiles, reduction just past a slice
+        (64, 48, 40),  // more dst columns than one tile
+        (1024, 64, 8), // a hidden-state-wide row
+    ] {
+        compare_out_prod_with(
+            ProbeOp::OutProdQuant,
+            params,
+            [ne00, k, 1, 1],
+            [ne10, k, 1, 1],
+            1.0e-4,
+        );
+    }
+    compare_out_prod_with(
+        ProbeOp::OutProdQuant,
+        params,
+        [96, 33, 2, 1],
+        [8, 33, 2, 1],
+        1.0e-4,
+    );
+}
+
+/// A BF16 row whose width is not a whole number of 16-value chunks is refused by
+/// the Metal gate - the training graph then places the node elsewhere - rather
+/// than read past the tensor or abort. The CPU still computes it.
+#[cfg(retro_metal)]
+#[test]
+fn out_prod_bf16_metal_refuses_a_row_that_is_not_whole_chunks() {
+    if !common::gpu_device_present() {
+        eprintln!("skipping: no GPU device registered at runtime");
+        return;
+    }
+    let ne_a = [24_i64, 5, 1, 1];
+    let ne_b = [3_i64, 5, 1, 1];
+    let a = pseudo_random(24 * 5, 0x0b16, 1.0);
+    let b = pseudo_random(3 * 5, 0x0b17, 1.0);
+    let params = [GGML_TYPE_BF16, 0.0];
+    let cpu = probe_op(
+        ProbeOp::OutProdQuant,
+        false,
+        ProbeInputs::pair(ne_a, &a, ne_b, &b),
+        params,
+        24 * 3,
+    )
+    .expect("the CPU decodes BF16 at any row width");
+    assert!(cpu.iter().any(|v| v.abs() > 1e-6));
+    let error = probe_op(
+        ProbeOp::OutProdQuant,
+        true,
+        ProbeInputs::pair(ne_a, &a, ne_b, &b),
+        params,
+        24 * 3,
+    )
+    .expect_err("a 24-wide BF16 row is not whole chunks");
+    assert!(
+        error.to_string().contains("BF16"),
+        "the refusal should name the type, got: {error}"
+    );
+}
+
+/// The fused sparse cross-entropy, forward and backward, over a BF16 head - a
+/// tied `token_embd` in a BF16 checkpoint. The full path runs on the CPU over
+/// the decoded head; the fused one on Metal over the BF16 bytes, so the bound
+/// is the F32 one of `tests/fused_ce.rs`.
+#[cfg(retro_metal)]
+#[test]
+fn fused_sparse_ce_bf16_metal_matches_cpu() {
+    use retrograd::{
+        FusedCeProbeInputs, FusedCeProbeShape, FusedCeWeightType, fused_sparse_ce_probe,
+    };
+    if !common::gpu_device_present() {
+        eprintln!("skipping: no GPU device registered at runtime");
+        return;
+    }
+    const NE: usize = 64;
+    const NT: usize = 5;
+    const NV: usize = 300;
+    let h = pseudo_random(NE * NT, 0x0ce1, 1.0);
+    let w = pseudo_random(NE * NV, 0x0ce2, 1.0);
+    let targets = vec![3, -1, 17, 8, 299];
+    let weights = vec![1.0_f32, 0.9, 0.0, -0.6, 1.4];
+    for n_tiles in [1, 3] {
+        let probe = fused_sparse_ce_probe(
+            FusedCeProbeShape {
+                n_embd: NE,
+                n_tokens: NT,
+                n_vocab: NV,
+                n_tiles,
+                seq_chunk: 0,
+                w_type: FusedCeWeightType::Ggml(GGML_TYPE_BF16 as i32),
+            },
+            true,
+            FusedCeProbeInputs {
+                h: &h,
+                w: &w,
+                targets: &targets,
+                weights: &weights,
+                bias: None,
+            },
+            1.5,
+        )
+        .expect("fused CE over a BF16 head on Metal");
+        assert!(
+            (probe.loss_full - probe.loss_fused).abs() < 2.0e-4,
+            "C={n_tiles}: loss full {} != fused {}",
+            probe.loss_full,
+            probe.loss_fused
+        );
+        assert!(probe.grad_h_full.iter().any(|v| v.abs() > 1e-6));
+        for (i, (&full, &fused)) in probe
+            .grad_h_full
+            .iter()
+            .zip(&probe.grad_h_fused)
+            .enumerate()
+        {
+            assert!(
+                (full - fused).abs() < 2.0e-4 + 1.0e-3 * full.abs(),
+                "C={n_tiles}: grad_h[{i}] full {full} != fused {fused}"
+            );
+        }
+    }
+}
+
+/// BF16 against F16 through the same chunked loader, on the input-gradient
+/// shapes of a 1024-wide model with a 3584-wide FFN. A measurement, not a test:
+/// `#[ignore]`d, run it with
+/// `cargo test --release --test metal_ops -- --ignored --nocapture out_prod_bf16_metal_timing`.
+#[cfg(retro_metal)]
+#[test]
+#[ignore]
+fn out_prod_bf16_metal_timing() {
+    if !common::gpu_device_present() {
+        eprintln!("skipping: no GPU device registered at runtime");
+        return;
+    }
+    const GGML_TYPE_F16: f32 = 1.0;
+    for (ne00, k, ne10) in [(1024_i64, 3584_i64, 256_i64), (3584, 1024, 256)] {
+        let a = pseudo_random((ne00 * k) as usize, 0x61, 1.0);
+        let b = pseudo_random((ne10 * k) as usize, 0x62, 1.0);
+        let ne_a = [ne00, k, 1, 1];
+        let ne_b = [ne10, k, 1, 1];
+        let out_len = (ne00 * ne10) as usize;
+        for (name, type_id) in [("f16", GGML_TYPE_F16), ("bf16", GGML_TYPE_BF16)] {
+            let run = || {
+                probe_op(
+                    ProbeOp::OutProdQuant,
+                    true,
+                    ProbeInputs::pair(ne_a, &a, ne_b, &b),
+                    [type_id, 0.0],
+                    out_len,
+                )
+                .expect("out_prod run")
+            };
+            // Pipeline compilation stays out of the measurement.
+            run();
+            let runs = 20;
+            let start = std::time::Instant::now();
+            for _ in 0..runs {
+                run();
+            }
+            let elapsed = start.elapsed();
+            eprintln!(
+                "out_prod metal {name} [{ne00}x{k}] x [{ne10}x{k}]: {:.3} ms/run over {runs} runs \
+                 (host conversion and upload included)",
+                elapsed.as_secs_f64() * 1000.0 / runs as f64
+            );
+        }
     }
 }
 
