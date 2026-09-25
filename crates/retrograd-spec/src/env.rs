@@ -5,6 +5,9 @@
 //! type = "container"        # "http" | "container" | "local"
 //! profile = "python"        # or image = "…@sha256:…"
 //!
+//! [agent.environment.tools]
+//! default = "python"
+//!
 //! [agent.environment.pool]
 //! max_live = 8
 //! reuse = "workspace"
@@ -20,7 +23,19 @@ use serde::{Deserialize, Serialize};
 
 use retrograd_agent_core::{Error, Result};
 
-use crate::tools::Profile;
+use crate::tools::ToolsConfig;
+
+/// A language preset for the *image*: the default image and the package cache
+/// a container gets. It selects no tools - a toolset does that.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Profile {
+    #[default]
+    Python,
+    Typescript,
+    /// No default image and no cache: the configuration names its own image.
+    Custom,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -53,12 +68,10 @@ pub struct ContainerConfig {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LocalConfig {
-    pub profile: Profile,
-    pub tools: Option<Vec<String>>,
+    pub tools: ToolsConfig,
     /// Must be typed by someone. Model-generated code runs on the training
     /// machine with the training process's privileges and network.
     pub allow_unsandboxed: bool,
-    pub deny_tools: Vec<String>,
     pub setup_timeout_secs: u64,
     pub verify_timeout_secs: Option<u64>,
 }
@@ -66,10 +79,8 @@ pub struct LocalConfig {
 impl Default for LocalConfig {
     fn default() -> Self {
         Self {
-            profile: Profile::default(),
-            tools: None,
+            tools: ToolsConfig::default(),
             allow_unsandboxed: false,
-            deny_tools: Vec::new(),
             setup_timeout_secs: 300,
             verify_timeout_secs: None,
         }
@@ -179,7 +190,8 @@ mod container {
 
     use retrograd_container::{PoolConfig, ReusePolicy};
 
-    use crate::tools::Profile;
+    use super::Profile;
+    use crate::tools::ToolsConfig;
 
     /// The serialized shape shared by the TOML frontend, the server catalogue and
     /// the Python binding.
@@ -187,7 +199,7 @@ mod container {
     #[serde(default, deny_unknown_fields)]
     pub struct ContainerEnvironmentConfig {
         pub profile: Profile,
-        pub tools: Option<Vec<String>>,
+        pub tools: ToolsConfig,
         /// Overrides the profile's image. Prefer `name@sha256:…`: a run resumed
         /// three weeks later on a moving tag is not the same environment.
         pub image: Option<String>,
@@ -196,9 +208,6 @@ mod container {
         pub allow_network: bool,
         pub limits: retrograd_container::spec::SpecLimits,
         pub pool: ContainerPoolConfig,
-        /// Extra tools beyond the profile's are not configurable - that is the
-        /// programmatic extension point. Removing one is.
-        pub deny_tools: Vec<String>,
         /// Mounted read-only, keyed by target path. Defaults to the profile's
         /// package cache: one `pip install` per run instead of one per episode,
         /// which is the real payoff of container reuse.
@@ -214,12 +223,11 @@ mod container {
         fn default() -> Self {
             Self {
                 profile: Profile::default(),
-                tools: None,
+                tools: ToolsConfig::default(),
                 image: None,
                 allow_network: false,
                 limits: retrograd_container::spec::SpecLimits::default(),
                 pool: ContainerPoolConfig::default(),
-                deny_tools: Vec::new(),
                 cache_volume: None,
                 setup_timeout_secs: 300,
                 verify_timeout_secs: None,
@@ -273,6 +281,7 @@ impl ContainerEnvironmentConfig {
     /// and the built-in registry: `retrograd_env::ContainerEnvironment::validate`
     /// adds those.
     pub fn validate_declaration(&self) -> Result<()> {
+        self.tools.validate_declaration()?;
         if self.setup_timeout_secs == 0 {
             return Err(Error::invalid("setup_timeout_secs must be positive"));
         }
@@ -295,28 +304,24 @@ impl ContainerEnvironmentConfig {
 }
 
 impl EnvironmentConfig {
-    /// The tool selection this environment declares: the profile, the explicit
-    /// list, and what the operator denied.
-    pub fn tool_selection(&self) -> (Profile, Option<Vec<String>>, crate::tools::ToolFilter) {
+    /// The session tools a sandbox environment declares. `None` for an HTTP
+    /// environment, whose tools belong to its server - and for a container
+    /// declaration this build cannot type.
+    pub fn tools(&self) -> Option<&ToolsConfig> {
         match self {
-            Self::Local(config) => (
-                config.profile,
-                config.tools.clone(),
-                crate::tools::ToolFilter {
-                    allow: None,
-                    deny: config.deny_tools.clone(),
-                },
-            ),
+            Self::Local(config) => Some(&config.tools),
             #[cfg(feature = "container")]
-            Self::Container(config) => (
-                config.profile,
-                config.tools.clone(),
-                crate::tools::ToolFilter {
-                    allow: None,
-                    deny: config.deny_tools.clone(),
-                },
-            ),
-            _ => (Profile::Custom, Some(Vec::new()), Default::default()),
+            Self::Container(config) => Some(&config.tools),
+            _ => None,
+        }
+    }
+
+    pub fn tools_mut(&mut self) -> Option<&mut ToolsConfig> {
+        match self {
+            Self::Local(config) => Some(&mut config.tools),
+            #[cfg(feature = "container")]
+            Self::Container(config) => Some(&mut config.tools),
+            _ => None,
         }
     }
 
@@ -338,7 +343,7 @@ impl EnvironmentConfig {
                          isolation; set allow_unsandboxed to run without a container",
                     ));
                 }
-                Ok(())
+                config.tools.validate_declaration()
             }
         }
     }
@@ -359,6 +364,23 @@ fn validate_container(_config: &ContainerConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sandbox_declares_its_toolset() {
+        let config: EnvironmentConfig = toml::from_str(
+            "type = 'local'\nallow_unsandboxed = true\n[tools]\ndefault = 'python'\n",
+        )
+        .unwrap();
+        config.validate_declaration().unwrap();
+        assert_eq!(
+            config.tools().and_then(|tools| tools.default.as_deref()),
+            Some("python")
+        );
+        let config: EnvironmentConfig =
+            toml::from_str("type = 'local'\nallow_unsandboxed = true\n").unwrap();
+        let error = config.validate_declaration().unwrap_err().to_string();
+        assert!(error.contains("tools.default"), "{error}");
+    }
 
     #[test]
     fn a_base_url_needs_a_scheme_and_a_host() {

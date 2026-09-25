@@ -312,9 +312,14 @@ required = false
 id = "py-sandbox"
 description = "Python tasks"
 type = "local"
-profile = "python"
 allow_unsandboxed = true
-deny_tools = ["bash"]
+
+[environment.tools]
+default = "no-shell"
+
+[environment.tools.toolset.no-shell]
+include = ["python"]
+deny = ["bash"]
 "#;
 
 #[test]

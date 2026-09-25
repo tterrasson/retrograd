@@ -24,7 +24,7 @@ use retrograd_agent::{
     UpdateBoundary, UpdateHook,
 };
 // Only the `not(feature = "mcp")` half of `connect_tools` below calls
-// `local_catalog`; the MCP half resolves the whole plan instead. Same `cfg` on
+// `resolve_local`; the MCP half resolves the whole plan instead. Same `cfg` on
 // the import, so the build that has the transport does not warn about it.
 #[cfg(not(feature = "mcp"))]
 use retrograd_agent::ToolPlanResolve;
@@ -293,12 +293,28 @@ fn drive(
         }
     };
 
+    // The tools first, in one resolution: the toolsets the environment will
+    // execute and the catalogue that describes them come from the same pass,
+    // so the hash logged below is the hash of what the model is offered.
+    let mut tools = match connect_tools(&local, &runtime, agent, ctx) {
+        Ok(tools) => tools,
+        Err(error) => {
+            return AgentOutcome {
+                trainer: Some(trainer),
+                result: Err(error),
+            };
+        }
+    };
+    ctx.observer
+        .info(&format!("tool catalog sha256 {}", tools.catalog_sha256()));
+
     // Connecting to a daemon, pulling an image and validating every task
     // declaration happens here - before a single token is generated.
     let mut environment = match &agent.environment {
-        Some(config) => match local.block_on(&runtime, config.build()) {
+        Some(config) => match local.block_on(&runtime, config.build(tools.toolsets.take())) {
             Ok(factory) => Some(factory),
             Err(error) => {
+                tools.shutdown(&local, &runtime);
                 return AgentOutcome {
                     trainer: Some(trainer),
                     result: Err(error.into()),
@@ -330,17 +346,6 @@ fn drive(
     // containers are live and Ctrl+C still takes the default action.
     crate::interrupt::install(environment.clone());
 
-    let tools = match connect_tools(&local, &runtime, agent, environment.is_some(), ctx) {
-        Ok(tools) => tools,
-        Err(error) => {
-            return AgentOutcome {
-                trainer: Some(trainer),
-                result: Err(error),
-            };
-        }
-    };
-    ctx.observer
-        .info(&format!("tool catalog sha256 {}", tools.catalog_sha256()));
     // The world is taken inside the branch, not while building a tuple: the
     // operands of an `if let` pattern are evaluated before the pattern is
     // tested, so a `take()` there empties the environment even in the common
@@ -720,18 +725,21 @@ fn read_scenarios(path: &Path) -> Result<Vec<Scenario>> {
     Ok(scenarios)
 }
 
-/// The MCP providers a run connected to, and how to close them.
+/// The run's resolved tools: the toolsets its environment executes, the MCP
+/// providers it connected to, and how to close them.
 ///
-/// A unit-like value without the feature, so the call sites read the same in
-/// both builds and the "not compiled in" sentence is said once.
+/// Without the feature there is no provider, so the call sites read the same
+/// in both builds and the "not compiled in" sentence is said once.
 #[cfg(feature = "mcp")]
 struct ConnectedTools {
+    toolsets: Option<retrograd_agent::tools::Toolsets>,
     provider: Option<Arc<retrograd_agent::tools::McpToolProvider>>,
     catalog_sha256: String,
 }
 
 #[cfg(not(feature = "mcp"))]
 struct ConnectedTools {
+    toolsets: Option<retrograd_agent::tools::Toolsets>,
     catalog_sha256: String,
 }
 
@@ -772,7 +780,6 @@ fn connect_tools(
     local: &tokio::task::LocalSet,
     runtime: &tokio::runtime::Runtime,
     agent: &AgentRunConfig,
-    has_environment: bool,
     ctx: &mut Context<'_>,
 ) -> Result<ConnectedTools> {
     let resolved = local
@@ -788,7 +795,7 @@ fn connect_tools(
     // merged view of the inline declarations and every `mcp_config` file, and
     // reading those files is a property of the machine that runs the document,
     // not of the document.
-    if has_environment
+    if agent.environment.is_some()
         && let Some(server) = resolved.servers.iter().find(|server| !server.stateless)
     {
         return Err(Error::config(format!(
@@ -800,6 +807,7 @@ fn connect_tools(
         ctx.observer.info(warning);
     }
     Ok(ConnectedTools {
+        toolsets: resolved.toolsets,
         provider: resolved.provider,
         catalog_sha256: resolved.catalog.sha256,
     })
@@ -810,7 +818,6 @@ fn connect_tools(
     _local: &tokio::task::LocalSet,
     _runtime: &tokio::runtime::Runtime,
     agent: &AgentRunConfig,
-    _has_environment: bool,
     _ctx: &mut Context<'_>,
 ) -> Result<ConnectedTools> {
     if !agent.tool_plan.mcp_servers.is_empty() || !agent.tool_plan.mcp_config_files.is_empty() {
@@ -819,12 +826,13 @@ fn connect_tools(
              rebuild with `--features mcp`",
         ));
     }
-    let catalog = agent
+    let local = agent
         .tool_plan
-        .local_catalog(&retrograd_agent::tools::ToolRegistry::builtin())
+        .resolve_local(&retrograd_agent::tools::ToolRegistry::builtin())
         .map_err(Error::from)?;
     Ok(ConnectedTools {
-        catalog_sha256: catalog.sha256,
+        toolsets: local.toolsets,
+        catalog_sha256: local.catalog.sha256,
     })
 }
 
@@ -924,8 +932,8 @@ mod tests {
         check_gradable(Some(&http), &held_out, path).expect("the server grades its own steps");
 
         let local = environment(serde_json::json!({
-            "type": "local", "profile": "python", "allow_unsandboxed": true,
-            "deny_tools": [], "setup_timeout_secs": 300, "verify_timeout_secs": null
+            "type": "local", "tools": {"default": "python"}, "allow_unsandboxed": true,
+            "setup_timeout_secs": 300, "verify_timeout_secs": null
         }));
         let error = check_gradable(Some(&local), &held_out, path)
             .expect_err("a sandbox grades by verify, and there is none");

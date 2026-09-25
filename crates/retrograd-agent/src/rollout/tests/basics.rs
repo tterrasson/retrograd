@@ -104,7 +104,7 @@ async fn tool_observation_is_untrained_between_two_policy_actions() {
 #[tokio::test]
 async fn the_tool_list_is_fetched_once_for_the_whole_engine() {
     // The tool list is fetched once and reused across rollouts, avoiding an MCP
-    // round trip and schema serialization for every member and update.
+    // round trip for every group and update.
     let tools = Arc::new(CountingTools::default());
     let engine = RolloutEngine::with_tools(
         Arc::new(FakePolicy::default()),

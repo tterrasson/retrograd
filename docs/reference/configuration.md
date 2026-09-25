@@ -338,9 +338,9 @@ Keys of one mode are refused in the other.
 | Key | Default | Description |
 | --- | ---: | --- |
 | **container** | | Requires the `container` build feature. |
-| `profile` | `python` | `python`, `typescript` or `custom`. |
+| `profile` | `python` | Default image and package cache: `python`, `typescript` or `custom`. |
 | `image` | profile's | Container image; prefer a digest. |
-| `tools` / `deny_tools` | profile's / none | Built-in tools to expose or hide. |
+| `tools` | required | Toolsets, see below. |
 | `allow_network` | `false` | Allow outbound network. |
 | `cache_volume` | none | Volume mounted read-only on the profile's package cache, so `reuse = "workspace"` installs once per run. |
 | `setup_timeout_secs` | `300` | Timeout for a scenario's `setup`. |
@@ -356,7 +356,19 @@ Keys of one mode are refused in the other.
 | `headers` | none | Headers added to every request. |
 | **local** | | Runs tools on the host, without isolation. |
 | `allow_unsandboxed` | `false` | Must be `true`. |
-| `profile`, `tools`, `deny_tools`, `setup_timeout_secs`, `verify_timeout_secs` | | As for containers. |
+| `tools`, `setup_timeout_secs`, `verify_timeout_secs` | | As for containers. |
+
+### `[agent.environment.tools]`
+
+For `container` and `local`. See [Tools and toolsets](../training/tools).
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `default` | required | Toolset of a scenario that names none (`base`, `python`, `typescript`, or one you define). |
+| `scenario_toolsets` | none | Other toolsets a scenario may select with `metadata.env.toolset`. |
+| `files` | none | Definition files (`[[tool]]`, `[toolset.NAME]`), relative to this config. |
+| `[[...tools.tool]]` | none | Inline tool definitions: `id`, `version`, `name`, `description`, `input_schema`, and `builtin` or `exec`. |
+| `[...tools.toolset.NAME]` | none | Inline toolsets: `include`, `tools` (`id` or `id@version`), `deny`. |
 
 ### `[agent.scenario_generation]`
 

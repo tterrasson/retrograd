@@ -90,7 +90,8 @@ fn resolve_catalog(agent: &retrograd::config::AgentRunConfig) -> Result<ToolCata
     if agent.tool_plan.mcp_servers.is_empty() && agent.tool_plan.mcp_config_files.is_empty() {
         return agent
             .tool_plan
-            .local_catalog(&registry)
+            .resolve_local(&registry)
+            .map(|local| local.catalog)
             .map_err(Error::from);
     }
     #[cfg(feature = "mcp")]

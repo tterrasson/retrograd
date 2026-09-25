@@ -196,9 +196,18 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
             // those files is legitimate here - the signature is computed by the
             // machine that is about to execute the document.
             let (mcp_servers, _warnings) = agent.tool_plan.merged_servers().map_err(Error::from)?;
+            // The session tools as resolved, not as declared: a definition file
+            // or an exec script edited between a run and its resume changes what
+            // the model is offered, and the catalogue hash is what sees it.
+            let tools = agent
+                .tool_plan
+                .resolve_local(&retrograd_tools::ToolRegistry::builtin())
+                .map_err(Error::from)?
+                .catalog
+                .sha256;
             write!(
                 &mut descriptor,
-                "|agent_grpo|scenarios={}|corpus={}|updates={}|scenarios_per_update={}|group={}|epochs={}|clip={:08x},{:08x}|kl={:08x}|limits={},{},{},{},{},{}|judge_failure={:?}|dropped={:08x}|degenerate={}|skip_empty={}|truncation={:?}|seed={}|judge={:?}|environment={:?}|mcp={:?}",
+                "|agent_grpo|scenarios={}|corpus={}|updates={}|scenarios_per_update={}|group={}|epochs={}|clip={:08x},{:08x}|kl={:08x}|limits={},{},{},{},{},{}|judge_failure={:?}|dropped={:08x}|degenerate={}|skip_empty={}|truncation={:?}|seed={}|judge={:?}|environment={:?}|mcp={:?}|tools={}",
                 agent.scenarios.display(),
                 checkpoint::fingerprint(&corpus),
                 config.updates,
@@ -223,6 +232,7 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
                 agent.judge,
                 agent.environment,
                 mcp_servers,
+                tools,
             )
             .expect("writing to a String never fails");
             // Preserve existing checkpoint signatures when both options use their defaults.

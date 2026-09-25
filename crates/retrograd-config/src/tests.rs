@@ -1143,6 +1143,9 @@ fn an_agentic_run_evaluates_and_checkpoints_like_any_other() {
         "[agent]\nscenarios='s.jsonl'\ngroup_size=4\n",
         "[agent.judge]\ntype='command'\ncommand=['judge']\n",
         "[agent.environment]\ntype='local'\nallow_unsandboxed=true\n",
+        "[agent.environment.tools]\ndefault='mine'\nfiles=['tools.toml']\n",
+        "[[agent.environment.tools.tool]]\nid='t'\nversion=1\ndescription='d'\n",
+        "exec={ argv=['python3', '-c'], script='t.py' }\n",
         "[evaluation]\ndata='eval.jsonl'\nevery_iterations=2\npatience=3\n",
         "[checkpoint]\ndirectory='ckpt'\nmode='steps_and_best_eval'\nevery_steps=10\n",
     );
@@ -1154,6 +1157,24 @@ fn an_agentic_run_evaluates_and_checkpoints_like_any_other() {
     assert_eq!(evaluation.patience, Some(3));
     let checkpoint = config.checkpoint.expect("[checkpoint] is kept");
     assert!(checkpoint.mode.includes_steps() && checkpoint.mode.includes_best_eval());
+    // The toolsets' files and scripts are relative to the document, like every
+    // other path in it, and the plan carries the same table the world does.
+    let Algorithm::AgentGrpo(agent) = &config.algorithm else {
+        panic!("an agent_grpo run");
+    };
+    let root = file.parent().unwrap();
+    let tools = agent
+        .tool_plan
+        .session
+        .as_ref()
+        .expect("a sandbox declares tools");
+    assert_eq!(tools.files, [root.join("tools.toml")]);
+    assert_eq!(
+        tools.tools[0].exec.as_ref().unwrap().script.as_deref(),
+        Some(root.join("t.py").as_path())
+    );
+    let environment = agent.environment.as_ref().unwrap();
+    assert_eq!(environment.tools(), Some(tools));
 }
 
 /// A trajectory budget the model cannot hold is a configuration to fix, not

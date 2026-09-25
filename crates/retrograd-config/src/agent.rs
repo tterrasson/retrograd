@@ -297,15 +297,13 @@ pub(crate) fn build_agent(
         .cloned()
         .map(|path| resolve(root, path))
         .collect::<Vec<_>>();
-    let (profile, builtin, filter) = value
-        .environment
-        .as_ref()
-        .map(EnvironmentConfig::tool_selection)
-        .unwrap_or((
-            retrograd_spec::tools::Profile::Custom,
-            Some(Vec::new()),
-            Default::default(),
-        ));
+    // The definition files and scripts a sandbox's toolsets name are written
+    // relative to this document, like every other path in it. Only the paths:
+    // reading them is the runner's, for the reason given below.
+    let mut environment = value.environment.take();
+    if let Some(tools) = environment.as_mut().and_then(EnvironmentConfig::tools_mut) {
+        tools.resolve_paths(root);
+    }
     // Declared, not merged: resolving `mcp_config` files here would mean
     // reading a document requires the machine that will run it - the same
     // invariant `validate_declaration` keeps for environments. A planner or a
@@ -314,16 +312,17 @@ pub(crate) fn build_agent(
     // is stateless is checked where the plan is actually resolved, against the
     // merged view, in `retrograd-run`.
     let tool_plan = ToolPlan {
-        builtin,
-        profile,
+        session: environment
+            .as_ref()
+            .and_then(EnvironmentConfig::tools)
+            .cloned(),
         mcp_servers: value.mcp_servers.clone(),
         mcp_config_files: mcp_files,
-        filter,
     };
     // What the document itself declares can still be judged without touching
     // the filesystem, so an inline server that forgot `stateless` is reported at
     // parse time rather than after the images have been pulled.
-    if value.environment.is_some()
+    if environment.is_some()
         && let Some(server) = value.mcp_servers.iter().find(|server| !server.stateless)
     {
         return Err(Error::config(format!(
@@ -373,7 +372,7 @@ pub(crate) fn build_agent(
         scenarios: resolve(root, value.scenarios),
         config,
         judge,
-        environment: value.environment,
+        environment,
         tool_plan,
         system_suffix: value.system_suffix,
         template_variables: value.template_variables,

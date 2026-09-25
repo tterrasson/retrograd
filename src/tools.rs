@@ -45,7 +45,8 @@ pub(crate) fn tools(args: Vec<String>) -> Result<()> {
     if no_connect {
         let mut catalog = agent
             .tool_plan
-            .local_catalog(&registry)
+            .resolve_local(&registry)
+            .map(|local| local.catalog)
             .map_err(Error::from)?;
         let (servers, warnings) = agent.tool_plan.merged_servers().map_err(Error::from)?;
         catalog.warnings.extend(warnings);
@@ -96,10 +97,22 @@ pub(crate) fn render_catalog(catalog: &ToolCatalog, json: bool) -> Result<String
     for entry in &catalog.tools {
         let description = entry.spec.description.chars().take(96).collect::<String>();
         output.push_str(&format!(
-            "- {} [{}] {}\n",
+            "- {} ({}) [{}] {}\n",
             entry.spec.name,
+            entry.reference(),
             if entry.stateful { "session" } else { "shared" },
             description
+        ));
+    }
+    for (name, members) in &catalog.toolsets {
+        let default = if catalog.default_toolset.as_deref() == Some(name.as_str()) {
+            " (default)"
+        } else {
+            ""
+        };
+        output.push_str(&format!(
+            "- toolset {name}{default}: {}\n",
+            members.join(", ")
         ));
     }
     for resource in &catalog.resources {

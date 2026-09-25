@@ -23,6 +23,7 @@ from retrograd import (
     SandboxLimits,
     SandboxPool,
     Scenario,
+    Tools,
     TrainableConfig,
     TrainingConfig,
     TrainSequence,
@@ -248,14 +249,19 @@ def test_environments_serialize_into_the_native_tagged_shape() -> None:
             scenario,
             judge,
             environment=ContainerEnvironment(
+                Tools("no-shell", scenario_toolsets=["typescript"], files=[Path("tools.toml")]),
                 profile="typescript",
-                deny_tools=["bash"],
                 pool=SandboxPool(max_live=4, min_idle=2, reuse="workspace"),
                 limits=SandboxLimits(memory_mb=2048),
             ),
         ).environment_json()
     )
     assert container["type"] == "container"
+    assert container["tools"] == {
+        "default": "no-shell",
+        "scenario_toolsets": ["typescript"],
+        "files": ["tools.toml"],
+    }
     assert container["pool"] == {
         "max_live": 4,
         "min_idle": 2,
@@ -269,25 +275,16 @@ def test_environments_serialize_into_the_native_tagged_shape() -> None:
 
     local = json.loads(
         AgenticGRPOConfig(
-            scenario, judge, environment=LocalEnvironment(allow_unsandboxed=True)
+            scenario, judge, environment=LocalEnvironment(Tools("python"), allow_unsandboxed=True)
         ).environment_json()
     )
     assert local == {
         "type": "local",
-        "profile": "python",
+        "tools": {"default": "python", "scenario_toolsets": [], "files": []},
         "allow_unsandboxed": True,
-        "deny_tools": [],
         "setup_timeout_secs": 300,
         "verify_timeout_secs": None,
     }
-    selected = json.loads(
-        AgenticGRPOConfig(
-            scenario,
-            judge,
-            environment=LocalEnvironment(allow_unsandboxed=True, tools=("shell", "read_file")),
-        ).environment_json()
-    )
-    assert selected["tools"] == ["shell", "read_file"]
 
     http = json.loads(
         AgenticGRPOConfig(
@@ -317,12 +314,14 @@ def test_an_environment_refuses_what_no_run_should_get_by_omission() -> None:
     judge = CommandJudge(("judge",))
     # Unconfined execution is typed, never defaulted.
     with pytest.raises(ValueError, match="allow_unsandboxed"):
-        LocalEnvironment()
+        LocalEnvironment(Tools("python"))
+    with pytest.raises(ValueError, match="toolset"):
+        Tools(" ")
     # A pool that must keep more warm than it may hold never converges.
     with pytest.raises(ValueError, match="min_idle"):
         SandboxPool(max_live=2, min_idle=8)
     with pytest.raises(ValueError, match="custom"):
-        ContainerEnvironment(profile="custom")
+        ContainerEnvironment(Tools("python"), profile="custom")
     with pytest.raises(ValueError, match="base_url"):
         HttpEnvironment("127.0.0.1:8099")
     # Shared MCP tools need an explicit stateless assertion before they may be
@@ -332,13 +331,13 @@ def test_an_environment_refuses_what_no_run_should_get_by_omission() -> None:
             scenario,
             judge,
             mcp_servers=[McpServer(name="tools", command=("tool-server",))],
-            environment=LocalEnvironment(allow_unsandboxed=True),
+            environment=LocalEnvironment(Tools("python"), allow_unsandboxed=True),
         )
     composed = AgenticGRPOConfig(
         scenario,
         judge,
         mcp_servers=[McpServer(name="tools", command=("tool-server",), stateless=True)],
-        environment=LocalEnvironment(allow_unsandboxed=True),
+        environment=LocalEnvironment(Tools("python"), allow_unsandboxed=True),
     )
     assert json.loads(composed.mcp_servers_json())[0]["stateless"] is True
 

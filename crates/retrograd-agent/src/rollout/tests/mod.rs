@@ -680,8 +680,22 @@ impl Environment for CountingEnvironment {
         })
     }
 
-    async fn tools(&self) -> Result<Vec<ToolSpec>> {
-        EchoTools.list_tools().await
+    /// Echo's tools, plus one per `metadata.extra_tool` - enough to give two
+    /// scenarios two different tool lists.
+    async fn tools(&self, scenario: &Scenario) -> Result<Vec<ToolSpec>> {
+        let mut tools = EchoTools.list_tools().await?;
+        if let Some(name) = scenario
+            .metadata
+            .get("extra_tool")
+            .and_then(|name| name.as_str())
+        {
+            tools.push(ToolSpec {
+                name: name.into(),
+                description: "extra".into(),
+                input_schema: serde_json::json!({"type": "object"}),
+            });
+        }
+        Ok(tools)
     }
 
     async fn state(&mut self) -> Result<EnvState> {

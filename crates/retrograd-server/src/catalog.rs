@@ -154,6 +154,8 @@ pub struct EnvironmentEntry {
     pub id: String,
     pub description: String,
     pub config: EnvironmentConfig,
+    /// The default toolset's tool names, resolved at startup.
+    tools: Vec<String>,
 }
 
 impl EnvironmentEntry {
@@ -165,25 +167,11 @@ impl EnvironmentEntry {
         }
     }
 
-    /// The tool names a rollout will see, when the kind is one whose tools are
-    /// known without contacting anything. An HTTP environment's list belongs to
-    /// its server, so it is reported empty rather than invented.
+    /// The tool names a rollout of the default toolset sees. An HTTP
+    /// environment's list belongs to its server, so it is reported empty rather
+    /// than invented.
     pub fn tool_names(&self) -> Vec<String> {
-        let tools = match &self.config {
-            EnvironmentConfig::Local(local) => retrograd_agent::tools::ToolSet::builder()
-                .with_profile(local.profile)
-                .deny(local.deny_tools.clone())
-                .build(),
-            #[cfg(feature = "container")]
-            EnvironmentConfig::Container(container) => {
-                use retrograd_agent::env::ContainerEnvironment;
-                container.tools(retrograd_agent::tools::ToolSet::builder())
-            }
-            _ => return Vec::new(),
-        };
-        tools
-            .map(|set| set.specs().iter().map(|spec| spec.name.clone()).collect())
-            .unwrap_or_default()
+        self.tools.clone()
     }
 }
 
@@ -295,13 +283,29 @@ impl Catalog {
             // the build cannot run, a pool that cannot converge, a local sandbox
             // asked for by omission - fails server startup. The client only ever
             // sends an id, so this is the *only* place those values are read.
-            config.validate().map_err(|error| {
+            let context = |error: retrograd_agent::Error| {
                 Error::config(format!("environment '{}': {error}", declaration.id))
-            })?;
+            };
+            config.validate().map_err(context)?;
+            // Resolving the toolsets reads their definition files: a broken one
+            // fails startup like the rest of the declaration.
+            let tools = config
+                .resolve_tools(&retrograd_agent::tools::ToolRegistry::builtin())
+                .map_err(context)?
+                .map(|session| {
+                    session
+                        .toolsets
+                        .select(None)
+                        .map(|set| set.specs().iter().map(|spec| spec.name.clone()).collect())
+                })
+                .transpose()
+                .map_err(context)?
+                .unwrap_or_default();
             let entry = EnvironmentEntry {
                 id: declaration.id.clone(),
                 description: declaration.description.clone(),
                 config,
+                tools,
             };
             insert_unique(
                 &mut catalog.environments,
@@ -555,9 +559,14 @@ mod tests {
 id = "py-sandbox"
 description = "Python tasks, no network"
 type = "local"
-profile = "python"
 allow_unsandboxed = true
-deny_tools = ["bash"]
+
+[environment.tools]
+default = "no-shell"
+
+[environment.tools.toolset.no-shell]
+include = ["python"]
+deny = ["bash"]
 "#,
         )
         .expect("declare catalog");
@@ -570,7 +579,7 @@ deny_tools = ["bash"]
         let listing = catalog.environment_listing();
         assert_eq!(listing.environments.len(), 1);
         let published = serde_json::to_string(&listing).unwrap();
-        for secret in ["allow_unsandboxed", "profile", "image", "limits"] {
+        for secret in ["allow_unsandboxed", "toolset", "image", "limits"] {
             assert!(!published.contains(secret), "{secret} leaked: {published}");
         }
 
@@ -586,7 +595,19 @@ deny_tools = ["bash"]
     fn a_broken_environment_declaration_fails_at_startup() {
         for (body, expected) in [
             // A local sandbox is never obtained by omission.
-            ("type = \"local\"\n", "allow_unsandboxed"),
+            (
+                "type = \"local\"\n[environment.tools]\ndefault = \"python\"\n",
+                "allow_unsandboxed",
+            ),
+            // A toolset must be chosen, and must exist.
+            (
+                "type = \"local\"\nallow_unsandboxed = true\n",
+                "tools.default",
+            ),
+            (
+                "type = \"local\"\nallow_unsandboxed = true\n[environment.tools]\ndefault = \"nope\"\n",
+                "unknown toolset 'nope'",
+            ),
             // A typo is a typo.
             (
                 "type = \"local\"\nallow_unsandboxd = true\n",
@@ -608,7 +629,9 @@ deny_tools = ["bash"]
         // Two entries with one id would make a reference ambiguous.
         let duplicate = concat!(
             "[[environment]]\nid = \"e\"\ntype = \"local\"\nallow_unsandboxed = true\n",
+            "[environment.tools]\ndefault = \"python\"\n",
             "[[environment]]\nid = \"e\"\ntype = \"local\"\nallow_unsandboxed = true\n",
+            "[environment.tools]\ndefault = \"python\"\n",
         );
         assert!(matches!(declared(duplicate), Err(Error::Config(_))));
     }

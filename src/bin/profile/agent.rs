@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use retrograd::config::{Algorithm, RunConfig};
 use retrograd::{Error, Result};
-use retrograd_agent::{AgenticRun, Environments, JudgeBackend, Scenario};
+use retrograd_agent::{AgenticRun, Environments, JudgeBackend, Scenario, ToolPlanResolve};
 
 use super::{Options, PhaseTotals, UpdateRow, VramTrack, apply_micro_batch_and_packing};
 use crate::report::Workload;
@@ -37,18 +37,10 @@ pub(crate) fn run(options: Options, mut run_config: RunConfig, wall: Instant) ->
             agent.config.limits.max_new_tokens_per_turn = value;
         }
     }
-    if !agent.tool_plan.mcp_servers.is_empty()
-        || !agent.tool_plan.mcp_config_files.is_empty()
-        || agent
-            .tool_plan
-            .builtin
-            .as_ref()
-            .is_some_and(|names| !names.is_empty())
-    {
+    if !agent.tool_plan.mcp_servers.is_empty() || !agent.tool_plan.mcp_config_files.is_empty() {
         return Err(Error::invalid(
-            "the profiler does not yet support agent_grpo's [agent.tool_plan] (MCP servers or \
-             an explicit builtin list); profile a config whose tools come only from \
-             [agent.environment]",
+            "the profiler does not yet support agent_grpo's MCP servers; profile a config whose \
+             tools come only from [agent.environment]",
         ));
     }
     let group_size = agent.config.group_size;
@@ -85,10 +77,16 @@ pub(crate) fn run(options: Options, mut run_config: RunConfig, wall: Instant) ->
         })?;
     let local = tokio::task::LocalSet::new();
 
-    // Build the environment before generating the first token, as the main
-    // runner does.
+    // Resolve the toolsets and build the environment before generating the
+    // first token, as the main runner does.
+    let toolsets = agent
+        .tool_plan
+        .resolve_local(&retrograd_tools::ToolRegistry::builtin())?
+        .toolsets;
     let environment = match &agent.environment {
-        Some(environment_config) => Some(local.block_on(&runtime, environment_config.build())?),
+        Some(environment_config) => {
+            Some(local.block_on(&runtime, environment_config.build(toolsets))?)
+        }
         None => None,
     };
 

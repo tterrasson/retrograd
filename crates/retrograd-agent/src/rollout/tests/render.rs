@@ -73,3 +73,37 @@ async fn a_template_blind_to_tools_still_gets_the_prompt_written_catalog() {
         observation.content
     );
 }
+
+/// A scenario may carry its own toolset, so the rendering is decided per tool
+/// list: each scenario's template call gets exactly its own tools.
+#[tokio::test]
+async fn each_scenario_is_rendered_with_its_own_tool_list() {
+    let policy = Arc::new(NativeToolPolicy::default());
+    let engine = RolloutEngine::with_environments(
+        policy.clone(),
+        Arc::new(CountingFactory::default()),
+        Arc::new(crate::tools::HermesToolCallParser),
+        group_limits(),
+    )
+    .unwrap();
+    let mut extended = scenario();
+    extended
+        .metadata
+        .insert("extra_tool".into(), serde_json::json!("lookup"));
+    engine.rollout(&scenario(), 1).await.unwrap();
+    engine.rollout(&extended, 2).await.unwrap();
+    engine.rollout(&scenario(), 3).await.unwrap();
+
+    let renders = policy.native_renders.lock().unwrap();
+    let opening_tools = renders
+        .iter()
+        .filter(|(messages, _)| messages.len() == 2)
+        .map(|(_, tools)| tools.len())
+        .collect::<Vec<_>>();
+    assert_eq!(opening_tools, [1, 2, 1]);
+    assert_eq!(
+        engine.declared_tools(),
+        1,
+        "the first rendering is the one reported"
+    );
+}

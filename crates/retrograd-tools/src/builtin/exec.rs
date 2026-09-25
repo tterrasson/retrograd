@@ -15,6 +15,14 @@ pub struct Shell {
     program: String,
 }
 
+impl Shell {
+    pub fn new(program: impl Into<String>) -> Self {
+        Self {
+            program: program.into(),
+        }
+    }
+}
+
 impl Default for Shell {
     fn default() -> Self {
         Self {

@@ -9,6 +9,9 @@
 //! type = "container"        # "http" | "container" | "local"
 //! profile = "python"        # or image = "…@sha256:…"
 //!
+//! [grpo.agent.environment.tools]
+//! default = "python"
+//!
 //! [grpo.agent.environment.pool]
 //! max_live = 8
 //! reuse = "workspace"
@@ -32,71 +35,33 @@ use retrograd_agent_core::Error;
 pub use retrograd_spec::env::{
     ContainerConfig, EnvironmentConfig, HttpEnvironmentConfig, LocalConfig,
 };
+use retrograd_tools::{SessionTools, ToolRegistry, Toolsets};
 
 /// What a declared environment can do in *this* build: check itself against the
-/// features compiled in, and instantiate a factory.
+/// features compiled in, resolve its tools, and instantiate a factory.
 ///
 /// The declaration is `retrograd-spec`'s. Everything
 /// below needs either a tool registry, a daemon or a socket, which is why it is
 /// here - and why a binary that only reads a configuration links none of them.
 pub trait Environments {
-    /// The tool profile this declaration selects, the registry names an
-    /// explicit `tools` list resolves to (`None` when the profile's own set is
-    /// used unfiltered), and the `deny_tools` filter. `Http` declarations carry
-    /// no tool selection of their own, so they answer with `Profile::Custom`
-    /// and an empty list.
-    fn tool_selection(
-        &self,
-    ) -> (
-        retrograd_tools::Profile,
-        Option<Vec<String>>,
-        retrograd_tools::ToolFilter,
-    );
     fn validate(&self) -> Result<()>;
     fn validate_declaration(&self) -> Result<()>;
-    fn build(&self) -> impl std::future::Future<Output = Result<Arc<dyn EnvironmentFactory>>>;
+    /// Resolves the `tools` table of a sandbox environment over `registry`:
+    /// `None` for an HTTP one, whose server owns its tools. Reads the
+    /// definition files, so it belongs to the machine that runs the document.
+    fn resolve_tools(&self, registry: &ToolRegistry) -> Result<Option<SessionTools>>;
+    /// Builds the factory over `toolsets` - the ones [`resolve_tools`]
+    /// produced, or the run's own resolution of the same declaration, so that
+    /// what the catalogue describes is what the environment executes.
+    ///
+    /// [`resolve_tools`]: Self::resolve_tools
+    fn build(
+        &self,
+        toolsets: Option<Toolsets>,
+    ) -> impl std::future::Future<Output = Result<Arc<dyn EnvironmentFactory>>>;
 }
 
 impl Environments for EnvironmentConfig {
-    fn tool_selection(
-        &self,
-    ) -> (
-        retrograd_tools::Profile,
-        Option<Vec<String>>,
-        retrograd_tools::ToolFilter,
-    ) {
-        match self {
-            Self::Local(config) => (
-                config.profile,
-                config
-                    .tools
-                    .as_ref()
-                    .map(|tools| config.profile.registry_names(tools)),
-                retrograd_tools::ToolFilter {
-                    allow: None,
-                    deny: config.deny_tools.clone(),
-                },
-            ),
-            #[cfg(feature = "container")]
-            Self::Container(config) => (
-                config.profile,
-                config
-                    .tools
-                    .as_ref()
-                    .map(|tools| config.profile.registry_names(tools)),
-                retrograd_tools::ToolFilter {
-                    allow: None,
-                    deny: config.deny_tools.clone(),
-                },
-            ),
-            _ => (
-                retrograd_tools::Profile::Custom,
-                Some(Vec::new()),
-                retrograd_tools::ToolFilter::default(),
-            ),
-        }
-    }
-
     /// Everything that can be decided without touching the network: the shape
     /// of the configuration, and whether this binary can honour it at all.
     ///
@@ -113,30 +78,38 @@ impl Environments for EnvironmentConfig {
         }
     }
 
-    /// The declaration's own checks, plus the ones that need a registry: an
-    /// environment naming a tool this build does not carry is a configuration
-    /// error, and it is *this* crate that knows the registry.
+    /// The declaration's own checks, plus the container spec's when this build
+    /// can type one.
     fn validate_declaration(&self) -> Result<()> {
         EnvironmentConfig::validate_declaration(self)?;
         match self {
-            Self::Local(config) => selected_builder(config.profile, config.tools.as_ref())?
-                .deny(config.deny_tools.clone())
-                .build()
-                .map(|_| ()),
             Self::Container(config) => validate_container(config),
-            Self::Http(_) => Ok(()),
+            Self::Local(_) | Self::Http(_) => Ok(()),
         }
     }
 
-    /// Builds the factory. Async because a container pool connects to the
-    /// daemon, pulls its image and reaps leftovers here - before the first
-    /// rollout, on purpose.
-    async fn build(&self) -> Result<Arc<dyn EnvironmentFactory>> {
+    fn resolve_tools(&self, registry: &ToolRegistry) -> Result<Option<SessionTools>> {
+        self.tools()
+            .map(|tools| retrograd_tools::resolve_session(tools, registry))
+            .transpose()
+    }
+
+    /// Async because a container pool connects to the daemon, pulls its image
+    /// and reaps leftovers here - before the first rollout, on purpose.
+    async fn build(&self, toolsets: Option<Toolsets>) -> Result<Arc<dyn EnvironmentFactory>> {
         self.validate()?;
-        match self {
-            Self::Http(config) => build_http(config),
-            Self::Container(config) => build_container(config).await,
-            Self::Local(config) => build_local(config),
+        match (self, toolsets) {
+            (Self::Http(config), None) => build_http(config),
+            (Self::Http(_), Some(_)) => Err(retrograd_agent_core::Error::invalid(
+                "an HTTP environment serves its own tools; it takes no toolsets",
+            )),
+            (Self::Container(config), Some(toolsets)) => build_container(config, toolsets).await,
+            (Self::Local(config), Some(toolsets)) => build_local(config, toolsets),
+            (Self::Container(_) | Self::Local(_), None) => {
+                Err(retrograd_agent_core::Error::invalid(
+                    "a sandbox environment is built over resolved toolsets",
+                ))
+            }
         }
     }
 }
@@ -189,29 +162,31 @@ fn build_http(_config: &HttpEnvironmentConfig) -> Result<Arc<dyn EnvironmentFact
 }
 
 #[cfg(feature = "container")]
-async fn build_container(config: &ContainerConfig) -> Result<Arc<dyn EnvironmentFactory>> {
-    let (factory, _metrics) =
-        crate::container::build_factory(config, retrograd_tools::ToolSet::builder()).await?;
+async fn build_container(
+    config: &ContainerConfig,
+    toolsets: Toolsets,
+) -> Result<Arc<dyn EnvironmentFactory>> {
+    let (factory, _metrics) = crate::container::build_factory(config, toolsets).await?;
     Ok(Arc::new(factory))
 }
 
 #[cfg(not(feature = "container"))]
-async fn build_container(_config: &ContainerConfig) -> Result<Arc<dyn EnvironmentFactory>> {
+async fn build_container(
+    _config: &ContainerConfig,
+    _toolsets: Toolsets,
+) -> Result<Arc<dyn EnvironmentFactory>> {
     Err(unsupported("container", "container"))
 }
 
 #[cfg(feature = "local-sandbox")]
-fn build_local(config: &LocalConfig) -> Result<Arc<dyn EnvironmentFactory>> {
-    let tools = selected_builder(config.profile, config.tools.as_ref())?
-        .deny(config.deny_tools.clone())
-        .build()?;
+fn build_local(config: &LocalConfig, toolsets: Toolsets) -> Result<Arc<dyn EnvironmentFactory>> {
     let provider = crate::LocalSandboxProvider::new(crate::LocalSandboxConfig {
         allow_unsandboxed: config.allow_unsandboxed,
         ..Default::default()
     })?;
     Ok(Arc::new(crate::SandboxEnvironmentFactory::new(
         provider,
-        tools,
+        toolsets,
         crate::SandboxEnvironmentConfig {
             image: None,
             setup_timeout: std::time::Duration::from_secs(config.setup_timeout_secs),
@@ -224,21 +199,8 @@ fn build_local(config: &LocalConfig) -> Result<Arc<dyn EnvironmentFactory>> {
 }
 
 #[cfg(not(feature = "local-sandbox"))]
-fn build_local(_config: &LocalConfig) -> Result<Arc<dyn EnvironmentFactory>> {
+fn build_local(_config: &LocalConfig, _toolsets: Toolsets) -> Result<Arc<dyn EnvironmentFactory>> {
     Err(unsupported("local", "local-sandbox"))
-}
-
-fn selected_builder(
-    profile: retrograd_tools::Profile,
-    tools: Option<&Vec<String>>,
-) -> Result<retrograd_tools::ToolSetBuilder> {
-    match tools {
-        Some(names) => retrograd_tools::ToolSet::builder().with_registry(
-            &retrograd_tools::ToolRegistry::builtin(),
-            &profile.registry_names(names),
-        ),
-        None => Ok(retrograd_tools::ToolSet::builder().with_profile(profile)),
-    }
 }
 
 // Called only from the `#[cfg(not(feature = …))]` arms of the three capability
@@ -271,6 +233,7 @@ mod tests {
             "exec_timeout_secs = 30\nmax_output_bytes = 65536\n",
             "[pool]\nmax_live = 8\nmin_idle = 2\nreuse = 'workspace'\n",
             "max_leases_per_container = 32\n",
+            "[tools]\ndefault = 'python'\n",
         ))
         .expect("the documented table must parse");
         assert!(matches!(config, EnvironmentConfig::Container(_)));
@@ -282,7 +245,7 @@ mod tests {
     #[tokio::test]
     async fn a_container_environment_without_the_feature_says_so() {
         let config = parse("type = 'container'\nprofile = 'python'\n").unwrap();
-        let error = match config.build().await {
+        let error = match config.build(None).await {
             Ok(_) => panic!("must not build"),
             Err(error) => error.to_string(),
         };
@@ -292,25 +255,43 @@ mod tests {
     #[cfg(feature = "local-sandbox")]
     #[tokio::test]
     async fn a_local_environment_is_never_obtained_by_omission() {
-        let config = parse("type = 'local'\n").unwrap();
-        let error = match config.build().await {
+        let config = parse("type = 'local'\n[tools]\ndefault = 'python'\n").unwrap();
+        let error = match config.build(None).await {
             Ok(_) => panic!("must not build"),
             Err(error) => error.to_string(),
         };
         assert!(error.contains("allow_unsandboxed"), "{error}");
 
-        let config =
-            parse("type = 'local'\nallow_unsandboxed = true\ndeny_tools = ['bash']\n").unwrap();
-        let factory = config.build().await.expect("an explicit local sandbox");
+        let config = parse(concat!(
+            "type = 'local'\nallow_unsandboxed = true\n",
+            "[tools]\ndefault = 'no-shell'\n",
+            "[tools.toolset.no-shell]\ninclude = ['python']\ndeny = ['bash']\n",
+        ))
+        .unwrap();
+        let tools = config
+            .resolve_tools(&ToolRegistry::builtin())
+            .unwrap()
+            .expect("a local environment declares tools");
+        let factory = config
+            .build(Some(tools.toolsets))
+            .await
+            .expect("an explicit local sandbox");
         let environment = factory.create().await.unwrap();
+        let scenario = retrograd_agent_core::Scenario {
+            id: "s".into(),
+            system: None,
+            user: "u".into(),
+            metadata: Default::default(),
+        };
         let names = environment
-            .tools()
+            .tools(&scenario)
             .await
             .unwrap()
             .into_iter()
             .map(|spec| spec.name)
             .collect::<Vec<_>>();
         assert!(!names.contains(&"bash".to_owned()) && names.contains(&"submit".to_owned()));
+        assert!(config.build(None).await.is_err());
     }
 
     /// The Python binding serializes its dataclasses into exactly this, so the
@@ -325,15 +306,17 @@ mod tests {
                        "exec_timeout_secs": 30, "max_output_bytes": 65536},
             "pool": {"max_live": 8, "min_idle": 0, "reuse": "never",
                      "max_leases_per_container": 32},
-            "deny_tools": ["bash"], "cache_volume": null,
+            "tools": {"default": "python", "scenario_toolsets": ["lite"],
+                      "files": ["tools.toml"]},
+            "cache_volume": null,
             "setup_timeout_secs": 300, "verify_timeout_secs": null, "run_id": null
         });
         let config: EnvironmentConfig = serde_json::from_value(container).expect("container JSON");
         assert!(matches!(config, EnvironmentConfig::Container(_)));
 
         let local = serde_json::json!({
-            "type": "local", "profile": "python", "allow_unsandboxed": true,
-            "deny_tools": [], "setup_timeout_secs": 300, "verify_timeout_secs": null
+            "type": "local", "tools": {"default": "python"}, "allow_unsandboxed": true,
+            "setup_timeout_secs": 300, "verify_timeout_secs": null
         });
         let config: EnvironmentConfig = serde_json::from_value(local).expect("local JSON");
         config

@@ -51,11 +51,17 @@ pub use task::{EnvTask, Verify, WORKDIR};
 /// before environments existed behaves exactly as it did.
 pub struct ToolProviderEnvironment {
     tools: Arc<dyn ToolProvider>,
+    /// Shared by every instance of one factory: the list is the provider's, and
+    /// listing it once per group would be a round trip per group for MCP.
+    listing: Arc<tokio::sync::OnceCell<Vec<ToolSpec>>>,
 }
 
 impl ToolProviderEnvironment {
     pub fn new(tools: Arc<dyn ToolProvider>) -> Self {
-        Self { tools }
+        Self {
+            tools,
+            listing: Arc::default(),
+        }
     }
 }
 
@@ -80,8 +86,11 @@ impl Environment for ToolProviderEnvironment {
         }))
     }
 
-    async fn tools(&self) -> Result<Vec<ToolSpec>> {
-        self.tools.list_tools().await
+    async fn tools(&self, _scenario: &Scenario) -> Result<Vec<ToolSpec>> {
+        self.listing
+            .get_or_try_init(|| self.tools.list_tools())
+            .await
+            .cloned()
     }
 
     async fn close(&mut self) -> Result<()> {
@@ -93,18 +102,25 @@ impl Environment for ToolProviderEnvironment {
 /// instance is free - the provider itself is what holds the connections.
 pub struct ToolProviderFactory {
     tools: Arc<dyn ToolProvider>,
+    listing: Arc<tokio::sync::OnceCell<Vec<ToolSpec>>>,
 }
 
 impl ToolProviderFactory {
     pub fn new(tools: Arc<dyn ToolProvider>) -> Self {
-        Self { tools }
+        Self {
+            tools,
+            listing: Arc::default(),
+        }
     }
 }
 
 #[async_trait]
 impl EnvironmentFactory for ToolProviderFactory {
     async fn create(&self) -> Result<Box<dyn Environment>> {
-        Ok(Box::new(ToolProviderEnvironment::new(self.tools.clone())))
+        Ok(Box::new(ToolProviderEnvironment {
+            tools: self.tools.clone(),
+            listing: self.listing.clone(),
+        }))
     }
 }
 
@@ -168,8 +184,8 @@ impl Environment for SharedToolsEnvironment {
         self.world.get_mut().step(call).await
     }
 
-    async fn tools(&self) -> Result<Vec<ToolSpec>> {
-        let world_tools = self.world.lock().await.tools().await?;
+    async fn tools(&self, scenario: &Scenario) -> Result<Vec<ToolSpec>> {
+        let world_tools = self.world.lock().await.tools(scenario).await?;
         // Checked here, per instance and per call: the collision is between what
         // this world advertises now and the shared names, and a shadowed world
         // tool would otherwise be silently routed to the shared provider.
@@ -254,7 +270,7 @@ mod shared_tools_tests {
         async fn step(&mut self, call: &ToolCall) -> Result<StepOutcome> {
             Ok(StepOutcome::tool(ToolResult::ok(call.id.clone(), "world")))
         }
-        async fn tools(&self) -> Result<Vec<ToolSpec>> {
+        async fn tools(&self, _: &Scenario) -> Result<Vec<ToolSpec>> {
             Ok(vec![spec("session")])
         }
         async fn close(&mut self) -> Result<()> {
@@ -282,6 +298,15 @@ mod shared_tools_tests {
         }
     }
 
+    fn scenario() -> Scenario {
+        Scenario {
+            id: "s".into(),
+            system: None,
+            user: "u".into(),
+            metadata: Default::default(),
+        }
+    }
+
     #[tokio::test]
     async fn composition_routes_by_name_and_refuses_collisions() {
         let factory =
@@ -291,7 +316,7 @@ mod shared_tools_tests {
         let mut environment = factory.create().await.unwrap();
         assert_eq!(
             environment
-                .tools()
+                .tools(&scenario())
                 .await
                 .unwrap()
                 .iter()
@@ -317,7 +342,7 @@ mod shared_tools_tests {
             SharedToolsFactory::new(Arc::new(WorldFactory), Arc::new(Shared { name: "session" }))
                 .await
                 .unwrap();
-        let error = match colliding.create().await.unwrap().tools().await {
+        let error = match colliding.create().await.unwrap().tools(&scenario()).await {
             Ok(_) => panic!("collision must fail"),
             Err(error) => error,
         };

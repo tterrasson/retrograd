@@ -17,97 +17,118 @@
 use std::sync::Arc;
 
 use retrograd_agent_core::text::truncate_utf8;
-use retrograd_agent_core::{ExecOutput, ExecRequest, Sandbox};
+use retrograd_agent_core::{Error, ExecOutput, ExecRequest, Result, Sandbox};
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
 use crate::session::{SessionTool, ToolOutcome};
+use crate::{RegisteredTool, ToolDefinitions, ToolRegistry};
 
 mod exec;
 mod files;
 
 pub use exec::{Interpreter, RunTests, Shell};
 pub use files::{EditFile, Grep, ListDir, ReadFile, Submit, WriteFile};
-pub use retrograd_spec::tools::Profile;
 
-/// The tools a profile names, built.
-///
-/// The preset itself is a declaration and lives in `retrograd-spec` -
-/// resolving it against the built-in registry is this crate's job, so the
-/// method that does it is added here rather than moved with the enum.
-pub trait ProfileTools {
-    fn tools(self) -> Vec<Arc<dyn SessionTool>>;
-}
+/// The built-in tools and toolsets, declared like any user file.
+const BUILTIN_DEFINITIONS: &str = include_str!("builtin.toml");
 
-impl ProfileTools for Profile {
-    /// The tools of the profile, in a stable order.
-    ///
-    /// The interpreter and the test command are the only parts that differ.
-    /// `python` on a `node` image would be a tool the model is told about and
-    /// cannot use, so each profile advertises the one its image actually has.
-    fn tools(self) -> Vec<Arc<dyn SessionTool>> {
-        builtin_registry()
-            .resolve(&self.tool_names())
-            .expect("profile registry names are built-ins")
-            .into_iter()
-            .map(|(_, tool)| match tool {
-                crate::RegisteredTool::Session(tool) => tool,
-                crate::RegisteredTool::Shared(_) => unreachable!("profiles contain session tools"),
-            })
-            .collect()
-    }
-}
-
-/// Constructs one built-in. A plain `fn` pointer rather than a boxed closure:
-/// every built-in is a unit struct or a `Default`, so there is nothing to
-/// capture.
-type BuiltinCtor = fn() -> Arc<dyn SessionTool>;
-
-/// One row of the built-in table: the registry name, and how to build it.
-type BuiltinDef = (&'static str, BuiltinCtor);
-
-struct BuiltinFactory {
-    name: &'static str,
-    build: BuiltinCtor,
-}
-
-impl crate::ToolFactory for BuiltinFactory {
-    fn name(&self) -> &str {
-        self.name
-    }
-
-    fn describe(&self) -> retrograd_agent_core::ToolSpec {
-        (self.build)().spec()
-    }
-
-    fn build(
-        &self,
-        _params: &serde_json::Value,
-    ) -> retrograd_agent_core::Result<crate::RegisteredTool> {
-        Ok(crate::RegisteredTool::Session((self.build)()))
-    }
-}
-
-/// Built-ins are ordinary registry entries; profiles only select their names.
-pub(crate) fn builtin_registry() -> crate::ToolRegistry {
-    let definitions: [BuiltinDef; 11] = [
-        ("shell", || Arc::new(Shell::default())),
-        ("python", || Arc::new(Interpreter::python())),
-        ("node", || Arc::new(Interpreter::node())),
-        ("pytest", || Arc::new(RunTests::pytest())),
-        ("npm_test", || Arc::new(RunTests::npm())),
-        ("read_file", || Arc::new(ReadFile)),
-        ("write_file", || Arc::new(WriteFile)),
-        ("edit_file", || Arc::new(EditFile)),
-        ("list_dir", || Arc::new(ListDir)),
-        ("grep", || Arc::new(Grep)),
-        ("submit", || Arc::new(Submit)),
+/// The built-in factories, then the definitions that use them.
+pub(crate) fn builtin_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::default();
+    let factories: [(&str, Arc<dyn crate::ToolFactory>); 9] = [
+        (
+            "shell",
+            Arc::new(|params: &serde_json::Value| {
+                let ShellParams { program } = params_of("shell", params)?;
+                Ok(session(match program {
+                    Some(program) => Shell::new(program),
+                    None => Shell::default(),
+                }))
+            }),
+        ),
+        (
+            "interpreter",
+            Arc::new(|params: &serde_json::Value| {
+                let InterpreterParams { language, argv } =
+                    required_params_of("interpreter", params)?;
+                Ok(session(Interpreter::new(language, argv)))
+            }),
+        ),
+        (
+            "run_tests",
+            Arc::new(|params: &serde_json::Value| {
+                let CommandParams { argv } = required_params_of("run_tests", params)?;
+                Ok(session(RunTests::new(argv)))
+            }),
+        ),
+        ("read_file", unit("read_file", || session(ReadFile))),
+        ("write_file", unit("write_file", || session(WriteFile))),
+        ("edit_file", unit("edit_file", || session(EditFile))),
+        ("list_dir", unit("list_dir", || session(ListDir))),
+        ("grep", unit("grep", || session(Grep))),
+        ("submit", unit("submit", || session(Submit))),
     ];
-    let mut registry = crate::ToolRegistry::default();
-    for (name, build) in definitions {
+    for (name, factory) in factories {
         registry
-            .register(Arc::new(BuiltinFactory { name, build }))
-            .expect("builtin tool definitions are valid and unique");
+            .register_factory(name, factory)
+            .expect("builtin factory names are unique");
     }
+    let definitions: ToolDefinitions =
+        toml::from_str(BUILTIN_DEFINITIONS).expect("builtin.toml is valid");
     registry
+        .define(definitions)
+        .expect("builtin.toml names only builtin factories, once each");
+    registry
+}
+
+fn session(tool: impl SessionTool + 'static) -> RegisteredTool {
+    RegisteredTool::Session(Arc::new(tool))
+}
+
+/// A factory for a tool that takes no parameters, and says so when given some.
+fn unit(name: &'static str, build: fn() -> RegisteredTool) -> Arc<dyn crate::ToolFactory> {
+    Arc::new(move |params: &serde_json::Value| {
+        if !params.is_null() && params.as_object().is_none_or(|map| !map.is_empty()) {
+            return Err(Error::invalid(format!("factory '{name}' takes no params")));
+        }
+        Ok(build())
+    })
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShellParams {
+    program: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InterpreterParams {
+    language: String,
+    argv: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandParams {
+    argv: Vec<String>,
+}
+
+/// Optional parameters: absent means the factory's defaults.
+fn params_of<T: DeserializeOwned + Default>(
+    factory: &str,
+    params: &serde_json::Value,
+) -> Result<T> {
+    if params.is_null() {
+        return Ok(T::default());
+    }
+    required_params_of(factory, params)
+}
+
+fn required_params_of<T: DeserializeOwned>(factory: &str, params: &serde_json::Value) -> Result<T> {
+    T::deserialize(params)
+        .map_err(|error| Error::invalid(format!("factory '{factory}': invalid params: {error}")))
 }
 
 /// Renders a command's result as the model will read it.
@@ -366,30 +387,76 @@ pub(crate) mod testing {
 mod tests {
     use super::*;
 
+    /// A builtin's spec is what the model reads and is trained on, so a version
+    /// is frozen: changing its name, description or schema means adding
+    /// `id@2` to `builtin.toml`, then a row here - never editing a row.
     #[test]
-    fn a_profile_advertises_only_tools_its_image_has() {
-        let names = |profile: Profile| {
-            profile
-                .tools()
+    fn builtin_versions_are_frozen() {
+        let registry = crate::ToolRegistry::builtin();
+        let actual = registry
+            .definitions()
+            .map(|definition| {
+                let built = registry.build(&definition.key()).unwrap();
+                let spec = serde_json::to_string(&built.entry.spec).unwrap();
+                (
+                    definition.key().to_string(),
+                    crate::registry::sha256_hex(spec.as_bytes()),
+                )
+            })
+            .collect::<Vec<_>>();
+        let frozen: &[(&str, &str)] = &[
+            (
+                "bash@1",
+                "845203a7a48b3cba77be9e97659961d3d81a36fac7d943096d7e744ea94fe2d9",
+            ),
+            (
+                "edit_file@1",
+                "f33b17304d61a40651497df52502aafdf1933489ff96c587b97f7907f1d905d2",
+            ),
+            (
+                "grep@1",
+                "c46bcd8744a31941f7bf8576fcc18eb5a6e2ed8b97b60f9ec9679c02c7a4f0fd",
+            ),
+            (
+                "list_dir@1",
+                "597226b4b6d7b05b460716147250726d00cbc93b3d3468498ef638b9cc042de6",
+            ),
+            (
+                "node@1",
+                "73150511b4ef4914743edb3e6a07e100e95e520d22841af033e9eb50ad19676f",
+            ),
+            (
+                "npm_test@1",
+                "e68488d741f97cf8194e34ec1ac8515f11c7dc23d582f927b7a1a975bc6c3bd0",
+            ),
+            (
+                "pytest@1",
+                "d8bebc8e0c815702c5b9260621a67d1a53c110464c3f0b1035e06b36613ca827",
+            ),
+            (
+                "python@1",
+                "a7ae0b79fc612e914697a4c64657ed6abef286e3b2b017f2537f191e4ab13f01",
+            ),
+            (
+                "read_file@1",
+                "696419383b5e89ba82aff5f65a4702dd83bc9450417a628463a51b3ca03c76a1",
+            ),
+            (
+                "submit@1",
+                "892e611c0f75bab94969139c3f1bf8c967c941c065a04d8fcff52cd65a3accb5",
+            ),
+            (
+                "write_file@1",
+                "34652e2b731f19b5b35d4fa3cf0836046a04c2e7676a7cc7ab29f5763802b7cf",
+            ),
+        ];
+        assert_eq!(
+            actual,
+            frozen
                 .iter()
-                .map(|tool| tool.spec().name)
+                .map(|(reference, sha)| (reference.to_string(), sha.to_string()))
                 .collect::<Vec<_>>()
-        };
-        let python = names(Profile::Python);
-        assert!(python.contains(&"python".to_owned()) && !python.contains(&"node".to_owned()));
-        let typescript = names(Profile::Typescript);
-        assert!(
-            typescript.contains(&"node".to_owned()) && !typescript.contains(&"python".to_owned())
         );
-        assert_eq!(names(Profile::Custom), Vec::<String>::new());
-
-        // Both profiles are buildable as a set: no duplicate, no broken schema.
-        for profile in [Profile::Python, Profile::Typescript] {
-            crate::ToolSet::builder()
-                .extend(profile.tools())
-                .build()
-                .expect("a profile must be a valid tool set");
-        }
     }
 
     /// The rendering is what the model reads and is trained on, so its shape is

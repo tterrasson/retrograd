@@ -119,12 +119,17 @@ mod tests {
     fn validation_accepts_session_tools_and_rejects_unknown_references() {
         let catalog = ToolCatalog {
             tools: vec![CatalogEntry {
+                id: "write_file".into(),
+                version: Some(1),
                 spec: retrograd_agent_core::ToolSpec {
                     name: "write_file".into(),
                     description: "write".into(),
                     input_schema: serde_json::json!({"type": "object"}),
                 },
-                source: ToolSource::Builtin,
+                source: ToolSource::Builtin {
+                    factory: "write_file".into(),
+                    params: String::new(),
+                },
                 stateful: true,
             }],
             ..Default::default()

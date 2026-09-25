@@ -1591,11 +1591,17 @@ impl PyTrainer {
         // Connecting to a daemon, pulling an image and validating every task
         // declaration happens before a single token is generated.
         let mut environments = match &environment {
-            Some(config) => Some(
-                local
-                    .block_on(&runtime, config.build())
-                    .map_err(agent_python_error)?,
-            ),
+            Some(config) => {
+                let toolsets = config
+                    .resolve_tools(&retrograd_agent::tools::ToolRegistry::builtin())
+                    .map_err(agent_python_error)?
+                    .map(|session| session.toolsets);
+                Some(
+                    local
+                        .block_on(&runtime, config.build(toolsets))
+                        .map_err(agent_python_error)?,
+                )
+            }
             None => None,
         };
         let provider = if mcp_configs.is_empty() {

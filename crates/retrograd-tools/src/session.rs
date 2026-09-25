@@ -1,18 +1,17 @@
 //! Tools bound to one episode's sandbox.
 //!
-//! This is the extension point: implement [`SessionTool`], register it in a
-//! [`ToolSet`], and the environment that owns the sandbox does the rest. A tool
+//! This is the Rust extension point: implement [`SessionTool`], register a
+//! factory for it in the [`ToolRegistry`](crate::ToolRegistry), and a toolset
+//! that names it hands it to the environment that owns the sandbox. A tool
 //! never sees a container, a pool or a rollout - only the
 //! [`Sandbox`] contract - so it is testable
 //! against a local sandbox with no daemon in sight.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use retrograd_agent_core::{Error, Result, Sandbox, ToolCall, ToolResult, ToolSpec};
-
-use crate::builtin::ProfileTools;
 
 /// What one session tool produced.
 ///
@@ -92,7 +91,7 @@ pub trait SessionTool: Send + Sync {
     ) -> Result<ToolOutcome>;
 }
 
-/// A validated set of session tools, keyed by name.
+/// A validated set of session tools, ordered by name.
 #[derive(Clone, Default)]
 pub struct ToolSet {
     tools: Vec<Arc<dyn SessionTool>>,
@@ -100,8 +99,35 @@ pub struct ToolSet {
 }
 
 impl ToolSet {
-    pub fn builder() -> ToolSetBuilder {
-        ToolSetBuilder::default()
+    /// Fails at construction rather than at the 300th rollout: a name
+    /// collision or a malformed schema discovered mid-run is a lost run. The
+    /// order is the names', so the prompt does not depend on how a toolset was
+    /// assembled.
+    pub fn new(tools: Vec<Arc<dyn SessionTool>>) -> Result<Self> {
+        let mut named = Vec::new();
+        let mut seen = HashSet::new();
+        for tool in tools {
+            let spec = tool.spec();
+            if spec.name.trim().is_empty() {
+                return Err(Error::invalid("a session tool name must not be empty"));
+            }
+            if !spec.input_schema.is_object() {
+                return Err(Error::invalid(format!(
+                    "session tool '{}' must declare a JSON object input schema",
+                    spec.name
+                )));
+            }
+            if !seen.insert(spec.name.clone()) {
+                return Err(Error::invalid(format!(
+                    "duplicate session tool name '{}'",
+                    spec.name
+                )));
+            }
+            named.push((spec, tool));
+        }
+        named.sort_by(|a, b| a.0.name.cmp(&b.0.name));
+        let (specs, tools) = named.into_iter().unzip();
+        Ok(Self { tools, specs })
     }
 
     pub fn specs(&self) -> &[ToolSpec] {
@@ -133,98 +159,64 @@ impl ToolSet {
     }
 }
 
-/// Builds a [`ToolSet`], failing at construction rather than at the 300th
-/// rollout: a name collision or a malformed schema discovered mid-run is a lost
-/// run.
-#[derive(Default)]
-pub struct ToolSetBuilder {
-    tools: Vec<Arc<dyn SessionTool>>,
-    denied: Vec<String>,
+/// The toolsets a sandbox environment may hand a trajectory: one default, and
+/// the others a scenario may select by name.
+///
+/// Selection is per scenario, so every member of a group gets the same tools -
+/// a group whose members saw different tools would compare different tasks.
+#[derive(Clone)]
+pub struct Toolsets {
+    default: String,
+    sets: BTreeMap<String, Arc<ToolSet>>,
 }
 
-impl ToolSetBuilder {
-    /// Adds the built-in tools of a language profile. Nothing else about the
-    /// profile is decided here - the image and the package cache are read by
-    /// `retrograd-env`, from the same enum.
-    pub fn with_profile(self, profile: crate::builtin::Profile) -> Self {
-        self.extend(profile.tools())
+impl Toolsets {
+    /// One toolset under one name, which is also the default.
+    pub fn single(name: impl Into<String>, tools: ToolSet) -> Result<Self> {
+        let name = name.into();
+        Self::new(name.clone(), BTreeMap::from([(name, tools)]))
     }
 
-    pub fn with_registry(
-        mut self,
-        registry: &crate::ToolRegistry,
-        names: &[String],
-    ) -> Result<Self> {
-        for (_, tool) in registry.resolve(names)? {
-            match tool {
-                crate::RegisteredTool::Session(tool) => self.tools.push(tool),
-                crate::RegisteredTool::Shared(_) => {
-                    return Err(Error::invalid(
-                        "a shared registered tool cannot be installed in a session sandbox",
-                    ));
-                }
-            }
+    pub fn new(default: impl Into<String>, sets: BTreeMap<String, ToolSet>) -> Result<Self> {
+        let default = default.into();
+        if !sets.contains_key(&default) {
+            return Err(Error::invalid(format!(
+                "default toolset '{default}' is not among the resolved toolsets"
+            )));
         }
-        Ok(self)
-    }
-
-    pub fn with(mut self, tool: Arc<dyn SessionTool>) -> Self {
-        self.tools.push(tool);
-        self
-    }
-
-    pub fn extend<I>(mut self, tools: I) -> Self
-    where
-        I: IntoIterator<Item = Arc<dyn SessionTool>>,
-    {
-        self.tools.extend(tools);
-        self
-    }
-
-    /// Hides tools by name pattern, `*` allowed as a wildcard - the same
-    /// spelling `McpServerConfig` filters with, so an operator writes one rule
-    /// shape whatever the tool source is.
-    pub fn deny<I, S>(mut self, patterns: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.denied.extend(patterns.into_iter().map(Into::into));
-        self
-    }
-
-    pub fn build(self) -> Result<ToolSet> {
-        let mut tools = Vec::new();
-        let mut specs = Vec::new();
-        let mut seen = HashSet::new();
-        for tool in self.tools {
-            let spec = tool.spec();
-            if spec.name.trim().is_empty() {
-                return Err(Error::invalid("a session tool name must not be empty"));
-            }
-            if !spec.input_schema.is_object() {
-                return Err(Error::invalid(format!(
-                    "session tool '{}' must declare a JSON object input schema",
-                    spec.name
-                )));
-            }
-            if self
-                .denied
-                .iter()
-                .any(|pattern| crate::glob_match(pattern, &spec.name))
-            {
-                continue;
-            }
-            if !seen.insert(spec.name.clone()) {
-                return Err(Error::invalid(format!(
-                    "duplicate session tool name '{}'",
-                    spec.name
-                )));
-            }
-            specs.push(spec);
-            tools.push(tool);
+        if let Some((name, _)) = sets.iter().find(|(_, set)| set.is_empty()) {
+            return Err(Error::invalid(format!(
+                "toolset '{name}' gives the policy nothing to do"
+            )));
         }
-        Ok(ToolSet { tools, specs })
+        Ok(Self {
+            default,
+            sets: sets
+                .into_iter()
+                .map(|(name, set)| (name, Arc::new(set)))
+                .collect(),
+        })
+    }
+
+    pub fn default_name(&self) -> &str {
+        &self.default
+    }
+
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.sets.keys().map(String::as_str)
+    }
+
+    /// The toolset a scenario asked for, or the default. Asking for one the
+    /// environment did not declare selectable is a dataset error, refused
+    /// before the first rollout.
+    pub fn select(&self, requested: Option<&str>) -> Result<&Arc<ToolSet>> {
+        let name = requested.unwrap_or(&self.default);
+        self.sets.get(name).ok_or_else(|| {
+            Error::invalid(format!(
+                "toolset '{name}' is not selectable here; selectable: {}",
+                self.sets.keys().cloned().collect::<Vec<_>>().join(", ")
+            ))
+        })
     }
 }
 
@@ -276,32 +268,37 @@ mod tests {
 
     #[test]
     fn a_broken_set_is_refused_at_construction_not_mid_run() {
-        assert!(
-            ToolSet::builder()
-                .with(Arc::new(Named("bash")))
-                .with(Arc::new(Named("bash")))
-                .build()
-                .is_err()
-        );
-        assert!(ToolSet::builder().with(Arc::new(Unnamed)).build().is_err());
+        assert!(ToolSet::new(vec![Arc::new(Named("bash")), Arc::new(Named("bash"))]).is_err());
+        assert!(ToolSet::new(vec![Arc::new(Unnamed)]).is_err());
     }
 
     #[test]
-    fn deny_patterns_use_the_same_wildcards_as_mcp_filters() {
-        let set = ToolSet::builder()
-            .with(Arc::new(Named("bash")))
-            .with(Arc::new(Named("write_file")))
-            .with(Arc::new(Named("read_file")))
-            .deny(["write_*", "bash"])
-            .build()
-            .unwrap();
+    fn a_set_is_ordered_by_name_and_a_toolset_is_selected_by_name() {
+        let set =
+            ToolSet::new(vec![Arc::new(Named("write_file")), Arc::new(Named("bash"))]).unwrap();
         assert_eq!(
             set.specs()
                 .iter()
-                .map(|spec| &spec.name)
+                .map(|spec| spec.name.as_str())
                 .collect::<Vec<_>>(),
-            ["read_file"]
+            ["bash", "write_file"]
         );
+        let toolsets = Toolsets::new(
+            "full",
+            BTreeMap::from([
+                ("full".to_owned(), set),
+                (
+                    "lite".to_owned(),
+                    ToolSet::new(vec![Arc::new(Named("bash"))]).unwrap(),
+                ),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(toolsets.select(None).unwrap().specs().len(), 2);
+        assert_eq!(toolsets.select(Some("lite")).unwrap().specs().len(), 1);
+        let error = toolsets.select(Some("other")).err().unwrap().to_string();
+        assert!(error.contains("selectable: full, lite"), "{error}");
+        assert!(Toolsets::single("x", ToolSet::default()).is_err());
     }
 
     #[test]

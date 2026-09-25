@@ -82,6 +82,10 @@ called for it.
 
 ## Tools
 
+A sandbox environment hands each trajectory a **toolset**: built-in tools,
+your own tools in any language (run inside the sandbox), versioned so they can
+be compared. See [Tools and toolsets](./tools).
+
 **MCP servers** (`[[agent.mcp_servers]]`) are shared by every trajectory. Use
 `command = [...]` for a local server or `url = "..."` for a remote one.
 `allowed_tools` / `denied_tools` filter what the model sees (`*` wildcard, deny
@@ -103,15 +107,19 @@ set `stateless = true`.
 
 ### Containers
 
-Each trajectory runs in its own container, with built-in tools: `bash`,
-`python` (or `node`), `run_tests`, `read_file`, `write_file`, `edit_file`,
-`list_dir`, `grep` and `submit`.
+Each trajectory runs in its own container. `profile` picks the default image
+and package cache; `tools.default` picks the toolset (`python` is `bash`,
+`python`, `run_tests`, `read_file`, `write_file`, `edit_file`, `list_dir`,
+`grep` and `submit`).
 
 ```toml
 [agent.environment]
 type = "container"
 profile = "python"         # or "typescript", or "custom" with your own image
 allow_network = false
+
+[agent.environment.tools]
+default = "python"
 
 [agent.environment.limits]
 cpus = 1.0
@@ -124,7 +132,8 @@ reuse = "never"            # "workspace" recycles a cleaned container
 ```
 
 A scenario describes its task in `metadata.env`. `verify` turns the result into
-a reward; `summary` is what the judge sees instead of the transcript:
+a reward; `summary` is what the judge sees instead of the transcript; `toolset`
+selects one of the environment's `scenario_toolsets`:
 
 ```json
 {"id": "fix-parser", "user": "test_parse_empty fails. Fix it.",
@@ -230,3 +239,7 @@ with Trainer("model.gguf", lora=LoraConfig()) as trainer:
     trainer.fit_agentic_grpo(config, callback=print)
     trainer.save_adapter("agent.gguf")
 ```
+
+A sandbox environment names its toolset explicitly:
+`environment=ContainerEnvironment(Tools("python"))`, or
+`Tools("rust", files=("tools.toml",))` for your own definitions.

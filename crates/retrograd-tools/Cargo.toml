@@ -14,12 +14,15 @@ async-trait.workspace = true
 futures-util = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
 retrograd-agent-core.workspace = true
+retrograd-core.workspace = true
 retrograd-spec.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"], optional = true }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "process", "rt", "sync", "time"] }
+toml.workspace = true
 
 [features]
 default = ["mcp"]

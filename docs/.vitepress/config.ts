@@ -54,6 +54,7 @@ export default defineConfig({
             { text: 'PPO', link: '/training/ppo' },
             { text: 'GRPO', link: '/training/grpo' },
             { text: 'Agentic GRPO', link: '/training/agent' },
+            { text: 'Tools and toolsets', link: '/training/tools' },
             { text: 'Distillation', link: '/training/distill' },
             { text: 'Observing rollouts', link: '/training/observe' },
           ],

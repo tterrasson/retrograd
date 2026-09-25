@@ -33,3 +33,6 @@ container = ["dep:retrograd-container"]
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+toml.workspace = true

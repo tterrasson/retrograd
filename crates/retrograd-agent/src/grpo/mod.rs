@@ -179,21 +179,22 @@ impl<'a> AgenticRun<'a> {
         self.with_environments(Arc::new(ToolProviderFactory::new(tools)))
     }
 
-    /// Resolves embedders' stateless registered tools without modifying the
-    /// built-in crate. Session-bound registry entries must be installed in the
-    /// environment that owns their sandbox.
+    /// Builds embedders' shared tools from the registry - a factory registered
+    /// with [`ToolRegistry::register_factory`](crate::tools::ToolRegistry::register_factory)
+    /// and a definition naming it. Session-bound tools belong in a toolset of
+    /// the environment that owns their sandbox.
     pub fn with_tool_registry(
         self,
         registry: &crate::tools::ToolRegistry,
-        names: &[String],
+        references: &[crate::tools::ToolRef],
     ) -> Result<Self> {
         let mut shared = Vec::new();
-        for (name, registered) in registry.resolve(names)? {
-            match registered {
+        for reference in references {
+            match registry.build(reference)?.tool {
                 crate::tools::RegisteredTool::Shared(tool) => shared.push(tool),
                 crate::tools::RegisteredTool::Session(_) => {
                     return Err(crate::Error::invalid(format!(
-                        "registered tool '{name}' is session-bound and must be installed in an environment"
+                        "registered tool '{reference}' is session-bound and must be installed in an environment"
                     )));
                 }
             }

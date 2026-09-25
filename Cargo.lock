@@ -1831,6 +1831,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "toml",
 ]
 
 [[package]]
@@ -1841,12 +1842,15 @@ dependencies = [
  "futures-util",
  "http",
  "retrograd-agent-core",
+ "retrograd-core",
  "retrograd-spec",
  "rmcp",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "tokio",
+ "toml",
 ]
 
 [[package]]

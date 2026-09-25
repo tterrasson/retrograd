@@ -1,8 +1,8 @@
 //! The environment that runs tools in a sandbox.
 //!
 //! This is where the three halves meet: a [`SandboxProvider`] says *where* an
-//! episode runs, a [`ToolSet`] says *what* it may do, and an [`EnvTask`] says
-//! what the scenario asks for. None of the three knows about the other two, and
+//! episode runs, the [`Toolsets`] say *what* it may do, and an [`EnvTask`] says
+//! what the scenario asks for - including which of those toolsets it gets. None of the three knows about the other two, and
 //! none of them knows about Docker.
 //!
 //! The split that governs every path below is the one from
@@ -18,7 +18,7 @@ use retrograd_agent_core::{
     EnvState, Environment, EnvironmentFactory, Error, ExecRequest, Lease, Result, Sandbox,
     SandboxProvider, Scenario, StepOutcome, ToolCall, ToolSpec,
 };
-use retrograd_tools::ToolSet;
+use retrograd_tools::{ToolSet, Toolsets};
 
 use crate::task::{EnvTask, Verify};
 
@@ -62,7 +62,9 @@ impl Default for SandboxEnvironmentConfig {
 /// One episode: one lease, one workspace, one task.
 pub struct SandboxEnvironment {
     provider: Arc<dyn SandboxProvider>,
-    tools: Arc<ToolSet>,
+    toolsets: Arc<Toolsets>,
+    /// The toolset the current scenario selected, set by `reset`.
+    tools: Option<Arc<ToolSet>>,
     config: Arc<SandboxEnvironmentConfig>,
     lease: Option<Lease>,
     task: EnvTask,
@@ -73,12 +75,13 @@ pub struct SandboxEnvironment {
 impl SandboxEnvironment {
     pub fn new(
         provider: Arc<dyn SandboxProvider>,
-        tools: Arc<ToolSet>,
+        toolsets: Arc<Toolsets>,
         config: Arc<SandboxEnvironmentConfig>,
     ) -> Self {
         Self {
             provider,
-            tools,
+            toolsets,
+            tools: None,
             config,
             lease: None,
             task: EnvTask::default(),
@@ -150,6 +153,7 @@ impl Environment for SandboxEnvironment {
         // outlives no scenario, and the parse is a few microseconds against a
         // container acquisition.
         self.task = EnvTask::from_scenario(scenario)?;
+        self.tools = Some(self.toolsets.select(self.task.toolset.as_deref())?.clone());
         self.task.check_image(
             &scenario.id,
             self.config.image.as_deref(),
@@ -171,7 +175,11 @@ impl Environment for SandboxEnvironment {
 
     async fn step(&mut self, call: &ToolCall) -> Result<StepOutcome> {
         let sandbox = self.lease()?.sandbox();
-        let outcome = match self.tools.call(sandbox.as_ref(), call).await {
+        let tools = self
+            .tools
+            .clone()
+            .ok_or_else(|| Error::Tool("environment used before reset".into()))?;
+        let outcome = match tools.call(sandbox.as_ref(), call).await {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.poison();
@@ -222,8 +230,13 @@ impl Environment for SandboxEnvironment {
         })
     }
 
-    async fn tools(&self) -> Result<Vec<ToolSpec>> {
-        Ok(self.tools.specs().to_vec())
+    async fn tools(&self, scenario: &Scenario) -> Result<Vec<ToolSpec>> {
+        let task = EnvTask::from_scenario(scenario)?;
+        Ok(self
+            .toolsets
+            .select(task.toolset.as_deref())?
+            .specs()
+            .to_vec())
     }
 
     async fn state(&mut self) -> Result<EnvState> {
@@ -265,24 +278,19 @@ impl Environment for SandboxEnvironment {
 /// Hands out one [`SandboxEnvironment`] per trajectory over a shared provider.
 pub struct SandboxEnvironmentFactory {
     provider: Arc<dyn SandboxProvider>,
-    tools: Arc<ToolSet>,
+    toolsets: Arc<Toolsets>,
     config: Arc<SandboxEnvironmentConfig>,
 }
 
 impl SandboxEnvironmentFactory {
     pub fn new(
         provider: Arc<dyn SandboxProvider>,
-        tools: ToolSet,
+        toolsets: Toolsets,
         config: SandboxEnvironmentConfig,
     ) -> Result<Self> {
-        if tools.is_empty() {
-            return Err(Error::invalid(
-                "a sandbox environment with no tools gives the policy nothing to do",
-            ));
-        }
         Ok(Self {
             provider,
-            tools: Arc::new(tools),
+            toolsets: Arc::new(toolsets),
             config: Arc::new(config),
         })
     }
@@ -303,7 +311,7 @@ impl EnvironmentFactory for SandboxEnvironmentFactory {
     async fn create(&self) -> Result<Box<dyn Environment>> {
         Ok(Box::new(SandboxEnvironment::new(
             self.provider.clone(),
-            self.tools.clone(),
+            self.toolsets.clone(),
             self.config.clone(),
         )))
     }
@@ -311,6 +319,9 @@ impl EnvironmentFactory for SandboxEnvironmentFactory {
     async fn prepare(&self, scenarios: &[Scenario]) -> Result<()> {
         for scenario in scenarios {
             let task = EnvTask::from_scenario(scenario)?;
+            self.toolsets
+                .select(task.toolset.as_deref())
+                .map_err(|error| Error::invalid(format!("scenario '{}': {error}", scenario.id)))?;
             task.check_image(
                 &scenario.id,
                 self.config.image.as_deref(),
@@ -343,8 +354,6 @@ impl EnvironmentFactory for SandboxEnvironmentFactory {
 
 #[cfg(test)]
 mod tests {
-    use retrograd_tools::Profile;
-
     use super::*;
     use crate::local::{LocalSandboxConfig, LocalSandboxProvider};
 
@@ -357,11 +366,19 @@ mod tests {
     }
 
     fn factory(config: SandboxEnvironmentConfig) -> SandboxEnvironmentFactory {
-        let tools = ToolSet::builder()
-            .with_profile(Profile::Python)
-            .build()
-            .unwrap();
-        SandboxEnvironmentFactory::new(provider(), tools, config).unwrap()
+        let tools: retrograd_tools::ToolsConfig = toml::from_str(
+            r#"
+            default = "python"
+            scenario_toolsets = ["read-only"]
+            [toolset.read-only]
+            tools = ["read_file@1", "list_dir@1", "submit@1"]
+            "#,
+        )
+        .unwrap();
+        let session =
+            retrograd_tools::resolve_session(&tools, &retrograd_tools::ToolRegistry::builtin())
+                .unwrap();
+        SandboxEnvironmentFactory::new(provider(), session.toolsets, config).unwrap()
     }
 
     fn scenario(env: serde_json::Value) -> Scenario {
@@ -582,13 +599,101 @@ mod tests {
             .expect("an invented tool must not cost the trajectory");
         assert!(outcome.result.is_error && outcome.result.content.contains("unknown tool"));
 
-        assert!(
-            SandboxEnvironmentFactory::new(
-                provider(),
-                ToolSet::default(),
-                SandboxEnvironmentConfig::default()
-            )
-            .is_err()
+        assert!(Toolsets::single("empty", ToolSet::default()).is_err());
+    }
+
+    /// The toolset is the scenario's choice, among those the environment made
+    /// selectable - and a choice it did not is a dataset error, refused before
+    /// the first rollout rather than at it.
+    #[tokio::test]
+    async fn a_scenario_selects_its_toolset() {
+        let factory = factory(SandboxEnvironmentConfig::default());
+        let environment = factory.create().await.unwrap();
+        let names =
+            |specs: Vec<ToolSpec>| specs.into_iter().map(|spec| spec.name).collect::<Vec<_>>();
+        let default = names(
+            environment
+                .tools(&scenario(serde_json::json!({})))
+                .await
+                .unwrap(),
         );
+        assert!(default.contains(&"bash".to_owned()));
+        let read_only = scenario(serde_json::json!({"toolset": "read-only"}));
+        assert_eq!(
+            names(environment.tools(&read_only).await.unwrap()),
+            ["list_dir", "read_file", "submit"]
+        );
+
+        let mut environment = factory.create().await.unwrap();
+        environment.reset(&read_only, 0).await.unwrap();
+        let outcome = environment
+            .step(&call("bash", serde_json::json!({"command": "true"})))
+            .await
+            .unwrap();
+        assert!(outcome.result.content.starts_with("unknown tool 'bash'"));
+
+        let error = factory
+            .prepare(&[scenario(serde_json::json!({"toolset": "typescript"}))])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("scenario 's'") && error.contains("not selectable"),
+            "{error}"
+        );
+    }
+
+    /// An exec tool runs in the trajectory's own workspace, reads the model's
+    /// arguments on stdin, and can grade and finish the episode.
+    #[tokio::test]
+    async fn an_exec_tool_runs_in_the_sandbox_and_grades_the_episode() {
+        let tools: retrograd_tools::ToolsConfig = toml::from_str(
+            r#"
+            default = "checker"
+            [[tool]]
+            id = "check"
+            version = 1
+            description = "Check the answer file."
+            exec = { argv = ["sh", "-c", "n=$(wc -c); test -f answer && printf '{\"content\": \"%s bytes\", \"reward\": 0.5, \"done\": true}' $n"], protocol = "json" }
+            [toolset.checker]
+            tools = ["check", "write_file@1"]
+            "#,
+        )
+        .unwrap();
+        let session =
+            retrograd_tools::resolve_session(&tools, &retrograd_tools::ToolRegistry::builtin())
+                .unwrap();
+        let factory = SandboxEnvironmentFactory::new(
+            provider(),
+            session.toolsets,
+            SandboxEnvironmentConfig::default(),
+        )
+        .unwrap();
+        let mut environment = factory.create().await.unwrap();
+        environment
+            .reset(&scenario(serde_json::json!({})), 0)
+            .await
+            .unwrap();
+
+        // No answer yet: the command fails, which is an observation.
+        let outcome = environment
+            .step(&call("check", serde_json::json!({})))
+            .await
+            .unwrap();
+        assert!(outcome.result.is_error && !outcome.done);
+
+        environment
+            .step(&call(
+                "write_file",
+                serde_json::json!({"path": "answer", "content": "42"}),
+            ))
+            .await
+            .unwrap();
+        let outcome = environment
+            .step(&call("check", serde_json::json!({"x": 1})))
+            .await
+            .unwrap();
+        assert_eq!(outcome.result.content, "7 bytes");
+        assert_eq!((outcome.reward, outcome.done), (Some(0.5), true));
     }
 }

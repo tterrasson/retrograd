@@ -1,26 +1,4 @@
-//! The one filtering language used by every tool source.
-
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ToolFilter {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allow: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub deny: Vec<String>,
-}
-
-impl ToolFilter {
-    /// Whether `name` passes this filter: matched by `allow` (or `allow` is
-    /// unset) and not matched by `deny`. `deny` always wins over `allow`.
-    pub fn exposes(&self, name: &str) -> bool {
-        self.allow
-            .as_ref()
-            .is_none_or(|patterns| patterns.iter().any(|pattern| glob_match(pattern, name)))
-            && !self.deny.iter().any(|pattern| glob_match(pattern, name))
-    }
-}
+//! The one name-pattern language used by every tool source.
 
 /// `*` matches any run of characters; every other character is literal.
 pub fn glob_match(pattern: &str, name: &str) -> bool {

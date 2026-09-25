@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use retrograd_agent_core::{Error, Result, Scenario, relative_path};
-use retrograd_tools::Profile;
+use retrograd_spec::env::Profile;
 use serde::{Deserialize, Serialize};
 
 /// The path every episode works in, whatever backs the sandbox.
@@ -47,6 +47,10 @@ pub struct EnvTask {
     pub image: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<Profile>,
+    /// The toolset this scenario's trajectories get, among those the
+    /// environment declares selectable. Absent means the environment's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toolset: Option<String>,
     /// Files written into the workspace before the first turn.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub files: BTreeMap<String, String>,

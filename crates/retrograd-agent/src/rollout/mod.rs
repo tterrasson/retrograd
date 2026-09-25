@@ -19,6 +19,7 @@ mod state;
 #[cfg(test)]
 pub(crate) mod tests;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,7 +34,7 @@ use self::render::{ToolRendering, prompt_tool_rendering};
 use crate::FailureKind;
 use crate::env::{Environment, EnvironmentFactory, ToolProviderFactory};
 use crate::policy::Policy;
-use crate::tools::{HermesToolCallParser, ToolCallParser, ToolProvider};
+use crate::tools::{HermesToolCallParser, ToolCallParser, ToolProvider, ToolSpec};
 use crate::trajectory::{Message, Trajectory, TrajectoryGroup};
 use crate::{Error, Result};
 use retrograd_agent_core::scenario::{RolloutLimits, Scenario, TruncationPolicy};
@@ -92,13 +93,16 @@ pub struct RolloutEngine {
     /// from being chosen independently.
     fallback_parser: Arc<dyn ToolCallParser>,
     limits: RolloutLimits,
-    /// How tools are rendered, decided once. It depends on the environment kind
-    /// and on the model's template, not on the instance, while `rollout` runs
-    /// once per trajectory per group per update - listing the tools and
-    /// re-serializing every schema on each of those was pure repeated work (and
-    /// a round trip when the environment is remote). Hence a cache at the
-    /// factory's level, not the instance's.
-    tools: tokio::sync::OnceCell<ToolRendering>,
+    /// How tools are rendered, decided once per distinct tool list. It depends
+    /// on the tools and on the model's template, not on the instance, while
+    /// `rollout` runs once per trajectory per group per update - deriving a
+    /// parser from the template on each of those was pure repeated work. Keyed
+    /// by the list because a scenario may select its own toolset; a run with
+    /// one toolset fills a single entry.
+    tools: tokio::sync::Mutex<HashMap<String, Arc<ToolRendering>>>,
+    /// How many tools the first rendering declared, for the update loop's
+    /// "the model called nothing" diagnostic.
+    declared: std::sync::OnceLock<usize>,
 }
 
 impl RolloutEngine {
@@ -109,7 +113,8 @@ impl RolloutEngine {
             environments: None,
             fallback_parser: Arc::new(HermesToolCallParser),
             limits,
-            tools: tokio::sync::OnceCell::new(),
+            tools: Default::default(),
+            declared: Default::default(),
         })
     }
 
@@ -146,56 +151,67 @@ impl RolloutEngine {
             environments: Some(environments),
             fallback_parser: parser,
             limits,
-            tools: tokio::sync::OnceCell::new(),
+            tools: Default::default(),
+            declared: Default::default(),
         })
     }
 
-    /// How many tools the run declared, once a rollout has settled the
-    /// rendering. Zero before that, and zero for a run with no tools at all,
-    /// which is what the update loop needs to tell "the model called nothing"
-    /// from "there was nothing to call".
+    /// How many tools the first rollout was offered. Zero before that, and zero
+    /// for a run with no tools at all, which is what the update loop needs to
+    /// tell "the model called nothing" from "there was nothing to call".
     pub fn declared_tools(&self) -> usize {
-        self.tools.get().map_or(0, ToolRendering::declared_tools)
+        self.declared.get().copied().unwrap_or(0)
     }
 
-    /// Lists the tools once and asks the policy whether its template can render
-    /// them, which together decide the rendering for the whole run.
+    /// Lists the tools `scenario` is offered and asks the policy whether its
+    /// template can render them, which together decide the rendering of every
+    /// trajectory offered the same list.
     async fn tool_rendering(
         &self,
         environment: Option<&dyn Environment>,
-    ) -> Result<&ToolRendering> {
-        self.tools
-            .get_or_try_init(|| async {
-                let Some(environment) = environment else {
-                    return Ok(ToolRendering::None);
-                };
-                let specs = environment.tools().await?;
-                if specs.is_empty() {
-                    return Ok(ToolRendering::None);
-                }
-                if !self.policy.supports_native_tools().await? {
-                    return prompt_tool_rendering(&specs);
-                }
-                // Asked here and not at construction, because the generated
-                // grammar may name the functions: the parser is derived from
-                // the template *and* the catalog, and the catalog is only
-                // known once the environment has listed it.
-                match self.policy.tool_call_parser(&specs).await? {
-                    Some(parser) => Ok(ToolRendering::Native { specs, parser }),
-                    // The template renders tools but nothing could be derived
-                    // to read them back. Rendering natively anyway would
-                    // rebuild the exact asymmetry this is here to prevent, so
-                    // both halves fall back together.
-                    None => {
-                        tracing::warn!(
-                            "the model's chat template renders tools but yields no parser for \
-                             its own call format; falling back to the prompt-described convention"
-                        );
-                        prompt_tool_rendering(&specs)
-                    }
-                }
-            })
-            .await
+        scenario: &Scenario,
+    ) -> Result<Arc<ToolRendering>> {
+        let Some(environment) = environment else {
+            return Ok(Arc::new(ToolRendering::None));
+        };
+        let specs = environment.tools(scenario).await?;
+        let key = serde_json::to_string(&specs)
+            .map_err(|error| Error::invalid(format!("serialize tool list: {error}")))?;
+        let mut cache = self.tools.lock().await;
+        if let Some(rendering) = cache.get(&key) {
+            return Ok(rendering.clone());
+        }
+        let rendering = Arc::new(self.render_tools(specs).await?);
+        self.declared.get_or_init(|| rendering.declared_tools());
+        cache.insert(key, rendering.clone());
+        Ok(rendering)
+    }
+
+    async fn render_tools(&self, specs: Vec<ToolSpec>) -> Result<ToolRendering> {
+        if specs.is_empty() {
+            return Ok(ToolRendering::None);
+        }
+        if !self.policy.supports_native_tools().await? {
+            return prompt_tool_rendering(&specs);
+        }
+        // Asked here and not at construction, because the generated grammar
+        // may name the functions: the parser is derived from the template
+        // *and* the catalog, and the catalog is only known once the
+        // environment has listed it.
+        match self.policy.tool_call_parser(&specs).await? {
+            Some(parser) => Ok(ToolRendering::Native { specs, parser }),
+            // The template renders tools but nothing could be derived to read
+            // them back. Rendering natively anyway would rebuild the exact
+            // asymmetry this is here to prevent, so both halves fall back
+            // together.
+            None => {
+                tracing::warn!(
+                    "the model's chat template renders tools but yields no parser for its own \
+                     call format; falling back to the prompt-described convention"
+                );
+                prompt_tool_rendering(&specs)
+            }
+        }
     }
 
     /// One rendering call for the whole engine, so the native and prompt paths

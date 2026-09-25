@@ -146,12 +146,42 @@ EnvironmentProfile: TypeAlias = Literal["python", "typescript", "custom"]
 
 
 @dataclass(frozen=True, slots=True)
+class Tools:
+    """The toolsets a sandbox environment hands its trajectories.
+
+    ``default`` names a toolset - a built-in one (``python``, ``typescript``,
+    ``base``) or one declared in ``files``, TOML files of ``[[tool]]`` and
+    ``[toolset.NAME]`` tables. ``scenario_toolsets`` are the others a scenario
+    may select with ``metadata.env.toolset``.
+    """
+
+    default: str
+    scenario_toolsets: tuple[str, ...] = ()
+    files: tuple[PathLike, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.default.strip():
+            raise ValueError("Tools.default must name a toolset")
+        object.__setattr__(self, "scenario_toolsets", tuple(self.scenario_toolsets))
+        object.__setattr__(self, "files", tuple(self.files))
+
+    def native_dict(self) -> dict[str, object]:
+        return {
+            "default": self.default,
+            "scenario_toolsets": list(self.scenario_toolsets),
+            "files": [os.fspath(path) for path in self.files],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ContainerEnvironment:
     """Container-backed environment with one pool per trajectory.
 
-    Requires a native build with the ``container`` feature.
+    Requires a native build with the ``container`` feature. ``profile`` picks
+    the default image and package cache; ``tools`` picks the tools.
     """
 
+    tools: Tools
     profile: EnvironmentProfile = "python"
     #: Overrides the profile's image. Prefer ``name@sha256:…`` - a run resumed
     #: three weeks later on a moving tag is not the same environment.
@@ -159,11 +189,6 @@ class ContainerEnvironment:
     allow_network: bool = False
     limits: SandboxLimits = field(default_factory=SandboxLimits)
     pool: SandboxPool = field(default_factory=SandboxPool)
-    #: Tool names to hide, ``*`` allowed. Adding a tool is done in Rust; taking
-    #: one away is configuration.
-    deny_tools: tuple[str, ...] = ()
-    #: Positive registry selection. ``None`` keeps the profile preset.
-    tools: tuple[str, ...] | None = None
     #: Volume mounted read-only on the profile's package cache. This is the real
     #: payoff of ``reuse="workspace"``: one install per run, not one per episode.
     cache_volume: str | None = None
@@ -171,9 +196,6 @@ class ContainerEnvironment:
     verify_timeout: int | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "deny_tools", tuple(self.deny_tools))
-        if self.tools is not None:
-            object.__setattr__(self, "tools", tuple(self.tools))
         if self.profile not in ("python", "typescript", "custom"):
             raise ValueError(f"unknown environment profile {self.profile!r}")
         if self.profile == "custom" and not self.image:
@@ -184,22 +206,19 @@ class ContainerEnvironment:
             raise ValueError("verify_timeout must be greater than zero")
 
     def native_dict(self) -> dict[str, object]:
-        config: dict[str, object] = {
+        return {
             "type": "container",
             "profile": self.profile,
+            "tools": self.tools.native_dict(),
             "image": self.image,
             "allow_network": self.allow_network,
             "limits": self.limits.native_dict(),
             "pool": self.pool.native_dict(),
-            "deny_tools": list(self.deny_tools),
             "cache_volume": self.cache_volume,
             "setup_timeout_secs": self.setup_timeout,
             "verify_timeout_secs": self.verify_timeout,
             "run_id": None,
         }
-        if self.tools is not None:
-            config["tools"] = list(self.tools)
-        return config
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,19 +230,12 @@ class LocalEnvironment:
     it on.
     """
 
-    profile: EnvironmentProfile = "python"
+    tools: Tools
     allow_unsandboxed: bool = False
-    deny_tools: tuple[str, ...] = ()
-    tools: tuple[str, ...] | None = None
     setup_timeout: int = 300
     verify_timeout: int | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "deny_tools", tuple(self.deny_tools))
-        if self.tools is not None:
-            object.__setattr__(self, "tools", tuple(self.tools))
-        if self.profile not in ("python", "typescript", "custom"):
-            raise ValueError(f"unknown environment profile {self.profile!r}")
         if not self.allow_unsandboxed:
             raise ValueError(
                 "a local environment runs model-generated code on this machine with no "
@@ -231,17 +243,13 @@ class LocalEnvironment:
             )
 
     def native_dict(self) -> dict[str, object]:
-        config: dict[str, object] = {
+        return {
             "type": "local",
-            "profile": self.profile,
+            "tools": self.tools.native_dict(),
             "allow_unsandboxed": self.allow_unsandboxed,
-            "deny_tools": list(self.deny_tools),
             "setup_timeout_secs": self.setup_timeout,
             "verify_timeout_secs": self.verify_timeout,
         }
-        if self.tools is not None:
-            config["tools"] = list(self.tools)
-        return config
 
 
 @dataclass(frozen=True, slots=True)

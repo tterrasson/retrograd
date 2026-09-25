@@ -15,6 +15,7 @@ from .agent import (
     SandboxLimits,
     SandboxPool,
     Scenario,
+    Tools,
 )
 from .config import (
     CriticConfig,
@@ -107,6 +108,7 @@ __all__ = [
     "Scenario",
     "Scheduler",
     "TokenScores",
+    "Tools",
     "TrainSequence",
     "TrainableConfig",
     "TrainableExclusion",

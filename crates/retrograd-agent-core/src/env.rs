@@ -93,9 +93,10 @@ pub trait Environment: Send {
     /// and it is counted by `agent/tool_error_fraction` rather than as a failure.
     async fn step(&mut self, call: &ToolCall) -> Result<StepOutcome>;
 
-    /// The tool list. It describes the environment *kind*, not the instance, so
-    /// the engine fetches it once per run and reuses it for every trajectory.
-    async fn tools(&self) -> Result<Vec<ToolSpec>>;
+    /// The tools a trajectory of `scenario` is offered. Read before `reset`,
+    /// once per group, so it must be a function of the scenario and never of
+    /// the instance's state: every member of a group sees the same tools.
+    async fn tools(&self, scenario: &Scenario) -> Result<Vec<ToolSpec>>;
 
     /// Where the episode ended up. The default is empty: an environment with
     /// nothing inspectable to report is the common case, and reporting nothing

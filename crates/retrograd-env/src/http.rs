@@ -15,8 +15,8 @@
 //! | `POST /close` | `{"env_id": …}`             | any 2xx, body never read - `204` is fine       |
 //! | `GET /state/{env_id}` | - | `EnvState`, or `404` for a server with none    |
 //!
-//! `/tools` is fetched once per run by the engine, so it must describe the
-//! environment kind rather than a live instance.
+//! `/tools` is fetched once per run and shared by every instance, so it must
+//! describe the environment kind rather than a live instance.
 //!
 //! This is also the bridge to an OpenEnv-style server: `reset`/`step`/`state`/
 //! `close` is the same shape under another name, and everything that must stay
@@ -39,6 +39,9 @@ pub use retrograd_spec::env::HttpEnvironmentConfig;
 pub struct HttpEnvironmentFactory {
     client: reqwest::Client,
     config: Arc<HttpEnvironmentConfig>,
+    /// `/tools` describes the server, not a session: fetched by the first
+    /// instance asked, then shared by every other one.
+    tools: Arc<tokio::sync::OnceCell<Vec<ToolSpec>>>,
 }
 
 impl HttpEnvironmentFactory {
@@ -63,6 +66,7 @@ impl HttpEnvironmentFactory {
         Ok(Self {
             client,
             config: Arc::new(config),
+            tools: Arc::default(),
         })
     }
 }
@@ -73,6 +77,7 @@ impl EnvironmentFactory for HttpEnvironmentFactory {
         Ok(Box::new(HttpEnvironment {
             client: self.client.clone(),
             config: self.config.clone(),
+            tools: self.tools.clone(),
             env_id: None,
         }))
     }
@@ -81,6 +86,7 @@ impl EnvironmentFactory for HttpEnvironmentFactory {
 pub struct HttpEnvironment {
     client: reqwest::Client,
     config: Arc<HttpEnvironmentConfig>,
+    tools: Arc<tokio::sync::OnceCell<Vec<ToolSpec>>>,
     /// Allocated by `reset`, required by every later call. `None` before the
     /// first reset and after `close`.
     env_id: Option<String>,
@@ -289,10 +295,16 @@ impl Environment for HttpEnvironment {
         })
     }
 
-    async fn tools(&self) -> Result<Vec<ToolSpec>> {
-        let request = self.client.get(self.url("tools"));
-        let response: ToolsResponse = self.send(request, "tools").await?;
-        Ok(response.tools)
+    /// The same list for every scenario: the server owns its tools.
+    async fn tools(&self, _scenario: &Scenario) -> Result<Vec<ToolSpec>> {
+        self.tools
+            .get_or_try_init(|| async {
+                let request = self.client.get(self.url("tools"));
+                let response: ToolsResponse = self.send(request, "tools").await?;
+                Ok::<_, Error>(response.tools)
+            })
+            .await
+            .cloned()
     }
 
     /// `GET /state/{env_id}`, and the one route a server may simply not have:
@@ -564,7 +576,13 @@ mod tests {
         let base = serve(state.clone()).await;
         let factory = HttpEnvironmentFactory::new(HttpEnvironmentConfig::new(base)).unwrap();
 
-        let tools = factory.create().await.unwrap().tools().await.unwrap();
+        let tools = factory
+            .create()
+            .await
+            .unwrap()
+            .tools(&scenario())
+            .await
+            .unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "count");
 

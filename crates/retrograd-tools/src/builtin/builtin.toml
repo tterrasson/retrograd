@@ -1,0 +1,74 @@
+# The built-in tools and toolsets, in the format of any definition file.
+#
+# A description, a schema or an output wording that changes is a new version:
+# add `id@2` beside `id@1`, never edit `id@1`. The builtin toolsets pin exact
+# versions, so a new version changes no existing run.
+
+[[tool]]
+id = "bash"
+version = 1
+builtin = { factory = "shell" }
+
+[[tool]]
+id = "python"
+version = 1
+builtin = { factory = "interpreter", params = { language = "python", argv = ["python3", "-c"] } }
+
+[[tool]]
+id = "node"
+version = 1
+builtin = { factory = "interpreter", params = { language = "node", argv = ["node", "-e"] } }
+
+[[tool]]
+id = "pytest"
+version = 1
+name = "run_tests"
+builtin = { factory = "run_tests", params = { argv = ["python3", "-m", "pytest", "-q"] } }
+
+[[tool]]
+id = "npm_test"
+version = 1
+name = "run_tests"
+builtin = { factory = "run_tests", params = { argv = ["npm", "test", "--silent"] } }
+
+[[tool]]
+id = "read_file"
+version = 1
+builtin = { factory = "read_file" }
+
+[[tool]]
+id = "write_file"
+version = 1
+builtin = { factory = "write_file" }
+
+[[tool]]
+id = "edit_file"
+version = 1
+builtin = { factory = "edit_file" }
+
+[[tool]]
+id = "list_dir"
+version = 1
+builtin = { factory = "list_dir" }
+
+[[tool]]
+id = "grep"
+version = 1
+builtin = { factory = "grep" }
+
+[[tool]]
+id = "submit"
+version = 1
+builtin = { factory = "submit" }
+
+# Workspace tools every coding toolset shares.
+[toolset.base]
+tools = ["bash@1", "read_file@1", "write_file@1", "edit_file@1", "list_dir@1", "grep@1", "submit@1"]
+
+[toolset.python]
+include = ["base"]
+tools = ["python@1", "pytest@1"]
+
+[toolset.typescript]
+include = ["base"]
+tools = ["node@1", "npm_test@1"]

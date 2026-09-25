@@ -33,10 +33,13 @@ impl RolloutEngine {
     ) -> Result<Vec<Result<Trajectory>>> {
         let listing = before_deadline(
             deadline,
-            self.tool_rendering(environments.first().map(|environment| &**environment)),
+            self.tool_rendering(
+                environments.first().map(|environment| &**environment),
+                scenario,
+            ),
         )
         .await;
-        let rendering = match listing {
+        let rendering = &*match listing {
             Some(rendering) => rendering?,
             None => {
                 return Err(Error::Tool(deadline_expired(

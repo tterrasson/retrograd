@@ -4,6 +4,7 @@
 //! run publishes. Resolving one against a registry, an MCP server or a file on
 //! disk is `retrograd-tools`' business, and stays there.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use retrograd_agent_core::{Error, Result, ToolSpec};
@@ -11,35 +12,50 @@ use retrograd_core::hex_lower;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::tools::{McpServerConfig, Profile, ToolFilter};
+use crate::tools::{McpServerConfig, ToolsConfig};
 
-/// A run's declared tool selection: some built-in/registry names, a language
-/// profile that fills in the rest, MCP servers (inline and read from files),
-/// and a filter applied over their union. `retrograd-tools` resolves this
-/// against a live registry and filesystem into a [`ToolCatalog`].
+/// A run's declared tools: the session tools of its sandbox environment, if it
+/// has one, and the MCP servers shared by every trajectory (inline and read
+/// from files). `retrograd-tools` resolves this against a live registry and
+/// filesystem into a [`ToolCatalog`].
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ToolPlan {
-    pub builtin: Option<Vec<String>>,
-    pub profile: Profile,
+    /// The `tools` table of a container or local environment.
+    pub session: Option<ToolsConfig>,
     pub mcp_servers: Vec<McpServerConfig>,
     pub mcp_config_files: Vec<PathBuf>,
-    pub filter: ToolFilter,
 }
 
-/// Where a catalogued tool was resolved from.
+/// Where a catalogued tool was resolved from, and what decides its behaviour.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToolSource {
-    Builtin,
-    Registry { name: String },
-    Mcp { server: String },
+    /// A Rust implementation and the parameters it was built with.
+    Builtin {
+        factory: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        params: String,
+    },
+    /// A program run in the sandbox. `sha256` covers the argv, the script's
+    /// contents, the protocol and the timeout: the catalog hash changes when
+    /// the tool does, not only when its description does.
+    Exec {
+        sha256: String,
+    },
+    Mcp {
+        server: String,
+    },
 }
 
 /// One resolved tool, ready to be offered to a model.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogEntry {
+    pub id: String,
+    /// `None` for an MCP tool, which its server versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
     pub spec: ToolSpec,
     pub source: ToolSource,
     /// Whether this tool carries state across calls within a session (a shell,
@@ -47,6 +63,16 @@ pub struct CatalogEntry {
     /// group members (a read-only lookup). An MCP server is stateful unless it
     /// explicitly declared itself `stateless`.
     pub stateful: bool,
+}
+
+impl CatalogEntry {
+    /// `id@version`, or the bare id of an MCP tool.
+    pub fn reference(&self) -> String {
+        match self.version {
+            Some(version) => format!("{}@{version}", self.id),
+            None => self.id.clone(),
+        }
+    }
 }
 
 /// One resource (not a tool) an MCP server advertises: a URI a model can read.
@@ -68,6 +94,12 @@ pub struct ResourceSpec {
 #[serde(deny_unknown_fields)]
 pub struct ToolCatalog {
     pub tools: Vec<CatalogEntry>,
+    /// Each selectable toolset, as the references of its tools.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub toolsets: BTreeMap<String, Vec<String>>,
+    /// The toolset of a scenario that names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_toolset: Option<String>,
     pub resources: Vec<ResourceSpec>,
     pub warnings: Vec<String>,
     pub sha256: String,
@@ -79,13 +111,18 @@ impl ToolCatalog {
     /// tools produce byte-identical catalogs regardless of discovery order
     /// (registry lookup order, MCP handshake timing).
     pub fn canonicalize(mut self) -> Result<Self> {
+        self.tools.sort_by(|a, b| {
+            (&a.id, a.version, &a.spec.name).cmp(&(&b.id, b.version, &b.spec.name))
+        });
         self.tools
-            .sort_by(|a, b| (&a.source, &a.spec.name).cmp(&(&b.source, &b.spec.name)));
+            .dedup_by(|a, b| a.id == b.id && a.version == b.version && a.spec.name == b.spec.name);
         self.resources
             .sort_by(|a, b| (&a.server, &a.uri).cmp(&(&b.server, &b.uri)));
         self.warnings.sort();
         let view = serde_json::json!({
             "tools": self.tools,
+            "toolsets": self.toolsets,
+            "default_toolset": self.default_toolset,
             "resources": self.resources,
         });
         let bytes = serde_json::to_vec(&view)

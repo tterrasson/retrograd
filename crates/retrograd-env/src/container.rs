@@ -4,9 +4,10 @@
 //! behind the `container` feature: that is what makes bollard absent from a run
 //! whose tools are all read-only, rather than merely unused.
 //!
-//! Nothing here decides policy. A profile fills in an image, a package cache
-//! and a tool list; every one of those is overridable, and the security
-//! defaults are the container crate's own - this module never widens them.
+//! Nothing here decides policy. A profile fills in an image and a package
+//! cache; both are overridable, and the security defaults are the container
+//! crate's own - this module never widens them. The tools are not the
+//! profile's: they arrive resolved, as [`Toolsets`].
 
 use std::sync::Arc;
 
@@ -15,22 +16,21 @@ use retrograd_container::{
     ContainerSource, DaemonLocality, DockerClient, MountSpec, NetworkMode, SandboxMetrics,
     SandboxPool, reap,
 };
-use retrograd_tools::{Profile, ToolSet, ToolSetBuilder};
+use retrograd_spec::env::Profile;
+use retrograd_tools::Toolsets;
 
 use crate::sandbox::{SandboxEnvironmentConfig, SandboxEnvironmentFactory};
 
 pub use retrograd_spec::env::{ContainerEnvironmentConfig, ContainerPoolConfig};
 
-/// What a declared container environment can do once there is a tool registry
-/// and a daemon.
+/// What a declared container environment can do once there is a daemon.
 ///
-/// The declaration itself is `retrograd-spec`'s: building
-/// a `ContainerSpec` and a `ToolSet` from it is this crate's, and the split is
-/// what lets a configuration be *read* without linking bollard.
+/// The declaration itself is `retrograd-spec`'s: building a `ContainerSpec`
+/// from it is this crate's, and the split is what lets a configuration be
+/// *read* without linking bollard.
 pub trait ContainerEnvironment {
     fn image(&self) -> Result<String>;
     fn validate(&self) -> Result<()>;
-    fn tools(&self, extra: ToolSetBuilder) -> Result<ToolSet>;
 }
 
 impl ContainerEnvironment for ContainerEnvironmentConfig {
@@ -46,8 +46,8 @@ impl ContainerEnvironment for ContainerEnvironmentConfig {
         }
     }
 
-    /// Everything checkable without a daemon: the image, the container spec's
-    /// own refusals (root, the Docker socket, absurd limits) and the tool set.
+    /// Everything checkable without a daemon: the image and the container
+    /// spec's own refusals (root, the Docker socket, absurd limits).
     ///
     /// It exists so a catalogue or a config loader can reject a declaration at
     /// startup. What it cannot check - that the image exists, that the daemon
@@ -56,20 +56,7 @@ impl ContainerEnvironment for ContainerEnvironmentConfig {
     fn validate(&self) -> Result<()> {
         self.validate_declaration()?;
         container_spec(self)?;
-        self.tools(ToolSet::builder())?;
         Ok(())
-    }
-
-    /// Builds the tool set: the profile's tools, minus what the operator denied.
-    fn tools(&self, extra: ToolSetBuilder) -> Result<ToolSet> {
-        let extra = match &self.tools {
-            Some(names) => extra.with_registry(
-                &retrograd_tools::ToolRegistry::builtin(),
-                &self.profile.registry_names(names),
-            )?,
-            None => extra.with_profile(self.profile),
-        };
-        extra.deny(self.deny_tools.clone()).build()
     }
 }
 
@@ -146,14 +133,13 @@ pub async fn connect_pool(
 /// The whole environment side of a container run, in one call.
 pub async fn build_factory(
     config: &ContainerEnvironmentConfig,
-    extra_tools: ToolSetBuilder,
+    toolsets: Toolsets,
 ) -> Result<(SandboxEnvironmentFactory, Arc<SandboxMetrics>)> {
-    let tools = config.tools(extra_tools)?;
     let (pool, metrics, image) = connect_pool(config).await?;
     tracing::info!(%image, "container environment pinned to image digest");
     let factory = SandboxEnvironmentFactory::new(
         pool as Arc<dyn SandboxProvider>,
-        tools,
+        toolsets,
         SandboxEnvironmentConfig {
             // Both: the reference the operator configured, and what it resolved
             // to. Keeping only the first would compare scenarios against a tag
@@ -176,7 +162,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_profile_fills_in_an_image_a_cache_and_a_tool_list() {
+    fn a_profile_fills_in_an_image_and_a_cache() {
         let python = ContainerEnvironmentConfig {
             cache_volume: Some("retrograd-pip".into()),
             ..Default::default()
@@ -193,14 +179,6 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(typescript.image().unwrap(), "node:22-slim");
-        let names = typescript
-            .tools(ToolSet::builder())
-            .unwrap()
-            .specs()
-            .iter()
-            .map(|spec| spec.name.clone())
-            .collect::<Vec<_>>();
-        assert!(names.contains(&"node".to_owned()) && names.contains(&"submit".to_owned()));
     }
 
     /// `custom` exists so an operator can bring their own image; forgetting to
@@ -211,6 +189,7 @@ mod tests {
     #[test]
     fn an_impossible_pool_is_refused_at_declaration() {
         let config = ContainerEnvironmentConfig {
+            tools: python_tools(),
             pool: ContainerPoolConfig {
                 max_live: 2,
                 min_idle: 8,
@@ -229,12 +208,10 @@ mod tests {
             ..Default::default()
         };
         assert!(config.image().is_err());
-        // …and with an image, it advertises only what the caller registered.
         let config = ContainerEnvironmentConfig {
             image: Some("ghcr.io/me/tasks@sha256:abc".into()),
             ..config
         };
-        assert!(config.tools(ToolSet::builder()).unwrap().is_empty());
         assert_eq!(
             container_spec(&config).unwrap().image,
             "ghcr.io/me/tasks@sha256:abc"
@@ -242,24 +219,28 @@ mod tests {
     }
 
     #[test]
-    fn denied_tools_are_removed_and_the_network_stays_a_decision() {
+    fn the_network_stays_a_decision_and_a_toolset_is_required() {
         let config = ContainerEnvironmentConfig {
-            deny_tools: vec!["bash".into(), "run_*".into()],
+            tools: python_tools(),
             allow_network: true,
             ..Default::default()
         };
         config.validate().unwrap();
-        let tools = config.tools(ToolSet::builder()).unwrap();
-        let names = tools
-            .specs()
-            .iter()
-            .map(|spec| spec.name.as_str())
-            .collect::<Vec<_>>();
-        assert!(!names.contains(&"bash") && !names.contains(&"run_tests"));
-        assert!(names.contains(&"python"));
         assert_eq!(
             container_spec(&config).unwrap().network,
             NetworkMode::Bridge
         );
+        let error = ContainerEnvironmentConfig::default()
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("tools.default"), "{error}");
+    }
+
+    fn python_tools() -> retrograd_tools::ToolsConfig {
+        retrograd_tools::ToolsConfig {
+            default: Some("python".into()),
+            ..Default::default()
+        }
     }
 }
