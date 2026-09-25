@@ -247,6 +247,19 @@ pub(crate) fn init_trainer(
     let mem_after_model = snapshot_bytes();
     let vram_after_model = vram.sample();
 
+    // A base-weight policy trains nothing until its set is declared, and the
+    // parameter filter reads it at graph build: declared before the preflight.
+    if run_config.training.trainable.policy.trains_base_weights() {
+        let inventory =
+            retrograd_engine::tensor_inventory(&run_config.model, run_config.training.device)?;
+        let set = retrograd_core::resolve_base(
+            &inventory,
+            run_config.training.trainable.policy,
+            &run_config.training.trainable.selector,
+        )?;
+        trainer.declare_trainable_set(&set)?;
+    }
+
     // --- Phase: LoRA adapter creation. ---
     let t = Instant::now();
     if let Some(lora) = &run_config.lora {
