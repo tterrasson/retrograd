@@ -73,7 +73,7 @@ fn bench_validates_arguments_before_model_loading() {
         "run.toml",
         "--data",
         "one.jsonl",
-        "--eval-data",
+        "--data",
         "two.jsonl",
     ]);
     assert!(!output.status.success());

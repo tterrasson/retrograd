@@ -80,7 +80,6 @@ Commands:
   preflight --model base.gguf [--device auto|cpu|gpu] [--targets a,b] [--strict]
 
 Compatibility aliases:
-  bench: --dataset --eval-data
   chat: --base_only --temperature --top_p --max_new_tokens --max-tokens";
 
 #[cfg(test)]

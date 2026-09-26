@@ -23,8 +23,6 @@ use report::{print_distill_bench_report, print_reward_bench_report, print_sft_be
 pub(crate) const FLAGS: &[&str] = &[
     "--model",
     "--data",
-    "--dataset",
-    "--eval-data",
     "--adapter",
     "--device",
     "--format",
@@ -362,7 +360,7 @@ fn parse_bench_args(args: &[String]) -> Result<BenchArgs> {
                 args.once(&mut model_seen, "--model")?;
                 model = Some(PathBuf::from(value));
             }
-            "--data" | "--dataset" | "--eval-data" => {
+            "--data" => {
                 if data.replace(PathBuf::from(value)).is_some() {
                     return Err(Error::invalid(
                         "bench accepts exactly one evaluation dataset",
