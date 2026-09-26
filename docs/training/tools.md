@@ -134,10 +134,8 @@ vocabularies, or to A/B two versions of a tool in the same run.
 
 ## Reproducibility
 
-The catalog hash covers every tool's spec and implementation, including the
-exec argv, script contents, protocol and timeout, as well as the toolsets. It is
-part of the run signature, so a resume fails if a definition file or a
-script has changed since the run started.
+The tools and toolsets definitions are part of the run signature. A resume
+fails if a definition file or a script has changed since the run started.
 
 ## MCP servers
 

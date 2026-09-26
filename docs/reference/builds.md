@@ -69,11 +69,11 @@ Requires Xcode or the Xcode Command Line Tools. Enabled by default on macOS;
 
 ## Other build variables
 
-| Variable | Effect |
-| --- | --- |
-| `RETRO_NATIVE=1` | Optimize CPU kernels for the build machine. The binary may not run elsewhere. |
-| `RETRO_GGML_LINK=static\|shared` | How the native runtime is linked. Release builds are static, so the binary can be copied anywhere. |
+`RETRO_NATIVE=1` optimizes the CPU kernels for the build machine. The binary
+may not run elsewhere. `RETRO_GGML_LINK=static` or `shared` changes how
+the native runtime is linked; release builds are static by default, so the
+binary can be copied anywhere.
 
-Changing one of these variables rebuilds the native runtime in the same
-`target/` directory. Keep them constant, or use a separate `CARGO_TARGET_DIR`
-per variant, to avoid rebuilding back and forth.
+Changing either variable rebuilds the native runtime in the same `target/`
+directory. Keep them constant, or use a separate `CARGO_TARGET_DIR` per
+variant, to avoid rebuilding back and forth.
