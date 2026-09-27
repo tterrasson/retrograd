@@ -37,7 +37,7 @@ use retrograd_metrics::{MetricEvent, MetricsBus, MetricsSink, TensorBoardSink, W
 
 pub use control::{
     AdHocEvaluation, ControlPoint, Flow, FreeRunning, GenerationOutput, GenerationRequest,
-    RunControl, RunControls,
+    RunControl, RunControls, TrainerTask,
 };
 pub use controller::{EvalDirection, RunController};
 pub use observer::{

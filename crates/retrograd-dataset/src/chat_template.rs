@@ -118,7 +118,7 @@ impl SystemTurn for TemplateMessage<'_> {
 /// An assistant turn's `tool_calls` are not handed over either, for the same
 /// reason: the calls are already inside the sampled tokens.
 pub fn template_messages(messages: &[TemplateMessage<'_>]) -> Result<(String, Vec<String>)> {
-    serialize_messages(messages, None)
+    serialize_messages(messages, Reveal::None)
 }
 
 /// [`template_messages`] with assistant turn `reveal` (counted among assistant
@@ -132,12 +132,40 @@ pub fn template_messages_revealing(
     messages: &[TemplateMessage<'_>],
     reveal: usize,
 ) -> Result<String> {
-    serialize_messages(messages, Some(reveal)).map(|(json, _)| json)
+    serialize_messages(messages, Reveal::One(reveal)).map(|(json, _)| json)
+}
+
+/// The conversation as a client sent it: every assistant turn handed over for
+/// real, content and calls, and no sentinel anywhere.
+///
+/// For a caller that has no sampled tokens to preserve - a server answering a
+/// chat request only has the text the client sends back, so the template is the
+/// only thing that can decide how an earlier assistant turn reads.
+pub fn template_messages_verbatim(messages: &[TemplateMessage<'_>]) -> Result<String> {
+    serialize_messages(messages, Reveal::All).map(|(json, _)| json)
+}
+
+/// Which assistant turns [`serialize_messages`] hands over instead of a sentinel.
+#[derive(Clone, Copy)]
+enum Reveal {
+    None,
+    One(usize),
+    All,
+}
+
+impl Reveal {
+    fn reveals(self, index: usize) -> bool {
+        match self {
+            Self::None => false,
+            Self::One(revealed) => revealed == index,
+            Self::All => true,
+        }
+    }
 }
 
 fn serialize_messages(
     messages: &[TemplateMessage<'_>],
-    reveal: Option<usize>,
+    reveal: Reveal,
 ) -> Result<(String, Vec<String>)> {
     let mut sentinels = Vec::new();
     let mut assistant = 0;
@@ -149,7 +177,7 @@ fn serialize_messages(
             let content = if message.role == "assistant" {
                 let index = assistant;
                 assistant += 1;
-                if reveal == Some(index) {
+                if reveal.reveals(index) {
                     if !message.tool_calls.is_empty() {
                         object.insert("tool_calls".into(), openai_calls(message.tool_calls));
                     }

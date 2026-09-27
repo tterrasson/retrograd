@@ -54,6 +54,9 @@ struct Operation {
     /// What a `200` means for an operation that normally answers `201`,
     /// nothing was made, because it already existed.
     repeat: Option<&'static str>,
+    /// One of the OpenAI-compatible routes: tagged `openai`, and failing with
+    /// an OpenAI error envelope rather than a problem document.
+    openai: bool,
 }
 
 const fn op(
@@ -73,6 +76,7 @@ const fn op(
         response,
         created: false,
         repeat: None,
+        openai: false,
     }
 }
 
@@ -96,6 +100,11 @@ impl Operation {
 
     const fn with_query(mut self, params: &'static [QueryParam]) -> Self {
         self.query = params;
+        self
+    }
+
+    const fn openai(mut self) -> Self {
+        self.openai = true;
         self
     }
 }
@@ -355,6 +364,33 @@ const OPERATIONS: &[Operation] = &[
         None,
         None,
     ),
+    // The OpenAI contract, whose documents are OpenAI's: described by the
+    // OpenAI API reference rather than restated here as components.
+    op(
+        "get",
+        "/v1/models",
+        "OpenAI: every model id resolvable now - runs, checkpoints, bases",
+        None,
+        None,
+    )
+    .openai(),
+    op(
+        "get",
+        "/v1/models/{model}",
+        "OpenAI: one model id",
+        None,
+        None,
+    )
+    .openai(),
+    op(
+        "post",
+        "/v1/chat/completions",
+        "OpenAI: a chat completion from a run's weights, streamed or not",
+        None,
+        None,
+    )
+    .accepts(&["application/json"])
+    .openai(),
 ];
 
 /// The paths object, built from [`OPERATIONS`].
@@ -372,6 +408,9 @@ fn paths() -> Value {
         let parameters = parameters(operation);
         if !parameters.is_empty() {
             item["parameters"] = Value::Array(parameters);
+        }
+        if operation.openai {
+            item["tags"] = json!(["openai"]);
         }
         if let Some(request) = operation.request {
             item["requestBody"] = json!({

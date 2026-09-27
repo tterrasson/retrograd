@@ -212,6 +212,27 @@ impl Trainer {
                  weights: no anchor is attached to this run",
             ));
         }
+        self.without_adapter(operation)
+    }
+
+    /// Runs several forward-only calls against the model this run started
+    /// from: this model with its adapter disabled, never the attached anchor,
+    /// which may be another file. A base-weight run is refused: the weights it
+    /// started from are the ones being trained.
+    pub fn with_base_model<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        if self.trains_base_weights() {
+            return Err(Error::invalid(
+                "this run trains its base weights, so the model it started from is no longer \
+                 loaded",
+            ));
+        }
+        self.without_adapter(operation)
+    }
+
+    fn without_adapter<T>(&mut self, operation: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         self.set_lora_enabled(false)?;
         let result = operation(self);
         let restore = self.set_lora_enabled(true);

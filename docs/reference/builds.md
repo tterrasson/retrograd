@@ -32,8 +32,9 @@ What each backend supports is in the
 | `mcp` | MCP servers as tools for [agentic GRPO](../training/agent). |
 | `container` | Docker/Podman sandboxes for agentic GRPO. |
 
-`cli` (the command-line tools) and `agent` (agentic GRPO) are enabled by
-default; keep them when you pass `--no-default-features`.
+`cli` (the command-line tools), `agent` (agentic GRPO) and `serve`
+([`retrograd serve`](./cli#serve), which adds an HTTP server) are enabled by
+default; keep the ones you need when you pass `--no-default-features`.
 
 ## CUDA
 

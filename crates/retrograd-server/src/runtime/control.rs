@@ -19,7 +19,7 @@ use retrograd_config::CheckpointMode;
 use retrograd_core::Result as CoreResult;
 use retrograd_run::{
     AdHocEvaluation, ControlPoint, Flow, GenerationOutput, GenerationRequest, RunControl,
-    RunControls,
+    RunControls, TrainerTask,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -118,6 +118,10 @@ pub enum RunCommand {
     Evaluate(Reply<AdHocEvaluation>),
     /// Sample once against the adapter as it is at the next callback.
     Generate(Box<GenerationRequest>, Reply<GenerationOutput>),
+    /// Lend the trainer to one task at the next callback - a chat completion,
+    /// which renders, samples and parses with its own code and answers on its
+    /// own channel. The reply only says where the run was when it ran.
+    WithTrainer(TrainerTask, Reply<()>),
 }
 
 /// How many unread commands a run may hold.
@@ -255,6 +259,13 @@ impl ChannelControl {
                 }
                 let outcome = controls.generate(&request);
                 let _ = reply.send(outcome.map(|output| (at.into(), output)));
+            }
+            RunCommand::WithTrainer(task, reply) => {
+                if reply.is_closed() {
+                    return;
+                }
+                let outcome = controls.with_trainer(task);
+                let _ = reply.send(outcome.map(|()| (at.into(), ())));
             }
         }
     }

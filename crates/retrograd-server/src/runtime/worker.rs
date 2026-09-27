@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use retrograd_config::RunConfig;
 use retrograd_metrics::{MetricEvent, MetricsSink};
+use retrograd_openai::Session;
 use retrograd_run::{EvaluationReport, LoopPlan, RolloutEpoch, RunObserver, SftEpoch, SftStep};
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
@@ -34,6 +35,7 @@ use crate::dto;
 pub fn spawn(
     engine: Arc<dyn RunEngine>,
     device: Arc<Semaphore>,
+    serving: Arc<Session>,
     handle: Arc<RunHandle>,
     config: Box<RunConfig>,
     commands: mpsc::Receiver<RunCommand>,
@@ -42,7 +44,19 @@ pub fn spawn(
         // `queued` until a permit is free. With `max_concurrent_runs = 1` - the
         // default - this is where a second run waits for the first, rather than
         // being refused: a queue is what a caller can plan around, a 503 is not.
-        let permit = match device.clone().acquire_owned().await {
+        //
+        // The chat session borrows the same permit. A run that finds none free
+        // asks it back before queueing: the session answers the request it is
+        // serving and releases the device, and an inference nobody finished
+        // with never holds a training run in `queued`.
+        let permit = match device.clone().try_acquire_owned() {
+            Ok(permit) => Ok(permit),
+            Err(_) => {
+                serving.yield_device();
+                device.clone().acquire_owned().await
+            }
+        };
+        let permit = match permit {
             Ok(permit) => permit,
             Err(_) => {
                 handle.fail("the device queue was closed before the run started");

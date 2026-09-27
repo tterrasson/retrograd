@@ -32,6 +32,7 @@ members = [
     "crates/retrograd-plan",
     "crates/retrograd-run",
     "crates/retrograd-server",
+    "crates/retrograd-openai",
     "crates/retrograd-agent-core",
     "crates/retrograd-agent",
     "crates/retrograd-judge",
@@ -92,6 +93,7 @@ retrograd-llm-client = { path = "crates/retrograd-llm-client" }
 retrograd-memory = { path = "crates/retrograd-memory" }
 retrograd-metrics = { path = "crates/retrograd-metrics" }
 retrograd-observe = { path = "crates/retrograd-observe" }
+retrograd-openai = { path = "crates/retrograd-openai" }
 retrograd-plan = { path = "crates/retrograd-plan" }
 retrograd-run = { path = "crates/retrograd-run", default-features = false }
 retrograd-scenario-gen = { path = "crates/retrograd-scenario-gen" }
@@ -111,6 +113,7 @@ rir-lower = { path = "crates/rir-lower" }
 rir-runtime = { path = "crates/rir-runtime" }
 rir-sweep = { path = "crates/rir-sweep" }
 
+async-stream = "0.3"
 async-trait = "0.1"
 axum = "0.8"
 comfy-table = "8"
@@ -136,6 +139,7 @@ tokio = "1"
 tower = "0.5"
 tracing = "0.1"
 utoipa = "5"
+uuid = "1"
 
 [lib]
 name = "retrograd"
@@ -193,6 +197,11 @@ serde_json.workspace = true
 # profile gets, rather than the condensed `RolloutEpoch` a `RunObserver` sees.
 retrograd-agent = { workspace = true, optional = true, features = ["http-env"] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"], optional = true }
+# `retrograd serve`: the OpenAI chat-completions contract over one model, and
+# the HTTP server that carries it. The run server's stack - its registry, its
+# OpenAPI derive - stays out; only the protocol crate and axum come in.
+axum = { workspace = true, optional = true }
+retrograd-openai = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The cost model, for the two integration tests that compare a measured run
@@ -210,7 +219,7 @@ rir-lower.workspace = true
 # `train` runs every algorithm the one schema describes, including
 # `agent_grpo`. The two costly transports stay opt-in: rmcp for MCP tools,
 # bollard for the container pool.
-default = ["agent", "platform-gpu", "cli"]
+default = ["agent", "platform-gpu", "cli", "serve"]
 platform-gpu = ["retrograd-ffi/platform-gpu"]
 metal = ["retrograd-ffi/metal"]
 vulkan = ["retrograd-ffi/vulkan"]
@@ -224,6 +233,7 @@ cuda = ["retrograd-ffi/cuda"]
 # binary, and has no terminal to draw on.
 cli = ["dep:comfy-table", "dep:indicatif", "dep:tracing-subscriber", "dep:retrograd-cli-ui"]
 agent = ["retrograd-run/agent", "dep:retrograd-agent", "dep:tokio"]
+serve = ["agent", "cli", "dep:retrograd-openai", "dep:axum", "tokio/net", "tokio/signal"]
 mcp = ["agent", "retrograd-run/mcp", "retrograd-tools/mcp", "retrograd-agent/mcp"]
 container = ["agent", "retrograd-run/container", "retrograd-agent/container"]
 

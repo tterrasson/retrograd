@@ -27,6 +27,7 @@ binaries=(
   --test api_fork
   --test api_hardening
   --test api_datasets
+  --test api_openai
   --test error_catalog
 )
 

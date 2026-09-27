@@ -84,6 +84,19 @@ pub fn build_router(state: AppState) -> Router {
         ))
         .with_state(state.clone());
 
+    // The OpenAI contract over the runs' weights. No timeout layer, like the
+    // streams: an answer from a live run waits for its next progress callback,
+    // and a stream stays open until then. The bound is `command_timeout`,
+    // applied by the handler. Its own body limit, because a chat history
+    // outgrows the small-request ceiling.
+    let openai = retrograd_openai::router(retrograd_openai::Endpoint {
+        source: std::sync::Arc::new(api::openai::RunModels::new(state.clone())),
+        session: state.serving.clone(),
+        timeout: config.command_timeout(),
+        enabled: config.serving.enabled(),
+    })
+    .layer(RequestBodyLimitLayer::new(config.serving.max_body_bytes()));
+
     let v1 = Router::new()
         .route("/health", get(api::discovery::health))
         .route("/capabilities", get(api::discovery::capabilities))
@@ -130,7 +143,8 @@ pub fn build_router(state: AppState) -> Router {
         .layer(RequestBodyLimitLayer::new(config.max_body_bytes()))
         .with_state(state.clone())
         .merge(streams)
-        .merge(datasets);
+        .merge(datasets)
+        .merge(openai);
 
     Router::new()
         .nest("/v1", v1)
@@ -183,10 +197,22 @@ async fn not_found(uri: http::Uri) -> ApiError {
 /// *middleware* invents: `413` from the body limit, `408` from the timeout, `405`
 /// from axum's method routing. Every failure uses `application/problem+json`,
 /// so a client parsing one shape never meets a second.
+///
+/// The OpenAI routes are the exception: their clients read an OpenAI error
+/// envelope and nothing else, so an envelope passes through untouched and a
+/// middleware's own failure on one of those routes becomes an envelope too.
 async fn as_problem_document(request: Request, next: axum::middleware::Next) -> Response {
+    let openai = api::openai::is_openai_path(request.uri().path());
     let response = next.run(request).await;
     let status = response.status();
     if !status.is_client_error() && !status.is_server_error() {
+        return response;
+    }
+    if response
+        .extensions()
+        .get::<retrograd_openai::OpenAiEnvelope>()
+        .is_some()
+    {
         return response;
     }
     let is_problem = response
@@ -206,7 +232,13 @@ async fn as_problem_document(request: Request, next: axum::middleware::Next) -> 
         }
         _ => "the request could not be served",
     };
-    problem_from_rejection(status, detail).into_response()
+    let problem = problem_from_rejection(status, detail);
+    if openai {
+        return retrograd_openai::OpenAiError::from(problem)
+            .with_status(status)
+            .into_response();
+    }
+    problem.into_response()
 }
 
 /// Trims absolute paths out of problem documents on the way out.
@@ -223,6 +255,13 @@ async fn redact_problem_paths(
     let response = next.run(request).await;
     if !state.config.redact_error_paths() {
         return response;
+    }
+    if response
+        .extensions()
+        .get::<retrograd_openai::OpenAiEnvelope>()
+        .is_some()
+    {
+        return redact_openai_envelope(response).await;
     }
     let is_problem = response
         .headers()
@@ -268,6 +307,30 @@ async fn redact_problem_paths(
     }
     let body = serde_json::to_vec(&document).unwrap_or_else(|_| bytes.to_vec());
     (parts, body).into_response()
+}
+
+/// [`redact_problem_paths`] for the OpenAI envelope: its one prose field is
+/// `error.message`, and a model that failed to load names its file there.
+async fn redact_openai_envelope(response: Response) -> Response {
+    let (parts, body) = response.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 64 * 1024).await else {
+        return (parts.status, "").into_response();
+    };
+    let Ok(mut document) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Response::from_parts(parts, axum::body::Body::from(bytes));
+    };
+    if let Some(message) = document
+        .pointer("/error/message")
+        .and_then(|value| value.as_str())
+    {
+        let redacted = error::redact_paths(message);
+        if redacted != message {
+            tracing::info!(message, "redacted the paths in an error response");
+            document["error"]["message"] = serde_json::Value::String(redacted);
+        }
+    }
+    let body = serde_json::to_vec(&document).unwrap_or_else(|_| bytes.to_vec());
+    Response::from_parts(parts, axum::body::Body::from(body))
 }
 
 /// Axum's own rejections (a malformed JSON body, a missing content type) do not

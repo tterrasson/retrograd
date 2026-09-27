@@ -21,7 +21,9 @@ container = ["retrograd-agent/container"]
 # The SSE handlers are a replay followed by a live subscription; writing
 # that as a generator keeps the two halves in one readable sequence instead of a
 # hand-rolled `Stream` state machine.
-async-stream = "0.3"
+async-stream.workspace = true
+# The model sources of the OpenAI endpoint are `retrograd-openai` traits.
+async-trait.workspace = true
 axum.workspace = true
 bytes = "1.12.1"
 futures-core = "0.3.33"
@@ -40,6 +42,10 @@ retrograd-dataset.workspace = true
 retrograd-engine.workspace = true
 retrograd-memory.workspace = true
 retrograd-metrics.workspace = true
+# `/v1/chat/completions` and `/v1/models` over a run's weights: the protocol and
+# the serving session. This crate adds only what an id means - a run, a
+# checkpoint, the live adapter.
+retrograd-openai.workspace = true
 retrograd-plan.workspace = true
 retrograd-training.workspace = true
 retrograd-run = { workspace = true, features = ["agent"] }
@@ -57,7 +63,7 @@ tower-http = { version = "0.7", features = ["limit", "timeout", "trace"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 utoipa = { workspace = true, optional = true }
-uuid = { version = "1", features = ["serde", "v4"] }
+uuid = { workspace = true, features = ["serde", "v4"] }
 
 [dev-dependencies]
 http-body-util.workspace = true

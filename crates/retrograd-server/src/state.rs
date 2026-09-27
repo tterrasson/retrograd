@@ -99,6 +99,50 @@ pub struct ServerConfig {
     /// image, the limits and the pool; a client only ever names an id.
     #[serde(rename = "environment")]
     pub environments: Vec<CatalogDeclaration>,
+    /// `[serving]`: `/v1/chat/completions` and `/v1/models` over the runs'
+    /// weights.
+    pub serving: ServingConfig,
+}
+
+/// `[serving]`: the OpenAI-compatible endpoint.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ServingConfig {
+    /// On by default: it serves nothing a caller could not already reach
+    /// through `generate` and the artefacts.
+    pub enabled: Option<bool>,
+    /// Seconds a loaded model may sit unused before the device is given back.
+    pub idle_seconds: Option<u64>,
+    /// Seconds a load waits for the device a run holds. Zero, the default,
+    /// refuses at once with a 503 naming the run.
+    pub device_wait_seconds: Option<u64>,
+    /// Chat requests waiting for the serving thread.
+    pub queue: Option<usize>,
+    /// Largest chat request accepted. A long conversation outgrows the
+    /// small-request ceiling of the rest of the API.
+    pub max_body_bytes: Option<usize>,
+}
+
+impl ServingConfig {
+    pub fn enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+
+    pub fn idle(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.idle_seconds.unwrap_or(300))
+    }
+
+    pub fn device_wait(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.device_wait_seconds.unwrap_or(0))
+    }
+
+    pub fn queue(&self) -> usize {
+        self.queue.unwrap_or(8)
+    }
+
+    pub fn max_body_bytes(&self) -> usize {
+        self.max_body_bytes.unwrap_or(4 * 1024 * 1024)
+    }
 }
 
 impl ServerConfig {
@@ -144,6 +188,8 @@ impl ServerConfig {
         for (name, value) in [
             ("max_concurrent_requests", self.max_concurrent_requests),
             ("max_body_bytes", self.max_body_bytes),
+            ("serving.queue", self.serving.queue),
+            ("serving.max_body_bytes", self.serving.max_body_bytes),
         ] {
             if value == Some(0) {
                 return Err(retrograd_core::Error::invalid(format!(
@@ -158,6 +204,7 @@ impl ServerConfig {
                 "upload_idle_timeout_seconds",
                 self.upload_idle_timeout_seconds,
             ),
+            ("serving.idle_seconds", self.serving.idle_seconds),
         ] {
             if value == Some(0) {
                 return Err(retrograd_core::Error::invalid(format!(
@@ -565,6 +612,33 @@ impl ModelProbe for EngineProbe {
     }
 }
 
+/// The serving session of one server: its weights loaded by `loader`, on the
+/// device permit the runs queue on.
+fn serving_session(
+    config: &ServerConfig,
+    device: &Arc<Semaphore>,
+    registry: &Arc<RunRegistry>,
+    loader: Arc<dyn retrograd_openai::Loader>,
+) -> Arc<retrograd_openai::Session> {
+    let lease = crate::api::openai::DevicePermit {
+        device: device.clone(),
+        registry: registry.clone(),
+        wait: config.serving.device_wait(),
+    };
+    let session = retrograd_openai::Session::new(
+        loader,
+        Arc::new(lease),
+        retrograd_openai::SessionOptions {
+            idle: Some(config.serving.idle()),
+            queue: config.serving.queue(),
+        },
+    )
+    // Spawning one thread only fails when the process is out of resources, and
+    // then nothing else in the server would start either.
+    .expect("the serving thread starts");
+    Arc::new(session)
+}
+
 /// How many model geometries may be read at once. Four because each one is an
 /// mmap and a header parse: enough that a handful of clients planning at the same
 /// time do not queue behind each other, few enough that a burst cannot pin an
@@ -618,6 +692,9 @@ pub struct AppState {
     /// Every dataset this server has stored, rebuilt from `state_dir/datasets/`
     /// at startup.
     pub datasets: Arc<crate::datasets::DatasetStore>,
+    /// The thread that loads a run's weights to answer chat requests, on the
+    /// device permit the runs queue on.
+    pub serving: Arc<retrograd_openai::Session>,
 }
 
 /// What a cached fingerprint stays valid for: the file's size and modification
@@ -633,22 +710,38 @@ impl AppState {
         let state_dir = config.state_dir();
         let calibration = CalibrationStore::load(state_dir.join("calibration.json"));
         let datasets = crate::datasets::DatasetStore::open(&state_dir);
+        let device = Arc::new(Semaphore::new(concurrency));
+        let registry = Arc::new(RunRegistry::open(state_dir));
+        let serving = serving_session(
+            &config,
+            &device,
+            &registry,
+            Arc::new(retrograd_openai::TrainerLoader),
+        );
         Self {
             catalog: Arc::new(catalog),
             baseline: measure_baseline(),
             probe,
-            device: Arc::new(Semaphore::new(concurrency)),
+            device,
             probes: Arc::new(Semaphore::new(CONCURRENT_GEOMETRY_READS)),
             backends: Arc::new(compiled_backends()),
-            registry: Arc::new(RunRegistry::open(state_dir)),
+            registry,
             engine: Arc::new(TrainingEngine),
             calibration: Arc::new(RwLock::new(calibration)),
             execution_profiles: Arc::new(RwLock::new(BTreeMap::new())),
             preflights: Arc::new(RwLock::new(BTreeMap::new())),
             model_fingerprints: Arc::new(RwLock::new(BTreeMap::new())),
             datasets: Arc::new(datasets),
+            serving,
             config: Arc::new(config),
         }
+    }
+
+    /// Replaces what the serving session loads weights with, keeping its
+    /// device permit. For tests, which serve a fake model.
+    pub fn with_serving_loader(mut self, loader: Arc<dyn retrograd_openai::Loader>) -> Self {
+        self.serving = serving_session(&self.config, &self.device, &self.registry, loader);
+        self
     }
 
     /// Replaces the engine. The one seam the tests need, and the only way to

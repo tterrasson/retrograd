@@ -507,9 +507,16 @@ async fn the_openapi_document_describes_the_routes_the_router_serves() {
         "/v1/datasets",
         "/v1/datasets/{id}",
         "/v1/datasets/{id}/preview",
+        "/v1/models",
+        "/v1/models/{model}",
+        "/v1/chat/completions",
     ] {
         assert!(body["paths"][path].is_object(), "{path} is undocumented");
     }
+    assert_eq!(
+        body["paths"]["/v1/chat/completions"]["post"]["tags"][0],
+        "openai"
+    );
     // The schemas are derived from the DTOs, not written twice.
     assert!(
         body["components"]["schemas"]["RunView"].is_object(),

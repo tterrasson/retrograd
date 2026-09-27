@@ -281,7 +281,7 @@ fn directory_bytes(dir: &FsPath) -> Option<u64> {
 }
 
 /// Every `*.state` directory under `directory`, newest step first.
-fn scan_checkpoints(directory: &FsPath) -> Vec<dto::CheckpointEntry> {
+pub(crate) fn scan_checkpoints(directory: &FsPath) -> Vec<dto::CheckpointEntry> {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return Vec::new();
     };

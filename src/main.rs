@@ -10,6 +10,8 @@ mod judge;
 mod preflight;
 #[cfg(feature = "agent")]
 mod scenarios;
+#[cfg(feature = "serve")]
+mod serve;
 #[cfg(feature = "agent")]
 mod tools;
 mod train;
@@ -52,6 +54,8 @@ fn run() -> retrograd::Result<()> {
         #[cfg(feature = "agent")]
         Some("collect") => collect::collect(args.collect()),
         Some("preflight") => preflight::preflight_model(args.collect()),
+        #[cfg(feature = "serve")]
+        Some("serve") => serve::serve(args.collect()),
         Some("-h") | Some("--help") | None => {
             print_help();
             Ok(())
@@ -86,6 +90,9 @@ Commands:
           [--model base.gguf | --api] [--device auto|cpu|gpu]
           [--report report.json] [--force] [--pairs [--min-gap G]]
   preflight --model base.gguf [--device auto|cpu|gpu] [--targets a,b] [--strict]
+  serve <config.toml> [--adapter adapter.gguf | --checkpoint dir/best.state | --base-only]
+        [--model base.gguf] [--device auto|cpu|gpu] [--ctx N] [--host 127.0.0.1]
+        [--port 8000] [--api-key KEY] [--model-name NAME]
 
 Compatibility aliases:
   chat: --base_only --temperature --top_p --max_new_tokens --max-tokens";
@@ -111,6 +118,8 @@ mod help_tests {
             scenarios::FLAGS,
             #[cfg(feature = "agent")]
             collect::FLAGS,
+            #[cfg(feature = "serve")]
+            serve::FLAGS,
         ];
         for flag in groups.iter().flat_map(|flags| flags.iter()) {
             assert!(

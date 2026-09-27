@@ -56,6 +56,49 @@ model's and the adapter's answer to each turn; `--base-only` disables the
 adapter. Defaults: temperature `0.7`, top-p `0.95`, `512` new tokens. Type
 `/reset` to clear the history and `/exit` to quit.
 
+## `serve`
+
+```text
+retrograd serve CONFIG.toml [--adapter ADAPTER.gguf | --checkpoint DIR/best.state | --base-only]
+                [--model M] [--device D] [--ctx N] [--host 127.0.0.1] [--port 8000]
+                [--api-key KEY] [--model-name NAME]
+```
+
+Serves the model through the OpenAI API (`/v1/chat/completions`,
+`/v1/models`), so any OpenAI client - the `openai` SDK, lm-eval's
+`local-chat-completions`, Open WebUI, inspect - can query it:
+
+```bash
+retrograd serve run.toml --model-name tuned
+OPENAI_BASE_URL=http://127.0.0.1:8000/v1 OPENAI_API_KEY=unused python my_eval.py
+```
+
+The weights are chosen like `chat`: the adapter the configuration trains
+unless `--adapter`, `--checkpoint` (the adapter exported beside a `.state`
+directory) or `--base-only` says otherwise. The model is loaded before the
+server answers. Its id is `--model-name`, by default the adapter's file name;
+the base model is served beside it as `base`, which reloads the weights on each
+switch between the two.
+
+The prompt is rendered and parsed with the code the agentic rollouts use:
+`tools` reach the model through its own chat template when it has a tool
+format (otherwise through the system prompt), and calls come back as
+`tool_calls`. `stream: true` is supported; the answer arrives in one piece once
+generated. `temperature: 0` is greedy. `tool_choice: "none"` leaves the
+catalog out of the prompt. `n > 1`, `logprobs`, penalties, `response_format`
+other than text, `tool_choice: "required"` and `parallel_tool_calls: false`
+beside tools are refused with a 400 naming the field.
+
+Binding anything but a loopback address requires `--api-key`, which clients
+send as `Authorization: Bearer KEY`.
+
+`retrograd-server` serves the same routes for its runs: `RUN_ID` (the live
+weights while the run trains, its final adapter afterwards), `RUN_ID@final`,
+`RUN_ID@best`, `RUN_ID@step-N`, `RUN_ID@latest` and `RUN_ID@base`. A live run
+answers at its next progress callback. Its `[serving]` section sets `enabled`,
+`idle_seconds` (default 300), `device_wait_seconds` (default 0: a load refused
+while a run holds the device), `queue` (8) and `max_body_bytes` (4 MiB).
+
 ## `inspect`
 
 ```text

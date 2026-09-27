@@ -5,13 +5,13 @@
 //! while giving every member its own [`Environment`].
 //! The public surface, the construction and the rendering cache live here; the
 //! turn loop is in `lockstep`, the per-member bookkeeping in `state`, the
-//! tool rendering in `render`, the deadline plumbing in `deadline` and the
-//! environment lifecycle in `environments`.
+//! deadline plumbing in `deadline` and the environment lifecycle in
+//! `environments`. The tool rendering is [`crate::rendering`], shared with
+//! whoever else serves this model.
 
 mod deadline;
 mod environments;
 mod lockstep;
-mod render;
 mod state;
 
 // `pub(crate)` so the agentic loop's tests reuse the one set of fakes rather
@@ -26,16 +26,15 @@ use std::time::Duration;
 use retrograd_training::batch::TrainSequence;
 // Tokio's clock rather than `std`'s: identical in production, but it lets the
 // rollout deadline be tested under a paused clock instead of a real sleep.
-use retrograd_dataset::chat_template::{ToolRenderingKind, decide_rendering};
 use tokio::time::Instant;
 
 use self::deadline::{before_deadline, deadline_expired};
 use self::environments::{attach_env_state, close_environments, create_environments};
-use self::render::{ToolRendering, prompt_tool_rendering};
 use crate::FailureKind;
 use crate::env::{Environment, EnvironmentFactory, ToolProviderFactory};
 use crate::policy::Policy;
-use crate::tools::{HermesToolCallParser, ToolCallParser, ToolProvider, ToolSpec};
+use crate::rendering::{ToolRendering, resolve_tool_rendering};
+use crate::tools::{HermesToolCallParser, ToolCallParser, ToolProvider};
 use crate::trajectory::{Message, Trajectory, TrajectoryGroup};
 use crate::{Error, Result};
 use retrograd_agent_core::scenario::{RolloutLimits, Scenario, TruncationPolicy};
@@ -182,47 +181,10 @@ impl RolloutEngine {
         if let Some(rendering) = cache.get(&key) {
             return Ok(rendering.clone());
         }
-        let rendering = Arc::new(self.render_tools(specs).await?);
+        let rendering = Arc::new(resolve_tool_rendering(self.policy.as_ref(), specs).await?);
         self.declared.get_or_init(|| rendering.declared_tools());
         cache.insert(key, rendering.clone());
         Ok(rendering)
-    }
-
-    async fn render_tools(&self, specs: Vec<ToolSpec>) -> Result<ToolRendering> {
-        if specs.is_empty() {
-            return Ok(ToolRendering::None);
-        }
-        let native = self.policy.supports_native_tools().await?;
-        // Asked here and not at construction, because the generated grammar
-        // may name the functions: the parser is derived from the template
-        // *and* the catalog, and the catalog is only known once the
-        // environment has listed it.
-        let parser = match native {
-            true => self.policy.tool_call_parser(&specs).await?,
-            false => None,
-        };
-        match (
-            decide_rendering(specs.len(), native, parser.is_some()),
-            parser,
-        ) {
-            (ToolRenderingKind::Native, Some(parser)) => Ok(ToolRendering::Native {
-                specs: specs.into(),
-                parser,
-            }),
-            _ => {
-                // The template renders tools but nothing could be derived to
-                // read them back. Rendering natively anyway would rebuild the
-                // exact asymmetry this is here to prevent, so both halves fall
-                // back together.
-                if native {
-                    tracing::warn!(
-                        "the model's chat template renders tools but yields no parser for its \
-                         own call format; falling back to the prompt-described convention"
-                    );
-                }
-                prompt_tool_rendering(specs)
-            }
-        }
     }
 
     /// One rendering call for the whole engine, so the native and prompt paths
@@ -235,14 +197,8 @@ impl RolloutEngine {
         rendering: &ToolRendering,
         add_assistant: bool,
     ) -> Result<Vec<Vec<i32>>> {
-        let tools = match rendering {
-            ToolRendering::Native { specs, .. } => &specs[..],
-            // The catalog is in the system turn already, or there is none: the
-            // template must not be handed one either way.
-            ToolRendering::Prompt { .. } | ToolRendering::None => &[],
-        };
         self.policy
-            .render_chat_framing(messages, tools, add_assistant)
+            .render_chat_framing(messages, rendering.template_specs(), add_assistant)
             .await
     }
 

@@ -79,6 +79,24 @@ pub struct RunConfig {
     pub reference: Option<ReferenceConfig>,
 }
 
+impl RunConfig {
+    /// The chat-template variables this run renders its conversations with, as
+    /// the JSON object the runtime takes. `None` when it sets none: serving the
+    /// run's weights through their template must render what training
+    /// rendered, `enable_thinking = false` included.
+    pub fn chat_template_variables_json(&self) -> Option<String> {
+        match &self.algorithm {
+            Algorithm::Sft(sft) if !sft.template_variables.is_empty() => {
+                Some(sft.template_variables_json())
+            }
+            Algorithm::AgentGrpo(agent) if !agent.template_variables.is_empty() => {
+                Some(agent.template_variables_json())
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Which training objective a run carries, with that objective's own settings.
 #[derive(Clone, Debug)]
 pub enum Algorithm {

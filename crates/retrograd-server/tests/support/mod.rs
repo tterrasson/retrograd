@@ -636,6 +636,9 @@ pub async fn send(router: &Router, request: Request<Body>) -> (StatusCode, Value
 /// The bytes as they went on the wire, for the assertions that are about the
 /// bytes rather than the values.
 pub async fn send_raw(router: &Router, request: Request<Body>) -> (StatusCode, String, Vec<u8>) {
+    // The OpenAI routes fail in the envelope their clients read; every other
+    // route in a problem document.
+    let openai = retrograd_server::api::openai::is_openai_path(request.uri().path());
     let response = router
         .clone()
         .oneshot(request)
@@ -658,8 +661,12 @@ pub async fn send_raw(router: &Router, request: Request<Body>) -> (StatusCode, S
     if !status.is_success() {
         assert_eq!(
             content_type,
-            "application/problem+json",
-            "every failure is a problem document: {}",
+            if openai {
+                "application/json"
+            } else {
+                "application/problem+json"
+            },
+            "every failure is a problem document, or an OpenAI envelope on its routes: {}",
             String::from_utf8_lossy(&bytes)
         );
     }

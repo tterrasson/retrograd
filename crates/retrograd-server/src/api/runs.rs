@@ -24,7 +24,7 @@ use crate::dto;
 use crate::error::{ApiError, ApiResult, ErrorCode, ProblemKind};
 use crate::resolve::Resolved;
 use crate::runtime::control;
-use crate::runtime::registry::{RunArtifacts, RunControls, RunFilter, RunRecord};
+use crate::runtime::registry::{RunArtifacts, RunControls, RunFilter, RunRecord, ServingSpec};
 use crate::runtime::worker;
 use crate::state::AppState;
 
@@ -141,6 +141,7 @@ pub async fn create(
     worker::spawn(
         state.engine.clone(),
         state.device.clone(),
+        state.serving.clone(),
         handle,
         config,
         commands,
@@ -201,6 +202,24 @@ fn artifacts_of(config: &retrograd_config::RunConfig) -> RunArtifacts {
             .observe
             .as_ref()
             .map(|observe| observe.directory.clone()),
+        serving: Some(serving_of(config)),
+    }
+}
+
+/// What loading this run's weights again takes, read off its configuration.
+pub(crate) fn serving_of(config: &retrograd_config::RunConfig) -> ServingSpec {
+    ServingSpec {
+        model: config.model.clone(),
+        n_ctx: config.training.n_ctx,
+        device: match config.training.device {
+            retrograd_core::Device::Auto => "auto",
+            retrograd_core::Device::Cpu => "cpu",
+            retrograd_core::Device::Gpu => "gpu",
+        }
+        .to_owned(),
+        output_kind: config.output.kind.as_str().to_owned(),
+        output: config.output.path.clone(),
+        chat_template_variables: config.chat_template_variables_json(),
     }
 }
 

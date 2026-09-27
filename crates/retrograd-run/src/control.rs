@@ -36,7 +36,8 @@
 //! anywhere else would need a second copy of the weights.
 
 use retrograd_config::CheckpointMode;
-use retrograd_core::Result;
+use retrograd_core::{Error, Result};
+use retrograd_engine::Trainer;
 
 /// What the loop does after being polled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,6 +124,15 @@ pub struct GenerationOutput {
     pub base_text: Option<String>,
 }
 
+/// Work that needs the live trainer itself, handed in by a caller that brings
+/// its own way of reporting back - a chat request renders, samples and parses
+/// with the code it shares with its other callers, and only borrows the weights.
+///
+/// It runs inside the progress callback like every other command, so it must
+/// read and never train: it gets the trainer as the loop left it and must hand
+/// it back the same.
+pub type TrainerTask = Box<dyn FnOnce(&mut Trainer) + Send>;
+
 /// The knobs the loop offers a control plane, and the only ones it does.
 ///
 /// Every setter is a *schedule*: when to evaluate, how long to wait for an
@@ -155,6 +165,14 @@ pub trait RunControls {
 
     /// Samples one completion with the weights as they are at this callback.
     fn generate(&mut self, request: &GenerationRequest) -> Result<GenerationOutput>;
+
+    /// Lends the trainer to `task`, at this callback. `Err` means the task did
+    /// not run. Refused by default: a control surface with no trainer behind
+    /// it has none to lend.
+    fn with_trainer(&mut self, task: TrainerTask) -> Result<()> {
+        drop(task);
+        Err(Error::runtime("this run does not lend its trainer"))
+    }
 }
 
 /// Consulted once per progress callback.

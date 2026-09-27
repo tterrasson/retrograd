@@ -13,6 +13,7 @@ pub mod collect;
 pub mod export;
 mod grpo;
 pub mod policy;
+pub mod rendering;
 pub mod rollout;
 pub mod template_parser;
 pub mod train;
@@ -33,6 +34,7 @@ pub use env::{
     SandboxEnvironmentConfig, SandboxEnvironmentFactory, SharedToolsFactory, StepOutcome,
     ToolProviderEnvironment, ToolProviderFactory,
 };
+#[cfg(feature = "http-env")]
 pub use env::{HttpEnvironmentConfig, HttpEnvironmentFactory};
 pub use export::{AssistantForm, to_chat_example};
 pub use grpo::{

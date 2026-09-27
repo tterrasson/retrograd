@@ -12,6 +12,7 @@ use retrograd_training as training;
 
 use crate::control::{
     AdHocEvaluation, ControlPoint, GenerationOutput, GenerationRequest, RunControl, RunControls,
+    TrainerTask,
 };
 use crate::controller::{EvalDirection, RunController};
 use crate::observe;
@@ -167,6 +168,11 @@ impl RunControls for LiveControls<'_, '_> {
             tokens: sampled.tokens.len() as u64,
             base_text,
         })
+    }
+
+    fn with_trainer(&mut self, task: TrainerTask) -> Result<()> {
+        task(self.trainer);
+        Ok(())
     }
 }
 

@@ -6,5 +6,6 @@ pub mod datasets;
 pub mod discovery;
 pub mod events;
 pub mod inference;
+pub mod openai;
 pub mod plan;
 pub mod runs;

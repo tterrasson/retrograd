@@ -29,7 +29,7 @@ workspace_cpu=(--workspace --exclude retrograd --exclude retrograd-python)
 # `cli` is named explicitly because the two binaries carry
 # `required-features = ["cli"]`: without it `--bins` below would select
 # nothing and the lane would stop compiling them without saying so.
-root_cpu=(-p retrograd --no-default-features --features agent,cli)
+root_cpu=(-p retrograd --no-default-features --features agent,cli,serve)
 python_cpu=(-p retrograd-python --no-default-features)
 assert_cpu_graph() {
   local tree line found=0
@@ -79,6 +79,7 @@ timed_step compile:contracts cargo test \
   -p retrograd-agent --test train_sequences \
   -p retrograd-engine --test chat_parser_roundtrip --test tool_sft_render \
   -p retrograd-judge --test reward_batch \
+  -p retrograd-openai --test wire \
   -p retrograd-training --test value_head \
   --no-run
 
@@ -102,6 +103,7 @@ timed_step run:contracts cargo test \
   -p retrograd-agent --test train_sequences \
   -p retrograd-engine --test chat_parser_roundtrip --test tool_sft_render \
   -p retrograd-judge --test reward_batch \
+  -p retrograd-openai --test wire \
   -p retrograd-training --test value_head
 timed_step run:server "$repo_root/scripts/test-server.sh"
 
@@ -156,7 +158,7 @@ timed_step run:graph bash -c '
     fi
   done
   # The HTTP control plane is a leaf crate with its own binary, and nothing in
-  # the workspace depends on it. That is what keeps axum, matchit, utoipa and
+  # the workspace depends on it. That is what keeps its registry, utoipa and
   # the OpenAPI derive out of every build of the CLI -- a stronger guarantee
   # than a feature would give, since `--all-features` cannot turn it back on.
   # But `retrograd-server` already has a `[workspace.dependencies]` entry that
@@ -164,16 +166,33 @@ timed_step run:graph bash -c '
   # true` in the root manifest would pull the whole stack back in silently.
   # Matched on names unique to that stack: `tower-http` and `uuid` are *not*
   # among them -- they reach the CLI legitimately through reqwest and rmcp.
+  #
+  # axum itself is no longer unique to it: `retrograd serve` (the `serve`
+  # feature, on by default) carries the OpenAI contract over axum. So axum and
+  # what comes with it are held out of the build that turns `serve` off, and
+  # the server's own crates out of every build.
   for spec in "--no-default-features" "" "--features mcp" "--features container" "--all-features"; do
     # shellcheck disable=SC2086
     server_tree="$(cargo tree -e no-dev -p retrograd $spec --prefix none | awk "{print \$1}")"
-    for forbidden in retrograd-server axum axum-core matchit utoipa utoipa-gen async-stream serde_path_to_error; do
+    for forbidden in retrograd-server utoipa utoipa-gen serde_path_to_error; do
       if grep -qx "$forbidden" <<<"$server_tree"; then
         echo "$forbidden reached the retrograd binary with features: ${spec:-default}" >&2
         exit 1
       fi
     done
   done
+  serveless_tree="$(cargo tree -e no-dev -p retrograd --no-default-features --features agent,cli --prefix none | awk "{print \$1}")"
+  for forbidden in retrograd-openai axum axum-core matchit async-stream; do
+    if grep -qx "$forbidden" <<<"$serveless_tree"; then
+      echo "$forbidden reached the retrograd binary without the serve feature" >&2
+      exit 1
+    fi
+  done
+  default_tree="$(cargo tree -e no-dev -p retrograd --prefix none | awk "{print \$1}")"
+  if ! grep -qx retrograd-openai <<<"$default_tree"; then
+    echo "the default build no longer carries retrograd serve" >&2
+    exit 1
+  fi
   # And the crate that is supposed to carry it still does: an assertion that
   # only ever says "absent" would also pass if the server stopped using axum.
   carrier_tree="$(cargo tree -e no-dev -p retrograd-server --prefix none | awk "{print \$1}")"

@@ -181,7 +181,7 @@ fn require_live(handle: &RunHandle, action: &str) -> ApiResult<()> {
     }
 }
 
-fn dispatch(handle: &Arc<RunHandle>, command: RunCommand) -> ApiResult<()> {
+pub(crate) fn dispatch(handle: &Arc<RunHandle>, command: RunCommand) -> ApiResult<()> {
     match handle.control().map(|control| control.send(command)) {
         Some(Ok(())) => return Ok(()),
         // Commands are arriving faster than the run reads them; the run itself
@@ -207,7 +207,7 @@ fn dispatch(handle: &Arc<RunHandle>, command: RunCommand) -> ApiResult<()> {
 /// receiver on the way out is not just tidiness - the run checks whether anyone is
 /// still listening before spending a forward pass, so an abandoned request costs
 /// nothing.
-async fn wait<T>(
+pub(crate) async fn wait<T>(
     state: &AppState,
     answer: oneshot::Receiver<retrograd_core::Result<(At, T)>>,
     what: &str,

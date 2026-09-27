@@ -1,0 +1,35 @@
+[package]
+name = "retrograd-openai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - the OpenAI chat-completions contract over a Retrograd model"
+publish = false
+
+[dependencies]
+# The SSE answer is one awaited completion followed by its chunks; a generator
+# keeps the two halves in one readable sequence.
+async-stream.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+http.workspace = true
+# The rendering and the parsers the rollouts use, so what is served is what is
+# trained. Neither MCP nor the HTTP environment: nothing here runs a tool.
+retrograd-agent.workspace = true
+retrograd-core.workspace = true
+retrograd-engine.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+http-body-util.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true

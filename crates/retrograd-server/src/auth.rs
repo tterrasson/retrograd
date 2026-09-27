@@ -43,6 +43,12 @@ pub async fn require_token(
         Some(token) if constant_time_eq(token.as_bytes(), expected.as_bytes()) => {
             next.run(request).await
         }
+        // The OpenAI clients read their own envelope and show an empty message
+        // for anything else, so the refusal is spelled the way they read it.
+        _ if crate::api::openai::is_openai_path(request.uri().path()) => {
+            retrograd_openai::OpenAiError::unauthorized("this server requires a bearer token")
+                .into_response()
+        }
         // One answer for a missing token and a wrong one: which of the two it was
         // is not information a caller without a token is entitled to.
         _ => ApiError::new(

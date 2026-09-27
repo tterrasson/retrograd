@@ -73,6 +73,29 @@ pub struct RunArtifacts {
     pub wandb_export_directory: Option<PathBuf>,
     /// The `[observe]` directory: the viewer, its feed and `observe.jsonl`.
     pub observe: Option<PathBuf>,
+    /// What it takes to load this run's weights again, off its thread. `None`
+    /// for a `run.json` older than the field.
+    pub serving: Option<ServingSpec>,
+}
+
+/// The half of a run's configuration that loading its weights for inference
+/// needs: the base, the context, the device, what the run writes, and the
+/// template variables its data was rendered with.
+///
+/// Recorded at creation because a finished run - possibly one from a previous
+/// process - is exactly the run whose weights a client wants to serve, and
+/// re-reading the rendered configuration for it is how two copies drift.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+pub struct ServingSpec {
+    pub model: PathBuf,
+    pub n_ctx: u32,
+    /// `auto`, `cpu` or `gpu`, as the run was configured.
+    pub device: String,
+    /// `adapter`, `model` or `trainable`: which kind of file `output` is.
+    pub output_kind: String,
+    pub output: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_template_variables: Option<String>,
 }
 
 /// Which halves of the `PATCH` whitelist this run actually has.
@@ -678,6 +701,17 @@ impl RunRegistry {
 
     /// Every run that has not finished, handle and all. What a graceful shutdown
     /// needs: the summaries a listing returns cannot be commanded.
+    /// Every run, newest first.
+    pub fn handles(&self) -> Vec<Arc<RunHandle>> {
+        let inner = self.inner.read().recover();
+        inner
+            .order
+            .iter()
+            .rev()
+            .filter_map(|id| inner.runs.get(id).cloned())
+            .collect()
+    }
+
     pub fn live_handles(&self) -> Vec<Arc<RunHandle>> {
         self.inner
             .read()
