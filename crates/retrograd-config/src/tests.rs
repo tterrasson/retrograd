@@ -1729,3 +1729,175 @@ fn grpo_validation_enforces_group_geometry_and_on_policy_sampling() {
         assert!(config.validate().is_err(), "kl={invalid}");
     }
 }
+
+/// A preference document around `section`, with `extra` spliced before it -
+/// `[reference]`, `[observe]` or a `[training]` override.
+fn preference_document(training: &str, section: &str, extra: &str) -> String {
+    format!(
+        "[run]\nalgorithm='preference'\n[model]\npath='model.gguf'\n\
+         [output]\npath='out.gguf'\n[lora]\n[training]\nctx=256\nmicro_batch=64\n{training}\
+         {extra}[preference]\ndata='pairs.jsonl'\n{section}"
+    )
+}
+
+fn load_preference(training: &str, section: &str, extra: &str) -> Result<RunConfig> {
+    let file = write_config(&preference_document(training, section, extra));
+    let result = load(&file);
+    remove_config(&file);
+    result
+}
+
+#[test]
+fn a_preference_run_defaults_to_dpo_against_the_initial_policy() {
+    let config = load_preference("", "", "").unwrap();
+    let Algorithm::Preference(preference) = &config.algorithm else {
+        panic!("run.algorithm = 'preference' builds a preference run");
+    };
+    assert_eq!(
+        preference.loss,
+        PreferenceLoss::Dpo {
+            beta: 0.1,
+            label_smoothing: 0.0
+        }
+    );
+    assert_eq!(preference.reference, Some(ReferenceSource::Initial));
+    assert!(preference.shuffle);
+    assert_eq!(preference.seed, DEFAULT_SEED);
+    assert_eq!(preference.pairs_per_step, None);
+    assert_eq!(preference.logps_drop_warn, DEFAULT_LOGPS_DROP_WARN);
+    assert_eq!(config.training.n_batch, 256);
+    assert_eq!(config.training.n_seq_max, 2);
+
+    // Each loss has its own default beta, and the reference-free ones no
+    // reference.
+    for (loss, beta, reference) in [
+        ("ipo", 0.1, Some(ReferenceSource::Initial)),
+        ("simpo", 2.0, None),
+        ("orpo", 0.1, None),
+    ] {
+        let config = load_preference("", &format!("loss='{loss}'\n"), "").unwrap();
+        let Algorithm::Preference(preference) = &config.algorithm else {
+            panic!("a preference run");
+        };
+        assert_eq!(preference.loss.name(), loss);
+        assert_eq!(preference.loss.beta(), beta);
+        assert_eq!(preference.reference, reference);
+    }
+
+    // `[reference]` is the anchor of a reference-relative loss.
+    let config = load_preference("", "", "[reference]\nmodel='anchor.gguf'\n").unwrap();
+    let Algorithm::Preference(preference) = &config.algorithm else {
+        panic!("a preference run");
+    };
+    assert_eq!(preference.reference, Some(ReferenceSource::Model));
+}
+
+#[test]
+fn a_preference_key_is_refused_where_nothing_reads_it() {
+    let anchor = "[reference]\nmodel='anchor.gguf'\n";
+    let cases: [(&str, &str, &str, &str); 12] = [
+        ("", "loss='kto'\n", "", "preference.loss must be"),
+        (
+            "",
+            "loss='dpo'\ngamma_beta_ratio=0.5\n",
+            "",
+            "only read by loss = \"simpo\"",
+        ),
+        (
+            "",
+            "loss='ipo'\nlabel_smoothing=0.1\n",
+            "",
+            "only read by loss = \"dpo\"",
+        ),
+        ("", "loss='simpo'\nreference='base'\n", "", "reference-free"),
+        ("", "reference='base'\n", anchor, "two references declared"),
+        (
+            "",
+            "loss='orpo'\n",
+            anchor,
+            "nothing in this run scores against an anchor",
+        ),
+        (
+            "",
+            "reference='frozen'\n",
+            "",
+            "preference.reference must be initial or base",
+        ),
+        (
+            "",
+            "beta=0.0\n",
+            "",
+            "preference.beta must be finite and greater than zero",
+        ),
+        (
+            "",
+            "label_smoothing=0.5\n",
+            "",
+            "preference.label_smoothing must be in [0, 0.5)",
+        ),
+        (
+            "",
+            "pairs_per_step=0\n",
+            "",
+            "preference.pairs_per_step must be greater than zero",
+        ),
+        (
+            "",
+            "logps_drop_warn=0.0\n",
+            "",
+            "preference.logps_drop_warn",
+        ),
+        (
+            "gradient_accumulation=2\n",
+            "",
+            "",
+            "a preference step trains whole pairs",
+        ),
+    ];
+    for (training, section, extra, expected) in cases {
+        let error = load_preference(training, section, extra)
+            .expect_err(expected)
+            .to_string();
+        assert!(error.contains(expected), "{expected}: {error}");
+    }
+}
+
+#[test]
+fn a_preference_run_refuses_what_only_a_rollout_reads() {
+    let error = load_preference("generation_concurrency=2\n", "", "")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("generation_concurrency"), "{error}");
+
+    let error = load_preference("", "", "[observe]\ndirectory='out'\n")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("[observe]"), "{error}");
+
+    let error = load_preference("shared_prefix_fanout=3\n", "", "")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("two sequences of a preference pair"),
+        "{error}"
+    );
+}
+
+#[test]
+fn the_base_reference_is_refused_beside_base_training_and_the_initial_one_is_not() {
+    let base = "[run]\nalgorithm='preference'\n[model]\npath='model.gguf'\n\
+                [output]\npath='out.gguf'\n[training]\nctx=256\nmicro_batch=64\n\
+                trainable='full'\n[preference]\ndata='pairs.jsonl'\n";
+    let file = write_config(&format!("{base}reference='base'\n"));
+    let error = load(&file).unwrap_err().to_string();
+    remove_config(&file);
+    assert!(error.contains("preference.reference = 'base'"), "{error}");
+
+    let file = write_config(base);
+    let config = load(&file).unwrap();
+    remove_config(&file);
+    let Algorithm::Preference(preference) = &config.algorithm else {
+        panic!("a preference run");
+    };
+    assert_eq!(preference.reference, Some(ReferenceSource::Initial));
+}

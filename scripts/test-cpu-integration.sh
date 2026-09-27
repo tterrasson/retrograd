@@ -46,6 +46,7 @@ if [[ "${RETRO_PROFILE_TESTS:-0}" == "1" ]]; then
     --test base_training \
     --test f16_base_training \
     --test fixed_reference \
+    --test preference_runtime \
     --test muon_gefen \
     --test ppo_runtime \
     --test grpo_runtime \
@@ -66,9 +67,9 @@ if [[ "${RETRO_PROFILE_TESTS:-0}" == "1" ]]; then
 fi
 
 # These binaries contain the focused capability, LoRA/generation/SFT/PPO,
-# GRPO, distillation-teacher, offline top-k distillation, checkpoint and CLI
-# smoke tests. Cargo may start them concurrently; `serialize_models` supplies
-# the cross-process runtime lock.
+# GRPO, distillation-teacher, offline top-k distillation, preference,
+# checkpoint and CLI smoke tests. Cargo may start them concurrently;
+# `serialize_models` supplies the cross-process runtime lock.
 timed_step run:capabilities-suite cargo test --no-default-features --features agent,cli \
   --test capabilities \
   --test ppo_runtime \
@@ -84,6 +85,7 @@ timed_step run:capabilities-suite cargo test --no-default-features --features ag
   --test base_training \
   --test f16_base_training \
   --test fixed_reference \
+  --test preference_runtime \
   --test muon_gefen \
   -- --test-threads=1
 

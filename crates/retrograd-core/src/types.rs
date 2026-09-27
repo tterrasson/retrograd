@@ -580,13 +580,25 @@ impl TrainConfig {
     /// is not the memory lever: it only sizes llama.cpp's host-side output
     /// buffer, while `n_ubatch` is what bounds activation memory.
     pub fn validate_rollout_geometry(&self) -> Result<()> {
+        self.validate_whole_window_step(
+            "a rollout algorithm takes exactly one optimizer step per rollout",
+            "completion",
+        )
+    }
+
+    /// [`Self::validate_geometry`], plus the rule of an objective whose step
+    /// must cover the whole trained window: `n_batch == n_ctx`.
+    ///
+    /// `what` is the sentence that says why the objective needs it, and `unit`
+    /// what one row of it holds, so the refusal names the right thing for each.
+    pub fn validate_whole_window_step(&self, what: &str, unit: &str) -> Result<()> {
         self.validate_geometry()?;
         if self.n_batch != self.n_ctx {
             return Err(Error::invalid(format!(
-                "a rollout algorithm takes exactly one optimizer step per rollout, so the step \
+                "{what}, so the step \
                  must span the whole context: training.micro_batch * \
                  training.gradient_accumulation is {} * {} = {} but training.ctx is {}, which \
-                 silently takes {} steps per completion. Omit training.gradient_accumulation - it \
+                 silently takes {} steps per {unit}. Omit training.gradient_accumulation - it \
                  is pinned to ctx / micro_batch = {} here - and lower training.micro_batch to \
                  bound activation memory instead.",
                 self.n_ubatch,

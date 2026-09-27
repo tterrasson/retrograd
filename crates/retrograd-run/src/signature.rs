@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use retrograd_checkpoint as checkpoint;
-use retrograd_config::{Algorithm, RunConfig};
+use retrograd_config::{Algorithm, PreferenceLoss, RunConfig};
 use retrograd_core::{Error, LrScheduler, Result};
 use retrograd_metrics::RunMetadata;
 use retrograd_tools::ToolPlanResolve;
@@ -198,6 +198,34 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
             )
             .expect("writing to a String never fails");
         }
+        // The prepared pairs are fingerprinted with the dataset, together with
+        // the reference's identity; what is here is the objective.
+        Algorithm::Preference(preference) => {
+            let (label_smoothing, gamma_beta_ratio) = match preference.loss {
+                PreferenceLoss::Dpo {
+                    label_smoothing, ..
+                } => (label_smoothing, 0.0),
+                PreferenceLoss::Simpo {
+                    gamma_beta_ratio, ..
+                } => (0.0, gamma_beta_ratio),
+                PreferenceLoss::Ipo { .. } | PreferenceLoss::Orpo { .. } => (0.0, 0.0),
+            };
+            write!(
+                &mut descriptor,
+                "|preference|data={}|loss={}|beta={:08x}|ref={}|ls={:08x}|gamma={:08x}|shuffle={}|pps={:?}",
+                preference.data.display(),
+                preference.loss.name(),
+                preference.loss.beta().to_bits(),
+                preference
+                    .reference
+                    .map_or("none", |reference| reference.as_str()),
+                label_smoothing.to_bits(),
+                gamma_beta_ratio.to_bits(),
+                preference.shuffle,
+                preference.pairs_per_step,
+            )
+            .expect("writing to a String never fails");
+        }
         Algorithm::AgentGrpo(agent) => {
             let config = &agent.config;
             let corpus = fs::read(&agent.scenarios)?;
@@ -332,6 +360,7 @@ pub fn metadata(config: &RunConfig) -> RunMetadata {
             },
         ),
         Algorithm::AgentGrpo(value) => ("agent_grpo", value.scenarios.display().to_string()),
+        Algorithm::Preference(value) => ("preference", value.data.display().to_string()),
     };
     RunMetadata {
         algorithm: algorithm.into(),

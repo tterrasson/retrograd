@@ -650,7 +650,9 @@ pub async fn plan_config(
 
 fn iterations(config: &retrograd_config::RunConfig) -> u64 {
     match &config.algorithm {
-        retrograd_config::Algorithm::Sft(_) => config.training.epochs as u64,
+        retrograd_config::Algorithm::Sft(_) | retrograd_config::Algorithm::Preference(_) => {
+            config.training.epochs as u64
+        }
         retrograd_config::Algorithm::Ppo(ppo) => ppo.updates as u64,
         retrograd_config::Algorithm::Grpo(grpo) => grpo.updates as u64,
         // An offline run's iteration is an epoch over the corpus.

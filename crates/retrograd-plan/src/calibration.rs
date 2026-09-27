@@ -340,6 +340,7 @@ pub fn algorithm_slug(algorithm: &Algorithm) -> &'static str {
         Algorithm::Grpo(_) => "grpo",
         Algorithm::Distill(_) => "distill",
         Algorithm::AgentGrpo(_) => "agent_grpo",
+        Algorithm::Preference(_) => "preference",
     }
 }
 

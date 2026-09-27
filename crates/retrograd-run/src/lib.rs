@@ -223,6 +223,9 @@ pub fn execute_controlled(
             Algorithm::Distill(distill) => {
                 algorithm::run_distill(trainer.as_mut(), distill, &mut ctx)
             }
+            Algorithm::Preference(preference) => {
+                algorithm::run_preference(trainer.as_mut(), preference, &mut ctx)
+            }
             // The agentic loop owns the trainer while it runs - the policy actor
             // holds it on its own task - so it is handed over and handed back
             // rather than borrowed.

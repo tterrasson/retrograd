@@ -14,8 +14,8 @@ use std::path::PathBuf;
 
 use retrograd_config::{
     CheckpointToml, ConfigDocument, EvaluationToml, GrpoToml, LoraToml, MetricsToml, ModelToml,
-    OutputToml, PpoToml, RunConfig, RunToml, SamplingToml, SftToml, SharedPrefixFanoutToml,
-    TrainingToml, build as build_run_config,
+    OutputToml, PpoToml, PreferenceToml, RunConfig, RunToml, SamplingToml, SftToml,
+    SharedPrefixFanoutToml, TrainingToml, build as build_run_config,
 };
 use retrograd_core::{
     ExecutionProfile, LrScheduler, ModelInfo, PreflightReport, RewardProtocol, SharedPrefixFanout,
@@ -462,9 +462,13 @@ pub fn resolve(input: &ResolveInput<'_>) -> Result<Resolution, ResolveError> {
         min_ctx: MIN_CONTEXT.max(round_up_pow2(input.data.percentile(0.5))),
         // Raised by the candidate search once a packed subgroup is selected.
         min_ubatch: 1,
-        // PPO and GRPO only: one optimizer step per rollout is part of the
-        // objective, not a tuning choice.
-        whole_row_batch: matches!(workload.kind, WorkloadKind::Rollout { .. }),
+        // One optimizer step per rollout is part of a rollout objective, and a
+        // preference step holds whole pairs: neither is a tuning choice.
+        whole_row_batch: matches!(workload.kind, WorkloadKind::Rollout { .. })
+            || matches!(
+                run_config.algorithm,
+                retrograd_config::Algorithm::Preference(_)
+            ),
         generation_batch_default: 0,
     };
 

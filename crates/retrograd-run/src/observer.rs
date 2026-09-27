@@ -102,6 +102,15 @@ pub enum EvaluationReport {
         perplexity: f64,
         outcome: EvalOutcome,
     },
+    /// A preference run's held-out pairs: the loss it minimizes, and the share
+    /// of pairs whose chosen response earns the larger implicit reward.
+    Preference {
+        epoch: u32,
+        loss: f64,
+        accuracy: f64,
+        margin: f64,
+        outcome: EvalOutcome,
+    },
     Rollout {
         update: u64,
         updates: u32,

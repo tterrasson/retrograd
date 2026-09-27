@@ -16,7 +16,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use retrograd_core::{Error, Result};
-use retrograd_dataset::{DataFormat, read_chat_jsonl};
+use retrograd_dataset::{ChatMessage, DataFormat, read_chat_jsonl, read_preference_jsonl};
 
 /// Characters per token assumed when no tokenizer has run.
 ///
@@ -93,37 +93,9 @@ impl DatasetStats {
                 let lengths = records
                     .iter()
                     .map(|record| {
-                        let characters: usize = record
-                            .example
-                            .messages
-                            .iter()
-                            .map(|message| {
-                                // Every message also carries a role header and
-                                // its turn delimiters in the chat template; a
-                                // dozen tokens per message covers the templates
-                                // in use and keeps the estimate high.
-                                message.content.chars().count()
-                                    + message.role.chars().count()
-                                    + 36
-                                    + message
-                                        .tool_calls
-                                        .iter()
-                                        .map(|call| {
-                                            call.name.chars().count()
-                                                + json_chars(&call.arguments)
-                                                + CALL_MARKUP_CHARS
-                                        })
-                                        .sum::<usize>()
-                            })
-                            .sum();
-                        // The catalog is rendered once per record, into the
-                        // system turn or by the template itself.
-                        let catalog = match record.example.tools.is_empty() {
-                            true => 0,
-                            false => serde_json::to_string(&record.example.tools)
-                                .map_or(0, |catalog| catalog.chars().count()),
-                        };
-                        tokens_from_chars(characters + catalog)
+                        let characters = messages_chars(&record.example.messages)
+                            + catalog_chars(&record.example.tools);
+                        tokens_from_chars(characters)
                     })
                     .collect::<Vec<_>>();
                 if lengths.is_empty() {
@@ -135,6 +107,26 @@ impl DatasetStats {
                 Ok(Self::estimated(lengths))
             }
         }
+    }
+
+    /// [`Self::estimate_from_file`] for a preference file. The length of a pair
+    /// is both of its sequences - the prompt twice, and each response - which is
+    /// what the pair costs inside one optimizer window: a context chosen on this
+    /// length holds every pair in one step.
+    pub fn estimate_preference_file(path: &Path) -> Result<Self> {
+        let lengths = read_preference_jsonl(path)?
+            .iter()
+            .map(|record| {
+                let example = &record.example;
+                let prompt = messages_chars(&example.prompt) + catalog_chars(&example.tools);
+                tokens_from_chars(
+                    2 * prompt
+                        + messages_chars(&example.chosen)
+                        + messages_chars(&example.rejected),
+                )
+            })
+            .collect::<Vec<_>>();
+        Ok(Self::estimated(lengths))
     }
 
     /// The token length at `quantile ∈ [0, 1]`, rounded up to the next example.
@@ -175,6 +167,37 @@ impl DatasetStats {
 
     pub fn is_empty(&self) -> bool {
         self.lengths.is_empty()
+    }
+}
+
+/// Characters of the messages as a chat template renders them.
+fn messages_chars(messages: &[ChatMessage]) -> usize {
+    messages
+        .iter()
+        .map(|message| {
+            // Every message also carries a role header and its turn delimiters
+            // in the chat template; a dozen tokens per message covers the
+            // templates in use and keeps the estimate high.
+            message.content.chars().count()
+                + message.role.chars().count()
+                + 36
+                + message
+                    .tool_calls
+                    .iter()
+                    .map(|call| {
+                        call.name.chars().count() + json_chars(&call.arguments) + CALL_MARKUP_CHARS
+                    })
+                    .sum::<usize>()
+        })
+        .sum()
+}
+
+/// Characters of a catalog, rendered once per record into the system turn or
+/// by the template itself.
+fn catalog_chars(tools: &[retrograd_dataset::chat_template::TemplateTool]) -> usize {
+    match tools.is_empty() {
+        true => 0,
+        false => serde_json::to_string(tools).map_or(0, |catalog| catalog.chars().count()),
     }
 }
 
@@ -256,6 +279,29 @@ mod tests {
             stats.percentile(1.0) > stats.percentile(0.0) + tokens_from_chars(2 * 40 + 60),
             "{:?}",
             stats.lengths()
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_preference_pair_counts_its_prompt_once_per_response() {
+        let dir = std::env::temp_dir().join("retrograd-plan-dataset-preference-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pairs.jsonl");
+        std::fs::write(
+            &path,
+            "{\"prompt\":[{\"role\":\"user\",\"content\":\"a question\"}],\
+             \"chosen\":[{\"role\":\"assistant\",\"content\":\"yes\"}],\
+             \"rejected\":[{\"role\":\"assistant\",\"content\":\"no\"}]}\n",
+        )
+        .unwrap();
+        let stats = DatasetStats::estimate_preference_file(&path).unwrap();
+        assert_eq!(stats.examples, 1);
+        let prompt = "a question".len() + "user".len() + 36;
+        let responses = 2 * ("assistant".len() + 36) + "yes".len() + "no".len();
+        assert_eq!(
+            stats.max_length(),
+            tokens_from_chars(2 * prompt + responses)
         );
         std::fs::remove_file(&path).ok();
     }

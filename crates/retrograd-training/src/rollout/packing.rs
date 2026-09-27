@@ -140,7 +140,7 @@ pub(crate) struct WeightedStepScratch {
     pub(super) packed_len: Vec<usize>,
     pub(super) row_width: usize,
     pub(super) pad_token: i32,
-    pub(super) member_weights: Vec<Vec<f32>>,
+    pub(crate) member_weights: Vec<Vec<f32>>,
     pub(super) packed_sequence_batch: PackedSequenceBatch,
     pub(crate) packing_fanout: usize,
     pub(crate) packing_passes: usize,
@@ -219,10 +219,10 @@ impl WeightedStepScratch {
     }
 
     /// Sizes the per-member weight buffers for one optimizer chunk. The
-    /// vectors are rewritten in place by `grpo_token_weights_into`, so a chunk
+    /// vectors are rewritten in place by the objective's weights, so a chunk
     /// of stable width - the common case - allocates nothing after the first
     /// step.
-    pub(super) fn begin_members(&mut self, n_members: usize) {
+    pub(crate) fn begin_members(&mut self, n_members: usize) {
         self.member_weights.truncate(n_members);
         self.member_weights.resize_with(n_members, Vec::new);
     }

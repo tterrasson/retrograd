@@ -2,8 +2,9 @@
 //!
 //! One document, one schema, whichever frontend reads it. `[model]`, `[lora]`,
 //! `[training]`, `[metrics]`, `[evaluation]` and `[checkpoint]` are shared;
-//! `[run].algorithm` selects which of `[sft]`, `[ppo]`, `[grpo]` or `[agent]`
-//! is the run's own section, and exactly that one may be present.
+//! `[run].algorithm` selects which of `[sft]`, `[ppo]`, `[grpo]`, `[distill]`,
+//! `[agent]` or `[preference]` is the run's own section, and exactly that one
+//! may be present.
 
 //!
 //! One module per section of the document, each holding that section's schema,
@@ -20,6 +21,7 @@ mod document;
 mod grpo;
 mod optimizer;
 mod ppo;
+mod preference;
 mod reference;
 mod sft;
 
@@ -49,6 +51,9 @@ pub use grpo::{
 };
 pub use optimizer::{ResolvedOptimizer, build_optimizer};
 pub use ppo::{CriticConfig, CriticToml, PpoConfig, PpoToml};
+pub use preference::{
+    DEFAULT_LOGPS_DROP_WARN, PreferenceConfig, PreferenceLoss, PreferenceToml, ReferenceSource,
+};
 pub use reference::ReferenceConfig;
 pub use sft::{SftConfig, SftToml};
 /// The engine-shaped configuration a run is built from. Produced from a
@@ -92,6 +97,10 @@ pub enum Algorithm {
     /// `Algorithm` the size of the largest variant, including the SFT run that
     /// holds three fields.
     AgentGrpo(Box<AgentRunConfig>),
+    /// Offline preference optimization: supervised, with two sequences per
+    /// example (a chosen and a rejected response to one prompt) and nothing
+    /// generated.
+    Preference(PreferenceConfig),
 }
 
 #[derive(Clone, Debug)]

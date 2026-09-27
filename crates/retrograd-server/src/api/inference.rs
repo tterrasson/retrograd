@@ -75,6 +75,7 @@ pub async fn evaluate(
         global_step: at.global_step,
         loss: evaluation.loss,
         perplexity: evaluation.perplexity,
+        accuracy: evaluation.accuracy,
         mean_reward: evaluation.mean_reward,
         reward_min: evaluation.reward_min,
         reward_max: evaluation.reward_max,

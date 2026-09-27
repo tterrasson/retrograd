@@ -26,12 +26,13 @@ use crate::document::{
 use crate::grpo::build_grpo;
 use crate::optimizer::build_optimizer;
 use crate::ppo::build_ppo;
+use crate::preference::build_preference;
 use crate::reference::build_reference;
 use crate::sft::build_sft;
 use crate::{
     Algorithm, CheckpointConfig, CheckpointMode, DEFAULT_SEED, DEFAULT_TARGETS, EvaluationConfig,
     LoraRunConfig, MetricsConfig, ObserveConfig, OutputConfig, OutputKind, ReferenceConfig,
-    RunConfig, agent, parse_targets,
+    ReferenceSource, RunConfig, agent, parse_targets,
 };
 
 /// Reads, parses and builds the TOML file at `path` into a [`RunConfig`].
@@ -119,6 +120,7 @@ pub fn build_with(
         grpo,
         distill,
         agent: agent_section,
+        preference,
         evaluation,
         checkpoint,
         observe,
@@ -163,9 +165,21 @@ pub fn build_with(
             )?;
             Algorithm::AgentGrpo(Box::new(agent::build_agent(value, root, resolve)?))
         }
+        "preference" => {
+            let value = required(
+                preference,
+                "[preference] is required when run.algorithm = 'preference'",
+            )?;
+            Algorithm::Preference(build_preference(
+                value,
+                root,
+                reference_toml.is_some(),
+                lora.as_ref().map_or(DEFAULT_SEED, |config| config.seed),
+            )?)
+        }
         _ => {
             return Err(Error::config(
-                "run.algorithm must be one of sft, ppo, grpo, distill, or agent_grpo",
+                "run.algorithm must be one of sft, ppo, grpo, distill, agent_grpo, or preference",
             ));
         }
     };
@@ -598,6 +612,7 @@ fn only_the_selected_section(file: &ConfigDocument, algorithm_name: &str) -> Res
         ("grpo", file.grpo.is_some()),
         ("distill", file.distill.is_some()),
         ("agent", file.agent.is_some()),
+        ("preference", file.preference.is_some()),
     ] {
         let selected = match name {
             "agent" => algorithm_name == "agent_grpo",
@@ -624,9 +639,12 @@ fn derive_optimizer_window(
     let rollout = match &algorithm {
         Algorithm::Ppo(_) | Algorithm::Grpo(_) | Algorithm::AgentGrpo(_) => true,
         Algorithm::Distill(distill) => distill.mode.is_rollout(),
-        Algorithm::Sft(_) => false,
+        Algorithm::Sft(_) | Algorithm::Preference(_) => false,
     };
-    let accumulation = match (gradient_accumulation, rollout) {
+    // A preference step holds whole pairs, so it spans the window a rollout
+    // step does, without being one.
+    let whole_window = rollout || matches!(algorithm, Algorithm::Preference(_));
+    let accumulation = match (gradient_accumulation, whole_window) {
         (Some(value), _) => value,
         (None, true) => training.n_ctx.div_ceil(training.n_ubatch),
         (None, false) => 1,
@@ -640,6 +658,12 @@ fn derive_optimizer_window(
     // `retrograd-agent`'s own TOML.
     if rollout {
         training.validate_rollout_geometry()?;
+    } else if whole_window {
+        training.validate_whole_window_step(
+            "a preference step trains whole pairs, which a window narrower than the context \
+             would cut between two steps",
+            "pair",
+        )?;
     } else {
         training.validate_geometry()?;
     }
@@ -669,6 +693,20 @@ fn pin_rollout_geometry(
             agent.config.group_size,
             agent.config.scenarios_per_update,
         )),
+        // Nothing generated, but a pair is two sequences over one prompt, which
+        // the packed step can place side by side.
+        Algorithm::Preference(_) => {
+            training.n_seq_max = 2;
+            if let SharedPrefixFanout::Exact(fanout) = training.shared_prefix_fanout
+                && fanout > training.n_seq_max
+            {
+                return Err(Error::config(format!(
+                    "training.shared_prefix_fanout ({fanout}) exceeds the two sequences of \
+                     a preference pair"
+                )));
+            }
+            None
+        }
         _ => None,
     };
     if let Some((section, group_size, prompts_per_update)) = rollout_geometry {
@@ -855,6 +893,13 @@ fn fixed_reference_consumer(algorithm: &Algorithm) -> Option<&'static str> {
         Algorithm::AgentGrpo(agent) => {
             (agent.config.kl_coefficient > 0.0).then_some("agent.kl_coefficient")
         }
+        // The initial policy is scored before the first step, so it holds
+        // whatever the run trains and consumes no anchor.
+        Algorithm::Preference(preference) => match preference.reference {
+            Some(ReferenceSource::Base) => Some("preference.reference = 'base'"),
+            Some(ReferenceSource::Model) => Some("preference.loss"),
+            Some(ReferenceSource::Initial) | None => None,
+        },
     }
 }
 
@@ -862,7 +907,7 @@ fn build_observe(value: ObserveToml, algorithm: &Algorithm, root: &Path) -> Resu
     // Only the rollout algorithms produce something to look at.
     match algorithm {
         Algorithm::Ppo(_) | Algorithm::Grpo(_) | Algorithm::AgentGrpo(_) => {}
-        Algorithm::Sft(_) | Algorithm::Distill(_) => {
+        Algorithm::Sft(_) | Algorithm::Distill(_) | Algorithm::Preference(_) => {
             return Err(Error::config(
                 "[observe] exports rollouts and is only supported for ppo, grpo and agent_grpo",
             ));

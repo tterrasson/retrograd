@@ -81,13 +81,18 @@ pub struct ControlPoint {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AdHocEvaluation {
     /// SFT: mean token-level cross-entropy over the evaluation dataset.
+    /// Preference: the mean loss over the evaluation pairs.
     pub loss: Option<f64>,
     pub perplexity: Option<f64>,
+    /// Preference: share of evaluation pairs whose chosen response earns the
+    /// larger implicit reward.
+    pub accuracy: Option<f64>,
     /// PPO/GRPO: mean reward over the evaluated prompts.
     pub mean_reward: Option<f32>,
     pub reward_min: Option<f32>,
     pub reward_max: Option<f32>,
-    /// Rows (SFT) or prompts (rollout) the evaluation covered.
+    /// Rows (SFT), pairs (preference) or prompts (rollout) the evaluation
+    /// covered.
     pub examples: u64,
 }
 

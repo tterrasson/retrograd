@@ -1864,6 +1864,7 @@ name = "retrograd-training"
 version = "0.1.0"
 dependencies = [
  "retrograd-agent-core",
+ "retrograd-checkpoint",
  "retrograd-config",
  "retrograd-core",
  "retrograd-dataset",
@@ -1873,6 +1874,7 @@ dependencies = [
  "retrograd-observe",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
  "tracing",
 ]

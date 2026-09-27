@@ -10,7 +10,11 @@ use super::*;
 // only at `u64::MAX`.
 pub(super) fn workload_kind_of(config: &RunConfig) -> WorkloadKind {
     match &config.algorithm {
-        retrograd_config::Algorithm::Sft(_) => WorkloadKind::Sft,
+        // Two sequences per example and no generation: the rows of an SFT run,
+        // with no rollout buffer to hold.
+        retrograd_config::Algorithm::Sft(_) | retrograd_config::Algorithm::Preference(_) => {
+            WorkloadKind::Sft
+        }
         retrograd_config::Algorithm::Ppo(ppo) => WorkloadKind::Rollout {
             rollouts_per_update: saturating_dim(ppo.rollout_batch_size),
         },
@@ -46,7 +50,7 @@ pub(super) fn workload_kind_of(config: &RunConfig) -> WorkloadKind {
 
 pub(super) fn completion_bound(config: &RunConfig) -> u32 {
     match &config.algorithm {
-        retrograd_config::Algorithm::Sft(_) => 0,
+        retrograd_config::Algorithm::Sft(_) | retrograd_config::Algorithm::Preference(_) => 0,
         retrograd_config::Algorithm::Ppo(ppo) => ppo.sampling.max_new_tokens,
         retrograd_config::Algorithm::Grpo(grpo) => grpo.sampling.max_new_tokens,
         // Offline distillation completes nothing; its bound is SFT's.
@@ -240,7 +244,51 @@ pub(super) fn step_counts(input: &ResolveInput<'_>, config: &RunConfig) -> (u64,
                 config.updates as u64 * config.epochs as u64 * rollouts * steps_per_row,
             )
         }
+        retrograd_config::Algorithm::Preference(preference) => {
+            let epochs = config.training.epochs as u64;
+            (
+                epochs,
+                epochs * preference_steps_per_epoch(input.data, &config.training, preference),
+            )
+        }
     }
+}
+
+/// Optimizer steps of one preference epoch. With lengths, the pairs are grouped
+/// the way the run groups them - whole pairs, in file order, while their
+/// micro-batches fit one step - with each side taken as half of its pair's
+/// length, so the figure is an estimate the run's exact count can differ from
+/// by the order a shuffle picks and the split between the sides. Without
+/// lengths, one step per pair: the bound.
+fn preference_steps_per_epoch(
+    data: &DatasetStats,
+    training: &TrainConfig,
+    preference: &retrograd_config::PreferenceConfig,
+) -> u64 {
+    let pairs = data.examples.max(1);
+    if data.is_empty() {
+        return pairs;
+    }
+    let ubatch = u64::from(training.n_ubatch.max(1));
+    let period = (u64::from(training.n_batch) / ubatch).max(1);
+    // Each side is rounded up to micro-batches on its own.
+    let costs = data
+        .lengths()
+        .iter()
+        .map(|&length| 2 * u64::from(length).div_ceil(2).div_ceil(ubatch))
+        .collect::<Vec<_>>();
+    let cap = preference.pairs_per_step.map_or(u64::MAX, u64::from).max(1);
+    let (mut steps, mut budget, mut members) = (0_u64, 0_u64, 0_u64);
+    for cost in costs {
+        if members > 0 && (budget + cost > period || members >= cap) {
+            steps += budget.div_ceil(period).max(1);
+            budget = 0;
+            members = 0;
+        }
+        budget += cost;
+        members += 1;
+    }
+    steps + budget.div_ceil(period).max(1)
 }
 
 /// Judge requests over the whole run - a figure the plan carries,
@@ -355,7 +403,7 @@ pub(super) fn collect_warnings(
         | retrograd_config::Algorithm::AgentGrpo(_) => true,
         // An offline distillation run has no generation context to make fast.
         retrograd_config::Algorithm::Distill(distill) => distill.mode.is_rollout(),
-        retrograd_config::Algorithm::Sft(_) => false,
+        retrograd_config::Algorithm::Sft(_) | retrograd_config::Algorithm::Preference(_) => false,
     };
     if config.training.fast_generation_context && generates {
         // The one warning invariant 4 now leans on: it is emitted from the final

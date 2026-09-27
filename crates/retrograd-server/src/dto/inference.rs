@@ -27,11 +27,15 @@ pub struct EvaluationResult {
     /// metric stream.
     pub iteration: u64,
     pub global_step: u64,
-    /// SFT only.
+    /// SFT and preference.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub loss: Option<f64>,
+    /// SFT only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub perplexity: Option<f64>,
+    /// Preference only: share of evaluation pairs ranked as preferred.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accuracy: Option<f64>,
     /// PPO/GRPO only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mean_reward: Option<f32>,

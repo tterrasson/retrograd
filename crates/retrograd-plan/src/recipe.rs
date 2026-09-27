@@ -24,10 +24,14 @@ pub enum Objective {
     InstructionTuning,
     /// GRPO against a verifiable reward.
     ReasoningRl,
-    /// PPO against a learned or judged preference.
+    /// PPO against a learned or judged preference. "Preference" names the
+    /// reward here; learning from pairs of responses is [`Self::PreferenceTuning`].
     PreferenceRl,
     /// GRPO over tool-using trajectories.
     Agentic,
+    /// Offline preference optimization (DPO) over chosen/rejected pairs.
+    /// Supervised: nothing is generated and no reward is read.
+    PreferenceTuning,
 }
 
 impl Objective {
@@ -37,11 +41,12 @@ impl Objective {
             Self::InstructionTuning => "sft",
             Self::ReasoningRl | Self::Agentic => "grpo",
             Self::PreferenceRl => "ppo",
+            Self::PreferenceTuning => "preference",
         }
     }
 
     pub fn is_rollout(self) -> bool {
-        !matches!(self, Self::InstructionTuning)
+        !matches!(self, Self::InstructionTuning | Self::PreferenceTuning)
     }
 }
 
@@ -486,6 +491,12 @@ mod tests {
             serde_json::to_string(&Objective::ReasoningRl).unwrap(),
             r#""reasoning-rl""#
         );
+        assert_eq!(
+            serde_json::to_string(&Objective::PreferenceTuning).unwrap(),
+            r#""preference-tuning""#
+        );
+        assert_eq!(Objective::PreferenceTuning.algorithm(), "preference");
+        assert!(!Objective::PreferenceTuning.is_rollout());
         assert_eq!(
             serde_json::to_string(&Allow::TruncateContext).unwrap(),
             r#""truncate_context""#

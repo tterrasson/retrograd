@@ -131,6 +131,24 @@ impl PackMember for ChunkMember<'_> {
     }
 }
 
+/// One member of a weighted optimizer step that carries nothing but its
+/// sequence and its group: the objective has already turned everything else
+/// into the member's weights.
+pub(crate) struct WeightedMember<'a> {
+    pub(crate) group_id: u64,
+    pub(crate) rollout: &'a Rollout,
+}
+
+impl PackMember for WeightedMember<'_> {
+    fn group_id(&self) -> u64 {
+        self.group_id
+    }
+
+    fn rollout(&self) -> &Rollout {
+        self.rollout
+    }
+}
+
 /// Greedy partition of `indices` (an already-shuffled epoch order) into
 /// optimizer chunks: consecutive rollouts join a chunk while their combined
 /// ubatch evals fit one accumulation period - one optimizer window of

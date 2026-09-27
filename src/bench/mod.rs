@@ -191,6 +191,7 @@ pub(crate) fn bench_model(args: Vec<String>) -> Result<()> {
             Algorithm::Ppo(_) | Algorithm::Grpo(_) => "rollout reward",
             Algorithm::Distill(_) => "teacher divergence",
             Algorithm::AgentGrpo(_) => "judge score",
+            Algorithm::Preference(_) => "preference accuracy",
         }
     ));
     if args.format.is_some() && !matches!(&run_config.algorithm, Algorithm::Sft(_)) {
@@ -304,6 +305,13 @@ pub(crate) fn bench_model(args: Vec<String>) -> Result<()> {
             return Err(Error::invalid(
                 "bench does not support run.algorithm = 'agent_grpo': an agentic score needs \
                  rollouts against a live environment, so run `train` instead",
+            ));
+        }
+        Algorithm::Preference(_) => {
+            return Err(Error::invalid(
+                "bench does not support run.algorithm = 'preference' yet: set \
+                 [evaluation].data to a preference file, and the run reports its accuracy \
+                 at every evaluation",
             ));
         }
     };

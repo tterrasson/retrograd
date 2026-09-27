@@ -66,7 +66,7 @@ fn applies(scope: Scope, objective: Objective) -> bool {
     let algorithm = objective.algorithm();
     match scope {
         Scope::Any | Scope::Evaluation | Scope::Checkpoint => true,
-        Scope::Sft => algorithm == "sft",
+        Scope::Sft => algorithm == "sft" || algorithm == "preference",
         // `Scope::Grpo` is documented as covering `agentic` too, which also
         // resolves to a GRPO objective.
         Scope::Grpo => algorithm == "grpo" || algorithm == "agent_grpo",
@@ -75,10 +75,11 @@ fn applies(scope: Scope, objective: Objective) -> bool {
     }
 }
 
-const OBJECTIVES: [Objective; 3] = [
+const OBJECTIVES: [Objective; 4] = [
     Objective::InstructionTuning,
     Objective::ReasoningRl,
     Objective::PreferenceRl,
+    Objective::PreferenceTuning,
 ];
 
 /// Every row of the table names a field the resolver really decides.

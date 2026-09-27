@@ -157,7 +157,21 @@ pub(super) fn draft_document(
         );
     }
 
-    let (sft, ppo, grpo) = match recipe.objective {
+    let (sft, ppo, grpo, preference) = match recipe.objective {
+        Objective::PreferenceTuning => (
+            None,
+            None,
+            None,
+            // The loss and every constant are left at their defaults: DPO
+            // against the initial policy, which is the recipe a preference
+            // stage after SFT wants, and the planner has no reason to pin
+            // another.
+            Some(PreferenceToml {
+                data: recipe.data.path.clone().unwrap_or_default(),
+                loss: Some("dpo".to_string()),
+                ..Default::default()
+            }),
+        ),
         Objective::InstructionTuning => (
             Some(SftToml {
                 data: recipe.data.path.clone().unwrap_or_default(),
@@ -168,6 +182,7 @@ pub(super) fn draft_document(
                 shuffle: None,
                 template_variables: Default::default(),
             }),
+            None,
             None,
             None,
         ),
@@ -188,6 +203,7 @@ pub(super) fn draft_document(
                 critic: Default::default(),
                 sampling,
             }),
+            None,
             None,
         ),
         Objective::ReasoningRl | Objective::Agentic => (
@@ -226,6 +242,7 @@ pub(super) fn draft_document(
                 max_stalled_updates: None,
                 sampling,
             }),
+            None,
         ),
     };
     if recipe.objective.is_rollout() && input.reward_command.is_empty() {
@@ -339,6 +356,7 @@ pub(super) fn draft_document(
             // The planner sizes single-turn runs: an agentic recipe is not one
             // of the shapes it derives, so the section is never emitted.
             agent: None,
+            preference,
             observe: None,
             // The drafts are LoRA runs, whose anchor is their own frozen base
             // weights; a separate one is declared in the document, if at all.
@@ -542,8 +560,14 @@ pub(super) fn budgeted_epochs(
         return epochs;
     }
     if let Some(minutes) = budget.minutes {
+        // A forward and backward pass is ~6 FLOP per parameter and token; a
+        // preference step first scores its pairs forward-only, ~2 more.
+        let flops_per_parameter = match input.recipe.objective {
+            Objective::PreferenceTuning => 8.0,
+            _ => 6.0,
+        };
         let tokens_per_second =
-            EFFECTIVE_FLOPS / (6.0 * (input.model.n_params.max(1) as f64)).max(1.0);
+            EFFECTIVE_FLOPS / (flops_per_parameter * (input.model.n_params.max(1) as f64)).max(1.0);
         let tokens_per_epoch = (input.data.examples * n_ctx as u64) as f64;
         let epochs = ((minutes as f64 * 60.0 * tokens_per_second) / tokens_per_epoch.max(1.0))
             .floor()

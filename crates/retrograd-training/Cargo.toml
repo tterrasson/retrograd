@@ -3,7 +3,7 @@ name = "retrograd-training"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Retrograd - training algorithms: SFT, PPO, GRPO and distillation"
+description = "Retrograd - training algorithms: SFT, PPO, GRPO, distillation and preference optimization"
 publish = false
 
 [dependencies]
@@ -12,6 +12,8 @@ publish = false
 # tokio. What is new here is one runtime, owned by `rollout::judge`, which is
 # where a synchronous training loop meets an asynchronous endpoint.
 retrograd-agent-core.workspace = true
+# The fingerprint a preference run's reference cache and dataset identity use.
+retrograd-checkpoint.workspace = true
 retrograd-config.workspace = true
 retrograd-core.workspace = true
 retrograd-dataset.workspace = true
@@ -22,6 +24,7 @@ retrograd-metrics.workspace = true
 retrograd-observe.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
 tracing.workspace = true
 

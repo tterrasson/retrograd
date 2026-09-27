@@ -491,7 +491,8 @@ pub fn eval_max_examples(prompts_per_update: usize, eval_examples: u64) -> Choic
 pub enum Scope {
     /// Every objective.
     Any,
-    /// Supervised only.
+    /// The supervised objectives: `instruction-tuning` and
+    /// `preference-tuning`, which share the epoch loop these rows size.
     Sft,
     /// GRPO (`reasoning-rl`, `agentic`).
     Grpo,

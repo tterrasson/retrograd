@@ -173,6 +173,25 @@ fn print_done(outcome: &RunOutcome, config: &RunConfig) {
             agent.config.updates,
             agent.config.epochs,
         ),
+        // `train_loss` is the preference loss of the last epoch, not a
+        // cross-entropy; `eval_loss` the same loss over the held-out pairs.
+        Algorithm::Preference(preference) => {
+            let eval_loss = if metrics.eval_loss.is_finite() {
+                format!(" eval_loss={:.6}", metrics.eval_loss)
+            } else {
+                String::new()
+            };
+            println!(
+                "done epoch={}/{} algorithm=preference loss={} step={} train_loss={:.6}{eval_loss} tok/s={:.1} out={}",
+                metrics.epoch,
+                config.training.epochs,
+                preference.loss.name(),
+                metrics.global_step,
+                metrics.train_loss,
+                metrics.tokens_per_second,
+                config.output.path.display()
+            );
+        }
     }
 }
 
@@ -537,6 +556,16 @@ impl RunObserver for TerminalObserver {
                 outcome,
             } => format!(
                 "eval epoch {epoch}: loss {loss:.6}  perplexity {perplexity:.4}  {}",
+                eval_status(outcome, 6),
+            ),
+            EvaluationReport::Preference {
+                epoch,
+                loss,
+                accuracy,
+                margin,
+                outcome,
+            } => format!(
+                "eval epoch {epoch}: loss {loss:.6}  accuracy {accuracy:.4}  margin {margin:.4}  {}",
                 eval_status(outcome, 6),
             ),
             EvaluationReport::Rollout {

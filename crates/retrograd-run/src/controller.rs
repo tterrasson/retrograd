@@ -101,6 +101,10 @@ impl RunController {
                 "agent_grpo",
                 BTreeMap::from([("rollout".to_string(), agent.config.seed)]),
             ),
+            Algorithm::Preference(preference) => (
+                "preference",
+                BTreeMap::from([("shuffle".to_string(), u64::from(preference.seed))]),
+            ),
         };
         Ok(Self {
             evaluation: config.evaluation.clone(),
@@ -115,10 +119,10 @@ impl RunController {
             context: CheckpointContext {
                 algorithm: algorithm.into(),
                 trajectory_signature: trajectory_signature(config)?,
-                resume_boundary: if algorithm == "sft" {
-                    "epoch"
-                } else {
-                    "update"
+                resume_boundary: match algorithm {
+                    "sft" => "epoch",
+                    "preference" => "step",
+                    _ => "update",
                 }
                 .into(),
                 scheduler_kind: scheduler_name(config.training.lr_scheduler).into(),

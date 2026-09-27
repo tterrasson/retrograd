@@ -237,6 +237,22 @@ fn exhaustive_distill_offline() -> DistillToml {
     }
 }
 
+/// Every key of `[preference]`, for the loss that reads them. The keys another
+/// loss reads are refused beside this one, and have their own tests.
+fn exhaustive_preference() -> PreferenceToml {
+    PreferenceToml {
+        data: PathBuf::from("data/pairs.jsonl"),
+        loss: Some("dpo".to_string()),
+        beta: Some(0.25),
+        reference: Some("base".to_string()),
+        label_smoothing: Some(0.1),
+        gamma_beta_ratio: None,
+        shuffle: Some(false),
+        pairs_per_step: Some(3),
+        logps_drop_warn: Some(1.5),
+    }
+}
+
 /// Dr. GRPO refuses anything but strictly on-policy sampling, so the two
 /// fields that could vary are covered by the PPO document instead.
 fn exhaustive_sampling() -> SamplingToml {
@@ -346,6 +362,7 @@ fn exhaustive_document() -> ConfigDocument {
         sft: None,
         ppo: None,
         distill: None,
+        preference: None,
         grpo: Some(GrpoToml {
             prompts: PathBuf::from("data/prompts.txt"),
             reward_command: vec!["score".to_string(), "--grpo".to_string()],
@@ -1270,6 +1287,62 @@ fn the_other_algorithm_sections_reach_the_run_config() {
     // The row order lives on `TrainConfig`, where the runtime reads it.
     assert!(!config.training.shuffle_dataset);
     assert_eq!(config.training.shuffle_seed, 7);
+
+    let mut document = lora_normalized(exhaustive_document());
+    document.run.algorithm = "preference".to_string();
+    document.observe = None;
+    document.grpo = None;
+    document.preference = Some(exhaustive_preference());
+    document.training.generation_concurrency = None;
+    // `reference = "base"` is the source, so no anchor.
+    document.reference = None;
+    let config = build(document, root).expect("the preference document builds");
+    let Algorithm::Preference(preference) = &config.algorithm else {
+        panic!("run.algorithm = 'preference' builds a preference run");
+    };
+    assert_eq!(preference.data, root.join("data/pairs.jsonl"));
+    assert_eq!(
+        preference.loss,
+        PreferenceLoss::Dpo {
+            beta: 0.25,
+            label_smoothing: 0.1
+        }
+    );
+    assert_eq!(preference.reference, Some(ReferenceSource::Base));
+    assert!(!preference.shuffle);
+    assert_eq!(preference.seed, 7);
+    assert_eq!(preference.pairs_per_step, Some(3));
+    assert_eq!(preference.logps_drop_warn, 1.5);
+    // A pair is two sequences, and one step spans the window.
+    assert_eq!(config.training.n_seq_max, 2);
+    assert_eq!(config.training.n_batch, config.training.n_ctx);
+
+    // `gamma_beta_ratio`, the one key the DPO literal leaves out.
+    let mut document = lora_normalized(exhaustive_document());
+    document.run.algorithm = "preference".to_string();
+    document.observe = None;
+    document.grpo = None;
+    document.training.generation_concurrency = None;
+    document.reference = None;
+    document.preference = Some(PreferenceToml {
+        loss: Some("simpo".to_string()),
+        reference: None,
+        label_smoothing: None,
+        gamma_beta_ratio: Some(0.75),
+        ..exhaustive_preference()
+    });
+    let config = build(document, root).expect("the SimPO document builds");
+    let Algorithm::Preference(preference) = &config.algorithm else {
+        panic!("run.algorithm = 'preference' builds a preference run");
+    };
+    assert_eq!(
+        preference.loss,
+        PreferenceLoss::Simpo {
+            beta: 0.25,
+            gamma_beta_ratio: 0.75
+        }
+    );
+    assert_eq!(preference.reference, None);
 }
 
 /// The other side of the same coin: what a document that says nothing gets.

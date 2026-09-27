@@ -194,6 +194,9 @@ pub enum RunEventPayload {
         loss: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         perplexity: Option<f64>,
+        /// Preference only: share of evaluation pairs ranked as preferred.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        accuracy: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         mean_reward: Option<f32>,
         improved: bool,

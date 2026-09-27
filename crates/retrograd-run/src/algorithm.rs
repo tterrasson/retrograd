@@ -214,26 +214,106 @@ pub(crate) fn run_sft(
     // The product `checked_total_steps` validated above, minus the epoch factor.
     let steps_per_epoch = train.examples as u64 * steps_per_row(config);
     let total_epochs = config.training.epochs;
+    let mut evaluate = eval.map(|dataset| {
+        move |trainer: &mut Trainer| -> Result<SupervisedEval> {
+            let metrics = trainer.eval_sft(&dataset)?;
+            Ok(SupervisedEval {
+                loss: metrics.loss(),
+                examples: dataset.rows() as u64,
+                detail: EvalDetail::Sft {
+                    perplexity: metrics.perplexity(),
+                },
+            })
+        }
+    });
     run_supervised_epochs(
         trainer,
         ctx,
-        eval,
+        evaluate
+            .as_mut()
+            .map(|evaluate| evaluate as &mut SupervisedEvaluator<'_>),
         total_epochs,
         steps_per_epoch,
         |trainer, on_progress| training::sft::run_resumed(trainer, &train, resume, on_progress),
     )
 }
 
-/// The epoch loop the two supervised objectives share: SFT, and offline top-k
-/// distillation.
+/// What one held-out pass of a supervised objective measured.
+pub(crate) struct SupervisedEval {
+    /// The value early stopping compares, lower is better.
+    pub(crate) loss: f64,
+    pub(crate) examples: u64,
+    pub(crate) detail: EvalDetail,
+}
+
+/// The objective-specific half of a [`SupervisedEval`].
+pub(crate) enum EvalDetail {
+    Sft { perplexity: f64 },
+    Preference(training::preference::PreferenceEval),
+}
+
+impl SupervisedEval {
+    fn values(&self) -> Vec<MetricValue> {
+        match &self.detail {
+            EvalDetail::Sft { perplexity } => vec![MetricValue {
+                name: "eval/perplexity".into(),
+                value: *perplexity as f32,
+            }],
+            EvalDetail::Preference(eval) => eval.values(),
+        }
+    }
+
+    fn ad_hoc(&self) -> AdHocEvaluation {
+        match &self.detail {
+            EvalDetail::Sft { perplexity } => AdHocEvaluation {
+                loss: Some(self.loss),
+                perplexity: Some(*perplexity),
+                examples: self.examples,
+                ..Default::default()
+            },
+            EvalDetail::Preference(eval) => AdHocEvaluation {
+                loss: Some(self.loss),
+                accuracy: Some(eval.accuracy),
+                examples: self.examples,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn report(&self, epoch: u32, outcome: crate::observer::EvalOutcome) -> EvaluationReport {
+        match &self.detail {
+            EvalDetail::Sft { perplexity } => EvaluationReport::Sft {
+                epoch,
+                loss: self.loss,
+                perplexity: *perplexity,
+                outcome,
+            },
+            EvalDetail::Preference(eval) => EvaluationReport::Preference {
+                epoch,
+                loss: self.loss,
+                accuracy: eval.accuracy,
+                margin: eval.margin,
+                outcome,
+            },
+        }
+    }
+}
+
+/// A supervised objective's held-out pass, run on the evaluation schedule and
+/// on demand.
+pub(crate) type SupervisedEvaluator<'a> = dyn FnMut(&mut Trainer) -> Result<SupervisedEval> + 'a;
+
+/// The epoch loop the supervised objectives share: SFT, offline top-k
+/// distillation, and preference optimization.
 ///
-/// They differ in what a target *is* - one token or `k` of them - and in
-/// nothing else this function can see: the same prepared corpus, the same epoch
-/// resume unit, the same forward-pass evaluation, the same control plane.
+/// They differ in what a target *is* - one token, `k` of them, or a pair of
+/// responses - and in what their held-out pass measures, which `evaluate`
+/// carries. Everything else is the same: epochs, forward-pass evaluation, the
+/// control plane, and checkpoints at the boundaries the algorithm emits.
 fn run_supervised_epochs(
     trainer: &mut Trainer,
     ctx: &mut Context<'_>,
-    eval: Option<retrograd_dataset::PreparedDataset>,
+    mut evaluate: Option<&mut SupervisedEvaluator<'_>>,
     total_epochs: u32,
     steps_per_epoch: u64,
     run: impl FnOnce(
@@ -241,7 +321,7 @@ fn run_supervised_epochs(
         &mut dyn FnMut(&mut Trainer, training::Progress) -> Result<bool>,
     ) -> Result<TrainMetrics>,
 ) -> Result<TrainMetrics> {
-    let has_eval = eval.is_some();
+    let has_eval = evaluate.is_some();
     ctx.observer.loop_started(&LoopPlan::Sft {
         // `total_epochs` and not `training.epochs`: an offline distillation run
         // counts its passes with `distill.offline_epochs`, and the plan the
@@ -261,22 +341,15 @@ fn run_supervised_epochs(
             ..
         } = &mut *ctx;
         controller.note_step(event.metrics.global_step);
-        // An ad-hoc evaluation is the scheduled forward pass without the
-        // bookkeeping: the same prepared dataset, the same `eval_sft`, and no
-        // `record_evaluation`.
+        // An ad-hoc evaluation is the scheduled pass without the bookkeeping:
+        // the same evaluator, and no `record_evaluation`.
         let mut ad_hoc = |trainer: &mut Trainer| {
-            let dataset = eval.as_ref().ok_or_else(|| {
+            let evaluate = evaluate.as_mut().ok_or_else(|| {
                 Error::invalid(
                     "this run has no evaluation dataset, so there is nothing to evaluate",
                 )
             })?;
-            let metrics = trainer.eval_sft(dataset)?;
-            Ok(AdHocEvaluation {
-                loss: Some(metrics.loss()),
-                perplexity: Some(metrics.perplexity()),
-                examples: dataset.rows() as u64,
-                ..Default::default()
-            })
+            Ok(evaluate(trainer)?.ad_hoc())
         };
         // Control is consulted first and acted on last. First, because a pause
         // must not sit between an evaluation and the checkpoint that records it;
@@ -299,18 +372,21 @@ fn run_supervised_epochs(
         if event.metrics.epoch_complete
             && controller.should_evaluate(event.metrics.epoch, total_epochs)
         {
-            let eval = eval
-                .as_ref()
-                .expect("an evaluation schedule has a prepared SFT dataset");
-            let eval_metrics = trainer.eval_sft(eval)?;
-            let loss = eval_metrics.loss();
+            let evaluate = evaluate
+                .as_mut()
+                .expect("an evaluation schedule has an evaluator");
+            let evaluation = evaluate(trainer)?;
+            let loss = evaluation.loss;
             event.metrics.eval_loss = loss as f32;
             last_eval_loss = event.metrics.eval_loss;
-            event = training::Progress::sft(event.metrics, true);
-            event.values.push(MetricValue {
-                name: "eval/perplexity".into(),
-                value: eval_metrics.perplexity() as f32,
-            });
+            // The series the metrics derive, plus what the evaluation measured.
+            if event.metrics.eval_loss.is_finite() {
+                event.values.push(MetricValue {
+                    name: "eval/loss".into(),
+                    value: event.metrics.eval_loss,
+                });
+            }
+            event.values.extend(evaluation.values());
             let outcome = controller.record_evaluation(
                 trainer,
                 loss,
@@ -320,14 +396,12 @@ fn run_supervised_epochs(
                 event.metrics.global_step,
             )?;
             keep_training = outcome.keep_training;
-            observer.evaluation(&EvaluationReport::Sft {
-                epoch: event.metrics.epoch,
-                loss,
-                perplexity: eval_metrics.perplexity(),
-                outcome,
-            });
+            observer.evaluation(&evaluation.report(event.metrics.epoch, outcome));
         }
-        // An epoch boundary is the only point an SFT run can resume from.
+        for note in event.notes.drain(..) {
+            observer.info(&note);
+        }
+        // SFT resumes at epoch boundaries only; preference at every step.
         if let Some(boundary) = event.boundary {
             controller.checkpoint_boundary(
                 trainer,
@@ -636,6 +710,187 @@ fn run_distill_offline(
             )
         },
     )
+}
+
+/// Offline preference optimization, on the supervised driver: pairs instead of
+/// rows, a boundary after every step, and a reference scored once.
+///
+/// The order is what the initial policy dictates. It exists only before the
+/// checkpoint restores anything, so a fresh run scores it first and keeps it in
+/// the checkpoint directory; a resumed run reads it back. The other two sources
+/// can be scored again at will, and a resume without their cache scores them
+/// after the restore, when the adapter they disable exists.
+pub(crate) fn run_preference(
+    trainer: &mut Trainer,
+    preference: &config::PreferenceConfig,
+    ctx: &mut Context<'_>,
+) -> Result<TrainMetrics> {
+    use config::ReferenceSource;
+    use training::preference::{CacheHeader, ReferenceCache, compute_reference};
+
+    let config = ctx.config;
+    let epochs = config.training.epochs;
+    let prepared = training::preference::prepare(
+        trainer,
+        preference,
+        &config.training,
+        epochs,
+        config
+            .evaluation
+            .as_ref()
+            .map(|evaluation| (evaluation.data.as_path(), evaluation.max_examples)),
+    )?;
+    let resuming = config
+        .checkpoint
+        .as_ref()
+        .is_some_and(|checkpoint| checkpoint.resume_from.is_some());
+    let identity = preference
+        .reference
+        .map(|source| reference_identity(config, trainer, source))
+        .transpose()?;
+    let cache = match (&config.checkpoint, &identity) {
+        (Some(checkpoint), Some(identity)) => Some(ReferenceCache::new(
+            &checkpoint.directory,
+            CacheHeader {
+                pairs: prepared.pairs() as u64,
+                eval_pairs: prepared.eval_pairs() as u64,
+                corpus: prepared.fingerprint().to_string(),
+                reference: identity.clone(),
+                loss: preference.loss.name().to_string(),
+            },
+        )),
+        _ => None,
+    };
+    let mut reference = match (preference.reference, resuming, &cache) {
+        (None, _, _) => None,
+        (Some(source), false, _) => {
+            let table = compute_reference(trainer, &prepared, source)?;
+            if let Some(cache) = &cache {
+                cache.write(&table)?;
+            }
+            Some(table)
+        }
+        (Some(ReferenceSource::Initial), true, Some(cache)) => Some(cache.read_initial()?),
+        (Some(_), true, Some(cache)) => cache.read()?,
+        (Some(_), true, None) => {
+            return Err(Error::invalid(
+                "a resumed preference run has a checkpoint directory to read its reference from",
+            ));
+        }
+    };
+    // The reference is part of what a resume must find unchanged, and its
+    // identity is known before its scores are: a resume that has to score them
+    // again does so against the same source.
+    let fingerprint = checkpoint::fingerprint(
+        format!(
+            "{}|loss={}|reference={}",
+            prepared.fingerprint(),
+            preference.loss.name(),
+            identity.as_deref().unwrap_or("none"),
+        )
+        .as_bytes(),
+    );
+    let resume = ctx.controller.begin(
+        trainer,
+        checkpoint::Dataset {
+            version: checkpoint::FORMAT_VERSION,
+            path: preference.data.display().to_string(),
+            fingerprint,
+            examples: prepared.pairs() as u64,
+            row_width: prepared.row_width() as u64,
+            format: "preference_jsonl".into(),
+            permutation: Vec::new(),
+            cursor: 0,
+        },
+        prepared.total_steps(),
+    )?;
+    if reference.is_none()
+        && let Some(source) = preference.reference
+    {
+        let table = compute_reference(trainer, &prepared, source)?;
+        if let Some(cache) = &cache {
+            cache.write(&table)?;
+        }
+        reference = Some(table);
+    }
+    ctx.datasets_prepared(
+        prepared.pairs(),
+        prepared.supervised_tokens(),
+        vec![
+            MetricValue {
+                name: "data/preference_pairs".into(),
+                value: prepared.pairs() as f32,
+            },
+            MetricValue {
+                name: "data/preference_eval_pairs".into(),
+                value: prepared.eval_pairs() as f32,
+            },
+        ],
+    )?;
+    let reference = reference.as_ref();
+    let mut evaluate =
+        (prepared.eval_pairs() > 0).then_some(|trainer: &mut Trainer| -> Result<SupervisedEval> {
+            let eval =
+                training::preference::evaluate(trainer, &prepared, reference, &preference.loss)?;
+            Ok(SupervisedEval {
+                loss: eval.loss,
+                examples: eval.examples as u64,
+                detail: EvalDetail::Preference(eval),
+            })
+        });
+    // Only the observer reads it; the scheduler has the exact total.
+    let steps_per_epoch = prepared.total_steps().div_ceil(u64::from(epochs.max(1)));
+    run_supervised_epochs(
+        trainer,
+        ctx,
+        evaluate
+            .as_mut()
+            .map(|evaluate| evaluate as &mut SupervisedEvaluator<'_>),
+        epochs,
+        steps_per_epoch,
+        |trainer, on_progress| {
+            training::preference::run_resumed(
+                trainer,
+                &prepared,
+                reference,
+                preference,
+                resume,
+                on_progress,
+            )
+        },
+    )
+}
+
+/// What scored the reference, as the cache and the checkpoint identity record
+/// it. A model is named by its path and size, as a run signature names it; an
+/// adapter the initial policy loaded, by its content.
+fn reference_identity(
+    config: &RunConfig,
+    trainer: &Trainer,
+    source: config::ReferenceSource,
+) -> Result<String> {
+    let model = format!(
+        "{}:{}",
+        config.model.display(),
+        crate::signature::model_bytes(&config.model)
+    );
+    Ok(match source {
+        config::ReferenceSource::Initial => {
+            let adapter = match &config.lora {
+                Some(lora) => match &lora.init_adapter {
+                    Some(path) => checkpoint::fingerprint_file_cached(path)?,
+                    None => checkpoint::fingerprint(format!("{:?}", lora.config).as_bytes()),
+                },
+                None => "none".into(),
+            };
+            format!(
+                "initial|model={model}|adapter={adapter}|trainable={}",
+                config.training.trainable.policy
+            )
+        }
+        config::ReferenceSource::Base => format!("base|model={model}"),
+        config::ReferenceSource::Model => format!("model|{}", trainer.reference_fingerprint()?),
+    })
 }
 
 /// Shared driver of the rollout-based algorithms: one observation per optimizer

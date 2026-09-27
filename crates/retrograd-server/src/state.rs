@@ -877,6 +877,9 @@ impl AppState {
             retrograd_config::Algorithm::Ppo(value) => {
                 self.resolve_path(&value.prompts.to_string_lossy(), "/config/ppo/prompts")?;
             }
+            retrograd_config::Algorithm::Preference(value) => {
+                self.resolve_path(&value.data.to_string_lossy(), "/config/preference/data")?;
+            }
             retrograd_config::Algorithm::Grpo(value) => {
                 self.resolve_path(&value.prompts.to_string_lossy(), "/config/grpo/prompts")?;
             }

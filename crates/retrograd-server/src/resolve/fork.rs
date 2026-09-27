@@ -315,6 +315,7 @@ pub async fn check_compatible(
         retrograd_config::Algorithm::Grpo(_) => "grpo",
         retrograd_config::Algorithm::Distill(_) => "distill",
         retrograd_config::Algorithm::AgentGrpo(_) => "agent_grpo",
+        retrograd_config::Algorithm::Preference(_) => "preference",
     };
     if target.manifest.algorithm != algorithm {
         return Err(conflict(format!(

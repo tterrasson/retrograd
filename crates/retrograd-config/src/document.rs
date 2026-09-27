@@ -14,6 +14,7 @@ use crate::agent::AgentToml;
 use crate::distill::DistillToml;
 use crate::grpo::GrpoToml;
 use crate::ppo::PpoToml;
+use crate::preference::PreferenceToml;
 use crate::sft::SftToml;
 
 /// The configuration *document*: the exact schema of the CLI's TOML file.
@@ -69,6 +70,8 @@ pub struct ConfigDocument {
     pub distill: Option<DistillToml>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentToml>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preference: Option<PreferenceToml>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observe: Option<ObserveToml>,
     /// `[reference]`: the frozen model a KL penalty is scored against. Its own
