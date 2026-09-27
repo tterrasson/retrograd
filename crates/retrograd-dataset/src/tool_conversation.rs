@@ -577,7 +577,7 @@ fn resolve_calls(example: &ChatExample) -> (Vec<Vec<TemplateCall>>, Vec<Option<S
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use serde_json::json;
 
     use super::*;
@@ -877,7 +877,7 @@ mod tests {
     /// A chat template small enough to predict by hand: `<role>content</role>`,
     /// a `<tools>` header, calls written `<call>{json}</call>`, and an assistant
     /// closer that is the one special token of a byte-level vocabulary.
-    struct TemplateBackend {
+    pub(crate) struct TemplateBackend {
         native: bool,
         /// Whether the assistant closer is an end-of-generation token.
         eog_closer: bool,

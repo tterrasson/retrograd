@@ -15,9 +15,15 @@ use retrograd_core::{Error, Result};
 use crate::chat_template::TemplateTool;
 
 pub mod chat_template;
+pub mod preference;
 mod tool_conversation;
 pub mod topk;
 
+pub use preference::{
+    PreferenceExample, PreferenceExampleError, PreferencePreparer, PreferenceRecord, PreparedPair,
+    PreparedSequence, Side, preference_measured_lengths, prepare_pair, prepare_preference_jsonl,
+    read_preference_jsonl, validate_preference_jsonl,
+};
 pub use tool_conversation::{ToolConversationRenderer, ToolRenderError, ToolStream};
 
 pub const IGNORE_LABEL: i32 = -1;
@@ -155,7 +161,7 @@ pub struct ChatExample {
     pub metadata: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChatMessage {
     pub role: String,
@@ -502,7 +508,7 @@ retrograd_core::wire_enum! {
     pub enum RecordErrorKind {
         /// A JSONL line with nothing but whitespace.
         EmptyRecord = "empty_record",
-        /// The line does not parse as the `ChatExample` schema at all: malformed
+        /// The line does not parse as the file's record schema at all: malformed
         /// JSON, a missing field, or an unknown one (`deny_unknown_fields`).
         InvalidJson = "invalid_json",
         /// The line parses but fails a semantic rule: an empty or unknown role, no
@@ -638,16 +644,26 @@ fn implausible_alternation(example: &ChatExample) -> Option<String> {
 /// both reported this way, each pinned to its line. An empty file is still a
 /// hard error - there is no line to report a problem *on*.
 pub fn validate_chat_jsonl(path: &Path) -> Result<Validation> {
+    validate_lines(path, |line_number, line| {
+        match parse_line(line_number, line) {
+            Err(error) => Some(error),
+            Ok(example) => semantic_error(line_number, &example),
+        }
+    })
+}
+
+/// Runs `check` on every line of a JSONL file, 1-based, keeping the first
+/// [`MAX_COLLECTED_RECORD_ERRORS`] problems and counting them all.
+fn validate_lines(
+    path: &Path,
+    mut check: impl FnMut(usize, &str) -> Option<RecordError>,
+) -> Result<Validation> {
     let source = read_text(path)?;
     let mut validation = Validation::default();
     let mut lines = 0usize;
     for (index, line) in source.lines().enumerate() {
         lines += 1;
-        let problem = match parse_line(index + 1, line) {
-            Err(error) => Some(error),
-            Ok(example) => semantic_error(index + 1, &example),
-        };
-        if let Some(problem) = problem {
+        if let Some(problem) = check(index + 1, line) {
             validation.total += 1;
             if validation.errors.len() < MAX_COLLECTED_RECORD_ERRORS {
                 validation.errors.push(problem);
