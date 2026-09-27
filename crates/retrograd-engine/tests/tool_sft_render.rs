@@ -208,7 +208,8 @@ fn framing_runs(stream: &ToolStream) -> Vec<Vec<i32>> {
 /// Native rendering only: the catalog goes to the template, not into a system
 /// turn this rebuild would have to write too.
 fn rollout_framing(backend: &FixtureBackend, example: &ChatExample) -> Vec<Vec<i32>> {
-    let tools = retrograd_dataset::chat_template::template_tools(&example.tools).unwrap();
+    let tools =
+        retrograd_dataset::chat_template::template_tools(&example.tools).expect("a valid catalog");
     let messages = example
         .messages
         .iter()
@@ -237,18 +238,20 @@ fn rollout_framing(backend: &FixtureBackend, example: &ChatExample) -> Vec<Vec<i
         .collect::<Vec<_>>();
     let mut runs = Vec::new();
     for (turn, &index) in assistants.iter().enumerate() {
-        let (json, sentinels) = template_messages(&messages[..index]).unwrap();
+        let (json, sentinels) = template_messages(&messages[..index]).expect("a valid history");
         let rendered = backend
             .format_chat_messages(&json, Some(&tools), true)
-            .unwrap();
-        let pieces = split_assistant_spans(&rendered, &sentinels).unwrap();
+            .expect("the template renders");
+        let pieces = split_assistant_spans(&rendered, &sentinels).expect("sentinels in order");
         let piece = pieces.last().expect("one piece per gap");
         let tokens = match turn {
-            0 => backend.tokenize_text(piece).unwrap(),
+            0 => backend.tokenize_text(piece).expect("infallible stand-in"),
             _ => {
                 let tokens = FixtureBackend::tokenize(piece);
                 match tokens.first() {
-                    Some(&closer) if backend.is_eog_token(closer).unwrap() => tokens[1..].to_vec(),
+                    Some(&closer) if backend.is_eog_token(closer).expect("infallible stand-in") => {
+                        tokens[1..].to_vec()
+                    }
                     _ => tokens,
                 }
             }
