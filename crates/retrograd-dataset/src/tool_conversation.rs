@@ -119,7 +119,12 @@ pub(crate) fn validate_tools(example: &ChatExample) -> std::result::Result<(), C
 pub enum ToolRenderError {
     #[error(transparent)]
     Template(#[from] ChatTemplateError),
-    #[error("a tool record must end on an assistant turn: nothing after the last one is learned")]
+    /// Only the observations of the last turn's calls may follow it: an
+    /// environment that ends the episode on a call leaves the trajectory there.
+    #[error(
+        "a tool record must end on an assistant turn, or on the observations that answer it: \
+         nothing after the last one is learned"
+    )]
     EndsWithoutAssistant,
     /// Rendering the turn for real changed text outside it, so there is no
     /// span that is "what the template writes for this turn".
@@ -283,7 +288,9 @@ impl<'b, B: DatasetBackend + ?Sized> ToolConversationRenderer<'b, B> {
         }
         if example
             .messages
-            .last()
+            .iter()
+            .rev()
+            .find(|message| message.role != "tool")
             .is_some_and(|message| message.role != "assistant")
         {
             return Err(ToolRenderError::EndsWithoutAssistant.into());
@@ -1267,13 +1274,34 @@ mod tests {
     }
 
     #[test]
-    fn a_record_ending_on_an_observation_has_nothing_to_learn_at_its_end() {
+    fn a_record_ending_on_the_observation_of_its_last_call_stops_at_that_call() {
+        // The shape an environment that ends the episode on `submit` produces.
         let example = run_record(vec![
             user("go"),
             calling(vec![call(None, "run")]),
             answer(None, "a.txt"),
         ]);
-        let error = stream(&TemplateBackend::default(), &example).unwrap_err();
+        let stream = stream(&TemplateBackend::default(), &example).unwrap();
+        assert_eq!(
+            stream.tokens.last(),
+            Some(&EOG),
+            "the calling turn's closer"
+        );
+        assert!(stream.train_mask.last().copied().unwrap());
+        let observation = bytes("a.txt");
+        assert!(
+            !stream
+                .tokens
+                .windows(observation.len())
+                .any(|window| window == observation),
+            "nothing follows the observation, so it is not in the stream"
+        );
+
+        // A user turn after the last answer is something else: nothing
+        // answers it.
+        let mut example = one_call("");
+        example.messages.push(user("and then?"));
+        let error = self::stream(&TemplateBackend::default(), &example).unwrap_err();
         assert!(
             error.to_string().contains("must end on an assistant turn"),
             "{error}"
