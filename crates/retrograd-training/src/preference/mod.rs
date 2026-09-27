@@ -18,6 +18,7 @@ pub(crate) mod loss;
 mod plan;
 pub mod reference;
 
+use std::ops::Range;
 use std::path::Path;
 
 use retrograd_checkpoint as checkpoint;
@@ -102,7 +103,6 @@ pub struct PreparedPreference {
     /// Physical ubatches each pair costs inside one optimizer window.
     pub(crate) costs: Vec<u64>,
     pub(crate) layout: RowLayout,
-    pub(crate) packing_capability: bool,
     shuffle: bool,
     seed: u32,
     pairs_per_step: Option<usize>,
@@ -142,44 +142,15 @@ impl PreparedPreference {
         &self.fingerprint
     }
 
-    /// The optimizer chunks of one epoch, as ranges of `order`, with the steps
-    /// each takes.
-    fn plan_epoch(&self, epoch: u32) -> Result<(Vec<usize>, Vec<PlannedChunk>)> {
+    /// The optimizer chunks of one epoch, as ranges of `order`. Each takes
+    /// exactly one optimizer step: a chunk of several pairs fits the period,
+    /// and a pair over it was only admitted if it trains as one packed pass.
+    fn plan_epoch(&self, epoch: u32) -> (Vec<usize>, Vec<Range<usize>>) {
         let order = plan::epoch_order(self.pairs.len(), self.shuffle, self.seed, epoch);
         let period = self.layout.accumulation_period();
-        let chunks = plan::chunk_pairs(&order, &self.costs, period, self.pairs_per_step)
-            .into_iter()
-            .map(|range| {
-                let pairs = order[range.clone()]
-                    .iter()
-                    .map(|&index| &self.pairs[index])
-                    .collect::<Vec<_>>();
-                let members = members(&pairs);
-                let packed = matches!(
-                    select_packing(&members, &self.layout, self.packing_capability)?,
-                    PackingSelection::Packed(_)
-                );
-                let cost = order[range.clone()]
-                    .iter()
-                    .map(|&index| self.costs[index])
-                    .sum::<u64>();
-                Ok(PlannedChunk {
-                    steps: plan::chunk_steps(cost, period, packed),
-                    split: !packed && cost > period,
-                    range,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok((order, chunks))
+        let chunks = plan::chunk_pairs(&order, &self.costs, period, self.pairs_per_step);
+        (order, chunks)
     }
-}
-
-#[derive(Clone, Debug)]
-struct PlannedChunk {
-    range: std::ops::Range<usize>,
-    steps: u64,
-    /// One pair whose rows need more than one optimizer step.
-    split: bool,
 }
 
 fn members<'a>(pairs: &[&'a Pair]) -> Vec<WeightedMember<'a>> {
@@ -229,6 +200,36 @@ pub fn prepare(
         .iter()
         .map(|pair| Ok(layout.rollout_evals(&pair.chosen)? + layout.rollout_evals(&pair.rejected)?))
         .collect::<Result<Vec<_>>>()?;
+    // A pair's coefficients are its loss's gradient only under the parameters
+    // that scored it, so both responses must train in the same optimizer step.
+    // The runtime closes a step every period of rows, so a pair over the
+    // period is trainable only as one packed pass.
+    let period = layout.accumulation_period();
+    let capability = trainer.supports_shared_prefix_packed_training()?;
+    let mut oversized = Vec::new();
+    for (index, (pair, &cost)) in pairs.iter().zip(&costs).enumerate() {
+        if cost > period
+            && !matches!(
+                select_packing(&members(&[pair]), &layout, capability)?,
+                PackingSelection::Packed(_)
+            )
+        {
+            oversized.push(index);
+        }
+    }
+    if let Some(&first) = oversized.first() {
+        return Err(Error::config(format!(
+            "{} of {} preference pairs do not fit one optimizer step (the first is pair {}): \
+             their two responses together exceed training.ctx = {} tokens and cannot share \
+             one packed pass, and a pair split between two steps would not train its loss; \
+             raise training.ctx, or allow training.shared_prefix_fanout on a model that \
+             supports packed training",
+            oversized.len(),
+            pairs.len(),
+            first + 1,
+            layout.window
+        )));
+    }
     let supervised_tokens = pairs
         .iter()
         .flat_map(Pair::sides)
@@ -253,7 +254,6 @@ pub fn prepare(
         eval,
         costs,
         layout,
-        packing_capability: trainer.supports_shared_prefix_packed_training()?,
         shuffle: config.shuffle,
         seed: config.seed,
         // A count of pairs, so a `u32` always fits `usize` on the targets this
@@ -267,10 +267,9 @@ pub fn prepare(
     if prepared.pairs.is_empty() {
         return Err(Error::invalid("a preference run needs at least one pair"));
     }
-    prepared.total_steps = (0..epochs).try_fold(0_u64, |total, epoch| {
-        let (_, chunks) = prepared.plan_epoch(epoch)?;
-        Ok::<_, Error>(total.saturating_add(chunks.iter().map(|chunk| chunk.steps).sum()))
-    })?;
+    prepared.total_steps = (0..epochs)
+        .map(|epoch| prepared.plan_epoch(epoch).1.len() as u64)
+        .fold(0_u64, u64::saturating_add);
     Ok(prepared)
 }
 
@@ -340,7 +339,7 @@ impl Totals {
         self.mean(self.rejected_logps)
     }
 
-    fn values(&self, loss: &PreferenceLoss, split_pairs: u64) -> Vec<MetricValue> {
+    fn values(&self, loss: &PreferenceLoss) -> Vec<MetricValue> {
         let value = |name: &str, value: f64| MetricValue {
             name: format!("preference/{name}").into(),
             value: value as f32,
@@ -357,7 +356,6 @@ impl Totals {
                 "pairs_per_step",
                 self.pairs as f64 / self.steps.max(1) as f64,
             ),
-            value("split_pairs", split_pairs as f64),
         ];
         if matches!(loss, PreferenceLoss::Orpo { .. }) {
             values.push(value("nll", self.mean(self.nll)));
@@ -513,7 +511,6 @@ pub fn run_resumed(
     };
     let mut scratch = WeightedStepScratch::new(&prepared.layout);
     let mut global_step = trainer.advance_scheduler_steps(0)?;
-    let mut split_pairs = 0_u64;
     let mut drift = DriftWatch {
         first: None,
         threshold: f64::from(config.logps_drop_warn),
@@ -521,26 +518,18 @@ pub fn run_resumed(
     };
     let mut final_metrics = TrainMetrics::default();
     for epoch in 0..prepared.epochs {
-        let (order, chunks) = prepared.plan_epoch(epoch)?;
-        let ranges = chunks
-            .iter()
-            .map(|chunk| chunk.range.clone())
-            .collect::<Vec<_>>();
-        let first = match epoch.cmp(&start_epoch) {
-            std::cmp::Ordering::Less => {
-                // The split pairs a resumed run already stepped through, so the
-                // cumulative series continues rather than restarts.
-                split_pairs += chunks.iter().filter(|chunk| chunk.split).count() as u64;
-                continue;
-            }
-            std::cmp::Ordering::Equal => plan::resume_chunk(&ranges, cursor)?,
-            std::cmp::Ordering::Greater => 0,
+        if epoch < start_epoch {
+            continue;
+        }
+        let (order, chunks) = prepared.plan_epoch(epoch);
+        let first = match epoch == start_epoch {
+            true => plan::resume_chunk(&chunks, cursor)?,
+            false => 0,
         };
-        split_pairs += chunks[..first].iter().filter(|chunk| chunk.split).count() as u64;
         let mut epoch_totals = Totals::default();
         let last_chunk = chunks.len().saturating_sub(1);
         for (index, chunk) in chunks.iter().enumerate().skip(first) {
-            let pairs = order[chunk.range.clone()]
+            let pairs = order[chunk.clone()]
                 .iter()
                 .map(|&pair| {
                     (
@@ -551,22 +540,21 @@ pub fn run_resumed(
                 .collect::<Vec<_>>();
             let (mut metrics, mut totals) =
                 step(trainer, &pairs, &config.loss, prepared, &mut scratch)?;
-            // The plan owns the step count. A row whose weights all rounded to
-            // zero is skipped by the runtime, and the schedule still counts it,
-            // so the horizon stays the one the run was started with.
+            // The plan owns the step count: one per chunk. A row whose weights
+            // all rounded to zero is skipped by the runtime, and the schedule
+            // still counts it, so the horizon stays the one the run was
+            // started with.
             let taken = metrics
                 .global_step
                 .checked_sub(global_step)
                 .ok_or_else(|| Error::runtime("the optimizer step counter moved backwards"))?;
-            if taken > chunk.steps {
+            if taken > 1 {
                 return Err(Error::runtime(format!(
-                    "a preference step took {taken} optimizer steps where its plan has {}",
-                    chunk.steps
+                    "a preference step took {taken} optimizer steps where its plan has one"
                 )));
             }
-            global_step = trainer.advance_scheduler_steps(chunk.steps - taken)?;
-            totals.steps = chunk.steps;
-            split_pairs += u64::from(chunk.split);
+            global_step = trainer.advance_scheduler_steps(1 - taken)?;
+            totals.steps = 1;
             metrics.global_step = global_step;
             metrics.epoch = epoch + 1;
             metrics.epoch_complete = false;
@@ -577,7 +565,7 @@ pub fn run_resumed(
             let mut progress = Progress::sft(metrics, false);
             progress
                 .values
-                .extend(totals.values(&config.loss, split_pairs));
+                .extend(totals.values(&config.loss));
             progress.notes.append(&mut scratch.notes);
             if let Some(warning) = drift.observe(totals.chosen_logps(), totals.rejected_logps()) {
                 progress.notes.push(warning);
@@ -587,7 +575,7 @@ pub fn run_resumed(
             // which is where it resumes from.
             progress.boundary = (!at_epoch_end).then_some(Boundary {
                 completed_iterations: u64::from(epoch),
-                cursor: chunk.range.end as u64,
+                cursor: chunk.end as u64,
                 kl_multiplier: None,
             });
             let keep_going = on_progress(trainer, progress)?;
@@ -605,7 +593,7 @@ pub fn run_resumed(
                 let mut progress = Progress::sft(metrics, false);
                 progress
                     .values
-                    .extend(epoch_totals.values(&config.loss, split_pairs));
+                    .extend(epoch_totals.values(&config.loss));
                 if !on_progress(trainer, progress)? || !keep_going {
                     return Ok(final_metrics);
                 }

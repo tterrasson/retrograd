@@ -165,18 +165,23 @@ pub(crate) fn pair_terms(
         }
         PreferenceLoss::Orpo { .. } => {
             let lambda = beta;
-            let clamped = u32::from(chosen.mean() > ORPO_MEAN_BOUND)
-                + u32::from(rejected.mean() > ORPO_MEAN_BOUND);
+            let chosen_clamped = chosen.mean() > ORPO_MEAN_BOUND;
+            let rejected_clamped = rejected.mean() > ORPO_MEAN_BOUND;
+            let clamped = u32::from(chosen_clamped) + u32::from(rejected_clamped);
             let chosen_mean = chosen.mean().min(ORPO_MEAN_BOUND);
             let rejected_mean = rejected.mean().min(ORPO_MEAN_BOUND);
             let (chosen_odds, chosen_slope) = log_odds(chosen_mean);
             let (rejected_odds, rejected_slope) = log_odds(rejected_mean);
             let z = chosen_odds - rejected_odds;
             let pull = lambda * sigmoid(-z);
+            // Past the bound the loss reads the bound, not the mean, so that
+            // side's derivative is zero - and so is its coefficient.
+            let live = |clamped: bool| f64::from(u8::from(!clamped));
             PairTerms {
                 loss: -chosen_mean + lambda * softplus(-z),
-                chosen_weight: (1.0 + pull * chosen_slope) / chosen.count(),
-                rejected_weight: -pull * rejected_slope / rejected.count(),
+                chosen_weight: live(chosen_clamped) * (1.0 + pull * chosen_slope) / chosen.count(),
+                rejected_weight: live(rejected_clamped) * -pull * rejected_slope
+                    / rejected.count(),
                 chosen_reward: beta * chosen_mean,
                 rejected_reward: beta * rejected_mean,
                 orpo: Some(OrpoTerms {
@@ -352,6 +357,10 @@ mod tests {
         assert_eq!(orpo.clamped, 1);
         assert!(terms.loss.is_finite() && terms.chosen_weight.is_finite());
         assert!(close(orpo.nll, -ORPO_MEAN_BOUND));
+        // The loss is flat in a clamped side, so nothing trains it; the other
+        // side keeps its coefficient.
+        assert_eq!(terms.chosen_weight, 0.0);
+        assert!(terms.rejected_weight < 0.0);
 
         let terms = pair_terms(&ORPO, side(-4.0, 4, 0.0), side(-8.0, 4, 0.0)).unwrap();
         assert_eq!(terms.orpo.unwrap().clamped, 0);

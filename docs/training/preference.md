@@ -98,8 +98,9 @@ count), so `training.gradient_accumulation` is pinned to
 `ctx / micro_batch`; lower `micro_batch` to save memory. When
 `training.shared_prefix_fanout` allows it and the model supports it, both
 sequences of a pair run in one pass over their shared prompt. Choose `ctx` so
-that a whole pair fits: a pair larger than the window is still trained, over
-several steps, and counted in `preference/split_pairs`.
+that a whole pair fits: both answers of a pair must train in the same step,
+so a pair whose two sequences together exceed `ctx` and cannot run as one
+packed pass is refused before the first step.
 
 Pairs are shuffled at each epoch (`shuffle = false` keeps file order), and a
 run can resume from any step.

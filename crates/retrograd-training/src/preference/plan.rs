@@ -50,16 +50,6 @@ pub(crate) fn chunk_pairs(
     chunks
 }
 
-/// Optimizer steps one chunk takes: one when it is packed or fits the period,
-/// otherwise one per started period of its rows - the runtime closes a step
-/// every `period` ubatches and pads the last one.
-pub(crate) fn chunk_steps(cost: u64, period: u64, packed: bool) -> u64 {
-    match packed {
-        true => 1,
-        false => cost.div_ceil(period.max(1)).max(1),
-    }
-}
-
 /// Where a resumed epoch starts: the index of the chunk that begins after
 /// `cursor` pairs. A cursor inside a chunk cannot come from this run's own
 /// boundaries, which only ever fall between chunks.
@@ -96,9 +86,6 @@ mod tests {
         // A pair larger than the period is a chunk of its own.
         let costs = [2, 9, 1, 1, 1];
         assert_eq!(chunk_pairs(&order, &costs, 4, None), vec![0..1, 1..2, 2..5]);
-        assert_eq!(chunk_steps(9, 4, false), 3);
-        assert_eq!(chunk_steps(9, 4, true), 1);
-        assert_eq!(chunk_steps(3, 4, false), 1);
     }
 
     #[test]
