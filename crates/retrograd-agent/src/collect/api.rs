@@ -5,7 +5,7 @@
 //! So this is a text loop of its own, over the same environments, and what it
 //! produces is records only - structured ones, since the calls come back
 //! already parsed. The filters, the selection and the writing are the rollout
-//! path's ([`keep_best`]); the grading is the environment's alone, because a
+//! path's (`keep_best`); the grading is the environment's alone, because a
 //! judge scores token-level trajectory groups.
 
 use std::sync::Arc;

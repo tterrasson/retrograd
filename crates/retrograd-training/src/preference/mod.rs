@@ -5,11 +5,11 @@
 //! the parameters only through each response's summed log-probability, so its
 //! gradient is one detached coefficient per response times the gradient of
 //! that response's tokens - exactly what the weighted objective PPO and GRPO
-//! already train through ([`loss`] has the derivation). One step is therefore
+//! already train through (`loss` has the derivation). One step is therefore
 //! a forward-only scoring pass under the current parameters, the coefficients
 //! in `f64`, and one weighted step over the chunk's sequences.
 //!
-//! One responsibility per file: [`loss`] the objectives, [`reference`] the
+//! One responsibility per file: `loss` the objectives, [`reference`](mod@reference) the
 //! frozen scores and their cache, `plan` which pairs share a step, and
 //! [`evaluate`] the held-out pass.
 

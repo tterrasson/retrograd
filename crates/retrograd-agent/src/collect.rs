@@ -3,7 +3,7 @@
 //! best trace against the worst as a preference record.
 //!
 //! Nothing here is new machinery. The rollouts are the engine's, the grading is
-//! the update loop's own ([`score_group`]), and the records are
+//! the update loop's own (`score_group`), and the records are
 //! [`to_chat_example`]'s - so a trace is kept on exactly the reward it would
 //! have been trained on, and prepares back to the stream it was collected as.
 
