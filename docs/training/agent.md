@@ -198,12 +198,56 @@ not the judge's: judge scores are relative to a group and cannot be compared
 across updates. Held-out scenarios must therefore be verifiable (a `verify`
 command, or an HTTP environment that returns rewards).
 
+## Warm-start from successful traces
+
+A model that never produces a valid tool call gives every member of a group the
+same reward, and GRPO has nothing to learn from. Collect the traces that did
+succeed, train on them, then run GRPO from the result:
+
+```bash
+retrograd collect agent.toml --out traces.jsonl --k 8 --keep 1 --report pass.json
+```
+
+```toml
+# sft.toml
+[run]
+algorithm = "sft"
+
+[model]
+path = "model.gguf"
+
+[output]
+path = "warm.gguf"
+
+[lora]
+rank = 8
+alpha = 16.0
+
+[training]
+ctx = 4096
+lr = 0.0001
+
+[sft]
+data = "traces.jsonl"
+# The same variables as agent.toml's [agent] section, so the format learned is
+# the one the rollout samples.
+template_variables = { enable_thinking = false }
+```
+
+Then set `[lora].init_adapter = "warm.gguf"` in `agent.toml` and train it.
+Only traces that finish cleanly are kept - no truncation, no malformed call,
+verified when the scenarios have a `verify` command - and at most `--keep` per
+scenario, so the easy scenarios do not make up the whole dataset. `pass.json`
+lists each scenario's pass rate; the ones no attempt solved are candidates for
+a larger generator (`--model teacher.gguf`).
+
 ## Tooling
 
 ```bash
 retrograd tools list agent.toml --json          # the exact tool catalog
 retrograd scenarios generate agent.toml         # write scenarios with an LLM
 retrograd judge eval agent.toml --fixtures f.jsonl   # measure a judge against labels
+retrograd collect agent.toml --out traces.jsonl # successful traces, as an SFT dataset
 ```
 
 `scenarios generate` reads `[agent.scenario_generation]` (`model`, `base_url`,

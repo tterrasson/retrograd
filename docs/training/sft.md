@@ -38,6 +38,30 @@ With chat JSONL, only assistant turns are trained. With plain text, every token
 is. Rows are shuffled at each epoch (`sft.shuffle = false` keeps file order).
 See [Datasets](../getting-started/datasets).
 
+## Tool conversations
+
+A [tool record](../getting-started/datasets#tool-conversations) trains each
+assistant turn - its prose, its call markup in the model's own format, and the
+end-of-turn token the model stops on - and nothing else: the catalog, the
+observations and the template's framing are context. This is the stream an
+agentic rollout samples, so SFT on successful traces is the usual warm-start
+before [agentic GRPO](agent): a policy that cannot yet call a tool validly
+earns the same zero reward on every member of a group, and GRPO learns nothing
+from it.
+
+## Template variables
+
+```toml
+[sft]
+data = "traces.jsonl"
+template_variables = { enable_thinking = false }
+```
+
+Handed to the chat template while the dataset is rendered, like
+`[agent].template_variables` during a rollout. A warm-start before an agentic
+run must use the run's own: under other variables the template writes another
+format, and the model learns a turn it will not be asked to sample.
+
 ## Batch size and memory
 
 | Key | Default | Meaning |

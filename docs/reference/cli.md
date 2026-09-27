@@ -96,6 +96,36 @@ retrograd judge eval CONFIG.toml --fixtures FILE.jsonl
 
 See [Agentic GRPO](../training/agent#tooling).
 
+## `collect`
+
+```text
+retrograd collect CONFIG.toml --out FILE.jsonl [--k N] [--keep N] [--min-reward R]
+                  [--require-verified|--allow-unverified] [--raw] [--limit N]
+                  [--seed N] [--report FILE.json] [--force] [--model M] [--device D]
+```
+
+Rolls out the scenarios of an `agent_grpo` configuration and writes the
+successful traces as [tool records](../getting-started/datasets#tool-conversations)
+for SFT. It reads the model and `init_adapter`, `[agent]` and its judge; it
+trains nothing.
+
+| Flag | Default | Meaning |
+| --- | ---: | --- |
+| `--k` | `group_size` | Attempts per scenario. With `1`, the environment must grade every scenario. |
+| `--keep` | `1` | Traces kept per scenario: the highest reward, the shortest at equal reward, no exact duplicate. |
+| `--min-reward` | none | Drop traces below this total reward. |
+| `--require-verified` | on when every scenario has a `verify` | Keep only traces the environment verified. `--allow-unverified` turns it off. |
+| `--raw` | off | Write assistant turns verbatim instead of structured. Only a student of the generator's family can train on them. |
+| `--limit` | all | Collect from the first N scenarios. |
+| `--seed` | `[agent].seed` | Scenario `i` is rolled out from `seed + i × k`. |
+| `--report` | none | Per-scenario attempts, passes, kept traces and pass rate, as JSON. |
+| `--force` | off | Overwrite `--out`. |
+
+Traces that were truncated, contain a malformed call, or fail a filter are
+counted by cause and printed at the end. The file is written as `FILE.jsonl.tmp`
+and renamed once complete; an interrupted collection leaves the `.tmp` file
+with what it had kept.
+
 ## `profile`
 
 A separate binary that runs a short GRPO or agentic GRPO workload and reports

@@ -144,3 +144,24 @@ trajectory. They are separate from toolsets. When the run also has an
 environment, each server must set `stateless = true`. Use MCP for read-only
 services such as search or documentation lookups, and use exec tools for
 anything that acts on the trajectory's workspace.
+
+## Warm-start SFT
+
+GRPO learns only from differences inside a group. A model that does not yet
+write a valid call for its tools earns the same zero reward on every member, and
+the update has no signal. Supervised fine-tuning on successful tool traces
+first gives GRPO a policy it can improve:
+
+```bash
+retrograd collect agent.toml --out traces.jsonl --k 8 --keep 1   # generate, filter
+retrograd train sft.toml                                          # [sft] data = "traces.jsonl"
+retrograd train agent.toml                                        # GRPO from the warm-started adapter
+```
+
+`collect` rolls each scenario out `k` times with the run's own model,
+environment and judge, and keeps the best successful traces as
+[tool records](../getting-started/datasets#tool-conversations). A larger local
+model makes a stronger generator: `--model teacher.gguf`. See
+[`collect`](../reference/cli#collect) and
+[an example](./agent#warm-start-from-successful-traces).
+
