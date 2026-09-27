@@ -72,12 +72,12 @@ timed_step compile:rir-gen cargo test -p rir-gen --tests --no-run
 timed_step compile:rir-f16 cargo test -p rir-kernels --test f16_oracles --no-run
 # Name public-contract integration tests explicitly because `--lib` never
 # reaches a `tests/` directory, and a test binary no lane names is dead
-# coverage. None of the four needs a model or a device;
-# `chat_parser_roundtrip` runs on chat-template fixtures, which is exactly why
-# it belongs here and not in a model lane.
+# coverage. None of them needs a model or a device; `chat_parser_roundtrip`
+# and `tool_sft_render` run on chat-template fixtures, which is exactly why
+# they belong here and not in a model lane.
 timed_step compile:contracts cargo test \
   -p retrograd-agent --test train_sequences \
-  -p retrograd-engine --test chat_parser_roundtrip \
+  -p retrograd-engine --test chat_parser_roundtrip --test tool_sft_render \
   -p retrograd-judge --test reward_batch \
   -p retrograd-training --test value_head \
   --no-run
@@ -100,7 +100,7 @@ timed_step run:rir-gen cargo test -p rir-gen --tests
 timed_step run:rir-f16 cargo test -p rir-kernels --test f16_oracles
 timed_step run:contracts cargo test \
   -p retrograd-agent --test train_sequences \
-  -p retrograd-engine --test chat_parser_roundtrip \
+  -p retrograd-engine --test chat_parser_roundtrip --test tool_sft_render \
   -p retrograd-judge --test reward_batch \
   -p retrograd-training --test value_head
 timed_step run:server "$repo_root/scripts/test-server.sh"
