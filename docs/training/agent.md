@@ -244,6 +244,9 @@ an [`[agent.collect_api]`](../reference/configuration#agent-collect-api)
 section. A hosted model is graded by the environment only, since a judge ranks
 trajectories it cannot produce.
 
+`--pairs` writes each scenario's best trace against its worst instead, as
+[preference pairs](preference#pairs-from-agentic-rollouts) for DPO.
+
 ## Tooling
 
 ```bash
@@ -251,6 +254,7 @@ retrograd tools list agent.toml --json          # the exact tool catalog
 retrograd scenarios generate agent.toml         # write scenarios with an LLM
 retrograd judge eval agent.toml --fixtures f.jsonl   # measure a judge against labels
 retrograd collect agent.toml --out traces.jsonl # successful traces, as an SFT dataset
+retrograd collect agent.toml --out pairs.jsonl --pairs   # best against worst, as preference pairs
 ```
 
 `scenarios generate` reads `[agent.scenario_generation]` (`model`, `base_url`,

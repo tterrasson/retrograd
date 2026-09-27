@@ -1,7 +1,8 @@
 # SFT
 
 Supervised fine-tuning trains the model to reproduce known answers. Use it when
-your dataset already contains the responses you want.
+your dataset already contains the responses you want. An SFT adapter is also
+the usual starting point for [preference optimization](preference#from-sft-to-dpo).
 
 ## Configuration
 

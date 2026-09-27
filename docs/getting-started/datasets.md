@@ -133,12 +133,13 @@ data. Keep it separate from the training set.
 ```toml
 [evaluation]
 data = "data/eval.jsonl"
-every_iterations = 1   # every SFT epoch, or every rollout update
+every_iterations = 1   # every SFT or preference epoch, or every rollout update
 max_examples = 100     # rollout algorithms: cap on generated examples
 patience = 3           # stop after 3 evaluations without improvement
 ```
 
 SFT measures loss on assistant tokens. PPO and GRPO generate one answer per
-held-out prompt and report the mean reward. See
+held-out prompt and report the mean reward. A preference run scores held-out
+pairs and reports their loss, accuracy and margin. See
 [Checkpoints](../operations/checkpoints#keep-the-best-evaluation) to keep the
 best result.

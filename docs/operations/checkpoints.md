@@ -33,8 +33,8 @@ every_steps = 100
 ```
 
 `best_eval` keeps `best.state`, updated each time the evaluation improves;
-`steps_and_best_eval` does both. SFT keeps the lowest loss, PPO and GRPO the
-highest mean reward. Evaluation also runs at the last iteration.
+`steps_and_best_eval` does both. SFT and preference runs keep the lowest
+loss, PPO and GRPO the highest mean reward. Evaluation also runs at the last iteration.
 
 ### Resume
 
@@ -49,7 +49,9 @@ rate schedule, random generators and data position are restored.
 
 A checkpoint is refused if the model, data, algorithm or training settings no
 longer match. To start from an existing adapter without its optimizer state,
-use `lora.init_adapter` instead.
+use `lora.init_adapter` instead. A `dpo` or `ipo` run also needs the reference
+scores it saved in the checkpoint directory; see
+[Preference optimization](../training/preference#reference).
 
 ## Metrics
 
@@ -71,4 +73,4 @@ WANDB_API_KEY=... python3 scripts/import_wandb.py artifacts/wandb --project my-p
 
 Metric names are grouped by prefix: `train/`, `eval/`, `reward/`, `policy/`,
 `completions/`, `batch/`, `optimizer/`, `system/` (including memory use) and,
-per algorithm, `distill/`, `agent/`, `judge/`, `env/`.
+per algorithm, `distill/`, `preference/`, `agent/`, `judge/`, `env/`.

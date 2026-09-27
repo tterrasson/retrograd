@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Retrograd
   text: Fine-tune GGUF models directly
-  tagline: Train a LoRA adapter or the model's own weights with SFT, PPO, GRPO, agentic GRPO or distillation. One TOML file, one binary, no Python stack.
+  tagline: Train a LoRA adapter or the model's own weights with SFT, preference optimization, PPO, GRPO, agentic GRPO or distillation. One TOML file, one binary, no Python stack.
   image:
     src: /logo.png
     alt: Retrograd
@@ -20,6 +20,9 @@ features:
   - title: SFT
     details: Learn from example answers in chat JSONL or plain text.
     link: /training/sft
+  - title: Preference optimization
+    details: Learn from pairs of answers, one preferred over the other, with DPO, IPO, SimPO or ORPO.
+    link: /training/preference
   - title: PPO and GRPO
     details: Learn from a reward program that scores the model's own answers.
     link: /training/grpo
@@ -43,6 +46,7 @@ retrograd inspect --model base.gguf    # check the model and pick LoRA targets
 retrograd train run.toml               # train
 retrograd bench run.toml --adapter adapter.gguf   # compare base and adapter
 retrograd chat run.toml --compare      # try it interactively
+retrograd serve run.toml               # serve it through the OpenAI chat API
 ```
 
 Start with the [quickstart](/getting-started/quickstart).

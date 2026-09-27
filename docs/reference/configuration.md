@@ -83,7 +83,7 @@ rotary constants are never trained; the run lists what it excluded at start-up.
 | `threads` | automatic | CPU threads. Leave it out for automatic; `0` is refused. |
 | `generation_concurrency` | derived | Answers generated at once (GRPO, agentic GRPO, distillation). Lower to save memory. |
 | `generation_batch` | derived | Generation batch size. |
-| `shared_prefix_fanout` | `auto` | GRPO packing of answers that share a prompt: `auto`, `off`, `max`, or an integer ≥ 2. |
+| `shared_prefix_fanout` | `auto` | Packing of sequences that share a prompt (GRPO answers, preference pairs): `auto`, `off`, `max`, or an integer ≥ 2. |
 | `fast_sampling_context` | `true` | F16 KV cache and flash attention for generation. `false` for bit-exact sampling. |
 | `kv_dtype` | `f16` | KV cache type for training: `f16` or `f32`. Falls back to F32 when the device requires it. |
 | `gradient_checkpointing` | `false` | Recompute activations to save memory. |

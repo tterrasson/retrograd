@@ -25,7 +25,8 @@ Check that the model loads:
 ::: tip Smoke test
 `examples/smoke_tiny_sft.toml` trains a rank-1 adapter in seconds. Run it with
 `--model /path/to/base.gguf`, or run `scripts/fetch-cpu-fixture.sh` first to
-use the bundled tiny test model.
+use the bundled tiny test model. `smoke_tiny_ppo.toml`, `smoke_tiny_grpo.toml`
+and `smoke_tiny_preference.toml` do the same for the other algorithms.
 
 ```bash
 ./target/release/retrograd train examples/smoke_tiny_sft.toml --model /path/to/base.gguf
@@ -98,6 +99,15 @@ The adapter is a standard LoRA GGUF, so llama.cpp loads it as well:
 llama-cli -m /path/to/base.gguf --lora artifacts/adapter.gguf -p "ping"
 ```
 
+To query it from an OpenAI client or an eval harness, serve it through the
+OpenAI chat API on `127.0.0.1:8000`:
+
+```bash
+./target/release/retrograd serve configs/quickstart.toml --adapter artifacts/adapter.gguf
+```
+
+See [`serve`](../reference/cli#serve).
+
 ## Next steps
 
 Pick the algorithm that matches the signal you have:
@@ -105,6 +115,7 @@ Pick the algorithm that matches the signal you have:
 | You have | Use |
 | --- | --- |
 | Example answers | [SFT](../training/sft) |
+| Pairs of answers, one better than the other | [Preference optimization](../training/preference) (DPO, IPO, SimPO, ORPO) |
 | A program that scores one answer | [PPO](../training/ppo) |
 | A program that scores and ranks several answers to the same prompt | [GRPO](../training/grpo) |
 | Tasks that need tool calls over several turns | [Agentic GRPO](../training/agent) |

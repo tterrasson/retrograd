@@ -114,7 +114,9 @@ run can resume from any step.
 | `preference/margin` | Mean chosen reward minus rejected reward. |
 | `preference/chosen_reward`, `preference/rejected_reward` | The implicit rewards: `beta` times the log-ratio to the reference, or times the mean log-probability. |
 | `preference/chosen_logps`, `preference/rejected_logps` | Mean per-token log-probability of each answer. |
+| `preference/pairs_per_step` | Mean pairs trained per optimizer step. |
 | `preference/nll`, `preference/log_odds` | ORPO only. |
+| `preference/orpo_clamped` | ORPO only: answers so likely that their odds were clamped; they get no gradient. |
 
 Watch `chosen_logps`. A margin that grows because both answers become less
 likely is the usual way DPO goes wrong; when `chosen_logps` has fallen by more
@@ -129,9 +131,9 @@ data = "eval_pairs.jsonl"
 patience = 2
 ```
 
-A preference file of held-out pairs, evaluated after every epoch:
-`eval/preference_loss`, `eval/accuracy` and `eval/margin`. Early stopping reads
-the loss. `max_examples` keeps that many pairs, evenly spaced.
+A preference file of held-out pairs, evaluated every `every_iterations` epochs
+and after the last one: `eval/preference_loss`, `eval/accuracy`, `eval/margin`,
+`eval/chosen_logps` and `eval/rejected_logps`. Early stopping reads the loss. `max_examples` keeps that many pairs, evenly spaced.
 
 ## Pairs from agentic rollouts
 

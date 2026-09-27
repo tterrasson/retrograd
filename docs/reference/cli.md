@@ -42,6 +42,7 @@ defaults to `[evaluation].data`.
 | `ppo`, `grpo` | Reward distribution of generated answers. |
 | `distill` | KL to the teacher, top-1 agreement, perplexity. Loads the teacher. |
 | `agent_grpo` | Not supported. |
+| `preference` | Not supported. A run with [`[evaluation]`](../training/preference#evaluation) reports its preference accuracy at each evaluation. |
 
 ## `chat`
 
