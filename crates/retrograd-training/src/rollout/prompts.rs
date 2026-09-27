@@ -35,6 +35,15 @@ fn read_prompt_dataset(path: &std::path::Path, allow_reference: bool) -> Result<
         record.example.validate().map_err(|message| {
             Error::invalid(format!("{}:{}: {message}", path.display(), record.line))
         })?;
+        // A prompt is rendered as `(role, content)` pairs with no catalog, so
+        // a tool record would lose its calls here without a word.
+        if record.example.is_tool_record() {
+            return Err(Error::invalid(format!(
+                "{}:{}: tool records are SFT data; agentic prompts are scenarios (agent_grpo)",
+                path.display(),
+                record.line
+            )));
+        }
         let reference = if record
             .example
             .messages

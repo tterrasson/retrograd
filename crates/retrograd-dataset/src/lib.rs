@@ -8,11 +8,14 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use retrograd_core::{Error, Result};
 
+use crate::chat_template::TemplateTool;
+
 pub mod chat_template;
+mod tool_conversation;
 pub mod topk;
 
 pub const IGNORE_LABEL: i32 = -1;
@@ -123,9 +126,20 @@ impl PreparedDataset {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+/// One conversation of a chat-JSONL file.
+///
+/// A record with no tools is the plain `(role, content)` schema it has always
+/// been, prepared by prefix differences through the chat template. A record
+/// with tools - a catalog, `tool_calls` on an assistant turn, or `tool`
+/// observations - is a *tool* record (see [`ChatExample::is_tool_record`]) and
+/// is rendered through the same framing path as an agentic rollout, so a
+/// warm-start teaches exactly the stream the rollout samples and parses.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChatExample {
+    /// The catalog offered to the model, in the OpenAI function shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<TemplateTool>,
     pub messages: Vec<ChatMessage>,
     /// Criteria this record is to be judged on, read only by the rollout prompt
     /// reader when `[grpo.judge]` is set - the one place a judge can learn what
@@ -133,13 +147,144 @@ pub struct ChatExample {
     /// target. Silently unused by SFT, which has no judge to hand it to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rubric: Option<String>,
+    /// Free-form provenance - where a record came from, its reward, its
+    /// scenario. Kept for auditing and deduplication; never read by training.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub metadata: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChatMessage {
     pub role: String,
+    /// Empty only on an assistant turn that carries calls, or on a tool
+    /// observation whose output was empty.
+    #[serde(default)]
     pub content: String,
+    /// Assistant only: the calls this turn makes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ChatToolCall>,
+    /// Tool only: the call this observation answers. Absent, it answers the
+    /// next call still waiting, in order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Tool only, for OpenAI compatibility: the name of the tool that answered,
+    /// which must be the one the call named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Tool only: the call failed. Rendered with the same `ERROR: ` marker a
+    /// rollout writes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_error: bool,
+    /// Assistant only: `content` is the turn exactly as generated, call markup
+    /// included, and is tokenized as is instead of being written by the
+    /// template from `content` and `tool_calls`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub raw: bool,
+}
+
+impl ChatMessage {
+    pub fn text(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            name: None,
+            is_error: false,
+            raw: false,
+        }
+    }
+}
+
+/// One call on an assistant turn: `{id?, type?: "function", function: {name,
+/// arguments}}`, the OpenAI shape.
+///
+/// `arguments` is read as an object or as a string holding one - the OpenAI
+/// API sends the second - and kept as the object either way.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(try_from = "ToolCallWire", into = "ToolCallWire")]
+pub struct ChatToolCall {
+    /// `None` is the positional `call_{index}` every tool-call reader falls
+    /// back to.
+    pub id: Option<String>,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+impl ChatToolCall {
+    /// The id this call is answered under: its own, or its position in the turn.
+    pub fn resolved_id(&self, index: usize) -> String {
+        self.id
+            .clone()
+            .unwrap_or_else(|| chat_template::positional_id(index))
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ToolCallWire {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(rename = "type", default = "function_kind")]
+    kind: String,
+    function: FunctionCallWire,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct FunctionCallWire {
+    name: String,
+    #[serde(default = "no_arguments")]
+    arguments: serde_json::Value,
+}
+
+fn function_kind() -> String {
+    "function".into()
+}
+
+fn no_arguments() -> serde_json::Value {
+    serde_json::Value::Object(Default::default())
+}
+
+impl TryFrom<ToolCallWire> for ChatToolCall {
+    type Error = String;
+
+    fn try_from(wire: ToolCallWire) -> std::result::Result<Self, String> {
+        if wire.kind != "function" {
+            return Err(format!(
+                "unsupported tool call type '{}', expected 'function'",
+                wire.kind
+            ));
+        }
+        // A string that does not hold JSON is kept as the string, so the
+        // validation reports it as arguments that are not an object - a value
+        // problem on its line, not a line that failed to parse.
+        let arguments = match wire.function.arguments {
+            serde_json::Value::String(text) => {
+                serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text))
+            }
+            arguments => arguments,
+        };
+        Ok(Self {
+            id: wire.id,
+            name: wire.function.name,
+            arguments,
+        })
+    }
+}
+
+impl From<ChatToolCall> for ToolCallWire {
+    fn from(call: ChatToolCall) -> Self {
+        Self {
+            id: call.id,
+            kind: function_kind(),
+            function: FunctionCallWire {
+                name: call.name,
+                arguments: call.arguments,
+            },
+        }
+    }
 }
 
 /// One parsed line of a chat-JSONL file, with its 1-based source line kept
@@ -160,12 +305,38 @@ pub struct ChatRecord {
 pub enum ChatExampleError {
     #[error("messages must not be empty")]
     NoMessages,
-    /// The vocabulary is closed: `system`, `user`, `assistant`. A tool or
-    /// function role is a different schema, not a variant of this one.
+    /// The vocabulary is closed: `system`, `user`, `assistant`, and `tool` for
+    /// the observation that answers an assistant's call.
     #[error("unknown role '{role}'")]
     UnknownRole { role: String },
     #[error("message content must not be empty")]
     EmptyContent,
+    #[error(
+        "a 'tool' message must follow an assistant turn with tool_calls, or another tool message"
+    )]
+    ToolWithoutCall,
+    #[error("tool call '{id}' is never answered by a 'tool' message")]
+    UnansweredCall { id: String },
+    #[error("tool message answers '{id}', which is not a call still waiting for its result")]
+    UnknownCallId { id: String },
+    #[error("tool message for call '{id}' is named '{name}', but the call is to '{call}'")]
+    ToolNameMismatch {
+        id: String,
+        name: String,
+        call: String,
+    },
+    #[error("tool call names '{name}', which the record's tools do not declare")]
+    UndeclaredTool { name: String },
+    #[error("an assistant turn has tool_calls but the record declares no tools")]
+    CallsWithoutTools,
+    #[error("a tool name must not be empty")]
+    EmptyToolName,
+    #[error("tool '{name}' is declared twice")]
+    DuplicateToolName { name: String },
+    #[error("the arguments of tool call '{name}' must be a JSON object, or a string holding one")]
+    ArgumentsNotAnObject { name: String },
+    #[error("'{field}' is not allowed on a '{role}' message")]
+    ToolFieldOnWrongRole { field: &'static str, role: String },
 }
 
 /// Said as the facade says it, at the one place a record is validated without a
@@ -184,16 +355,36 @@ impl ChatExample {
             return Err(ChatExampleError::NoMessages);
         }
         for message in &self.messages {
-            if !matches!(message.role.as_str(), "system" | "user" | "assistant") {
+            if !matches!(
+                message.role.as_str(),
+                "system" | "user" | "assistant" | "tool"
+            ) {
                 return Err(ChatExampleError::UnknownRole {
                     role: message.role.clone(),
                 });
             }
-            if message.content.is_empty() {
+            misplaced_tool_field(message)?;
+            let may_be_empty = match message.role.as_str() {
+                "assistant" => !message.tool_calls.is_empty(),
+                "tool" => true,
+                _ => false,
+            };
+            if message.content.is_empty() && !may_be_empty {
                 return Err(ChatExampleError::EmptyContent);
             }
         }
-        Ok(())
+        tool_conversation::validate_tools(self)
+    }
+
+    /// Whether this record goes through the tool path: it declares tools, makes
+    /// or answers a call, or carries a turn to be tokenized verbatim - which
+    /// only the framing path can honour, since the plain path hands every turn
+    /// to the template.
+    pub fn is_tool_record(&self) -> bool {
+        !self.tools.is_empty()
+            || self.messages.iter().any(|message| {
+                message.role == "tool" || !message.tool_calls.is_empty() || message.raw
+            })
     }
 
     pub fn as_pairs(&self) -> Vec<(&str, &str)> {
@@ -201,6 +392,27 @@ impl ChatExample {
             .iter()
             .map(|message| (message.role.as_str(), message.content.as_str()))
             .collect()
+    }
+}
+
+/// A tool-only field on a message of another role. Checked field by field so the
+/// sentence names the one that is out of place.
+fn misplaced_tool_field(message: &ChatMessage) -> std::result::Result<(), ChatExampleError> {
+    let assistant = message.role == "assistant";
+    let tool = message.role == "tool";
+    let misplaced = [
+        ("tool_calls", !message.tool_calls.is_empty() && !assistant),
+        ("raw", message.raw && !assistant),
+        ("tool_call_id", message.tool_call_id.is_some() && !tool),
+        ("name", message.name.is_some() && !tool),
+        ("is_error", message.is_error && !tool),
+    ];
+    match misplaced.into_iter().find(|(_, misplaced)| *misplaced) {
+        Some((field, _)) => Err(ChatExampleError::ToolFieldOnWrongRole {
+            field,
+            role: message.role.clone(),
+        }),
+        None => Ok(()),
     }
 }
 
@@ -332,13 +544,23 @@ fn semantic_error(line_number: usize, example: &ChatExample) -> Option<RecordErr
 /// anywhere - so what is left must alternate: two consecutive `user` or two
 /// consecutive `assistant` turns is the shape of a malformed export, not a
 /// real conversation.
+///
+/// A tool record is held to a looser rule: two `user` turns in a row are what
+/// an environment that opens with its own text produces, so only two
+/// consecutive `assistant` turns are refused there. Where a `tool` message may
+/// sit is [`ChatExample::validate`]'s business.
 fn implausible_alternation(example: &ChatExample) -> Option<String> {
+    let tools = example.is_tool_record();
     let mut previous: Option<&str> = None;
     for message in &example.messages {
         if message.role == "system" {
             continue;
         }
-        if previous == Some(message.role.as_str()) {
+        let refused = match tools {
+            true => message.role == "assistant",
+            false => true,
+        };
+        if refused && previous == Some(message.role.as_str()) {
             return Some(format!(
                 "messages should alternate between user and assistant; found two \
                  consecutive '{}' turns",
@@ -697,12 +919,9 @@ mod tests {
         ChatExample {
             messages: messages
                 .iter()
-                .map(|(role, content)| ChatMessage {
-                    role: (*role).to_string(),
-                    content: (*content).to_string(),
-                })
+                .map(|(role, content)| ChatMessage::text(*role, *content))
                 .collect(),
-            rubric: None,
+            ..ChatExample::default()
         }
     }
 
@@ -840,9 +1059,9 @@ mod tests {
     #[test]
     fn record_validation_is_matchable_not_just_printable() {
         assert_eq!(
-            example(&[("tool", "x")]).validate().unwrap_err(),
+            example(&[("function", "x")]).validate().unwrap_err(),
             ChatExampleError::UnknownRole {
-                role: "tool".to_string()
+                role: "function".to_string()
             }
         );
         assert_eq!(
@@ -862,7 +1081,7 @@ mod tests {
         let cases = [
             (example(&[]), "messages must not be empty"),
             (
-                example(&[("tool", "x"), ("assistant", "a")]),
+                example(&[("function", "x"), ("assistant", "a")]),
                 "unknown role",
             ),
             (
@@ -1016,7 +1235,7 @@ mod tests {
         for _ in 0..3 {
             source.push_str("not json\n");
         }
-        source.push_str("{\"messages\":[{\"role\":\"tool\",\"content\":\"x\"}]}\n");
+        source.push_str("{\"messages\":[{\"role\":\"function\",\"content\":\"x\"}]}\n");
         source.push_str(
             "{\"messages\":[{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"assistant\",\"content\":\"b\"}]}\n",
         );
@@ -1070,6 +1289,59 @@ mod tests {
         );
         assert!(validate_chat_jsonl(&path).unwrap().is_valid());
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_tool_record_may_open_on_two_user_turns_and_a_plain_one_may_not() {
+        let path = temp_file(
+            "alternation-tools",
+            "{\"tools\":[{\"name\":\"run\"}],\"messages\":[{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"user\",\"content\":\"b\"},{\"role\":\"assistant\",\"content\":\"c\"}]}\n\
+             {\"tools\":[{\"name\":\"run\"}],\"messages\":[{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"assistant\",\"content\":\"b\"},{\"role\":\"assistant\",\"content\":\"c\"}]}\n\
+             {\"messages\":[{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"user\",\"content\":\"b\"},{\"role\":\"assistant\",\"content\":\"c\"}]}\n",
+        );
+        let errors = validate_chat_jsonl(&path).unwrap().errors;
+        assert_eq!(
+            errors.iter().map(|error| error.line).collect::<Vec<_>>(),
+            [2, 3],
+            "{errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.message.contains("alternate"))
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_tool_record_is_refused_on_its_line_as_an_invalid_value() {
+        let path = temp_file(
+            "tool-without-call",
+            "{\"tools\":[{\"name\":\"run\"}],\"messages\":[{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"tool\",\"content\":\"b\"},{\"role\":\"assistant\",\"content\":\"c\"}]}\n",
+        );
+        let errors = validate_chat_jsonl(&path).unwrap().errors;
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].kind, RecordErrorKind::InvalidValue);
+        assert_eq!(
+            errors[0].message,
+            ChatExampleError::ToolWithoutCall.to_string()
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_record_reads_and_writes_back_to_the_same_json() {
+        for line in [
+            r#"{"messages":[{"role":"user","content":"Q"},{"role":"assistant","content":"A"}],"rubric":"r"}"#,
+            r#"{"tools":[{"type":"function","function":{"name":"run","description":"d","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"Q"},{"role":"assistant","content":"","tool_calls":[{"id":"a","type":"function","function":{"name":"run","arguments":{"cmd":"ls"}}}]},{"role":"tool","content":"","tool_call_id":"a","is_error":true},{"role":"assistant","content":"<x>","raw":true}],"metadata":{"reward":1.0}}"#,
+        ] {
+            let example: ChatExample = serde_json::from_str(line).unwrap();
+            example.validate().unwrap();
+            assert_eq!(
+                serde_json::to_value(&example).unwrap(),
+                serde_json::from_str::<serde_json::Value>(line).unwrap()
+            );
+        }
     }
 
     #[test]

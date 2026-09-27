@@ -153,6 +153,11 @@ fn prompt_reader_reports_record_level_errors() {
             "{\"messages\":[{\"role\":\"user\",\"content\":\"ok\"},{\"role\":\"assistant\",\"content\":\"done\"}]}\n",
             ":1: prompt messages must end with a user message",
         ),
+        (
+            "tool-record",
+            "{\"tools\":[{\"name\":\"run\"}],\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}]}\n",
+            ":1: tool records are SFT data; agentic prompts are scenarios (agent_grpo)",
+        ),
     ] {
         let path = temp_prompts(name, source);
         let error = read_prompts(&path).unwrap_err();

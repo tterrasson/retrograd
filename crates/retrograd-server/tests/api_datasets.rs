@@ -121,6 +121,35 @@ async fn a_malformed_chat_jsonl_reports_every_line_error_at_once() {
 }
 
 #[tokio::test]
+async fn a_tool_record_is_validated_at_upload_like_any_other() {
+    let fixture = Fixture::new("datasets-tools");
+    let router = router_for(&fixture, FakeEngine::succeeding());
+    let valid = b"{\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"run\",\"parameters\":{\"type\":\"object\"}}}],\
+\"messages\":[{\"role\":\"user\",\"content\":\"go\"},\
+{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c0\",\"type\":\"function\",\"function\":{\"name\":\"run\",\"arguments\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}}]},\
+{\"role\":\"tool\",\"tool_call_id\":\"c0\",\"content\":\"a.txt\"},\
+{\"role\":\"assistant\",\"content\":\"one file\"}],\
+\"metadata\":{\"scenario_id\":\"ls\"}}\n";
+    let (status, body) = upload(&router, "/v1/datasets?format=jsonl", valid).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["examples"], 1);
+
+    // An observation with no call before it.
+    let orphan =
+        b"{\"tools\":[{\"name\":\"run\"}],\"messages\":[{\"role\":\"user\",\"content\":\"go\"}]}\n\
+{\"tools\":[{\"name\":\"run\"}],\"messages\":[{\"role\":\"user\",\"content\":\"go\"},\
+{\"role\":\"tool\",\"content\":\"x\"},{\"role\":\"assistant\",\"content\":\"a\"}]}\n";
+    let (status, body) = upload(&router, "/v1/datasets?format=jsonl", orphan).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let line_errors = body["meta"]["line_errors"]
+        .as_array()
+        .expect("collected errors");
+    assert_eq!(line_errors.len(), 1, "{body}");
+    assert_eq!(line_errors[0]["line"], 2);
+    assert_eq!(line_errors[0]["code"], "invalid_value");
+}
+
+#[tokio::test]
 async fn the_preview_reads_exactly_what_was_uploaded() {
     let fixture = Fixture::new("datasets-preview");
     let router = router_for(&fixture, FakeEngine::succeeding());

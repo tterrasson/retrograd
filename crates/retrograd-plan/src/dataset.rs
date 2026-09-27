@@ -25,6 +25,16 @@ use retrograd_dataset::{DataFormat, read_chat_jsonl};
 /// which is the direction a memory budget must err in.
 const CONSERVATIVE_CHARS_PER_TOKEN: f64 = 3.0;
 
+/// Characters assumed for the markup around one tool call - the call's
+/// delimiters and the keys of its body. An estimate, not a measurement: the
+/// Hermes form spends about this much and the families that use control tokens
+/// spend less.
+const CALL_MARKUP_CHARS: usize = 40;
+
+fn json_chars(value: &serde_json::Value) -> usize {
+    serde_json::to_string(value).map_or(0, |json| json.chars().count())
+}
+
 /// Length statistics of a prepared dataset.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -92,10 +102,28 @@ impl DatasetStats {
                                 // its turn delimiters in the chat template; a
                                 // dozen tokens per message covers the templates
                                 // in use and keeps the estimate high.
-                                message.content.chars().count() + message.role.chars().count() + 36
+                                message.content.chars().count()
+                                    + message.role.chars().count()
+                                    + 36
+                                    + message
+                                        .tool_calls
+                                        .iter()
+                                        .map(|call| {
+                                            call.name.chars().count()
+                                                + json_chars(&call.arguments)
+                                                + CALL_MARKUP_CHARS
+                                        })
+                                        .sum::<usize>()
                             })
                             .sum();
-                        tokens_from_chars(characters)
+                        // The catalog is rendered once per record, into the
+                        // system turn or by the template itself.
+                        let catalog = match record.example.tools.is_empty() {
+                            true => 0,
+                            false => serde_json::to_string(&record.example.tools)
+                                .map_or(0, |catalog| catalog.chars().count()),
+                        };
+                        tokens_from_chars(characters + catalog)
                     })
                     .collect::<Vec<_>>();
                 if lengths.is_empty() {
@@ -204,6 +232,31 @@ mod tests {
         assert_eq!(stats.examples, 2);
         assert!(!stats.measured);
         assert!(stats.percentile(1.0) > stats.percentile(0.0));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_tool_record_counts_its_catalog_and_its_calls() {
+        let dir = std::env::temp_dir().join("retrograd-plan-dataset-tools-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("chat.jsonl");
+        let plain = "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},\
+                     {\"role\":\"assistant\",\"content\":\"hello\"}]}";
+        let tools = "{\"tools\":[{\"name\":\"run\",\"description\":\"run a command\"}],\
+                     \"messages\":[{\"role\":\"user\",\"content\":\"hi\"},\
+                     {\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"function\":\
+                     {\"name\":\"run\",\"arguments\":{\"cmd\":\"ls -la\"}}}]},\
+                     {\"role\":\"tool\",\"content\":\"\"},\
+                     {\"role\":\"assistant\",\"content\":\"hello\"}]}";
+        std::fs::write(&path, format!("{plain}\n{tools}\n")).unwrap();
+        let stats = DatasetStats::estimate_from_file(&path, DataFormat::ChatJsonl).unwrap();
+        // Two more messages alone are 2 * 40 characters; the catalog and the
+        // call have to add on top of that.
+        assert!(
+            stats.percentile(1.0) > stats.percentile(0.0) + tokens_from_chars(2 * 40 + 60),
+            "{:?}",
+            stats.lengths()
+        );
         std::fs::remove_file(&path).ok();
     }
 
