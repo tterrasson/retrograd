@@ -6,7 +6,6 @@
 //! concatenation is exactly what one uninterrupted stream would have carried:
 //! gapless, in order, with the same seq range.
 
-mod support;
 
 use std::time::Duration;
 
@@ -14,7 +13,7 @@ use axum::body::Body;
 use http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::Value;
-use support::{
+use crate::support::{
     FakeEngine, Fixture, get, post, post_empty, recipe, router_for, send_raw, wait_for_status,
     wait_for_terminal,
 };
@@ -107,7 +106,7 @@ async fn a_finished_run_replays_its_whole_history_and_the_stream_ends() {
     // And a server restarted on the same directory replays it from disk, with no
     // ring and no live run.
     let restarted =
-        support::build_router(support::state_of(&fixture, FakeEngine::succeeding(), false));
+        crate::support::build_router(crate::support::state_of(&fixture, FakeEngine::succeeding(), false));
     let again = stream(&restarted, &format!("/v1/runs/{id}/events"), None).await;
     let replayed: Vec<u64> = again.iter().filter_map(|frame| frame.id).collect();
     assert_eq!(

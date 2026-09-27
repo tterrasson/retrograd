@@ -5,11 +5,10 @@
 //! `checkpoint.resume_from` override, and both are refused when the pair would
 //! continue on a different trajectory.
 
-mod support;
 
 use http::StatusCode;
 use serde_json::json;
-use support::*;
+use crate::support::*;
 
 /// A finished parent with a checkpoint whose manifest matches its own
 /// configuration - which is what a fork needs to be *accepted*, and which means

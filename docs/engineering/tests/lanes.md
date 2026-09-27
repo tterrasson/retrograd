@@ -74,7 +74,7 @@ Some integration binaries are included anyway, for the same reason: they need
 neither a GGUF nor a device, and what they cover is the kind of thing that
 regresses silently.
 
-- `retrograd-server`'s ten `tests/api_*.rs` binaries, run through
+- `retrograd-server`'s `tests/api` binary, run through
   `scripts/test-server.sh` (see below).
 - `retrograd-plan`'s `tests/resolve_snapshots.rs`,
   `tests/resolve_properties.rs` and `tests/derivation_table.rs` run the resolver
@@ -140,25 +140,29 @@ lost:
 
 ### `server` - the HTTP control plane, no model and no socket
 
-`scripts/test-server.sh`: `retrograd-server`'s unit tests plus its ten
-`tests/api_*.rs` binaries, which drive `build_router` in memory
+`scripts/test-server.sh`: `retrograd-server`'s unit tests plus the one
+`tests/api` binary, whose modules drive `build_router` in memory
 (`tower::ServiceExt::oneshot`) against a fake `ModelProbe` and a fake
 `RunEngine`. Nothing here loads a GGUF, touches a device or opens a port, and
 the HTTP wire contract is the last thing that should only be checked before a
-PR. All ten share `tests/support/mod.rs`.
+PR. All the modules share `tests/api/support/mod.rs`; one binary rather than one
+per file, because each would link the whole server stack again. Filter on the
+module path to run one: `cargo test -p retrograd-server --test api runs::`.
 
-| Binary | What it pins |
+| Module | What it pins |
 |---|---|
-| `api_discovery` | health, capabilities, presets, the operator catalogue, preflight |
-| `api_plan` | the three body forms, the guard, redaction, the measured pass (a fake probe reporting a fixed multiple of the cost model) |
-| `api_runs` | the whole runtime: state machine, device queue, journal on disk, idempotency, listing and paging |
-| `api_control` | pause/resume/cancel, the on-demand checkpoint, the `PATCH` whitelist - against a fake engine that really *polls* the control channel twice per iteration |
-| `api_events` | SSE replay, the reconnection property (`Last-Event-ID`, no gap and no repeat), the metrics pull, the aggregate stream |
-| `api_inference` | `evaluate` and `generate`: the round trip through the control channel, the reply's `global_step`, a paused run answering, the 504 |
-| `api_artifacts` | the checkpoint listing, the closed artefact inventory, download by name, `DELETE` |
-| `api_fork` | `fork_from` in both shapes, the trajectory refusal, an incomplete checkpoint |
-| `api_hardening` | the bearer token, the loopback refusals, the body limit, every middleware failure as a problem document, path redaction, path roots, OpenAPI |
-| `api_datasets` | content-addressed upload and idempotence, collected line-error validation, preview, listing, delete, the per-dataset body limit |
+| `discovery` | health, capabilities, presets, the operator catalogue, preflight |
+| `plan` | the three body forms, the guard, redaction, the measured pass (a fake probe reporting a fixed multiple of the cost model) |
+| `runs` | the whole runtime: state machine, device queue, journal on disk, idempotency, listing and paging |
+| `control` | pause/resume/cancel, the on-demand checkpoint, the `PATCH` whitelist - against a fake engine that really *polls* the control channel twice per iteration |
+| `events` | SSE replay, the reconnection property (`Last-Event-ID`, no gap and no repeat), the metrics pull, the aggregate stream |
+| `inference` | `evaluate` and `generate`: the round trip through the control channel, the reply's `global_step`, a paused run answering, the 504 |
+| `artifacts` | the checkpoint listing, the closed artefact inventory, download by name, `DELETE` |
+| `fork` | `fork_from` in both shapes, the trajectory refusal, an incomplete checkpoint |
+| `hardening` | the bearer token, the loopback refusals, the body limit, every middleware failure as a problem document, path redaction, path roots, OpenAPI |
+| `datasets` | content-addressed upload and idempotence, collected line-error validation, preview, listing, delete, the per-dataset body limit |
+| `openai` | `/v1/models` and `/v1/chat/completions` over the runs: which weights a model id names, who holds the device, the OpenAI error envelope |
+| `error_catalog` | `ERRORS.md` against every `ProblemKind` and `ErrorCode` the code can emit |
 
 The one server test **not** in this lane is `tests/e2e_cpu.rs`, which needs the
 CPU fixture - see `cpu-integration`.

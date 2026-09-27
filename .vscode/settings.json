@@ -20,6 +20,10 @@
     "${workspaceFolder}/Cargo.toml",
     "${workspaceFolder}/python/native/Cargo.toml"
   ],
+  // Its own directory, `target/rust-analyzer`: its checks run with other flags
+  // than the lanes, and sharing `target/debug` made each side invalidate the
+  // other's fingerprints and keep a copy of every crate for both.
+  "rust-analyzer.cargo.targetDir": true,
 
   // Python binding (uv-managed venv under python/)
   "python.defaultInterpreterPath": "${workspaceFolder}/python/.venv/bin/python",

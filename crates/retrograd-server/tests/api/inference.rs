@@ -6,13 +6,12 @@
 //! polls the control twice per iteration, so a reply here means the loop really
 //! answered - not that a handler invented a number.
 
-mod support;
 
 use std::time::Duration;
 
 use http::StatusCode;
 use serde_json::json;
-use support::*;
+use crate::support::*;
 
 /// A run slow enough to be interrogated while it is alive, already `running`.
 async fn live(fixture: &Fixture, recipe_body: serde_json::Value) -> (axum::Router, String) {

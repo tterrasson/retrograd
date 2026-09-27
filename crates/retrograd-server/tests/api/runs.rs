@@ -7,13 +7,12 @@
 //! queue, the journal on disk, idempotency, the listing and its paging - which is
 //! the part a GPU lane would only slow down without covering better.
 
-mod support;
 
 use std::sync::Arc;
 
 use http::StatusCode;
 use serde_json::Value;
-use support::{
+use crate::support::{
     Behaviour, FakeEngine, Fixture, Gate, build_router, get, post, post_with, recipe, router_for,
     state_of, wait_for_status, wait_for_terminal,
 };

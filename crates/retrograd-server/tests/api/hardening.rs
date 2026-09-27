@@ -6,7 +6,6 @@
 //! problem document, and does a message on the way out describe the server's
 //! filesystem.
 
-mod support;
 
 use std::sync::Arc;
 
@@ -14,7 +13,7 @@ use axum::body::Body;
 use http::{Request, StatusCode};
 use retrograd_server::dto;
 use serde_json::json;
-use support::*;
+use crate::support::*;
 
 /// The fixture's server with `config` fields replaced.
 fn hardened(

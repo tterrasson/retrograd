@@ -5,11 +5,10 @@
 //! this process only restored from disk, and a checkpoint removed by hand
 //! disappears from the listing without anything being told.
 
-mod support;
 
 use http::StatusCode;
 use serde_json::json;
-use support::*;
+use crate::support::*;
 
 /// A finished run with a checkpoint directory, and its id.
 async fn finished(fixture: &Fixture, name: &str) -> (axum::Router, String, serde_json::Value) {

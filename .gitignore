@@ -5,6 +5,9 @@
 /target-*/
 /crates/retrograd-ffi/runtime/build/
 
+# `cargo sweep -s` stamp, read back by `cargo sweep -f`.
+/sweep.timestamp
+
 # Python build files
 /python/.venv/
 /python/target/

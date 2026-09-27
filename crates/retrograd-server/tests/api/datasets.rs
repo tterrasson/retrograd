@@ -2,12 +2,11 @@
 //! over `build_router` with no model and no socket, exactly like every other
 //! `api_*` binary.
 
-mod support;
 
 use axum::body::Body;
 use http::{Request, StatusCode};
 use serde_json::json;
-use support::*;
+use crate::support::*;
 
 const CHAT_JSONL: &[u8] = b"{\"messages\":[{\"role\":\"user\",\"content\":\"Q1\"},{\"role\":\"assistant\",\"content\":\"A1\"}]}\n\
 {\"messages\":[{\"role\":\"user\",\"content\":\"Q2\"},{\"role\":\"assistant\",\"content\":\"A2\"}]}\n";
