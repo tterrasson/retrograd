@@ -155,6 +155,10 @@ fn exhaustive_sft() -> SftToml {
         data: PathBuf::from("data/sft.jsonl"),
         data_format: Some("jsonl".to_string()),
         shuffle: Some(false),
+        template_variables: serde_json::Map::from_iter([(
+            "enable_thinking".to_string(),
+            serde_json::Value::Bool(false),
+        )]),
     }
 }
 
@@ -1259,6 +1263,10 @@ fn the_other_algorithm_sections_reach_the_run_config() {
     assert_eq!(sft.data, root.join("data/sft.jsonl"));
     assert_eq!(sft.data_format, DataFormat::ChatJsonl);
     assert!(!sft.shuffle);
+    assert_eq!(
+        sft.template_variables_json(),
+        r#"{"enable_thinking":false}"#
+    );
     // The row order lives on `TrainConfig`, where the runtime reads it.
     assert!(!config.training.shuffle_dataset);
     assert_eq!(config.training.shuffle_seed, 7);

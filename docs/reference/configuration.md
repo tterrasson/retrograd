@@ -187,6 +187,7 @@ run that trains base weights with a KL penalty requires this section.
 | `data` | required | Training file. |
 | `data_format` | inferred | `text` or `jsonl`. See [Datasets](../getting-started/datasets#format-detection). |
 | `shuffle` | `true` | Shuffle rows at each epoch. |
+| `template_variables` | `{}` | Chat template variables, e.g. `{ enable_thinking = false }`. Use the ones of the agentic run a warm-start precedes, or the format it teaches is not the one sampled. |
 
 ## `[ppo]` {#ppo}
 

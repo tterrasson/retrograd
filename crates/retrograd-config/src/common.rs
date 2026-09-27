@@ -19,6 +19,14 @@ macro_rules! parse_string_enum {
         }
     }};
 }
+/// Chat-template variables as the JSON object the runtime takes. A TOML table
+/// crosses as is, so `false` stays a boolean a template can branch on.
+pub(crate) fn template_variables_json(
+    variables: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    serde_json::Value::Object(variables.clone()).to_string()
+}
+
 pub(crate) fn require_nonzero<T>(value: T, message: &str) -> Result<()>
 where
     T: Default + PartialEq,

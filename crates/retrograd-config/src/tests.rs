@@ -277,6 +277,23 @@ fn the_model_override_outranks_a_written_model_section() {
 }
 
 #[test]
+fn sft_template_variables_reach_the_run_as_a_json_object() {
+    let file = write_config(
+        "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\ntemplate_variables={ enable_thinking = false }\n",
+    );
+    let loaded = load(&file).unwrap();
+    let Algorithm::Sft(sft) = &loaded.algorithm else {
+        panic!("an SFT config");
+    };
+    // Same crossing as `[agent] template_variables`: `false` stays a boolean.
+    assert_eq!(
+        sft.template_variables_json(),
+        r#"{"enable_thinking":false}"#
+    );
+    remove_config(&file);
+}
+
+#[test]
 fn sft_shuffles_by_default_seeded_from_the_lora_seed() {
     let default_file = write_config(
         "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\nseed=7\n[sft]\ndata='data.txt'\n",

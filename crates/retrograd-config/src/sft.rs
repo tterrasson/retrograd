@@ -17,7 +17,21 @@ pub struct SftConfig {
     /// `lora.seed`. On by default; see [`TrainConfig::shuffle_dataset`], which
     /// is where the runtime reads it from.
     pub shuffle: bool,
+    /// Extra variables handed to the model's chat template while the dataset
+    /// is rendered, as `[agent] template_variables` are during a rollout. A
+    /// warm-start before an agentic run must use the run's own: the format a
+    /// template writes under `enable_thinking = false` is not the one it
+    /// writes without it.
+    pub template_variables: serde_json::Map<String, serde_json::Value>,
 }
+
+impl SftConfig {
+    /// `template_variables` as the JSON object the runtime takes.
+    pub fn template_variables_json(&self) -> String {
+        crate::common::template_variables_json(&self.template_variables)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SftToml {
@@ -28,6 +42,11 @@ pub struct SftToml {
     /// Defaults to `true`; set it to `false` to replay the file order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shuffle: Option<bool>,
+    /// Chat-template variables, e.g. `template_variables = { enable_thinking = false }`.
+    /// The runtime rejects `messages`, `tools`, `bos_token`, `eos_token` and
+    /// `add_generation_prompt`, which are supplied by the renderer.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub template_variables: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Builds the `[sft]` section. `shuffle` reaches the runtime through
@@ -60,5 +79,6 @@ pub(crate) fn build_sft(
         data,
         data_format,
         shuffle,
+        template_variables: value.template_variables,
     })
 }

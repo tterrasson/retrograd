@@ -139,7 +139,7 @@ impl AgentRunConfig {
 
     /// `template_variables` as the JSON object the runtime takes.
     pub fn template_variables_json(&self) -> String {
-        serde_json::Value::Object(self.template_variables.clone()).to_string()
+        crate::common::template_variables_json(&self.template_variables)
     }
 }
 

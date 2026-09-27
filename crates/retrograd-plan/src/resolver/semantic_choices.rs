@@ -166,6 +166,7 @@ pub(super) fn draft_document(
                 // rather than pinning it: the planner has no reason to hold an
                 // opinion on the row order.
                 shuffle: None,
+                template_variables: Default::default(),
             }),
             None,
             None,

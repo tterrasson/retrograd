@@ -176,6 +176,11 @@ pub(crate) fn run_sft(
     ctx: &mut Context<'_>,
 ) -> Result<TrainMetrics> {
     let config = ctx.config;
+    // Before anything is rendered: the training set and the held-out one are
+    // both prepared through the template these variables configure.
+    if !sft.template_variables.is_empty() {
+        trainer.set_chat_template_variables(Some(&sft.template_variables_json()))?;
+    }
     let train = training::sft::prepare(trainer, sft)?;
     // The dataset identity is part of what makes a resume valid, so it is
     // registered before the checkpoint is restored.

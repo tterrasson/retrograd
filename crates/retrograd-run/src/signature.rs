@@ -76,6 +76,17 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
         Algorithm::Sft(sft) => {
             write!(&mut descriptor, "|sft|format={:?}", sft.data_format)
                 .expect("writing to a String never fails");
+            // The prepared tokens are fingerprinted already, but a resume is
+            // refused on the variables themselves, as an agentic run's is.
+            // Absent when empty, so existing signatures stay put.
+            if !sft.template_variables.is_empty() {
+                write!(
+                    &mut descriptor,
+                    "|template_variables={}",
+                    checkpoint::fingerprint(sft.template_variables_json().as_bytes()),
+                )
+                .expect("writing to a String never fails");
+            }
         }
         Algorithm::Ppo(ppo) => {
             write!(
@@ -398,6 +409,29 @@ mod tests {
         assert_eq!(signature, trajectory_signature(&config).unwrap());
         config.reference.as_mut().unwrap().n_ctx = Some(config.training.n_ctx * 2);
         assert_ne!(signature, trajectory_signature(&config).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sft_template_variables_change_the_trajectory_only_when_set() {
+        let root = temp_path("sft-template-variables-signature");
+        let config = config::load(write_sft_config(&root)).unwrap();
+        let with = |variables: &[(&str, bool)]| {
+            let mut config = config.clone();
+            let config::Algorithm::Sft(sft) = &mut config.algorithm else {
+                panic!("an SFT config");
+            };
+            sft.template_variables = variables
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), serde_json::Value::Bool(*value)))
+                .collect();
+            trajectory_signature(&config).unwrap()
+        };
+        // Empty is the default every existing checkpoint was written under.
+        assert_eq!(trajectory_signature(&config).unwrap(), with(&[]));
+        let off = with(&[("enable_thinking", false)]);
+        assert_ne!(with(&[]), off);
+        assert_ne!(off, with(&[("enable_thinking", true)]));
         fs::remove_dir_all(root).unwrap();
     }
 
