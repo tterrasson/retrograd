@@ -266,10 +266,7 @@ async fn run(
         reward,
         &[scenario()],
         config,
-        &mut |example| {
-            records.push(example);
-            Ok(())
-        },
+        &mut records,
     )
     .await;
     (stats, records, factory)

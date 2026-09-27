@@ -274,17 +274,8 @@ fn drive(
     };
     let local = tokio::task::LocalSet::new();
 
-    // Paths inside the judge were already rebased by the loader, so identity is
-    // the right resolver here. Built before the first token, when there is one:
-    // a judge that cannot start is refused where it is declared rather than on
-    // the first group it is handed.
-    let reward = match agent
-        .judge
-        .as_ref()
-        .map(|judge| judge.build(|path| path.to_path_buf()).map_err(Error::from))
-        .transpose()
-    {
-        Ok(reward) => reward,
+    let world = match build_world(agent, &mut *ctx.observer, &local, &runtime) {
+        Ok(world) => world,
         Err(error) => {
             return AgentOutcome {
                 trainer: Some(trainer),
@@ -292,81 +283,6 @@ fn drive(
             };
         }
     };
-
-    // The tools first, in one resolution: the toolsets the environment will
-    // execute and the catalogue that describes them come from the same pass,
-    // so the hash logged below is the hash of what the model is offered.
-    let mut tools = match connect_tools(&local, &runtime, agent, ctx) {
-        Ok(tools) => tools,
-        Err(error) => {
-            return AgentOutcome {
-                trainer: Some(trainer),
-                result: Err(error),
-            };
-        }
-    };
-    ctx.observer
-        .info(&format!("tool catalog sha256 {}", tools.catalog_sha256()));
-
-    // Connecting to a daemon, pulling an image and validating every task
-    // declaration happens here - before a single token is generated.
-    let mut environment = match &agent.environment {
-        Some(config) => match local.block_on(&runtime, config.build(tools.toolsets.take())) {
-            Ok(factory) => Some(factory),
-            Err(error) => {
-                tools.shutdown(&local, &runtime);
-                return AgentOutcome {
-                    trainer: Some(trainer),
-                    result: Err(error.into()),
-                };
-            }
-        },
-        None => None,
-    };
-    // The digest, not the tag: a tag moves between a run and its resume, and the
-    // resolved reference is what someone has to paste back into the
-    // configuration to get the same environment.
-    if let Some(image) = environment
-        .as_ref()
-        .and_then(|factory| factory.pinned_image())
-    {
-        ctx.observer.info(&format!("environment image {image}"));
-    }
-    // Said once, because it decides what every reward in the run is: without a
-    // judge, a group its environment left unscored has no fallback and is
-    // dropped. Reading it at startup is what turns a later "unscored" count
-    // from a mystery into a consequence.
-    if reward.is_none() {
-        ctx.observer
-            .info("no [agent.judge]: trajectories are graded by the environment alone");
-    }
-
-    // After the environment exists, so a forced interrupt has something to tear
-    // down, and before the first rollout, so there is never a window where
-    // containers are live and Ctrl+C still takes the default action.
-    crate::interrupt::install(environment.clone());
-
-    // The world is taken inside the branch, not while building a tuple: the
-    // operands of an `if let` pattern are evaluated before the pattern is
-    // tested, so a `take()` there empties the environment even in the common
-    // case where there is no provider to compose it with - and the run would
-    // then be built with neither a sandbox nor tools.
-    if let Some(shared) = tools.provider()
-        && let Some(world) = environment.take()
-    {
-        match local.block_on(
-            &runtime,
-            retrograd_agent::env::SharedToolsFactory::new(world, shared),
-        ) {
-            Ok(composed) => environment = Some(Arc::new(composed)),
-            Err(error) => {
-                return AgentOutcome {
-                    trainer: Some(trainer),
-                    result: Err(error.into()),
-                };
-            }
-        }
-    }
 
     let training = ctx.config.training.clone();
     let total_epochs = updates as u64 * epochs_per_update as u64;
@@ -393,7 +309,7 @@ fn drive(
     ) {
         Ok(sink) => sink,
         Err(error) => {
-            tools.shutdown(&local, &runtime);
+            world.shutdown(&local, &runtime);
             ctx.observer.loop_finished();
             return AgentOutcome {
                 trainer: Some(trainer),
@@ -430,19 +346,14 @@ fn drive(
     if let Some(observer) = trajectory_observer {
         run = run.with_trajectory_observer(observer);
     }
-    if let Some(reward) = reward {
+    if let Some(reward) = world.judge.clone() {
         run = run.with_judge(reward);
     }
-    if environment.is_none()
-        && let Some(tools) = tools.provider()
-    {
-        run = run.with_tools(tools);
-    }
-    if let Some(environment) = environment {
+    if let Some(environment) = world.environments.clone() {
         run = run.with_environments(environment);
     }
     let outcome = local.block_on(&runtime, run.run());
-    tools.shutdown(&local, &runtime);
+    world.shutdown(&local, &runtime);
     let Reporter {
         ctx,
         sink,
@@ -463,6 +374,123 @@ fn drive(
             (Err(error), _) => Err(error),
         },
     }
+}
+
+/// What every trajectory of an agentic run acts on and is graded by, built once
+/// and before the first token: the environments, the judge, and the MCP
+/// connections that have to be closed afterwards.
+pub(crate) struct AgentWorld {
+    /// One instance per trajectory: the configured environment, with the MCP
+    /// tools composed in when there are both, or those tools alone. `None` is a
+    /// run with no tools at all.
+    pub(crate) environments: Option<Arc<dyn retrograd_agent::EnvironmentFactory>>,
+    pub(crate) judge: Option<Arc<dyn retrograd_agent::RewardBackend>>,
+    tools: ConnectedTools,
+}
+
+impl AgentWorld {
+    /// Closes the MCP connections. The environments are shut down by whoever
+    /// ran them.
+    pub(crate) fn shutdown(self, local: &tokio::task::LocalSet, runtime: &tokio::runtime::Runtime) {
+        self.tools.shutdown(local, runtime);
+    }
+}
+
+/// Builds the judge, the tools and the environment an `[agent]` section
+/// declares, and installs the interrupt handler that tears them down.
+///
+/// Everything that can refuse the configuration - a judge that cannot start, a
+/// stateful MCP server shared with an environment, an image that cannot be
+/// pulled - refuses here, before a single token is generated.
+pub(crate) fn build_world(
+    agent: &AgentRunConfig,
+    observer: &mut dyn crate::RunObserver,
+    local: &tokio::task::LocalSet,
+    runtime: &tokio::runtime::Runtime,
+) -> Result<AgentWorld> {
+    // Paths inside the judge were already rebased by the loader, so identity is
+    // the right resolver here. Built before the first token, when there is one:
+    // a judge that cannot start is refused where it is declared rather than on
+    // the first group it is handed.
+    let judge = agent
+        .judge
+        .as_ref()
+        .map(|judge| judge.build(|path| path.to_path_buf()).map_err(Error::from))
+        .transpose()?;
+
+    // The tools first, in one resolution: the toolsets the environment will
+    // execute and the catalogue that describes them come from the same pass,
+    // so the hash logged below is the hash of what the model is offered.
+    let mut tools = connect_tools(local, runtime, agent, observer)?;
+    observer.info(&format!("tool catalog sha256 {}", tools.catalog_sha256()));
+
+    // Connecting to a daemon, pulling an image and validating every task
+    // declaration happens here - before a single token is generated.
+    let mut environment = match &agent.environment {
+        Some(config) => match local.block_on(runtime, config.build(tools.toolsets.take())) {
+            Ok(factory) => Some(factory),
+            Err(error) => {
+                tools.shutdown(local, runtime);
+                return Err(error.into());
+            }
+        },
+        None => None,
+    };
+    // The digest, not the tag: a tag moves between a run and its resume, and the
+    // resolved reference is what someone has to paste back into the
+    // configuration to get the same environment.
+    if let Some(image) = environment
+        .as_ref()
+        .and_then(|factory| factory.pinned_image())
+    {
+        observer.info(&format!("environment image {image}"));
+    }
+    // Said once, because it decides what every reward in the run is: without a
+    // judge, a group its environment left unscored has no fallback and is
+    // dropped. Reading it at startup is what turns a later "unscored" count
+    // from a mystery into a consequence.
+    if judge.is_none() {
+        observer.info("no [agent.judge]: trajectories are graded by the environment alone");
+    }
+
+    // After the environment exists, so a forced interrupt has something to tear
+    // down, and before the first rollout, so there is never a window where
+    // containers are live and Ctrl+C still takes the default action.
+    crate::interrupt::install(environment.clone());
+
+    // The world is taken inside the branch, not while building a tuple: the
+    // operands of an `if let` pattern are evaluated before the pattern is
+    // tested, so a `take()` there empties the environment even in the common
+    // case where there is no provider to compose it with - and the run would
+    // then be built with neither a sandbox nor tools.
+    if let Some(shared) = tools.provider()
+        && let Some(world) = environment.take()
+    {
+        match local.block_on(
+            runtime,
+            retrograd_agent::env::SharedToolsFactory::new(world, shared),
+        ) {
+            Ok(composed) => environment = Some(Arc::new(composed)),
+            Err(error) => {
+                tools.shutdown(local, runtime);
+                return Err(error.into());
+            }
+        }
+    }
+    let environments = match (environment, tools.provider()) {
+        (Some(environment), _) => Some(environment as Arc<dyn retrograd_agent::EnvironmentFactory>),
+        // Stateless tools shared by every trajectory.
+        (None, Some(provider)) => Some(
+            Arc::new(retrograd_agent::ToolProviderFactory::new(provider))
+                as Arc<dyn retrograd_agent::EnvironmentFactory>,
+        ),
+        (None, None) => None,
+    };
+    Ok(AgentWorld {
+        environments,
+        judge,
+        tools,
+    })
 }
 
 /// The half of the run that reports: one row per optimizer epoch, one metrics
@@ -678,7 +706,7 @@ impl UpdateHook for BoundaryHook<'_, '_, '_> {
 }
 
 /// Appends `[agent].system_suffix` to every scenario's system turn.
-fn append_system_suffix(scenarios: &mut [Scenario], suffix: &str) {
+pub(crate) fn append_system_suffix(scenarios: &mut [Scenario], suffix: &str) {
     if suffix.is_empty() {
         return;
     }
@@ -690,7 +718,7 @@ fn append_system_suffix(scenarios: &mut [Scenario], suffix: &str) {
     }
 }
 
-fn read_scenarios(path: &Path) -> Result<Vec<Scenario>> {
+pub(crate) fn read_scenarios(path: &Path) -> Result<Vec<Scenario>> {
     retrograd_scenario_gen::verify_manifest(path).map_err(Error::from)?;
     let source = fs::read_to_string(path)?;
     let mut scenarios = Vec::new();
@@ -780,7 +808,7 @@ fn connect_tools(
     local: &tokio::task::LocalSet,
     runtime: &tokio::runtime::Runtime,
     agent: &AgentRunConfig,
-    ctx: &mut Context<'_>,
+    observer: &mut dyn crate::RunObserver,
 ) -> Result<ConnectedTools> {
     let resolved = local
         .block_on(
@@ -804,7 +832,7 @@ fn connect_tools(
         )));
     }
     for warning in &resolved.catalog.warnings {
-        ctx.observer.info(warning);
+        observer.info(warning);
     }
     Ok(ConnectedTools {
         toolsets: resolved.toolsets,
@@ -818,7 +846,7 @@ fn connect_tools(
     _local: &tokio::task::LocalSet,
     _runtime: &tokio::runtime::Runtime,
     agent: &AgentRunConfig,
-    _ctx: &mut Context<'_>,
+    _observer: &mut dyn crate::RunObserver,
 ) -> Result<ConnectedTools> {
     if !agent.tool_plan.mcp_servers.is_empty() || !agent.tool_plan.mcp_config_files.is_empty() {
         return Err(Error::config(

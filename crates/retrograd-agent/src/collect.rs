@@ -102,6 +102,25 @@ impl CollectStats {
     }
 }
 
+/// Where a collection goes: every kept trace as a record, and each scenario's
+/// outcome as it finishes.
+pub trait CollectSink {
+    fn record(&mut self, example: ChatExample) -> Result<()>;
+
+    /// Scenario `index` of `total` is done.
+    fn scenario_finished(&mut self, report: &ScenarioReport, index: usize, total: usize) {
+        let _ = (report, index, total);
+    }
+}
+
+/// Keeps the records in memory.
+impl CollectSink for Vec<ChatExample> {
+    fn record(&mut self, example: ChatExample) -> Result<()> {
+        self.push(example);
+        Ok(())
+    }
+}
+
 /// Rolls `config.k` attempts out per scenario, in file order, grades them the
 /// way an update does, and hands every kept trace to `sink` as a record.
 ///
@@ -112,7 +131,7 @@ pub async fn collect_trajectories(
     reward: Option<Arc<dyn RewardBackend>>,
     scenarios: &[Scenario],
     config: &CollectConfig,
-    sink: &mut dyn FnMut(ChatExample) -> Result<()>,
+    sink: &mut dyn CollectSink,
 ) -> Result<CollectStats> {
     check_config(config, reward.is_some(), scenarios)?;
     let mut stats = CollectStats::default();
@@ -175,17 +194,19 @@ pub async fn collect_trajectories(
                 }
             };
             example.metadata = record_metadata(&trajectory, config, pass_rate);
-            sink(example)?;
+            sink.record(example)?;
             kept += 1;
         }
         stats.kept += kept;
-        stats.scenarios.push(ScenarioReport {
+        let report = ScenarioReport {
             id: scenario.id.clone(),
             attempted,
             passed,
             kept,
             pass_rate,
-        });
+        };
+        sink.scenario_finished(&report, index, scenarios.len());
+        stats.scenarios.push(report);
     }
     Ok(stats)
 }

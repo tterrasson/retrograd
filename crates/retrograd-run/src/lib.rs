@@ -14,6 +14,10 @@ mod agent;
 #[cfg(feature = "agent")]
 pub use agent::evaluate_judge;
 mod algorithm;
+#[cfg(feature = "agent")]
+mod collect;
+#[cfg(feature = "agent")]
+pub use collect::{CollectOptions, CollectOutcome, collect};
 mod control;
 mod controller;
 #[cfg(feature = "agent")]

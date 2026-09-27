@@ -305,6 +305,124 @@ fn train_sft_runs_through_the_cli_and_writes_metrics_and_adapter() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// `collect` end to end on a toy local scenario: rollouts through the fixture
+/// model, graded by the scenario's own `verify`, written as a dataset that
+/// `train` then prepares for SFT. The fixture model solves nothing, so the
+/// filters are opened wide - this covers the path, not the reward.
+#[test]
+fn collect_writes_a_dataset_sft_trains_on() {
+    let Some(model) = common::model_path_if_available() else {
+        eprintln!("skipping: no local test model");
+        return;
+    };
+    let _guard = common::serialize_models();
+    let dir = std::env::temp_dir().join(format!("retrograd-cli-collect-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let scenario = serde_json::json!({
+        "id": "answer",
+        "system": "Use the tools to finish the task.",
+        "user": "Write yes into answer.txt, then submit.",
+        "metadata": {"env": {
+            "verify": {"command": ["sh", "-c", "grep -q yes answer.txt"],
+                       "reward_on_success": 1.0, "reward_on_failure": 0.0},
+        }},
+    });
+    std::fs::write(dir.join("scenarios.jsonl"), format!("{scenario}\n")).unwrap();
+    let agent = format!(
+        "[run]\nalgorithm='agent_grpo'\n[model]\npath='{}'\ndevice='cpu'\n[output]\npath='unused.gguf'\n\
+         [lora]\nrank=2\nalpha=4.0\ntargets=['blk.2.attn_q.weight']\n\
+         [training]\nctx=1024\nmicro_batch=1024\nlr=1e-5\n\
+         [agent]\nscenarios='scenarios.jsonl'\ngroup_size=2\nmax_turns=2\nmax_new_tokens_per_turn=96\n\
+         max_trajectory_tokens=1024\nmax_rollout_secs=0\nseed=3\n\
+         [agent.environment]\ntype='local'\nallow_unsandboxed=true\n\
+         [agent.environment.tools]\ndefault='base'\n",
+        model.display()
+    );
+    std::fs::write(dir.join("agent.toml"), agent).unwrap();
+
+    let out = dir.join("traces.jsonl");
+    let report = dir.join("report.json");
+    let collect = Command::new(env!("CARGO_BIN_EXE_retrograd"))
+        .arg("collect")
+        .arg(dir.join("agent.toml"))
+        .arg("--out")
+        .arg(&out)
+        .arg("--report")
+        .arg(&report)
+        // Below the failure reward and without the verdict: the fixture model
+        // fails the task, and what is under test is everything around that.
+        .args([
+            "--k",
+            "2",
+            "--keep",
+            "2",
+            "--min-reward",
+            "-1",
+            "--allow-unverified",
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run collect");
+    assert!(collect.status.success(), "{}", stderr(&collect));
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report).unwrap()).unwrap();
+    assert_eq!(report["attempted"], 2, "{report}");
+    assert_eq!(report["scenarios"][0]["id"], "answer");
+    assert!(
+        !dir.join("traces.jsonl.tmp").exists(),
+        "a finished collection leaves no partial file"
+    );
+    // A trace the model cut short or botched is rejected; seed 3 is one where
+    // at least one of the two attempts finishes cleanly.
+    assert!(out.is_file(), "{report}");
+    let records = std::fs::read_to_string(&out).unwrap();
+    for line in records.lines() {
+        let record: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert!(
+            record["tools"]
+                .as_array()
+                .is_some_and(|tools| !tools.is_empty())
+        );
+        assert_eq!(record["metadata"]["scenario_id"], "answer");
+        assert_eq!(record["metadata"]["generator"], model.display().to_string());
+    }
+
+    // Refused a second time: the dataset is not overwritten by accident.
+    let again = Command::new(env!("CARGO_BIN_EXE_retrograd"))
+        .arg("collect")
+        .arg(dir.join("agent.toml"))
+        .arg("--out")
+        .arg(&out)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run collect again");
+    assert!(!again.status.success());
+    assert!(
+        stderr(&again).contains("without --force"),
+        "{}",
+        stderr(&again)
+    );
+
+    let sft = format!(
+        "[run]\nalgorithm='sft'\n[model]\npath='{}'\ndevice='cpu'\n[output]\npath='adapter.gguf'\n\
+         [lora]\nrank=2\nalpha=4.0\ntargets=['blk.2.attn_q.weight']\n\
+         [training]\nctx=1024\nmicro_batch=1024\nepochs=1\nlr=1e-4\n\
+         [sft]\ndata='traces.jsonl'\n",
+        model.display()
+    );
+    std::fs::write(dir.join("sft.toml"), sft).unwrap();
+    let train = Command::new(env!("CARGO_BIN_EXE_retrograd"))
+        .arg("train")
+        .arg(dir.join("sft.toml"))
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("train on the collected traces");
+    assert!(train.status.success(), "{}", stderr(&train));
+    assert!(dir.join("adapter.gguf").is_file());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// Every line of `observe.jsonl`, and the records the feed publishes.
 fn read_export(directory: &std::path::Path) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
     let read = |path: std::path::PathBuf| std::fs::read_to_string(path).expect("an export file");

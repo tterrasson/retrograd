@@ -1,6 +1,8 @@
 mod args;
 mod bench;
 mod chat;
+#[cfg(feature = "agent")]
+mod collect;
 mod distill_teacher;
 mod inspect;
 #[cfg(feature = "agent")]
@@ -47,6 +49,8 @@ fn run() -> retrograd::Result<()> {
         Some("tools") => tools::tools(args.collect()),
         #[cfg(feature = "agent")]
         Some("scenarios") => scenarios::scenarios(args.collect()),
+        #[cfg(feature = "agent")]
+        Some("collect") => collect::collect(args.collect()),
         Some("preflight") => preflight::preflight_model(args.collect()),
         Some("-h") | Some("--help") | None => {
             print_help();
@@ -77,6 +81,10 @@ Commands:
   judge eval <config.toml> --fixtures fixtures.jsonl
   tools list <config.toml> [--json] [--no-connect]
   scenarios generate <config.toml> [--force] [--dry-run]
+  collect <config.toml> --out traces.jsonl [--k N] [--keep N] [--min-reward R]
+          [--require-verified|--allow-unverified] [--raw] [--limit N] [--seed N]
+          [--model base.gguf] [--device auto|cpu|gpu] [--report report.json]
+          [--force]
   preflight --model base.gguf [--device auto|cpu|gpu] [--targets a,b] [--strict]
 
 Compatibility aliases:
@@ -101,6 +109,8 @@ mod help_tests {
             tools::FLAGS,
             #[cfg(feature = "agent")]
             scenarios::FLAGS,
+            #[cfg(feature = "agent")]
+            collect::FLAGS,
         ];
         for flag in groups.iter().flat_map(|flags| flags.iter()) {
             assert!(
