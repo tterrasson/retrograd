@@ -2,35 +2,29 @@
 
 ## Tests
 
-Do not run raw `cargo test` / `pytest` invocations from scratch - use the
-lane scripts under `scripts/test-*.sh`. Use the fast lanes on every change and
-the model/GPU lanes before a PR when their component is affected.
+The suites are wrapped in lane scripts under `scripts/test-*.sh`, which carry
+the flags and exclusions a raw `cargo test` / `pytest` would miss. What each
+RIR lane covers:
+
+- `test-rir-parity.sh` - kernels, schedules, emitters: the generated shaders
+  against the Loop IR oracle, in release, no model, about a minute warm.
+  `test-fast-rust.sh` compiles those binaries but does not run them.
+- `test-rir.sh` - registry policies: whether a generated kernel may replace a
+  hand-written one, correctness *and* timing against the native kernel on the
+  same shapes, no model.
 
 The PyO3 package in `python/native` is named `retrograd-python` (its library is
 `_native`): exclude it from a workspace command with
 `--exclude retrograd-python`.
 
-Touching a RIR kernel, schedule or emitter: `scripts/test-rir-parity.sh` is the
-one to run while working - the generated shaders against the Loop IR oracle, in
-release, no model, about a minute warm. `scripts/test-fast-rust.sh` compiles
-those two binaries but no longer runs them.
+Two tools for shaping a kernel, neither of which decides a promotion:
 
-Before changing a policy in the registry, run `scripts/test-rir.sh`. It is the
-lane that decides whether a generated kernel may replace a hand-written one -
-correctness *and* timing against the native kernel, on the same shapes, without
-a model.
-
-While shaping a kernel or a schedule, the short loop is
-`RIR_TIME=1 cargo test --release -p rir-runtime --test device_timing --
---nocapture`: the generated shader timed alone, in seconds, with the schedule
-written in the test. It compares RIR to RIR - it never decides a promotion.
-
-When the question is *which* geometry rather than what one costs, the offline
-search is `cargo run --release -p rir-sweep -- --kernel <name>`: the same
-emit-and-time loop over a small product of candidates, refusing a gain inside
-the measured noise and a shape rule that would claim a form the candidate loses
-Its last block is a proposal to read and commit by hand; it decides no more
-than the loop above does.
+- `RIR_TIME=1 cargo test --release -p rir-runtime --test device_timing --
+  --nocapture` times the generated shader alone, with the schedule written in
+  the test - RIR against RIR.
+- `cargo run --release -p rir-sweep -- --kernel <name>` runs the same loop over
+  a small product of candidate geometries, refusing gains inside the measured
+  noise. Its last block is a proposal to read and commit by hand.
 
 ## Errors
 
