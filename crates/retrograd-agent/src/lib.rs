@@ -9,6 +9,7 @@
 //! containers and judges build on without ever pulling in the FFI bridge.
 
 pub mod chat;
+pub mod collect;
 pub mod export;
 mod grpo;
 pub mod policy;
@@ -21,6 +22,7 @@ pub use retrograd_env as env;
 pub use retrograd_judge as judge;
 pub use retrograd_tools as tools;
 
+pub use collect::{CollectConfig, CollectStats, Rejections, ScenarioReport, collect_trajectories};
 #[cfg(feature = "http-env")]
 pub use env::config::Environments;
 pub use env::{

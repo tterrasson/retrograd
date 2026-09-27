@@ -55,7 +55,7 @@ impl RolloutFailures {
         self.tool + self.policy + self.other
     }
 
-    fn record(&mut self, kind: FailureKind) {
+    pub(crate) fn record(&mut self, kind: FailureKind) {
         match kind {
             FailureKind::Tool => self.tool += 1,
             FailureKind::Policy => self.policy += 1,

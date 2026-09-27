@@ -23,6 +23,7 @@ use retrograd_training::Progress;
 
 pub use self::evaluate::AgentEvalMetrics;
 
+pub(crate) use self::updates::score_group;
 use self::updates::{UpdateLoop, run_updates};
 use crate::env::{EnvironmentFactory, ToolProviderFactory};
 use crate::judge::RewardBackend;
