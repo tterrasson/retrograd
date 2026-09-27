@@ -5,7 +5,8 @@
 <h1 align="center">Retrograd</h1>
 
 <p align="center">
-  Fine-tune GGUF models, with LoRA or full weights, from SFT to agentic GRPO.
+  Fine-tune GGUF models, with LoRA or full weights: SFT, preference
+  optimization, PPO, GRPO and agentic GRPO.
 </p>
 
 <p align="center">
@@ -19,8 +20,13 @@ fork. By default it trains a LoRA adapter, written as a standard GGUF that
 `llama.cpp` loads with `--lora`. It can also train the model's own weights,
 all of them or a selection. One TOML file describes the whole run.
 
-- **Algorithms**: SFT, PPO, GRPO, distillation from a teacher model, and
-  multi-turn agentic GRPO with MCP tools and sandboxed environments.
+- **Algorithms**: SFT (plain text, chat or tool conversations), offline
+  preference optimization (DPO, IPO, SimPO, ORPO), PPO, GRPO, distillation
+  from a teacher model, and multi-turn agentic GRPO with MCP tools and
+  sandboxed environments.
+- **Data from rollouts**: `retrograd collect` turns the successful traces of
+  an agentic configuration into SFT records, or into preference pairs with
+  `--pairs`, from the local model or an OpenAI-compatible endpoint.
 - **What is trained**: a LoRA adapter (default), all base weights, a selection
   of them, or an adapter plus norms and biases.
 - **Optimizers**: AdamW (default), SGD, Muon and Gefen.
@@ -29,7 +35,9 @@ all of them or a selection. One TOML file describes the whole run.
   MXFP4) for LoRA training. The lowest-bit formats are not supported on Metal;
   see the [support matrix](https://tterrasson.github.io/retrograd/engineering/SUPPORT).
 - **Interfaces**: a CLI, an HTTP server (`retrograd-server`), the `retrograd`
-  Rust crate and Python bindings.
+  Rust crate and Python bindings. `retrograd serve` exposes a trained adapter
+  through the OpenAI chat API, so any OpenAI client or eval harness can query
+  it.
 
 ## Build
 
@@ -78,7 +86,8 @@ run ends with a finite `train_loss` and writes the adapter to
 
 `examples/smoke_tiny_ppo.toml` and `examples/smoke_tiny_grpo.toml` do the same
 for the reinforcement learning algorithms, on eight arithmetic questions
-scored by `examples/smoke_rl_reward.py`. The
+scored by `examples/smoke_rl_reward.py`, and
+`examples/smoke_tiny_preference.toml` for DPO on a few preference pairs. The
 [register machine](examples/register_machine/README.md) is a complete GRPO
 example with an exact reward and held-out evaluation.
 
@@ -93,10 +102,11 @@ retrograd preflight --model base.gguf --strict   # operations the device cannot 
 retrograd train run.toml                         # train; --resume continues a stopped run
 retrograd bench run.toml --adapter adapter.gguf  # base model against adapter, same examples
 retrograd chat run.toml --compare                # base model and adapter, turn by turn
+retrograd serve run.toml                         # OpenAI-compatible API on 127.0.0.1:8000
 ```
 
-Agentic runs add `tools list`, `scenarios generate` and `judge eval`, and
-offline distillation adds `distill-teacher`. See the
+Agentic runs add `tools list`, `scenarios generate`, `judge eval` and
+`collect`, and offline distillation adds `distill-teacher`. See the
 [CLI reference](https://tterrasson.github.io/retrograd/reference/cli) and the
 [configuration reference](https://tterrasson.github.io/retrograd/reference/configuration).
 
@@ -106,10 +116,15 @@ The documentation is at <https://tterrasson.github.io/retrograd/>. Its source is
 a VitePress site in [`docs/`](docs/) (`cd docs && bun install && bun run docs:dev`).
 
 - **Training**: [SFT](https://tterrasson.github.io/retrograd/training/sft),
+  [preference optimization](https://tterrasson.github.io/retrograd/training/preference),
   [PPO](https://tterrasson.github.io/retrograd/training/ppo),
   [GRPO](https://tterrasson.github.io/retrograd/training/grpo),
   [agentic GRPO](https://tterrasson.github.io/retrograd/training/agent),
-  [distillation](https://tterrasson.github.io/retrograd/training/distill).
+  [tools and toolsets](https://tterrasson.github.io/retrograd/training/tools),
+  [distillation](https://tterrasson.github.io/retrograd/training/distill),
+  [observing rollouts](https://tterrasson.github.io/retrograd/training/observe).
+- **Data**: [dataset formats](https://tterrasson.github.io/retrograd/getting-started/datasets),
+  including tool conversations and preference pairs.
 - **Operations**: [checkpoints and metrics](https://tterrasson.github.io/retrograd/operations/checkpoints),
   [performance and memory](https://tterrasson.github.io/retrograd/operations/performance).
 - **Engineering**: [contribution rules, test lanes, backends and RIR kernels](https://tterrasson.github.io/retrograd/engineering/).
