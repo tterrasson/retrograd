@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias
@@ -18,6 +19,11 @@ GefenVariant: TypeAlias = Literal["shared_v", "quantized_m"]
 #: Which parameters carry a gradient. ``lora`` is the absence of :class:`TrainableConfig`,
 #: so it is not selectable here.
 TrainablePolicy: TypeAlias = Literal["full", "partial", "hybrid"]
+#: Offline preference objective, see :class:`PreferenceConfig`.
+PreferenceLoss: TypeAlias = Literal["dpo", "ipo", "simpo", "orpo"]
+#: What a reference-relative loss compares the policy with: the policy as it is
+#: before the first step, or the model with its adapter disabled.
+PreferenceReference: TypeAlias = Literal["initial", "base"]
 
 
 #: Largest block index the runtime's ``u32`` parser can hold.
@@ -678,3 +684,85 @@ class DistillConfig:
             raise ValueError("kl_coefficient must not be negative")
         if self.max_new_tokens <= 0:
             raise ValueError("max_new_tokens must be greater than zero")
+
+
+#: Default ``beta`` of each preference loss, the values the TOML section uses.
+_PREFERENCE_BETA: dict[str, float] = {"dpo": 0.1, "ipo": 0.1, "simpo": 2.0, "orpo": 0.1}
+
+
+@dataclass(frozen=True, slots=True)
+class PreferenceConfig:
+    """Offline preference optimization over chosen/rejected pairs.
+
+    ``data`` is a JSONL file with one ``{"prompt", "chosen", "rejected"}``
+    record per line. Nothing is generated: every step scores its pairs under the
+    current policy and trains both responses of each one. A constant a loss does
+    not read is refused beside it rather than ignored.
+    """
+
+    data: str | Path
+    loss: PreferenceLoss = "dpo"
+    #: ``None`` takes the loss's own default: 0.1 for dpo, ipo and orpo, 2.0
+    #: for simpo. For orpo it is the weight of the odds-ratio term.
+    beta: float | None = None
+    #: dpo and ipo only. ``None`` is ``"initial"``.
+    reference: PreferenceReference | None = None
+    #: dpo only, in [0, 0.5). ``None`` is 0.
+    label_smoothing: float | None = None
+    #: simpo only, non-negative. ``None`` is 0.5.
+    gamma_beta_ratio: float | None = None
+    epochs: int = 1
+    shuffle: bool = True
+    #: Most pairs one optimizer step holds; ``None`` fills the window.
+    pairs_per_step: int | None = None
+    #: Nats the chosen responses' mean log-probability may fall, together with
+    #: the rejected ones', before the run warns once.
+    logps_drop_warn: float = 2.0
+    #: Seeds the order the pairs are visited in.
+    seed: int = 42
+    #: A second preference file, evaluated after every epoch.
+    eval_data: str | Path | None = None
+
+    def native_kwargs(self) -> dict[str, object]:
+        """Return keyword arguments accepted by ``_Trainer.fit_preference``."""
+
+        return {
+            "loss": self.loss,
+            "beta": self.beta,
+            "reference": self.reference,
+            "label_smoothing": self.label_smoothing,
+            "gamma_beta_ratio": self.gamma_beta_ratio,
+            "epochs": self.epochs,
+            "shuffle": self.shuffle,
+            "pairs_per_step": self.pairs_per_step,
+            "logps_drop_warn": self.logps_drop_warn,
+            "seed": self.seed,
+            "eval_data": None if self.eval_data is None else os.fspath(self.eval_data),
+        }
+
+    def __post_init__(self) -> None:
+        if self.loss not in _PREFERENCE_BETA:
+            raise ValueError(f"loss must be one of {sorted(_PREFERENCE_BETA)}; got {self.loss!r}")
+        if self.beta is not None and not 0 < self.beta < float("inf"):
+            raise ValueError("beta must be finite and greater than zero")
+        if self.reference is not None:
+            if self.loss not in ("dpo", "ipo"):
+                raise ValueError(f"reference is only read by dpo and ipo, not {self.loss}")
+            if self.reference not in ("initial", "base"):
+                raise ValueError("reference must be 'initial' or 'base'")
+        if self.label_smoothing is not None:
+            if self.loss != "dpo":
+                raise ValueError(f"label_smoothing is only read by dpo, not {self.loss}")
+            if not 0 <= self.label_smoothing < 0.5:
+                raise ValueError("label_smoothing must be in [0, 0.5)")
+        if self.gamma_beta_ratio is not None:
+            if self.loss != "simpo":
+                raise ValueError(f"gamma_beta_ratio is only read by simpo, not {self.loss}")
+            if not 0 <= self.gamma_beta_ratio < float("inf"):
+                raise ValueError("gamma_beta_ratio must be finite and non-negative")
+        if self.epochs <= 0:
+            raise ValueError("epochs must be greater than zero")
+        if self.pairs_per_step is not None and self.pairs_per_step <= 0:
+            raise ValueError("pairs_per_step must be greater than zero when set")
+        if not 0 < self.logps_drop_warn < float("inf"):
+            raise ValueError("logps_drop_warn must be finite and greater than zero")

@@ -19,6 +19,7 @@ from retrograd import (
     LoraConfig,
     MuonOptions,
     PPOConfig,
+    PreferenceConfig,
     SamplingConfig,
     TrainingConfig,
 )
@@ -129,6 +130,29 @@ def test_the_distill_keywords_are_the_ones_fit_distill_accepts(native) -> None:
         "DistillConfig and _Trainer.fit_distill disagree: "
         f"only native {sorted(accepted - sent)}, only Python {sorted(sent - accepted)}"
     )
+
+
+def test_the_preference_keywords_are_the_ones_fit_preference_accepts(native) -> None:
+    accepted = _keywords(native._Trainer.fit_preference)
+    config = PreferenceConfig(data="pairs.jsonl")
+    sent = set(config.native_kwargs()) | {"callback"}
+    assert accepted == sent, (
+        "PreferenceConfig and _Trainer.fit_preference disagree: "
+        f"only native {sorted(accepted - sent)}, only Python {sorted(sent - accepted)}"
+    )
+
+
+def test_the_preference_defaults_are_the_native_ones(native) -> None:
+    """The façade leaves every loss-dependent constant to the binding, and the
+    constants it does spell out are the binding's own."""
+
+    parameters = inspect.signature(native._Trainer.fit_preference).parameters
+    config = PreferenceConfig(data="pairs.jsonl")
+    for name, value in config.native_kwargs().items():
+        assert parameters[name].default == value, (
+            f"PreferenceConfig.{name} defaults to {value!r}, "
+            f"_Trainer.fit_preference to {parameters[name].default!r}"
+        )
 
 
 def test_the_agentic_keywords_are_the_ones_fit_agentic_grpo_accepts(native) -> None:

@@ -367,3 +367,41 @@ def test_both_layer_range_parsers_read_the_same_language(layers: str, accepted: 
         )
     native_accepted = isinstance(raised.value, native.RetrogradNativeError)
     assert native_accepted is accepted, str(raised.value)
+
+
+def test_pyo3_trains_preference_pairs_on_the_real_fixture(tmp_path: Path) -> None:
+    import json
+
+    native = pytest.importorskip("retrograd._native")
+    pairs = tmp_path / "pairs.jsonl"
+    pairs.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "prompt": [{"role": "user", "content": f"Shout: {phrase}"}],
+                    "chosen": [{"role": "assistant", "content": phrase.upper()}],
+                    "rejected": [{"role": "assistant", "content": phrase}],
+                }
+            )
+            + "\n"
+            for phrase in ("hello there", "good morning")
+        )
+    )
+    trainer = native._Trainer(
+        str(_fixture()), n_ctx=128, n_batch=128, n_ubatch=64, n_seq_max=2, device="cpu"
+    )
+    try:
+        trainer.create_lora(rank=4, alpha=8.0, dtype="f32")
+        seen = []
+        metrics = trainer.fit_preference(
+            str(pairs), loss="dpo", eval_data=str(pairs), callback=seen.append
+        )
+        # (epoch, epoch_complete, global_step, train_loss, eval_loss, ...)
+        assert metrics[2] >= 1
+        names = {name for _, values in seen for name, _ in values}
+        assert "preference/accuracy" in names
+        assert "eval/accuracy" in names
+        with pytest.raises(ValueError, match="only read by"):
+            trainer.fit_preference(str(pairs), loss="simpo", reference="base")
+    finally:
+        trainer.close()

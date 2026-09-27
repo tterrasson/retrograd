@@ -14,6 +14,7 @@ from .config import (
     GRPOConfig,
     LoraConfig,
     PPOConfig,
+    PreferenceConfig,
     SamplingConfig,
     TrainingConfig,
 )
@@ -388,6 +389,39 @@ class Trainer:
             self._native.fit_distill,
             os.fspath(config.teacher_path),
             os.fspath(config.prompts),
+            **config.native_kwargs(),
+            callback=native_callback,
+        )
+        return TrainingMetrics.from_native(values)
+
+    def fit_preference(
+        self,
+        config: PreferenceConfig,
+        *,
+        callback: RolloutProgressCallback | None = None,
+    ) -> TrainingMetrics:
+        """Train this trainer's adapter on preference pairs.
+
+        One optimizer step holds whole pairs and spans the whole context, so the
+        trainer's ``micro_batch * gradient_accumulation`` must equal its
+        ``context_size`` (the defaults do); ``max_sequences=2`` lets a pair be
+        packed over its shared prompt. A reference-relative loss scores its
+        reference at the start of the call: the initial one is this adapter as
+        it is now. The callback receives the ``preference/*`` series of every
+        step, and the ``eval/*`` ones after every epoch when
+        ``config.eval_data`` is set.
+        """
+
+        if self._training.step_tokens != self._training.context_size:
+            raise ValueError(
+                "a preference step spans the whole context: set micro_batch * "
+                "gradient_accumulation to TrainingConfig.context_size"
+            )
+        native_callback = _wrap_callback(callback, TrainingProgress.from_native)
+
+        values = self._translate(
+            self._native.fit_preference,
+            os.fspath(config.data),
             **config.native_kwargs(),
             callback=native_callback,
         )

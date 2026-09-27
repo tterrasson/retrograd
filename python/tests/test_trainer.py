@@ -11,6 +11,7 @@ from retrograd import (
     GRPOConfig,
     LoraConfig,
     PPOConfig,
+    PreferenceConfig,
     RetrogradError,
     SamplingConfig,
     Scenario,
@@ -124,6 +125,12 @@ class FakeTrainer:
         self.grpo_call = (prompts, reward_command, config)
         if config["callback"]:
             config["callback"]((METRICS, [("reward/mean", 0.5)]))
+        return METRICS
+
+    def fit_preference(self, data, **config):
+        self.preference_call = (data, config)
+        if config["callback"]:
+            config["callback"]((METRICS, [("preference/accuracy", 0.5)]))
         return METRICS
 
     def train_grpo_batch(self, *args, **config):
@@ -531,3 +538,66 @@ def test_a_checkpoint_round_trip_crosses_as_the_keywords_the_binding_names(
     assert state.adapter is None
     assert state.trainable == "bundle.gguf"
     assert state.had_optimizer_graph and state.restored_optimizer_slots == 4
+
+
+def test_a_preference_run_translates_every_native_keyword(tmp_path: Path) -> None:
+    model = trainer()
+    seen = []
+    model.fit_preference(
+        PreferenceConfig(
+            tmp_path / "pairs.jsonl",
+            loss="dpo",
+            beta=0.2,
+            reference="base",
+            label_smoothing=0.1,
+            epochs=3,
+            shuffle=False,
+            pairs_per_step=4,
+            logps_drop_warn=1.5,
+            seed=9,
+            eval_data=tmp_path / "eval.jsonl",
+        ),
+        callback=seen.append,
+    )
+    data, config = model._native.preference_call
+    assert data == str(tmp_path / "pairs.jsonl")
+    callback = config.pop("callback")
+    assert callback is not None
+    assert config == {
+        "loss": "dpo",
+        "beta": 0.2,
+        "reference": "base",
+        "label_smoothing": 0.1,
+        "gamma_beta_ratio": None,
+        "epochs": 3,
+        "shuffle": False,
+        "pairs_per_step": 4,
+        "logps_drop_warn": 1.5,
+        "seed": 9,
+        "eval_data": str(tmp_path / "eval.jsonl"),
+    }
+    assert seen[0].values["preference/accuracy"] == 0.5
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"loss": "kto"}, "loss must be one of"),
+        ({"loss": "simpo", "reference": "base"}, "reference is only read"),
+        ({"loss": "ipo", "label_smoothing": 0.1}, "label_smoothing is only read"),
+        ({"gamma_beta_ratio": 0.5}, "gamma_beta_ratio is only read"),
+        ({"label_smoothing": 0.5}, r"\[0, 0.5\)"),
+        ({"beta": 0.0}, "beta must be"),
+        ({"pairs_per_step": 0}, "pairs_per_step"),
+    ],
+)
+def test_a_preference_constant_is_refused_where_nothing_reads_it(kwargs, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        PreferenceConfig("pairs.jsonl", **kwargs)
+
+
+def test_a_preference_run_needs_a_whole_window_step() -> None:
+    narrow = TrainingConfig(context_size=128, micro_batch=32, gradient_accumulation=2)
+    model = trainer(training=narrow)
+    with pytest.raises(ValueError, match="spans the whole context"):
+        model.fit_preference(PreferenceConfig("pairs.jsonl"))

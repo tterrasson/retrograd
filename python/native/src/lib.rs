@@ -12,7 +12,8 @@ use pyo3::prelude::*;
 
 use retrograd::config::{
     AdvantageBaseline, CriticConfig, DEFAULT_MAX_STALLED_UPDATES, DistillConfig, DistillMode,
-    GefenToml, GrpoConfig, MuonToml, OptimizerToml, PpoConfig, PromptOrder, build_optimizer,
+    GefenToml, GrpoConfig, MuonToml, OptimizerToml, PpoConfig, PreferenceConfig, PreferenceLoss,
+    PromptOrder, ReferenceSource, build_optimizer,
 };
 use retrograd::dataset::{self, DataFormat, PreparedDataset};
 use retrograd::training::{self, Progress};
@@ -1446,6 +1447,144 @@ impl PyTrainer {
                     });
                 }
             });
+        if let Some(error) = callback_error {
+            return Err(error);
+        }
+        result.map(metrics_tuple).map_err(python_error)
+    }
+
+    /// Offline preference optimization over a file of chosen/rejected pairs.
+    ///
+    /// `beta` defaults per loss; `reference` is read by `dpo` and `ipo` only
+    /// (`initial` by default, or `base`), and `label_smoothing` and
+    /// `gamma_beta_ratio` by `dpo` and `simpo` only. A value set for a loss that
+    /// does not read it is refused, as the TOML section refuses it. No resume:
+    /// the reference is scored at the start of the call.
+    #[pyo3(signature = (
+        data,
+        *,
+        loss="dpo",
+        beta=None,
+        reference=None,
+        label_smoothing=None,
+        gamma_beta_ratio=None,
+        epochs=1,
+        shuffle=true,
+        pairs_per_step=None,
+        logps_drop_warn=2.0,
+        seed=42,
+        eval_data=None,
+        callback=None
+    ))]
+    #[expect(clippy::too_many_arguments)]
+    fn fit_preference(
+        &mut self,
+        data: String,
+        loss: &str,
+        beta: Option<f32>,
+        reference: Option<&str>,
+        label_smoothing: Option<f32>,
+        gamma_beta_ratio: Option<f32>,
+        epochs: u32,
+        shuffle: bool,
+        pairs_per_step: Option<u32>,
+        logps_drop_warn: f32,
+        seed: u32,
+        eval_data: Option<String>,
+        callback: Option<Py<PyAny>>,
+    ) -> PyResult<MetricsTuple> {
+        let refuse = |key: &str, reader: &str| {
+            PyValueError::new_err(format!(
+                "{key} is only read by loss='{reader}', and this call's loss is '{loss}'"
+            ))
+        };
+        let loss = match loss.trim().to_ascii_lowercase().as_str() {
+            "dpo" => PreferenceLoss::Dpo {
+                beta: beta.unwrap_or(0.1),
+                label_smoothing: label_smoothing.unwrap_or(0.0),
+            },
+            "ipo" => PreferenceLoss::Ipo {
+                beta: beta.unwrap_or(0.1),
+            },
+            "simpo" => PreferenceLoss::Simpo {
+                beta: beta.unwrap_or(2.0),
+                gamma_beta_ratio: gamma_beta_ratio.unwrap_or(0.5),
+            },
+            "orpo" => PreferenceLoss::Orpo {
+                beta: beta.unwrap_or(0.1),
+            },
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown preference loss '{other}'; use dpo, ipo, simpo or orpo"
+                )));
+            }
+        };
+        if label_smoothing.is_some() && !matches!(loss, PreferenceLoss::Dpo { .. }) {
+            return Err(refuse("label_smoothing", "dpo"));
+        }
+        if gamma_beta_ratio.is_some() && !matches!(loss, PreferenceLoss::Simpo { .. }) {
+            return Err(refuse("gamma_beta_ratio", "simpo"));
+        }
+        let reference = match (loss.uses_reference(), reference) {
+            (true, None | Some("initial")) => Some(ReferenceSource::Initial),
+            (true, Some("base")) => Some(ReferenceSource::Base),
+            (true, Some(other)) => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown preference reference '{other}'; use initial or base"
+                )));
+            }
+            (false, None) => None,
+            (false, Some(_)) => {
+                return Err(PyValueError::new_err(format!(
+                    "reference is only read by a loss that compares against one (dpo, ipo), \
+                     and loss='{}' is reference-free",
+                    loss.name()
+                )));
+            }
+        };
+        if epochs == 0 {
+            return Err(PyValueError::new_err("epochs must be greater than zero"));
+        }
+        let config = PreferenceConfig {
+            data: data.into(),
+            loss,
+            reference,
+            shuffle,
+            seed,
+            pairs_per_step,
+            logps_drop_warn,
+        };
+        config.validate().map_err(python_error)?;
+        // A step holds whole pairs, so it spans the whole trained window.
+        self.training
+            .validate_whole_window_step(
+                "a preference step trains whole pairs, which a window narrower than the \
+                 context would cut between two steps",
+                "pair",
+            )
+            .map_err(python_error)?;
+        let training = self.training.clone();
+        let eval = eval_data.map(std::path::PathBuf::from);
+        let mut callback_error = None;
+        let result = training::preference::run(
+            self.trainer_mut()?,
+            &config,
+            &training,
+            epochs,
+            eval.as_deref(),
+            &mut |progress| {
+                if callback_error.is_some() {
+                    return;
+                }
+                if let Some(callback) = callback.as_ref() {
+                    Python::attach(|py| {
+                        if let Err(error) = callback.call1(py, (progress_tuple(progress),)) {
+                            callback_error = Some(error);
+                        }
+                    });
+                }
+            },
+        );
         if let Some(error) = callback_error {
             return Err(error);
         }
