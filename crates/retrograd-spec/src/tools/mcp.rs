@@ -448,17 +448,4 @@ mod tests {
         assert!(deny_only.exposes("read"));
         assert!(!deny_only.exposes("delete_admin"));
     }
-
-    #[test]
-    fn glob_matching_handles_anchors_and_inner_wildcards() {
-        assert!(crate::tools::glob_match("exact", "exact"));
-        assert!(!crate::tools::glob_match("exact", "exactly"));
-        assert!(crate::tools::glob_match("*", "anything"));
-        assert!(crate::tools::glob_match("read_*", "read_file"));
-        assert!(crate::tools::glob_match("*_file", "read_file"));
-        assert!(crate::tools::glob_match("read_*_file", "read_big_file"));
-        assert!(!crate::tools::glob_match("read_*_file", "read_big_dir"));
-        assert!(crate::tools::glob_match("a*b*c", "axxbyyc"));
-        assert!(!crate::tools::glob_match("a*b*c", "axxb"));
-    }
 }

@@ -349,10 +349,13 @@ mod tests {
 
     #[test]
     fn a_stop_sequence_truncates_at_its_earliest_match() {
+        // The budget is spent on "one. two!": both stops are in the sample,
+        // the one listed first matches later, and the cut still reads as a
+        // stop rather than as the budget.
         let mut model = FakeModel::new("one. two! three");
         let done = run(
             &mut model,
-            json!({"model": "m", "max_tokens": 4, "stop": ["!", "."],
+            json!({"model": "m", "max_tokens": 9, "stop": ["!", "."],
                    "messages": [{"role": "user", "content": "hi"}]}),
         );
         assert_eq!(done.content.as_deref(), Some("one"));

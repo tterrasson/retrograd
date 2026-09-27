@@ -495,17 +495,16 @@ mod tests {
         }
     }
 
-    /// The canonicalized nest computes exactly what the other one computed: the
-    /// pass renames and removes; it does not reassociate anything.
+    /// The pass is a fixed point: run again on the nest `lower` already
+    /// canonicalized, it removes nothing more and changes no value. `lower`
+    /// always canonicalizes, so there is no unoptimized nest to compare with;
+    /// what a second run would find is the work the first one left undone.
     #[test]
-    fn canonicalizing_changes_no_value() {
+    fn canonicalizing_is_a_fixed_point() {
         use crate::interp::{BoundArg, TensorView, TensorViewMut, run};
 
         let kernel = two_pass_row();
         let lk = lower(&kernel, Schedule::cpu_serial()).unwrap();
-        // The control: the same nest with the pass run a second time. It must be
-        // a fixed point - if it changed anything else, the first application
-        // would not have finished its work.
         let mut again = lk.clone();
         canonicalize(&mut again.body);
 

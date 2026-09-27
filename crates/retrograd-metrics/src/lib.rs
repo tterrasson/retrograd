@@ -339,6 +339,9 @@ mod tests {
     #[test]
     fn crc32c_matches_the_tfrecord_masking_example() {
         assert_eq!(masked_crc32c(b""), 0xa282ead8);
+        // The empty input only exercises the mask: CRC-32C's check value,
+        // 0xe3069283 for "123456789", pins the polynomial and the reflection.
+        assert_eq!(masked_crc32c(b"123456789"), 0xc78ab0e5);
     }
 
     #[test]

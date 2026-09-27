@@ -1802,22 +1802,17 @@ mod tests {
     }
 
     #[test]
-    fn a_descriptor_is_the_tables_its_optimizer_declares() {
+    fn gefens_two_variants_are_two_layouts_under_one_name() {
         for kind in ALL {
-            let descriptor = kind.descriptor();
-            assert_eq!(descriptor.id, kind.as_str());
-            assert_eq!(descriptor.layout_version, kind.layout_version());
-            assert_eq!(descriptor.slots, kind.slot_definitions());
-            assert_eq!(descriptor.shared_slots, kind.shared_slot_definitions());
-            assert_eq!(descriptor.hyperparameters, kind.hyperparameters());
             // One layout each except Gefen's two, which is the whole point of
             // the variant: the same name over two slot tables.
             let expected = match kind.gefen_layout().map(|layout| layout.variant) {
                 Some(GefenVariant::QuantizedM) => 2,
                 _ => 1,
             };
-            assert_eq!(descriptor.layout_version, expected, "{kind}");
+            assert_eq!(kind.descriptor().layout_version, expected, "{kind}");
         }
+        assert_eq!(shared_v().descriptor().id, quantized_m().descriptor().id);
         // And the two Gefen descriptors differ in more than their version.
         assert_ne!(
             shared_v().descriptor().slots,

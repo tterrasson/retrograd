@@ -448,7 +448,7 @@ mod tests {
     /// behaves like this one.
     struct FakeSandbox {
         id: usize,
-        recycles: AtomicUsize,
+        recycles: Arc<AtomicUsize>,
         destroyed: Arc<AtomicUsize>,
         recycle_fails: bool,
         healthy: bool,
@@ -513,6 +513,7 @@ mod tests {
     #[derive(Default)]
     struct FakeSource {
         created: AtomicUsize,
+        recycled: Arc<AtomicUsize>,
         destroyed: Arc<AtomicUsize>,
         recycle_fails: bool,
         healthy_instances: bool,
@@ -537,7 +538,7 @@ mod tests {
             Ok(Arc::new(FakeInstance {
                 sandbox: Arc::new(FakeSandbox {
                     id,
-                    recycles: AtomicUsize::new(0),
+                    recycles: self.recycled.clone(),
                     destroyed: self.destroyed.clone(),
                     recycle_fails: self.recycle_fails,
                     healthy: self.healthy_instances,
@@ -566,7 +567,7 @@ mod tests {
             Ok(Arc::new(FakeInstance {
                 sandbox: Arc::new(FakeSandbox {
                     id: 0,
-                    recycles: AtomicUsize::new(0),
+                    recycles: Arc::new(AtomicUsize::new(0)),
                     destroyed: self.destroyed.clone(),
                     recycle_fails: false,
                     healthy: true,
@@ -615,6 +616,7 @@ mod tests {
         let second = pool.acquire().await.unwrap();
         // One creation for two episodes, and the wipe happened in between.
         assert_eq!(source.created.load(Ordering::SeqCst), 1);
+        assert_eq!(source.recycled.load(Ordering::SeqCst), 1);
         assert_eq!(source.destroyed.load(Ordering::SeqCst), 0);
         drop(second);
     }

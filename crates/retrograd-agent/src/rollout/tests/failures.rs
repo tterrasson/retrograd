@@ -146,6 +146,7 @@ async fn a_hanging_environment_step_cannot_outlive_the_deadline() {
     assert_eq!(trajectory.tokens, [1, 2, 10]);
     assert!(trajectory.truncated);
 }
+
 #[tokio::test]
 async fn a_zero_deadline_disables_the_check() {
     let engine = engine_with(

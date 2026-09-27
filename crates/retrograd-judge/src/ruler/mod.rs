@@ -767,12 +767,27 @@ mod tests {
 
     /// Serves one canned `content` per connection, in order, and reports the
     /// request bodies it saw.
+    ///
+    /// Order is only meaningful for requests the judge sends one after the
+    /// other: concurrent ones reach `accept` in whatever order their
+    /// connections land, and are answered through [`serve_by`] instead.
     fn serve(contents: Vec<String>) -> (std::net::SocketAddr, mpsc::Receiver<String>) {
+        let count = contents.len();
+        let contents = std::sync::Mutex::new(contents.into_iter());
+        serve_by(count, move |_| contents.lock().unwrap().next().unwrap())
+    }
+
+    /// Serves `count` connections, each answered with the `content` that
+    /// `respond` picks from the request body.
+    fn serve_by(
+        count: usize,
+        respond: impl Fn(&str) -> String + Send + 'static,
+    ) -> (std::net::SocketAddr, mpsc::Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            for content in contents {
+            for _ in 0..count {
                 let Ok((mut stream, _)) = listener.accept() else {
                     return;
                 };
@@ -803,6 +818,7 @@ mod tests {
                     .split_once("\r\n\r\n")
                     .map(|(_, body)| body.to_owned())
                     .unwrap_or_default();
+                let content = respond(&body);
                 tx.send(body).ok();
                 let payload = serde_json::json!({
                     "choices": [{"message": {"content": content}}]
@@ -882,11 +898,16 @@ mod tests {
         // permutation leaves chunk 0 as `[0, 1]` and presents chunk 0 + anchor
         // as `[2, 0, 3]`. So the second response scores trajectory 2 at 0.1, the
         // anchor at 0.2 and trajectory 3 at 0.3 - and the anchor's own chunk
-        // scored it 0.5, shifting the second chunk by +0.3.
-        let (address, requests) = serve(vec![
-            scores_json(&[(0, "anchor", 0.5), (1, "second", 0.6)]),
-            scores_json(&[(0, "third", 0.1), (1, "anchor", 0.2), (2, "fourth", 0.3)]),
-        ]);
+        // scored it 0.5, shifting the second chunk by +0.3. The two chunks are
+        // requested concurrently, so each answer is picked by the chunk it is
+        // about: only the second one shows trajectory 2.
+        let (address, requests) = serve_by(2, |body| {
+            if body.contains("x2") {
+                scores_json(&[(0, "third", 0.1), (1, "anchor", 0.2), (2, "fourth", 0.3)])
+            } else {
+                scores_json(&[(0, "anchor", 0.5), (1, "second", 0.6)])
+            }
+        });
         // Distinct answers: identical ones would be absorbed by the shared
         // prefix and cost nothing, so nothing would need chunking.
         let answers = (0..4)
@@ -925,12 +946,18 @@ mod tests {
 
     #[tokio::test]
     async fn pairwise_aggregates_win_rates_and_survives_one_failed_comparison() {
-        // Ring schedule over three trajectories: (0,1), (1,2), (2,0).
-        let (address, _requests) = serve(vec![
-            r#"{"winner":"a","explanation":"0>1"}"#.to_owned(),
-            r#"{"winner":"a","explanation":"1>2"}"#.to_owned(),
-            "unparseable".to_owned(),
-        ]);
+        // Ring schedule over three trajectories: (0,1), (1,2), (2,0), compared
+        // concurrently - so the verdict is picked by the pair a request shows,
+        // and it is (2,0) that fails.
+        let (address, _requests) = serve_by(3, |body| {
+            if body.contains("alpha") && body.contains("beta") {
+                r#"{"winner":"a","explanation":"0>1"}"#.to_owned()
+            } else if body.contains("beta") && body.contains("gamma") {
+                r#"{"winner":"a","explanation":"1>2"}"#.to_owned()
+            } else {
+                "unparseable".to_owned()
+            }
+        });
         let judge = RulerJudge::with_api_key(
             RulerConfig {
                 strategy: JudgeStrategy::Pairwise {
@@ -946,7 +973,10 @@ mod tests {
             "test-key".into(),
         )
         .unwrap();
-        let scores = judge.score_group(&group(&["a", "b", "c"])).await.unwrap();
+        let scores = judge
+            .score_group(&group(&["alpha", "beta", "gamma"]))
+            .await
+            .unwrap();
         // 0 won its only completed match, 1 won one of two, 2 lost its only one.
         assert_eq!(scores[0].value, 1.0);
         assert_eq!(scores[1].value, 0.5);

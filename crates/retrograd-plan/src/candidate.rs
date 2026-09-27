@@ -515,6 +515,32 @@ mod tests {
             .collect();
         let frontier = eliminate_dominated(evaluated);
         assert!(!frontier.is_empty());
-        assert!(select(&frontier).is_some());
+        let template = select(&frontier)
+            .expect("a valid candidate survives")
+            .clone();
+
+        // Same memory, so cost and fidelity decide: `slower` loses on cost
+        // alone and goes; `faithful` costs more but keeps more, so it stays;
+        // `rejected` is cheaper still, but an invalid plan is never compared
+        // with a valid one.
+        let with = |execution_cost, fidelity, valid| CandidateEvaluation {
+            execution_cost,
+            fidelity,
+            valid,
+            ..template.clone()
+        };
+        let frontier = eliminate_dominated(vec![
+            with(20, 1, true),
+            with(10, 1, true),
+            with(30, 2, true),
+            with(5, 3, false),
+        ]);
+        let kept = frontier
+            .iter()
+            .map(|candidate| (candidate.execution_cost, candidate.fidelity))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(kept, [(5, 3), (10, 1), (30, 2)].into(), "{kept:?}");
+        let selected = select(&frontier).expect("a valid candidate survives");
+        assert_eq!((selected.execution_cost, selected.fidelity), (30, 2));
     }
 }

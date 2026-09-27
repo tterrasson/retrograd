@@ -203,6 +203,5 @@ mod tests {
         provenance.derived("lora.rank", "a");
         let json = serde_json::to_string(&provenance).unwrap();
         assert!(json.starts_with(r#"{"lora.rank""#), "{json}");
-        assert_eq!(json, serde_json::to_string(&provenance.clone()).unwrap());
     }
 }

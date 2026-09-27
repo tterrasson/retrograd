@@ -51,9 +51,8 @@ fn gpu_coverage_is_a_partition() {
 ///
 /// The closed family table makes this property local: a kernel that matches no
 /// arm cannot silently keep only its CPU schedule. Every arm schedules every
-/// backend it has not refused **in writing**, so:
-/// every arm schedules every backend it has not refused **in writing**, so
-/// "CPU alone" is not a value `schedules_for` returns by omission.
+/// backend it has not refused **in writing**, so "CPU alone" is not a value
+/// `schedules_for` returns by omission.
 #[test]
 fn every_family_reaches_every_gpu_target() {
     for family in Family::ALL {

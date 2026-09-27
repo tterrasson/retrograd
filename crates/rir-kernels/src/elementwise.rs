@@ -667,7 +667,7 @@ mod tests {
                 .max()
                 .unwrap_or(0)
         }
-        assert_eq!(depth(&plain.body), depth(&rep.body), "one extra loop");
+        assert_eq!(depth(&plain.body), depth(&rep.body), "no extra loop");
     }
 
     /// F16 members against the same analytical reference and under the same

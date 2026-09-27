@@ -786,9 +786,5 @@ mod tests {
             timeout_message(Duration::from_secs(30)),
             "command timed out after 30 seconds"
         );
-        assert_eq!(
-            timeout_message(Duration::from_secs(30)),
-            timeout_message(Duration::from_secs(30))
-        );
     }
 }

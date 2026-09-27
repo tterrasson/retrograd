@@ -181,8 +181,6 @@ mod tests {
         assert_eq!(typescript.image().unwrap(), "node:22-slim");
     }
 
-    /// `custom` exists so an operator can bring their own image; forgetting to
-    /// name it must fail at configuration time, not at the first acquisition.
     /// A pool that must keep more warm than it may hold never converges, and
     /// the shape of the mistake is a hang rather than an error - so it is
     /// refused where an operator can still read the sentence.
@@ -201,6 +199,8 @@ mod tests {
         assert!(error.contains("min_idle"), "{error}");
     }
 
+    /// `custom` exists so an operator can bring their own image; forgetting to
+    /// name it must fail at configuration time, not at the first acquisition.
     #[test]
     fn a_custom_profile_without_an_image_is_refused() {
         let config = ContainerEnvironmentConfig {

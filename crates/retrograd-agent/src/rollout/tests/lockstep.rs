@@ -74,6 +74,7 @@ async fn a_group_is_identical_to_the_same_rollouts_run_one_by_one() {
                 .unwrap(),
         );
     }
+    assert_eq!(group.trajectories.len(), sequential.len());
     for (batched, sequential) in group.trajectories.iter().zip(&sequential) {
         assert_eq!(batched.tokens, sequential.tokens);
         assert_eq!(batched.train_mask, sequential.train_mask);
@@ -135,6 +136,7 @@ async fn a_group_larger_than_the_sequence_capacity_is_chunked() {
         .unwrap();
 
     assert_eq!(batched.group_id, reference.group_id);
+    assert_eq!(batched.trajectories.len(), reference.trajectories.len());
     for (chunked, reference) in batched.trajectories.iter().zip(&reference.trajectories) {
         assert_eq!(chunked.tokens, reference.tokens);
         assert_eq!(chunked.train_mask, reference.train_mask);

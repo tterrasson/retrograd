@@ -432,6 +432,8 @@ impl SandboxOwner for LocalSandboxProvider {
 mod tests {
     use std::time::Duration;
 
+    use super::*;
+
     #[test]
     fn a_filesystem_failure_names_the_action_the_path_and_the_kind() {
         let io = std::io::Error::from(std::io::ErrorKind::NotFound);
@@ -442,8 +444,6 @@ mod tests {
             "tool error: read 'notes.txt': entity not found"
         );
     }
-
-    use super::*;
 
     fn sandbox() -> LocalSandbox {
         LocalSandbox::new(LocalSandboxConfig {

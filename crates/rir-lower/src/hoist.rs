@@ -741,9 +741,8 @@ mod tests {
         }
     }
 
-    /// Nothing is lost on the way out: the pass moves statements, it does not
-    /// drop or duplicate them, so the count of computations is the original
-    /// one plus exactly the address registers it introduced.
+    /// Nothing is lost on the way out: the body outlives the bases the pass
+    /// introduced, and every one of them is an index register.
     #[test]
     fn hoisting_moves_statements_and_creates_only_address_registers() {
         let lk = lower(&scaled_row(), Schedule::cpu_serial()).unwrap();

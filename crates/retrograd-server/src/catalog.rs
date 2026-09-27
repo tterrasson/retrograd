@@ -619,10 +619,6 @@ deny = ["bash"]
             let error = declared(&source)
                 .expect_err(&format!("accepted {body}"))
                 .to_string();
-            assert!(
-                error.contains("environment 'e'") || error.contains(expected),
-                "{error}"
-            );
             assert!(error.contains(expected), "{error}");
         }
 

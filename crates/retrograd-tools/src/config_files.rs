@@ -335,8 +335,21 @@ mod tests {
 
     #[test]
     fn sse_and_unknown_fields_are_refused() {
+        // SSE is a well-formed exchange entry: the refusal is the loader's, not
+        // the parser's.
+        let path =
+            std::env::temp_dir().join(format!("retrograd-mcp-sse-{}.json", std::process::id()));
+        fs::write(
+            &path,
+            r#"{"mcpServers":{"x":{"type":"sse","url":"https://x"}}}"#,
+        )
+        .unwrap();
+        let result = load_mcp_config_files(&[&path], &[]);
+        fs::remove_file(path).ok();
+        let error = result.expect_err("SSE must be refused").to_string();
+        assert!(error.contains("uses SSE"), "{error}");
+
         let parse = |source: &str| serde_json::from_str::<Document>(source);
-        assert!(parse(r#"{"mcpServers":{"x":{"type":"sse","url":"https://x"}}}"#).is_ok());
         assert!(parse(r#"{"mcpServers":{"x":{"command":"x","typo":true}}}"#).is_err());
     }
 }

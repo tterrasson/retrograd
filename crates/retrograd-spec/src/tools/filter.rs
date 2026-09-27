@@ -36,6 +36,11 @@ mod tests {
             ("bash", "bash", true),
             ("bash", "bashful", false),
             ("a*b", "ac", false),
+            ("*", "anything", true),
+            ("read_*_file", "read_big_file", true),
+            ("read_*_file", "read_big_dir", false),
+            ("a*b*c", "axxbyyc", true),
+            ("a*b*c", "axxb", false),
         ] {
             assert_eq!(glob_match(pattern, name), expected, "{pattern} / {name}");
         }

@@ -1165,25 +1165,13 @@ mod tests {
     }
 
     #[test]
-    fn the_server_budgets_are_what_a_resolution_is_narrowed_from() {
-        let config = ServerConfig {
-            vram_budget: BudgetRequest::Bytes(6 * 1024 * 1024 * 1024),
-            ..Default::default()
-        };
-        assert_eq!(
-            config.vram_budget,
-            BudgetRequest::Bytes(6 * 1024 * 1024 * 1024)
-        );
-        assert_eq!(config.ram_budget, BudgetRequest::All);
-    }
-
-    #[test]
     fn server_config_defaults_are_conservative() {
         let config = ServerConfig::default();
         assert_eq!(config.bind_address(), "127.0.0.1:8471");
         assert_eq!(config.concurrency(), 1);
         assert_eq!(config.state_dir(), PathBuf::from("runs"));
         assert_eq!(config.vram_budget, BudgetRequest::All);
+        assert_eq!(config.ram_budget, BudgetRequest::All);
         assert!(
             config.calibrate_runs(),
             "a created run measures what it is about to load"

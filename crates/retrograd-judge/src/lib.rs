@@ -554,25 +554,44 @@ mod tests {
         );
     }
 
+    /// Scores every member but the last, which it reports invalid.
+    struct LastInvalidJudge;
+
+    #[async_trait]
+    impl RewardBackend for LastInvalidJudge {
+        async fn score_group(&self, group: &TrajectoryGroup) -> Result<Vec<Score>> {
+            let last = group.trajectories.len() - 1;
+            Ok((0..=last)
+                .map(|index| Score {
+                    value: 0.5,
+                    valid: index != last,
+                    explanation: None,
+                    error: None,
+                })
+                .collect())
+        }
+    }
+
     #[tokio::test]
     async fn a_scored_group_never_keeps_a_partial_reward_set() {
-        // Every trajectory of a kept group must carry a reward: the downstream
-        // filter assumes rewards arrive all-or-nothing per group.
-        let mut groups = vec![group("good")];
-        score_groups(
-            Arc::new(PartialJudge),
+        // The downstream filter assumes rewards arrive all-or-nothing per
+        // group: one invalid member costs the whole group its rewards.
+        let mut groups = vec![group("a"), group("b")];
+        let metrics = score_groups(
+            Arc::new(LastInvalidJudge),
             &mut groups,
             JudgeFailurePolicy::DropGroup,
-            0.0,
+            1.0,
             false,
         )
         .await
         .unwrap();
+        assert_eq!(metrics.dropped_group_fraction, 1.0);
         assert!(
-            groups[0]
-                .trajectories
+            groups
                 .iter()
-                .all(|trajectory| trajectory.reward.is_some())
+                .flat_map(|group| &group.trajectories)
+                .all(|trajectory| trajectory.reward.is_none())
         );
     }
 }

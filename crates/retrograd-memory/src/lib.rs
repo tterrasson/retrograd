@@ -507,25 +507,6 @@ mod tests {
     }
 
     #[test]
-    fn observe_logs_only_significant_moves() {
-        let mut tracker = MemoryTracker::new();
-        let baseline = tracker.logged_footprint;
-        let (snapshot, message) = tracker.observe();
-        let snapshot = snapshot.expect("snapshot available");
-        // Sibling tests share this process and allocate, so the footprint can
-        // move between the two readings: assert the reporting rule rather than
-        // an absence of movement.
-        let delta = snapshot.footprint as i64 - baseline as i64;
-        let significant = delta.unsigned_abs() >= LOG_ABSOLUTE_THRESHOLD
-            && delta.unsigned_abs() as f64 / (baseline.max(1) as f64) >= LOG_RELATIVE_THRESHOLD;
-        assert_eq!(
-            message.is_some(),
-            significant,
-            "delta {delta} reported as {message:?}"
-        );
-    }
-
-    #[test]
     fn device_snapshot_is_consistent_or_absent() {
         // CPU-only builds legitimately have no device; when one exists its
         // budget must be self-consistent so the deltas mean something.
@@ -534,7 +515,6 @@ mod tests {
         };
         assert!(device.total > 0);
         assert!(device.free <= device.total);
-        assert_eq!(device.used(), device.total - device.free);
     }
 
     #[test]

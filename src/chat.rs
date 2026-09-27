@@ -394,7 +394,11 @@ mod tests {
         ]));
         // `--max_tokens` is intentionally not a documented alias: this
         // should fail instead of silently accepting a typo.
-        assert!(parsed.is_err());
+        let error = parsed.unwrap_err().to_string();
+        assert!(
+            error.contains("unknown chat flag '--max_tokens'"),
+            "{error}"
+        );
 
         let parsed = parse_chat_args(&strings(&[
             "run.toml",

@@ -1,6 +1,6 @@
 //! Exhaustive coverage of the TOML surface, and of the defaults behind it.
 //!
-//! The 38 tests next door check what a config *rejects*. What none of them
+//! The tests next door check what a config *rejects*. What none of them
 //! checks is that a field written in a document actually reaches [`RunConfig`]:
 //! `build` copies the two shapes field by field, by hand, and a line missing
 //! there is silent - the run trains with the default and the file that asked
@@ -12,7 +12,7 @@
 //!
 //! - **Coverage is a compile error, not a claim.** [`exhaustive_document`]
 //!   builds every `*Toml` value as a struct literal with no
-//!   `..Default::default()` tail. A field added to any of the fifteen types
+//!   `..Default::default()` tail. A field added to any of these types
 //!   stops this file compiling, which is what keeps the word "exhaustive"
 //!   true after the fact.
 //! - **Every key survives the trip.** [`KEYS`] freezes the flattened key set a
@@ -23,7 +23,7 @@
 //!
 //! `[agent]` is deliberately absent: `AgentToml` is `#[serde(default)]` and
 //! carries the whole agentic stack's declarations, which are typed and tested
-//! in their own crates. The sixteen types here are the ones `build` and its
+//! in their own crates. The types here are the ones `build` and its
 //! `build_*` helpers copy by hand.
 
 use std::path::Path;
@@ -1011,7 +1011,7 @@ fn every_toml_field_reaches_the_run_config() {
     let config = build(lora_normalized(exhaustive_document()), root)
         .expect("the exhaustive document builds");
     // The two keys this normalization clears have their value coverage in
-    // `the_trainable_section_is_parsed_before_the_mode_is_refused` below.
+    // `a_partial_document_reaches_the_run_config_with_its_selector` above.
     assert_eq!(config.training.trainable.policy, TrainablePolicy::Lora);
     assert_eq!(config.training.trainable.optimizer, OptimizerKind::AdamW);
     assert_eq!(

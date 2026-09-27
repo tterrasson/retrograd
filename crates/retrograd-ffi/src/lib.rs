@@ -1955,30 +1955,22 @@ mod contract_tests {
 
     #[test]
     fn gpu_runtime_probe_never_reports_success_without_a_registered_gpu() {
-        let registered = unsafe {
+        let has_gpu = unsafe {
             let mut needed = 0;
-            retro_backend_list(ptr::null_mut(), 0, &mut needed) == 0 && needed > 0
-        };
-        let has_gpu = if registered {
-            unsafe {
-                let mut needed = 0;
-                if retro_backend_list(ptr::null_mut(), 0, &mut needed) != 0 {
-                    false
-                } else {
-                    let mut buffer = vec![0_u8; needed + 1];
-                    let mut reported = 0;
-                    retro_backend_list(buffer.as_mut_ptr().cast(), buffer.len(), &mut reported) == 0
-                        && CStr::from_bytes_with_nul(&buffer)
-                            .map(|list| {
-                                list.to_string_lossy()
-                                    .lines()
-                                    .any(|line| line.starts_with("gpu\t"))
-                            })
-                            .unwrap_or(false)
-                }
+            if retro_backend_list(ptr::null_mut(), 0, &mut needed) != 0 || needed == 0 {
+                false
+            } else {
+                let mut buffer = vec![0_u8; needed + 1];
+                let mut reported = 0;
+                retro_backend_list(buffer.as_mut_ptr().cast(), buffer.len(), &mut reported) == 0
+                    && CStr::from_bytes_with_nul(&buffer)
+                        .map(|list| {
+                            list.to_string_lossy()
+                                .lines()
+                                .any(|line| line.starts_with("gpu\t"))
+                        })
+                        .unwrap_or(false)
             }
-        } else {
-            false
         };
         let probe = unsafe { retro_gpu_runtime_probe() };
         if !has_gpu {
