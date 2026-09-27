@@ -169,12 +169,13 @@ timed_step run:graph bash -c '
   #
   # axum itself is no longer unique to it: `retrograd serve` (the `serve`
   # feature, on by default) carries the OpenAI contract over axum. So axum and
-  # what comes with it are held out of the build that turns `serve` off, and
-  # the server's own crates out of every build.
+  # what comes with it -- `serde_path_to_error` included, through the `json` feature
+  # of axum -- are held out of the build that turns `serve` off, and the
+  # crates of the server out of every build.
   for spec in "--no-default-features" "" "--features mcp" "--features container" "--all-features"; do
     # shellcheck disable=SC2086
     server_tree="$(cargo tree -e no-dev -p retrograd $spec --prefix none | awk "{print \$1}")"
-    for forbidden in retrograd-server utoipa utoipa-gen serde_path_to_error; do
+    for forbidden in retrograd-server utoipa utoipa-gen; do
       if grep -qx "$forbidden" <<<"$server_tree"; then
         echo "$forbidden reached the retrograd binary with features: ${spec:-default}" >&2
         exit 1
@@ -182,7 +183,7 @@ timed_step run:graph bash -c '
     done
   done
   serveless_tree="$(cargo tree -e no-dev -p retrograd --no-default-features --features agent,cli --prefix none | awk "{print \$1}")"
-  for forbidden in retrograd-openai axum axum-core matchit async-stream; do
+  for forbidden in retrograd-openai axum axum-core matchit async-stream serde_path_to_error; do
     if grep -qx "$forbidden" <<<"$serveless_tree"; then
       echo "$forbidden reached the retrograd binary without the serve feature" >&2
       exit 1
