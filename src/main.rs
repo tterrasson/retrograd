@@ -83,8 +83,8 @@ Commands:
   scenarios generate <config.toml> [--force] [--dry-run]
   collect <config.toml> --out traces.jsonl [--k N] [--keep N] [--min-reward R]
           [--require-verified|--allow-unverified] [--raw] [--limit N] [--seed N]
-          [--model base.gguf] [--device auto|cpu|gpu] [--report report.json]
-          [--force]
+          [--model base.gguf | --api] [--device auto|cpu|gpu]
+          [--report report.json] [--force]
   preflight --model base.gguf [--device auto|cpu|gpu] [--targets a,b] [--strict]
 
 Compatibility aliases:

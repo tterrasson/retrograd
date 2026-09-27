@@ -371,6 +371,19 @@ For `container` and `local`. See [Tools and toolsets](../training/tools).
 | `[[...tools.tool]]` | none | Inline tool definitions: `id`, `version`, `name`, `description`, `input_schema`, and `builtin` or `exec`. |
 | `[...tools.toolset.NAME]` | none | Inline toolsets: `include`, `tools` (`id` or `id@version`), `deny`. |
 
+### `[agent.collect_api]`
+
+The OpenAI-compatible endpoint `retrograd collect --api` generates traces
+with. A training run ignores it.
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `base_url` | required | Endpoint, e.g. `https://api.openai.com/v1`. |
+| `model` | required | Model name sent with each request. |
+| `api_key_env` | required | Environment variable holding the key; the key itself never goes in the file. |
+| `timeout_secs` | `120` | Timeout per request. |
+| `temperature` | provider's | Sampling temperature. |
+
 ### `[agent.scenario_generation]`
 
 Used by `retrograd scenarios generate`. `model`, `base_url` and `api_key_env`

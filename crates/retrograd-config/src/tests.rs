@@ -277,6 +277,37 @@ fn the_model_override_outranks_a_written_model_section() {
 }
 
 #[test]
+fn the_collection_endpoint_is_read_and_its_required_keys_are_checked() {
+    let base = concat!(
+        "[run]\nalgorithm='agent_grpo'\n[model]\npath='model.gguf'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
+        "[agent]\nscenarios='s.jsonl'\n",
+        "[agent.environment]\ntype='http'\nbase_url='http://127.0.0.1:1'\n",
+    );
+    let file = write_config(&format!(
+        "{base}[agent.collect_api]\nbase_url='https://api.example/v1'\nmodel='teacher'\n\
+         api_key_env='TEACHER_KEY'\ntemperature=0.7\n"
+    ));
+    let config = load(&file).expect("a document with a collection endpoint");
+    remove_config(&file);
+    let Algorithm::AgentGrpo(agent) = &config.algorithm else {
+        panic!("expected an agentic algorithm");
+    };
+    let api = agent.collect_api.as_ref().expect("the endpoint is kept");
+    assert_eq!(api.model, "teacher");
+    assert_eq!(api.api_key_env, "TEACHER_KEY");
+    assert_eq!(api.timeout_secs, 120);
+    assert_eq!(api.temperature, Some(0.7));
+
+    let file = write_config(&format!(
+        "{base}[agent.collect_api]\nbase_url='https://api.example/v1'\nmodel='teacher'\n"
+    ));
+    let error = load(&file).unwrap_err().to_string();
+    remove_config(&file);
+    assert!(error.contains("api_key_env"), "{error}");
+}
+
+#[test]
 fn sft_template_variables_reach_the_run_as_a_json_object() {
     let file = write_config(
         "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\ntemplate_variables={ enable_thinking = false }\n",

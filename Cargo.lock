@@ -1532,6 +1532,7 @@ dependencies = [
  "retrograd-engine",
  "retrograd-env",
  "retrograd-judge",
+ "retrograd-llm-client",
  "retrograd-metrics",
  "retrograd-observe",
  "retrograd-tools",

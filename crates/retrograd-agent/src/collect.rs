@@ -19,7 +19,7 @@ use crate::export::{AssistantForm, to_chat_example};
 use crate::grpo::score_group;
 use crate::judge::{JudgeFailurePolicy, RewardBackend, apply_group_scores};
 use crate::rollout::{RolloutEngine, RolloutFailures};
-use crate::trajectory::{Role, Trajectory, TrajectoryGroup};
+use crate::trajectory::{Trajectory, TrajectoryGroup};
 use crate::{Error, Result, interrupt};
 use retrograd_agent_core::scenario::Scenario;
 
@@ -140,75 +140,160 @@ pub async fn collect_trajectories(
             stats.interrupted = true;
             break;
         }
-        let base_seed = config
-            .seed
-            .wrapping_add((index as u64).wrapping_mul(config.k as u64));
         let (attempted, scored) = rollout_and_score(
             engine,
             reward.clone(),
             scenario,
             config,
-            base_seed,
+            base_seed(config, index),
             &mut stats,
         )
         .await?;
-        stats.attempted += attempted;
-
-        let mut eligible = Vec::new();
-        for trajectory in scored {
-            match rejection(&trajectory, config) {
-                Some(cause) => *cause(&mut stats.rejected) += 1,
-                None => eligible.push(trajectory),
-            }
-        }
-        let passed = eligible.len();
-        let pass_rate = match attempted {
-            0 => 0.0,
-            attempted => passed as f32 / attempted as f32,
-        };
-        // Best first; at equal reward the shorter trace, which says the same
-        // thing in fewer tokens; then the member, so the order is total.
-        eligible.sort_by(|a, b| {
-            b.total_reward()
-                .total_cmp(&a.total_reward())
-                .then(a.tokens.len().cmp(&b.tokens.len()))
-                .then(member(a).cmp(&member(b)))
-        });
-        let mut seen = HashSet::new();
-        let mut kept = 0;
-        for trajectory in eligible {
-            if !seen.insert(fingerprint(&trajectory)) {
-                stats.rejected.duplicate += 1;
-                continue;
-            }
-            if kept == config.keep {
-                stats.rejected.over_keep += 1;
-                continue;
-            }
-            let mut example = match to_chat_example(&trajectory, scenario, config.form) {
-                Ok(example) => example,
-                Err(error) => {
-                    tracing::warn!(scenario = %scenario.id, "a kept trace did not export: {error}");
-                    stats.rejected.unexportable += 1;
-                    continue;
-                }
-            };
-            example.metadata = record_metadata(&trajectory, config, pass_rate);
-            sink.record(example)?;
-            kept += 1;
-        }
-        stats.kept += kept;
-        let report = ScenarioReport {
-            id: scenario.id.clone(),
+        let candidates = scored
+            .iter()
+            .map(|trajectory| Candidate::from_trajectory(trajectory, scenario, config.form))
+            .collect();
+        keep_best(
+            scenario,
+            (index, scenarios.len()),
             attempted,
-            passed,
-            kept,
-            pass_rate,
-        };
-        sink.scenario_finished(&report, index, scenarios.len());
-        stats.scenarios.push(report);
+            candidates,
+            config,
+            &mut stats,
+            sink,
+        )?;
     }
     Ok(stats)
+}
+
+/// Scenario `index`'s attempts start from `seed + index * k`, each member one
+/// further: reproducible, and no two scenarios share a seed.
+pub(crate) fn base_seed(config: &CollectConfig, index: usize) -> u64 {
+    config
+        .seed
+        .wrapping_add((index as u64).wrapping_mul(config.k as u64))
+}
+
+/// One graded attempt, whichever generator produced it.
+pub(crate) struct Candidate {
+    pub(crate) reward: f32,
+    /// What "shorter" means between two traces of the same reward: tokens for
+    /// a rollout, characters for a trace that has no tokens.
+    pub(crate) length: usize,
+    pub(crate) member: usize,
+    pub(crate) seed: u64,
+    pub(crate) invalid_turns: usize,
+    /// The environment's verdict, when it verified the attempt at all.
+    pub(crate) verification: Option<String>,
+    /// The attempt as a record, or why it could not be written as one.
+    pub(crate) record: Result<ChatExample>,
+}
+
+impl Candidate {
+    fn from_trajectory(trajectory: &Trajectory, scenario: &Scenario, form: AssistantForm) -> Self {
+        let provenance = trajectory.provenance.as_ref();
+        Self {
+            reward: trajectory.total_reward(),
+            length: trajectory.tokens.len(),
+            member: provenance.map_or(usize::MAX, |provenance| provenance.member),
+            seed: provenance.map_or(0, |provenance| provenance.seed),
+            invalid_turns: provenance.map_or(0, |provenance| provenance.invalid_turns),
+            verification: verification(&trajectory.metadata).map(str::to_owned),
+            record: to_chat_example(trajectory, scenario, form),
+        }
+    }
+}
+
+/// Filters one scenario's graded attempts, keeps the best distinct ones up to
+/// the cap, and writes them. `position` is the scenario's index and the total,
+/// for the progress report.
+pub(crate) fn keep_best(
+    scenario: &Scenario,
+    position: (usize, usize),
+    attempted: usize,
+    candidates: Vec<Candidate>,
+    config: &CollectConfig,
+    stats: &mut CollectStats,
+    sink: &mut dyn CollectSink,
+) -> Result<()> {
+    stats.attempted += attempted;
+    let mut eligible = Vec::new();
+    for candidate in candidates {
+        match rejection(&candidate, config) {
+            Some(cause) => *cause(&mut stats.rejected) += 1,
+            None => eligible.push(candidate),
+        }
+    }
+    let passed = eligible.len();
+    let pass_rate = match attempted {
+        0 => 0.0,
+        attempted => passed as f32 / attempted as f32,
+    };
+    // Best first; at equal reward the shorter trace, which says the same thing
+    // in fewer tokens; then the member, so the order is total.
+    eligible.sort_by(|a, b| {
+        b.reward
+            .total_cmp(&a.reward)
+            .then(a.length.cmp(&b.length))
+            .then(a.member.cmp(&b.member))
+    });
+    let mut seen = HashSet::new();
+    let mut kept = 0;
+    for candidate in eligible {
+        let Candidate {
+            reward,
+            member,
+            seed,
+            verification,
+            record,
+            ..
+        } = candidate;
+        let mut example = match record {
+            Ok(example) => example,
+            Err(error) => {
+                tracing::warn!(scenario = %scenario.id, "a passing trace did not export: {error}");
+                stats.rejected.unexportable += 1;
+                continue;
+            }
+        };
+        if !seen.insert(fingerprint(&example)) {
+            stats.rejected.duplicate += 1;
+            continue;
+        }
+        if kept == config.keep {
+            stats.rejected.over_keep += 1;
+            continue;
+        }
+        let turns = example
+            .messages
+            .iter()
+            .filter(|message| message.role == "assistant")
+            .count();
+        example.metadata = serde_json::Map::from_iter([
+            ("scenario_id".into(), json!(scenario.id)),
+            ("seed".into(), json!(seed)),
+            ("member".into(), json!(member)),
+            ("reward".into(), json!(reward)),
+            ("verification".into(), json!(verification)),
+            ("turns".into(), json!(turns)),
+            ("generator".into(), json!(config.generator)),
+            ("form".into(), json!(config.form.as_str())),
+            ("pass_rate".into(), json!(pass_rate)),
+        ]);
+        sink.record(example)?;
+        kept += 1;
+    }
+    stats.kept += kept;
+    let report = ScenarioReport {
+        id: scenario.id.clone(),
+        attempted,
+        passed,
+        kept,
+        pass_rate,
+    };
+    sink.scenario_finished(&report, position.0, position.1);
+    stats.scenarios.push(report);
+    Ok(())
 }
 
 /// Refused before the first rollout: a collection that could keep nothing is
@@ -311,93 +396,47 @@ async fn rollout_and_score(
 
 type Cause = fn(&mut Rejections) -> &mut usize;
 
-/// The first filter a graded trace fails, as the counter it lands on.
-fn rejection(trajectory: &Trajectory, config: &CollectConfig) -> Option<Cause> {
-    if trajectory
-        .provenance
-        .as_ref()
-        .is_some_and(|provenance| provenance.invalid_turns > 0)
-    {
+/// The first filter a graded attempt fails, as the counter it lands on.
+fn rejection(candidate: &Candidate, config: &CollectConfig) -> Option<Cause> {
+    if candidate.invalid_turns > 0 {
         return Some(|rejected| &mut rejected.invalid_turns);
     }
     if config
         .min_reward
-        .is_some_and(|minimum| trajectory.total_reward() < minimum)
+        .is_some_and(|minimum| candidate.reward < minimum)
     {
         return Some(|rejected| &mut rejected.below_min_reward);
     }
-    if config.require_verified && verification(trajectory) != Some("passed") {
+    if config.require_verified && candidate.verification.as_deref() != Some("passed") {
         return Some(|rejected| &mut rejected.unverified);
     }
     None
 }
 
-/// The verdict the environment reported, if it verified this trace at all.
-fn verification(trajectory: &Trajectory) -> Option<&str> {
-    trajectory
-        .metadata
+/// The verdict an environment reported in its state, under
+/// `env_state.metadata.verification`.
+pub(crate) fn verification(metadata: &serde_json::Map<String, Value>) -> Option<&str> {
+    metadata
         .get("env_state")?
         .get("metadata")?
         .get("verification")?
         .as_str()
 }
 
-fn member(trajectory: &Trajectory) -> usize {
-    trajectory
-        .provenance
-        .as_ref()
-        .map_or(usize::MAX, |provenance| provenance.member)
-}
-
-/// What makes two traces the same trace: their assistant turns - text and
-/// calls - and the observations between them. Canonical JSON, so the same
-/// arguments in another key order are the same call.
-fn fingerprint(trajectory: &Trajectory) -> [u8; 32] {
-    let turns = trajectory
+/// What makes two traces the same trace: the assistant turns - text and calls -
+/// and the observations of the record they are written as. Canonical JSON, so
+/// the same arguments in another key order are the same call.
+fn fingerprint(example: &ChatExample) -> [u8; 32] {
+    let turns = example
         .messages
         .iter()
-        .filter(|message| matches!(message.role, Role::Assistant | Role::Tool))
-        .map(|message| {
-            json!({
-                "role": message.role.as_str(),
-                "content": message.content,
-                "tool_calls": message.tool_calls,
-                "is_error": message.is_error,
-            })
-        })
+        .filter(|message| matches!(message.role.as_str(), "assistant" | "tool"))
+        .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
         .collect::<Vec<_>>();
     Sha256::digest(Value::Array(turns).to_string().as_bytes()).into()
 }
 
-fn record_metadata(
-    trajectory: &Trajectory,
-    config: &CollectConfig,
-    pass_rate: f32,
-) -> serde_json::Map<String, Value> {
-    let provenance = trajectory.provenance.as_ref();
-    let turns = trajectory
-        .messages
-        .iter()
-        .filter(|message| message.role == Role::Assistant)
-        .count();
-    serde_json::Map::from_iter([
-        ("scenario_id".into(), json!(trajectory.scenario_id)),
-        (
-            "seed".into(),
-            json!(provenance.map(|provenance| provenance.seed)),
-        ),
-        (
-            "member".into(),
-            json!(provenance.map(|provenance| provenance.member)),
-        ),
-        ("reward".into(), json!(trajectory.total_reward())),
-        ("verification".into(), json!(verification(trajectory))),
-        ("turns".into(), json!(turns)),
-        ("generator".into(), json!(config.generator)),
-        ("form".into(), json!(config.form.as_str())),
-        ("pass_rate".into(), json!(pass_rate)),
-    ])
-}
+pub mod api;
 
 #[cfg(test)]
 mod tests;

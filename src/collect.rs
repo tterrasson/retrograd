@@ -28,6 +28,7 @@ pub(crate) const FLAGS: &[&str] = &[
     "--device",
     "--report",
     "--force",
+    "--api",
 ];
 
 #[derive(Debug)]
@@ -67,6 +68,7 @@ fn parse(args: &[String]) -> Result<Args> {
             "--device" => parsed.device = Some(line.value(argument)?.parse()?),
             "--report" => options.report = Some(PathBuf::from(line.value(argument)?)),
             "--force" => options.force = true,
+            "--api" => options.api = true,
             other if other.starts_with("--") && !FLAGS.contains(&other) => {
                 return Err(line.unknown(other));
             }
@@ -89,6 +91,12 @@ fn parse(args: &[String]) -> Result<Args> {
     if parsed.options.k == Some(0) || parsed.options.keep == 0 {
         return Err(Error::invalid("--k and --keep must be at least 1"));
     }
+    if parsed.options.api && (parsed.model.is_some() || parsed.options.raw) {
+        return Err(Error::invalid(
+            "--api generates with [agent.collect_api]: it takes neither --model, which names a \
+             local generator, nor --raw, since the calls come back already parsed",
+        ));
+    }
     Ok(parsed)
 }
 
@@ -104,7 +112,9 @@ pub(crate) fn collect(args: Vec<String>) -> Result<()> {
     let ui = CliUi::new();
     ui.section("collect");
     ui.info(format!("config: {}", args.config.display()));
-    ui.info(format!("generator: {}", run_config.model.display()));
+    if !args.options.api {
+        ui.info(format!("generator: {}", run_config.model.display()));
+    }
     if args.options.raw && args.model.is_some() {
         // A raw turn is the generator's own markup; a student of another family
         // cannot read it back, and preparing the dataset will say so.
@@ -264,7 +274,11 @@ mod tests {
             options.require_verified, None,
             "implicit on verified scenarios"
         );
-        assert!(!options.raw && !options.force);
+        assert!(!options.raw && !options.force && !options.api);
+        let options = parse(&strings(&["run.toml", "--out", "traces.jsonl", "--api"]))
+            .unwrap()
+            .options;
+        assert!(options.api);
     }
 
     #[test]
@@ -279,6 +293,14 @@ mod tests {
             (
                 &["run.toml", "--out", "x.jsonl", "--bogus"][..],
                 "unknown collect flag",
+            ),
+            (
+                &["run.toml", "--out", "x.jsonl", "--api", "--raw"][..],
+                "--api generates",
+            ),
+            (
+                &["run.toml", "--out", "x.jsonl", "--api", "--model", "m.gguf"][..],
+                "--api generates",
             ),
         ] {
             let message = parse(&strings(args)).unwrap_err().to_string();

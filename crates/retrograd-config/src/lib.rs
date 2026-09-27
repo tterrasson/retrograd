@@ -32,7 +32,7 @@ use std::path::PathBuf;
 
 use retrograd_core::{Error, LoraConfig, Result, TargetSet, TrainConfig};
 
-pub use agent::{AgentRunConfig, AgentToml, ScenarioGenerationConfig};
+pub use agent::{AgentRunConfig, AgentToml, CollectApiConfig, ScenarioGenerationConfig};
 pub use build::{build, build_with, load, load_with, parse_toml};
 pub use distill::{
     DEFAULT_DISTILL_CLIP_RANGE_HIGH, DEFAULT_DISTILL_CLIP_RANGE_LOW, DEFAULT_DISTILL_EPOCHS,

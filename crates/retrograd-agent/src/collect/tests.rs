@@ -15,7 +15,7 @@ use crate::env::{EnvState, Environment, EnvironmentFactory, StepOutcome};
 use crate::judge::Score;
 use crate::policy::{Policy, PolicyGeneration};
 use crate::tools::{HermesToolCallParser, ToolCall, ToolResult, ToolSpec};
-use crate::trajectory::Message;
+use crate::trajectory::{Message, Role};
 use retrograd_agent_core::scenario::RolloutLimits;
 
 const CALL: i32 = 500;
@@ -107,7 +107,7 @@ fn generation(prompt: &[i32]) -> PolicyGeneration {
 
 /// What one member of a group does and earns, chosen by its seed.
 #[derive(Clone)]
-struct Plan {
+pub(super) struct Plan {
     mode: &'static str,
     /// The environment's reward for a call; `None` leaves grading to a judge.
     reward: Option<f32>,
@@ -115,7 +115,7 @@ struct Plan {
     verified: bool,
 }
 
-fn plan(mode: &'static str, reward: Option<f32>, observation: &'static str) -> Plan {
+pub(super) fn plan(mode: &'static str, reward: Option<f32>, observation: &'static str) -> Plan {
     Plan {
         mode,
         reward,
@@ -125,9 +125,9 @@ fn plan(mode: &'static str, reward: Option<f32>, observation: &'static str) -> P
 }
 
 #[derive(Default)]
-struct ScriptedFactory {
-    plans: Vec<Plan>,
-    created: AtomicUsize,
+pub(super) struct ScriptedFactory {
+    pub(super) plans: Vec<Plan>,
+    pub(super) created: AtomicUsize,
 }
 
 struct ScriptedEnvironment {
@@ -213,7 +213,7 @@ impl RewardBackend for ListJudge {
     }
 }
 
-fn scenario() -> Scenario {
+pub(super) fn scenario() -> Scenario {
     Scenario {
         id: "task".into(),
         system: Some("be useful".into()),
@@ -222,7 +222,7 @@ fn scenario() -> Scenario {
     }
 }
 
-fn config(k: usize, keep: usize) -> CollectConfig {
+pub(super) fn config(k: usize, keep: usize) -> CollectConfig {
     CollectConfig {
         k,
         keep,

@@ -239,7 +239,10 @@ Only traces that finish cleanly are kept - no truncation, no malformed call,
 verified when the scenarios have a `verify` command - and at most `--keep` per
 scenario, so the easy scenarios do not make up the whole dataset. `pass.json`
 lists each scenario's pass rate; the ones no attempt solved are candidates for
-a larger generator (`--model teacher.gguf`).
+a larger generator: `--model teacher.gguf`, or a hosted model with `--api` and
+an [`[agent.collect_api]`](../reference/configuration#agent-collect-api)
+section. A hosted model is graded by the environment only, since a judge ranks
+trajectories it cannot produce.
 
 ## Tooling
 

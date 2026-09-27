@@ -39,6 +39,9 @@ pub struct AgentRunConfig {
     /// Extra variables handed to the model's chat template on every render.
     pub template_variables: serde_json::Map<String, serde_json::Value>,
     pub scenario_generation: Option<ScenarioGenerationConfig>,
+    /// The remote model `retrograd collect --api` generates trajectories with.
+    /// Read by that command alone; a training run ignores it.
+    pub collect_api: Option<CollectApiConfig>,
     /// `max_trajectory_tokens` as written, before it is clamped to the model's
     /// context. The clamp needs a loaded model, so it happens in the runner and
     /// `config.limits.max_trajectory_tokens` holds the requested value until
@@ -81,6 +84,61 @@ impl Default for ScenarioGenerationConfig {
             max_catalog_bytes: 256 * 1024,
             shuffle: true,
         }
+    }
+}
+
+/// An OpenAI-compatible endpoint that stands in for the policy while a
+/// collection runs: the teacher a warm-start dataset is distilled from when no
+/// local model is strong enough. The key is read from `api_key_env`, never
+/// from the document.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CollectApiConfig {
+    pub base_url: String,
+    pub model: String,
+    pub api_key_env: String,
+    pub timeout_secs: u64,
+    /// Sent when set; the provider's default otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+}
+
+impl Default for CollectApiConfig {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            model: String::new(),
+            api_key_env: String::new(),
+            timeout_secs: 120,
+            temperature: None,
+        }
+    }
+}
+
+impl CollectApiConfig {
+    pub fn validate(&self) -> Result<()> {
+        if self.model.trim().is_empty()
+            || self.base_url.trim().is_empty()
+            || self.api_key_env.trim().is_empty()
+        {
+            return Err(Error::config(
+                "agent.collect_api model, base_url and api_key_env are required",
+            ));
+        }
+        if self.timeout_secs == 0 {
+            return Err(Error::config(
+                "agent.collect_api.timeout_secs must be positive",
+            ));
+        }
+        if self
+            .temperature
+            .is_some_and(|temperature| !(temperature >= 0.0 && temperature.is_finite()))
+        {
+            return Err(Error::config(
+                "agent.collect_api.temperature must be finite and non-negative",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -159,6 +217,9 @@ pub struct AgentToml {
     pub mcp_config: Vec<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scenario_generation: Option<ScenarioGenerationConfig>,
+    /// The endpoint `retrograd collect --api` generates with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collect_api: Option<CollectApiConfig>,
     /// One stateful environment per trajectory - HTTP, container or (explicitly)
     /// the host.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -220,6 +281,7 @@ impl Default for AgentToml {
             mcp_servers: vec![],
             mcp_config: vec![],
             scenario_generation: None,
+            collect_api: None,
             environment: None,
             updates: defaults.updates,
             scenarios_per_update: defaults.scenarios_per_update,
@@ -287,6 +349,9 @@ pub(crate) fn build_agent(
     }
     if let Some(generation) = &value.scenario_generation {
         generation.validate()?;
+    }
+    if let Some(api) = &value.collect_api {
+        api.validate()?;
     }
     if let Some(generation) = &mut value.scenario_generation {
         generation.seed.get_or_insert(value.seed);
@@ -377,6 +442,7 @@ pub(crate) fn build_agent(
         system_suffix: value.system_suffix,
         template_variables: value.template_variables,
         scenario_generation: value.scenario_generation,
+        collect_api: value.collect_api,
         explicit_trajectory_limit,
     })
 }
