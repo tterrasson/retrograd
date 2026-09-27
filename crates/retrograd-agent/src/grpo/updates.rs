@@ -88,7 +88,54 @@ async fn collect_and_start_judge(
         .flat_map(|group| group.trajectories.iter())
         .filter(|trajectory| trajectory.truncated)
         .count();
-    let mut groups = outcome.group.into_iter().collect::<Vec<_>>();
+    let GroupScoring {
+        withheld,
+        judged,
+        environment_scored,
+        judge_window,
+    } = score_group(outcome.group, reward, update_started).await?;
+
+    Ok(CollectedGroup {
+        attempted: outcome.attempted,
+        failures: outcome.failures,
+        last_error: outcome.last_error,
+        metrics,
+        first_assistant_text,
+        truncated,
+        withheld,
+        judged,
+        environment_scored,
+        rollout_done_at,
+        judge_window,
+        group_id,
+        drafts,
+    })
+}
+
+/// One collected group, graded the way an update grades it.
+pub(crate) struct GroupScoring {
+    /// The truncated members, taken out before grading; see
+    /// [`withhold_truncated_members`].
+    pub(crate) withheld: Vec<(u64, Vec<Trajectory>)>,
+    /// A group sent to the judge, with its verdict - or with the refusal a run
+    /// that has no judge answers with.
+    pub(crate) judged: Option<(TrajectoryGroup, Result<Vec<Score>>)>,
+    /// A group its environment graded, which the judge never sees.
+    pub(crate) environment_scored: Option<TrajectoryGroup>,
+    /// When the judge ran, in seconds since the clock the caller passed.
+    pub(crate) judge_window: Option<(f32, f32)>,
+}
+
+/// Grades one group: truncated members withheld, a group its environment
+/// graded kept out of the judge's hands, the rest sent to the judge. Shared by
+/// the update loop and by trajectory collection, so a trajectory is never
+/// graded one way to be trained on and another way to be exported.
+pub(crate) async fn score_group(
+    group: Option<TrajectoryGroup>,
+    reward: Option<Arc<dyn RewardBackend>>,
+    clock: Instant,
+) -> Result<GroupScoring> {
+    let mut groups = group.into_iter().collect::<Vec<_>>();
     let withheld = withhold_truncated_members(&mut groups);
     let (mut judged, mut environment_scored) = split_environment_scored(groups);
     let environment_scored = environment_scored.pop();
@@ -111,7 +158,7 @@ async fn collect_and_start_judge(
         ),
         Some(group) => {
             let reward = reward.expect("the None case is matched above");
-            let judge_started = update_started.elapsed().as_secs_f32();
+            let judge_started = clock.elapsed().as_secs_f32();
             // The trainer stays on its LocalSet; judge I/O is Send and runs on
             // the runtime worker pool, so a synchronous CUDA decode cannot
             // prevent an already-started HTTP request from progressing.
@@ -122,26 +169,16 @@ async fn collect_and_start_judge(
             let judged = task
                 .await
                 .map_err(|error| Error::Reward(format!("judge task failed: {error}")))?;
-            let judge_finished = update_started.elapsed().as_secs_f32();
+            let judge_finished = clock.elapsed().as_secs_f32();
             (Some(judged), Some((judge_started, judge_finished)))
         }
         None => (None, None),
     };
-
-    Ok(CollectedGroup {
-        attempted: outcome.attempted,
-        failures: outcome.failures,
-        last_error: outcome.last_error,
-        metrics,
-        first_assistant_text,
-        truncated,
+    Ok(GroupScoring {
         withheld,
         judged,
         environment_scored,
-        rollout_done_at,
         judge_window,
-        group_id,
-        drafts,
     })
 }
 

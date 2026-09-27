@@ -9,6 +9,7 @@
 //! containers and judges build on without ever pulling in the FFI bridge.
 
 pub mod chat;
+pub mod export;
 mod grpo;
 pub mod policy;
 pub mod rollout;
@@ -28,6 +29,7 @@ pub use env::{
     ToolProviderEnvironment, ToolProviderFactory,
 };
 pub use env::{HttpEnvironmentConfig, HttpEnvironmentFactory};
+pub use export::{AssistantForm, to_chat_example};
 pub use grpo::{
     AgentEvalMetrics, AgentFlow, AgentRunOutcome, AgenticGrpoServices, AgenticRun, UpdateBoundary,
     UpdateHook, run_agentic_grpo,

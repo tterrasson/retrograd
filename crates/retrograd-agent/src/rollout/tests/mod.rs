@@ -11,6 +11,7 @@ mod environments;
 mod failures;
 mod lockstep;
 mod render;
+mod sft_parity;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
