@@ -136,6 +136,12 @@ pub enum ToolRenderError {
     },
     #[error("assistant turn {turn} gives its tool calls twice, in content and in tool_calls")]
     CallsGivenTwice { turn: usize },
+    /// The rollout refuses the same template, on the same check.
+    #[error(
+        "the chat template rewrites the framing before assistant turn {turn} once the \
+         conversation continues past it, so it cannot be used for multi-turn rollouts"
+    )]
+    RewrittenFraming { turn: usize },
 }
 
 impl From<ToolRenderError> for Error {
@@ -317,12 +323,26 @@ impl<'b, B: DatasetBackend + ?Sized> ToolConversationRenderer<'b, B> {
             inject_tool_instructions(&mut messages, instructions);
         }
 
-        let (json, sentinels) = template_messages(&messages).map_err(ToolRenderError::from)?;
         let tools_json = rendering.tools_json.as_deref();
+        // Positions among the messages the template is handed, which the
+        // prompt catalog may have opened with a system turn of its own.
+        let turn_positions = messages
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| message.role == "assistant")
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let pieces = self.framing(&messages, &turn_positions, tools_json)?;
+        // The whole conversation, every turn a sentinel: what a structured turn
+        // is cut out of, and where the last turn's closer is read.
+        let (json, sentinels) = template_messages(&messages).map_err(ToolRenderError::from)?;
         let rendered = self
             .backend
             .format_chat_messages(&json, tools_json, false)?;
-        let pieces = split_assistant_spans(&rendered, &sentinels).map_err(ToolRenderError::from)?;
+        let closing = split_assistant_spans(&rendered, &sentinels)
+            .map_err(ToolRenderError::from)?
+            .pop()
+            .expect("a split yields one piece more than there are turns");
 
         let mut turns = Vec::with_capacity(assistants.len());
         for (turn, &index) in assistants.iter().enumerate() {
@@ -371,7 +391,9 @@ impl<'b, B: DatasetBackend + ?Sized> ToolConversationRenderer<'b, B> {
             // the one the policy sampled and is trained; otherwise the policy
             // still had to stop, on the model's own end of sequence, and the
             // template's closer is framing.
-            let next = self.backend.tokenize_fragment(&pieces[turn + 1])?;
+            let next = self
+                .backend
+                .tokenize_fragment(pieces.get(turn + 1).unwrap_or(&closing))?;
             let framing = match next.first() {
                 Some(&closer) if self.backend.is_eog_token(closer)? => {
                     tokens.push(closer);
@@ -391,6 +413,39 @@ impl<'b, B: DatasetBackend + ?Sized> ToolConversationRenderer<'b, B> {
             }
         }
         Ok(ToolStream { tokens, train_mask })
+    }
+
+    /// The framing before each assistant turn, rendered the way a rollout
+    /// renders it: the conversation up to that turn, with the generation prompt,
+    /// every earlier turn a sentinel. Returns one piece per assistant turn.
+    ///
+    /// Rendering the finished conversation once would not do. A template is
+    /// free to write a turn it is handed differently from the prompt it opens a
+    /// generation with - Qwen3 puts an empty `<think>` block before the last
+    /// assistant turn of a conversation, and no generation prompt writes one -
+    /// and the rollout only ever sees the second. It also refuses, on each
+    /// render, a template that rewrites a piece already committed, which a
+    /// rollout could not use either.
+    fn framing(
+        &self,
+        messages: &[TemplateMessage<'_>],
+        assistants: &[usize],
+        tools_json: Option<&str>,
+    ) -> Result<Vec<String>> {
+        let mut committed: Vec<String> = Vec::with_capacity(assistants.len());
+        for (turn, &index) in assistants.iter().enumerate() {
+            let (json, sentinels) =
+                template_messages(&messages[..index]).map_err(ToolRenderError::from)?;
+            let rendered = self.backend.format_chat_messages(&json, tools_json, true)?;
+            let pieces =
+                split_assistant_spans(&rendered, &sentinels).map_err(ToolRenderError::from)?;
+            if pieces[..turn] != committed[..] {
+                let at = (0..turn).find(|&i| pieces[i] != committed[i]).unwrap_or(0);
+                return Err(ToolRenderError::RewrittenFraming { turn: at }.into());
+            }
+            committed = pieces;
+        }
+        Ok(committed)
     }
 
     /// Reads an assistant turn back with the parser its rendering pairs with,
@@ -822,6 +877,12 @@ mod tests {
         /// Whether rendering a turn with its calls leaves the rest of the text
         /// alone.
         local: bool,
+        /// Written before the last message when it is an assistant turn, the
+        /// way Qwen3 writes an empty `<think>` block there.
+        last_turn_prefix: &'static str,
+        /// Opens an assistant turn already in the conversation, where the
+        /// generation prompt writes `<assistant>`.
+        historic_opener: &'static str,
     }
 
     const BOS: i32 = 999;
@@ -835,6 +896,8 @@ mod tests {
                 native: true,
                 eog_closer: true,
                 local: true,
+                last_turn_prefix: "",
+                historic_opener: "<assistant>",
             }
         }
     }
@@ -901,13 +964,20 @@ mod tests {
             if let Some(tools) = tools_json {
                 rendered.push_str(&format!("<tools>{tools}</tools>"));
             }
-            for message in &messages {
+            for (index, message) in messages.iter().enumerate() {
                 let role = message["role"].as_str().unwrap();
                 let calls = message["tool_calls"].as_array();
                 if !self.local && calls.is_some() {
                     rendered.insert_str(0, "<calls/>");
                 }
-                rendered.push_str(&format!("<{role}>{}", message["content"].as_str().unwrap()));
+                let opener = match role {
+                    "assistant" if index + 1 == messages.len() => {
+                        format!("{}{}", self.historic_opener, self.last_turn_prefix)
+                    }
+                    "assistant" => self.historic_opener.to_owned(),
+                    role => format!("<{role}>"),
+                };
+                rendered.push_str(&format!("{opener}{}", message["content"].as_str().unwrap()));
                 for call in calls.into_iter().flatten() {
                     let function = &call["function"];
                     rendered.push_str(&format!(
@@ -1296,5 +1366,41 @@ mod tests {
             crate::measured_lengths(&backend, &path, crate::DataFormat::ChatJsonl).unwrap();
         assert_eq!(lengths[1] as usize, stream.tokens.len());
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn the_framing_is_the_generation_prompt_not_the_rendered_turn() {
+        let backend = TemplateBackend {
+            last_turn_prefix: "<think></think>",
+            ..Default::default()
+        };
+        let stream = stream(&backend, &one_call("")).unwrap();
+        let prefix = bytes("<think></think>");
+        assert!(
+            !stream
+                .tokens
+                .windows(prefix.len())
+                .any(|window| window == prefix),
+            "a rollout opens the last turn on the generation prompt, which writes no prefix"
+        );
+        assert_eq!(
+            stream,
+            self::stream(&TemplateBackend::default(), &one_call("")).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_template_that_rewrites_committed_framing_is_refused_as_a_rollout_refuses_it() {
+        let backend = TemplateBackend {
+            historic_opener: "<model>",
+            ..Default::default()
+        };
+        let error = stream(&backend, &one_call("")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("rewrites the framing before assistant turn 0"),
+            "{error}"
+        );
     }
 }
