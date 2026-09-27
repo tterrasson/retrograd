@@ -23,7 +23,8 @@ pub use retrograd_judge as judge;
 pub use retrograd_tools as tools;
 
 pub use collect::{
-    CollectConfig, CollectSink, CollectStats, Rejections, ScenarioReport, collect_trajectories,
+    CollectConfig, CollectSink, CollectStats, PairRejections, PairsConfig, Rejections,
+    ScenarioReport, collect_trajectories,
 };
 #[cfg(feature = "http-env")]
 pub use env::config::Environments;

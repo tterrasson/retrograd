@@ -1,5 +1,6 @@
 //! Rejection sampling: roll a group out per scenario, keep what succeeded, and
-//! write it as chat records a warm-start can train on.
+//! write it as chat records a warm-start can train on - or, in pairs mode, the
+//! best trace against the worst as a preference record.
 //!
 //! Nothing here is new machinery. The rollouts are the engine's, the grading is
 //! the update loop's own ([`score_group`]), and the records are
@@ -10,7 +11,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
-use retrograd_dataset::ChatExample;
+use retrograd_dataset::{ChatExample, ChatMessage, PreferenceExample};
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -47,6 +48,29 @@ pub struct CollectConfig {
     pub environment_grades: bool,
     /// Recorded on every record: which model generated it.
     pub generator: String,
+    /// Write one preference pair per scenario instead of the kept traces.
+    pub pairs: Option<PairsConfig>,
+}
+
+/// How a scenario's group becomes a pair: its best trace that passes every
+/// filter, against its worst complete one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PairsConfig {
+    /// A pair whose rewards are closer than this prefers too little to learn
+    /// from, and is not written.
+    pub min_gap: f32,
+}
+
+/// Why a scenario produced no pair, one count per cause.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct PairRejections {
+    /// No trace passed the filters, or none earned `min_gap` less than it: a
+    /// group that all failed, or all succeeded alike.
+    pub no_gap: usize,
+    /// Fewer than two graded traces to compare.
+    pub single_member: usize,
+    /// The two traces do not open on the same prompt.
+    pub prompt_mismatch: usize,
 }
 
 /// Why a trace that came back was not kept, one count per cause.
@@ -90,6 +114,8 @@ pub struct CollectStats {
     #[serde(skip)]
     pub failures: RolloutFailures,
     pub scenarios: Vec<ScenarioReport>,
+    /// Pairs mode: the scenarios that gave no pair, by cause.
+    pub pairs: PairRejections,
     /// Stopped by an interrupt before the last scenario.
     pub interrupted: bool,
 }
@@ -106,6 +132,14 @@ impl CollectStats {
 /// outcome as it finishes.
 pub trait CollectSink {
     fn record(&mut self, example: ChatExample) -> Result<()>;
+
+    /// One pair, in pairs mode.
+    fn record_pair(&mut self, pair: PreferenceExample) -> Result<()> {
+        let _ = pair;
+        Err(Error::invalid(
+            "this collection sink takes no preference pairs",
+        ))
+    }
 
     /// Scenario `index` of `total` is done.
     fn scenario_finished(&mut self, report: &ScenarioReport, index: usize, total: usize) {
@@ -216,6 +250,11 @@ pub(crate) fn keep_best(
     stats: &mut CollectStats,
     sink: &mut dyn CollectSink,
 ) -> Result<()> {
+    if let Some(pairs) = &config.pairs {
+        return keep_pair(
+            scenario, position, attempted, candidates, pairs, config, stats, sink,
+        );
+    }
     stats.attempted += attempted;
     let mut eligible = Vec::new();
     for candidate in candidates {
@@ -296,11 +335,178 @@ pub(crate) fn keep_best(
     Ok(())
 }
 
+/// Pairs mode's [`keep_best`]: the best trace that passes every filter is
+/// `chosen`, the worst of all the others is `rejected`. The worst is taken
+/// among every graded, complete trace, whatever filter it failed, as long as it
+/// can be written as a record - which a trace with a malformed call cannot: its
+/// error observation answers no call - while `chosen` meets the same bar a
+/// kept trace does.
+#[expect(clippy::too_many_arguments)]
+fn keep_pair(
+    scenario: &Scenario,
+    position: (usize, usize),
+    attempted: usize,
+    candidates: Vec<Candidate>,
+    pairs: &PairsConfig,
+    config: &CollectConfig,
+    stats: &mut CollectStats,
+    sink: &mut dyn CollectSink,
+) -> Result<()> {
+    stats.attempted += attempted;
+    let mut passing = Vec::with_capacity(candidates.len());
+    for (index, candidate) in candidates.iter().enumerate() {
+        match rejection(candidate, config) {
+            Some(cause) => *cause(&mut stats.rejected) += 1,
+            None => passing.push(index),
+        }
+    }
+    let passed = passing.len();
+    let pass_rate = match attempted {
+        0 => 0.0,
+        attempted => passed as f32 / attempted as f32,
+    };
+    // Best first, as `keep_best` orders them; the worst is the reverse, the
+    // longer of two equal failures first.
+    let chosen = passing.iter().copied().min_by(|&a, &b| {
+        let (a, b) = (&candidates[a], &candidates[b]);
+        b.reward
+            .total_cmp(&a.reward)
+            .then(a.length.cmp(&b.length))
+            .then(a.member.cmp(&b.member))
+    });
+    let rejected = |chosen: usize| {
+        (0..candidates.len())
+            .filter(|&index| index != chosen && candidates[index].record.is_ok())
+            .min_by(|&a, &b| {
+                let (a, b) = (&candidates[a], &candidates[b]);
+                a.reward
+                    .total_cmp(&b.reward)
+                    .then(b.length.cmp(&a.length))
+                    .then(a.member.cmp(&b.member))
+            })
+    };
+    let mut kept = 0;
+    match (candidates.len(), chosen) {
+        (0 | 1, _) => stats.pairs.single_member += 1,
+        (_, None) => stats.pairs.no_gap += 1,
+        (_, Some(chosen)) => match rejected(chosen) {
+            None => {
+                tracing::warn!(scenario = %scenario.id, "no other trace of the group could be written");
+                stats.rejected.unexportable += 1;
+            }
+            Some(rejected) => {
+                let (best, worst) = (&candidates[chosen], &candidates[rejected]);
+                if best.reward - worst.reward < pairs.min_gap {
+                    stats.pairs.no_gap += 1;
+                } else {
+                    match (&best.record, &worst.record) {
+                        (Ok(best_record), Ok(worst_record)) => {
+                            match preference_pair(best_record, worst_record) {
+                                None => stats.pairs.prompt_mismatch += 1,
+                                Some(mut pair) => {
+                                    pair.metadata = serde_json::Map::from_iter([
+                                        ("scenario_id".into(), json!(scenario.id)),
+                                        ("chosen_reward".into(), json!(best.reward)),
+                                        ("rejected_reward".into(), json!(worst.reward)),
+                                        ("chosen_seed".into(), json!(best.seed)),
+                                        ("rejected_seed".into(), json!(worst.seed)),
+                                        ("pass_rate".into(), json!(pass_rate)),
+                                        ("generator".into(), json!(config.generator)),
+                                        ("form".into(), json!(config.form.as_str())),
+                                    ]);
+                                    match pair.validate() {
+                                        Ok(()) => {
+                                            sink.record_pair(pair)?;
+                                            kept = 1;
+                                        }
+                                        Err(error) => {
+                                            tracing::warn!(
+                                                scenario = %scenario.id,
+                                                "a pair did not export: {error}"
+                                            );
+                                            stats.rejected.unexportable += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        (Err(error), _) | (_, Err(error)) => {
+                            tracing::warn!(scenario = %scenario.id, "a paired trace did not export: {error}");
+                            stats.rejected.unexportable += 1;
+                        }
+                    }
+                }
+            }
+        },
+    }
+    stats.kept += kept;
+    let report = ScenarioReport {
+        id: scenario.id.clone(),
+        attempted,
+        passed,
+        kept,
+        pass_rate,
+    };
+    sink.scenario_finished(&report, position.0, position.1);
+    stats.scenarios.push(report);
+    Ok(())
+}
+
+/// Two traces of one scenario as a pair: the longest run of messages they open
+/// with alike is the prompt - cut back so it ends on what the model answers,
+/// a user turn or an observation - and each rest is its response. `None` when
+/// the two do not share a prompt, or offer different tools.
+fn preference_pair(chosen: &ChatExample, rejected: &ChatExample) -> Option<PreferenceExample> {
+    if chosen.tools != rejected.tools {
+        return None;
+    }
+    let common = chosen
+        .messages
+        .iter()
+        .zip(&rejected.messages)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let answers_next = |messages: &[ChatMessage], at: usize| {
+        messages
+            .get(at)
+            .is_some_and(|message| message.role == "assistant")
+            && at > 0
+            && matches!(messages[at - 1].role.as_str(), "user" | "tool")
+    };
+    let cut = (1..=common)
+        .rev()
+        .find(|&at| answers_next(&chosen.messages, at) && answers_next(&rejected.messages, at))?;
+    Some(PreferenceExample {
+        tools: chosen.tools.clone(),
+        prompt: chosen.messages[..cut].to_vec(),
+        chosen: chosen.messages[cut..].to_vec(),
+        rejected: rejected.messages[cut..].to_vec(),
+        metadata: Default::default(),
+    })
+}
+
 /// Refused before the first rollout: a collection that could keep nothing is
 /// an hour of rollouts to find out.
 fn check_config(config: &CollectConfig, judged: bool, scenarios: &[Scenario]) -> Result<()> {
     if config.k == 0 || config.keep == 0 {
         return Err(Error::invalid("collect needs k and keep of at least one"));
+    }
+    if let Some(pairs) = &config.pairs {
+        if config.k < 2 {
+            return Err(Error::invalid(
+                "collect --pairs needs at least two attempts per scenario to compare",
+            ));
+        }
+        if config.keep != 1 {
+            return Err(Error::invalid(
+                "collect --pairs writes one pair per scenario, so it takes no --keep",
+            ));
+        }
+        if !pairs.min_gap.is_finite() || pairs.min_gap < 0.0 {
+            return Err(Error::invalid(
+                "collect --min-gap must be finite and non-negative",
+            ));
+        }
     }
     if scenarios.is_empty() {
         return Err(Error::invalid("collect needs at least one scenario"));

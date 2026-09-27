@@ -1,6 +1,7 @@
 //! Running a collection: an `agent_grpo` configuration's model, world and
 //! judge, rolled out without a single update, and the traces that succeeded
-//! written as an SFT dataset.
+//! written as an SFT dataset - or, with `pairs`, each scenario's best trace
+//! against its worst as a preference dataset.
 //!
 //! Only what a rollout reads is taken from the configuration - the model and
 //! its `init_adapter`, `[agent]` (scenarios, environment, tools, suffix,
@@ -18,12 +19,12 @@ use std::time::Duration;
 
 use retrograd_agent::collect::api::{ApiGenerator, collect_from_api};
 use retrograd_agent::{
-    AssistantForm, CollectConfig, CollectSink, CollectStats, EnvironmentConfig, Policy,
-    PolicyActor, RolloutEngine, ScenarioReport, collect_trajectories,
+    AssistantForm, CollectConfig, CollectSink, CollectStats, EnvironmentConfig, PairsConfig,
+    Policy, PolicyActor, RolloutEngine, ScenarioReport, collect_trajectories,
 };
 use retrograd_config::{AgentRunConfig, Algorithm, CollectApiConfig, RunConfig};
 use retrograd_core::{Error, Result};
-use retrograd_dataset::ChatExample;
+use retrograd_dataset::{ChatExample, PreferenceExample};
 use retrograd_engine::Trainer;
 
 use crate::RunObserver;
@@ -54,7 +55,14 @@ pub struct CollectOptions {
     pub force: bool,
     /// Generate with the `[agent.collect_api]` endpoint instead of a local model.
     pub api: bool,
+    /// Write one preference pair per scenario, best trace against worst.
+    pub pairs: bool,
+    /// Pairs whose rewards differ by less are not written; 0.5 when absent.
+    pub min_gap: Option<f32>,
 }
+
+/// The reward gap a pair needs when `--min-gap` is not given.
+pub const DEFAULT_MIN_GAP: f32 = 0.5;
 
 /// What a collection did.
 #[derive(Debug)]
@@ -115,7 +123,13 @@ pub fn collect(
             Some(api) => api.model.clone(),
             None => config.model.display().to_string(),
         },
+        pairs: options.pairs.then(|| PairsConfig {
+            min_gap: options.min_gap.unwrap_or(DEFAULT_MIN_GAP),
+        }),
     };
+    if options.min_gap.is_some() && !options.pairs {
+        return Err(Error::invalid("--min-gap is only read with --pairs"));
+    }
     observer.info(&format!(
         "collecting {} scenarios, {} attempts each, keeping up to {} ({})",
         scenarios.len(),
@@ -165,7 +179,14 @@ pub fn collect(
     }
     // What was written reads back as the dataset it claims to be before it
     // takes the name a training run will be pointed at.
-    retrograd_dataset::read_chat_jsonl(&partial)?;
+    match options.pairs {
+        true => {
+            retrograd_dataset::read_preference_jsonl(&partial)?;
+        }
+        false => {
+            retrograd_dataset::read_chat_jsonl(&partial)?;
+        }
+    }
     fs::rename(&partial, &options.out)?;
     Ok(CollectOutcome {
         stats,
@@ -350,16 +371,26 @@ impl<'o> FileSink<'o> {
     }
 }
 
-impl CollectSink for FileSink<'_> {
-    fn record(&mut self, example: ChatExample) -> retrograd_agent::Result<()> {
-        let line = serde_json::to_string(&example)
-            .map_err(|error| Error::runtime(format!("serialize a collected record: {error}")))?;
+impl FileSink<'_> {
+    fn write_line(&mut self, line: serde_json::Result<String>) -> retrograd_agent::Result<()> {
+        let line =
+            line.map_err(|error| Error::runtime(format!("serialize a collected record: {error}")))?;
         // Flushed per record: an interrupted collection keeps what it has.
         writeln!(self.file, "{line}")
             .and_then(|()| self.file.flush())
             .map_err(Error::from)?;
         self.written += 1;
         Ok(())
+    }
+}
+
+impl CollectSink for FileSink<'_> {
+    fn record(&mut self, example: ChatExample) -> retrograd_agent::Result<()> {
+        self.write_line(serde_json::to_string(&example))
+    }
+
+    fn record_pair(&mut self, pair: PreferenceExample) -> retrograd_agent::Result<()> {
+        self.write_line(serde_json::to_string(&pair))
     }
 
     fn scenario_finished(&mut self, report: &ScenarioReport, index: usize, total: usize) {
@@ -379,6 +410,7 @@ fn write_report(path: &Path, stats: &CollectStats) -> Result<()> {
         "attempted": stats.attempted,
         "kept": stats.kept,
         "rejected": stats.rejected,
+        "pairs": stats.pairs,
         "failures": {
             "tool": stats.failures.tool,
             "policy": stats.failures.policy,

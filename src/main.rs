@@ -84,7 +84,7 @@ Commands:
   collect <config.toml> --out traces.jsonl [--k N] [--keep N] [--min-reward R]
           [--require-verified|--allow-unverified] [--raw] [--limit N] [--seed N]
           [--model base.gguf | --api] [--device auto|cpu|gpu]
-          [--report report.json] [--force]
+          [--report report.json] [--force] [--pairs [--min-gap G]]
   preflight --model base.gguf [--device auto|cpu|gpu] [--targets a,b] [--strict]
 
 Compatibility aliases:

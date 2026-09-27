@@ -102,7 +102,7 @@ See [Agentic GRPO](../training/agent#tooling).
 retrograd collect CONFIG.toml --out FILE.jsonl [--k N] [--keep N] [--min-reward R]
                   [--require-verified|--allow-unverified] [--raw] [--limit N]
                   [--seed N] [--report FILE.json] [--force] [--model M | --api]
-                  [--device D]
+                  [--device D] [--pairs [--min-gap G]]
 ```
 
 Rolls out the scenarios of an `agent_grpo` configuration and writes the
@@ -122,9 +122,12 @@ trains nothing.
 | `--report` | none | Per-scenario attempts, passes, kept traces and pass rate, as JSON. |
 | `--force` | off | Overwrite `--out`. |
 | `--api` | off | Generate with the [`[agent.collect_api]`](./configuration#agent-collect-api) endpoint instead of a local model. No model is loaded; only the environment grades, and turns are structured. |
+| `--pairs` | off | Write one [preference pair](../training/preference) per scenario instead: the best trace that passes the filters as `chosen`, the worst complete one that can be written as `rejected`. Takes no `--keep`. |
+| `--min-gap` | `0.5` | With `--pairs`: skip a scenario whose two rewards differ by less. |
 
 Traces that were truncated, contain a malformed call, or fail a filter are
-counted by cause and printed at the end. The file is written as `FILE.jsonl.tmp`
+counted by cause and printed at the end, and with `--pairs` so are the
+scenarios that gave no pair. The file is written as `FILE.jsonl.tmp`
 and renamed once complete; an interrupted collection leaves the `.tmp` file
 with what it had kept.
 

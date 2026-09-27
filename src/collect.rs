@@ -1,5 +1,6 @@
 //! `retrograd collect` - roll an agentic configuration out, keep the traces
-//! that succeeded, and write them as an SFT dataset.
+//! that succeeded, and write them as an SFT dataset; with `--pairs`, each
+//! scenario's best trace against its worst, as a preference dataset.
 //!
 //! The first half of "generate, filter, SFT, GRPO": the dataset it writes is
 //! the warm-start that gets a policy calling its tools validly before GRPO has
@@ -29,6 +30,8 @@ pub(crate) const FLAGS: &[&str] = &[
     "--report",
     "--force",
     "--api",
+    "--pairs",
+    "--min-gap",
 ];
 
 #[derive(Debug)]
@@ -51,13 +54,17 @@ fn parse(args: &[String]) -> Result<Args> {
     };
     let mut out = None;
     let mut positional = None;
+    let mut keep_given = false;
     let mut line = crate::args::Args::new("collect", args);
     while let Some(argument) = line.next_arg() {
         let options = &mut parsed.options;
         match argument {
             "--out" => out = Some(PathBuf::from(line.value(argument)?)),
             "--k" => options.k = Some(line.parse(argument, "an integer")?),
-            "--keep" => options.keep = line.parse(argument, "an integer")?,
+            "--keep" => {
+                options.keep = line.parse(argument, "an integer")?;
+                keep_given = true;
+            }
             "--min-reward" => options.min_reward = Some(line.parse(argument, "a number")?),
             "--require-verified" => options.require_verified = Some(true),
             "--allow-unverified" => options.require_verified = Some(false),
@@ -69,6 +76,8 @@ fn parse(args: &[String]) -> Result<Args> {
             "--report" => options.report = Some(PathBuf::from(line.value(argument)?)),
             "--force" => options.force = true,
             "--api" => options.api = true,
+            "--pairs" => options.pairs = true,
+            "--min-gap" => options.min_gap = Some(line.parse(argument, "a number")?),
             other if other.starts_with("--") && !FLAGS.contains(&other) => {
                 return Err(line.unknown(other));
             }
@@ -90,6 +99,14 @@ fn parse(args: &[String]) -> Result<Args> {
     parsed.options.out = out.ok_or_else(|| Error::invalid("collect requires --out PATH"))?;
     if parsed.options.k == Some(0) || parsed.options.keep == 0 {
         return Err(Error::invalid("--k and --keep must be at least 1"));
+    }
+    if parsed.options.pairs && keep_given {
+        return Err(Error::invalid(
+            "--pairs writes one pair per scenario, so it takes no --keep",
+        ));
+    }
+    if parsed.options.min_gap.is_some() && !parsed.options.pairs {
+        return Err(Error::invalid("--min-gap is only read with --pairs"));
     }
     if parsed.options.api && (parsed.model.is_some() || parsed.options.raw) {
         return Err(Error::invalid(
@@ -130,9 +147,13 @@ pub(crate) fn collect(args: Vec<String>) -> Result<()> {
     };
     let outcome = run::collect(&run_config, &args.options, &mut observer)?;
     let stats = &outcome.stats;
+    let kept = match args.options.pairs {
+        true => "pairs",
+        false => "traces",
+    };
     match &outcome.written {
         Some(path) => ui.info(format!(
-            "kept {} of {} attempts in {}",
+            "kept {} {kept} from {} attempts in {}",
             stats.kept,
             stats.attempted,
             path.display()
@@ -155,6 +176,14 @@ pub(crate) fn collect(args: Vec<String>) -> Result<()> {
         rejected.over_keep,
         rejected.unexportable,
     ));
+    if args.options.pairs {
+        let pairs = &stats.pairs;
+        ui.info(format!(
+            "no pair: {} without a reward gap, {} with a single graded trace, {} whose traces \
+             open on different prompts",
+            pairs.no_gap, pairs.single_member, pairs.prompt_mismatch,
+        ));
+    }
     if stats.failures.total() > 0 {
         ui.info(format!(
             "failed rollouts: {} tool, {} policy, {} other",
@@ -261,6 +290,20 @@ mod tests {
         assert_eq!(options.seed, Some(7));
         assert_eq!(options.report, Some(PathBuf::from("report.json")));
         assert!(options.force);
+
+        let options = parse(&strings(&[
+            "run.toml",
+            "--out",
+            "pairs.jsonl",
+            "--pairs",
+            "--min-gap",
+            "0.25",
+        ]))
+        .unwrap()
+        .options;
+        assert!(options.pairs);
+        assert_eq!(options.min_gap, Some(0.25));
+        assert_eq!(options.keep, 1);
     }
 
     #[test]
@@ -301,6 +344,14 @@ mod tests {
             (
                 &["run.toml", "--out", "x.jsonl", "--api", "--model", "m.gguf"][..],
                 "--api generates",
+            ),
+            (
+                &["run.toml", "--out", "x.jsonl", "--pairs", "--keep", "2"][..],
+                "takes no --keep",
+            ),
+            (
+                &["run.toml", "--out", "x.jsonl", "--min-gap", "1"][..],
+                "only read with --pairs",
             ),
         ] {
             let message = parse(&strings(args)).unwrap_err().to_string();

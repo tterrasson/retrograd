@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use retrograd_core::SamplingParams;
-use retrograd_dataset::ChatExample;
+use retrograd_dataset::{ChatExample, ChatMessage, PreferenceExample};
 use serde_json::json;
 
 use super::*;
@@ -233,6 +233,7 @@ pub(super) fn config(k: usize, keep: usize) -> CollectConfig {
         judge_failure: JudgeFailurePolicy::DropGroup,
         environment_grades: true,
         generator: "model.gguf".into(),
+        pairs: None,
     }
 }
 
@@ -440,4 +441,150 @@ async fn a_collection_is_reproducible() {
         serde_json::to_string(&first).unwrap(),
         serde_json::to_string(&second).unwrap()
     );
+}
+
+/// A sink that keeps the pairs, and refuses a plain record.
+#[derive(Default)]
+struct Pairs(Vec<PreferenceExample>);
+
+impl CollectSink for Pairs {
+    fn record(&mut self, _example: ChatExample) -> Result<()> {
+        panic!("pairs mode writes no plain record")
+    }
+
+    fn record_pair(&mut self, pair: PreferenceExample) -> Result<()> {
+        self.0.push(pair);
+        Ok(())
+    }
+}
+
+fn pairs_config(k: usize, min_gap: f32) -> CollectConfig {
+    CollectConfig {
+        pairs: Some(PairsConfig { min_gap }),
+        ..config(k, 1)
+    }
+}
+
+async fn run_pairs(
+    plans: Vec<Plan>,
+    config: &CollectConfig,
+) -> (CollectStats, Vec<PreferenceExample>) {
+    let factory = Arc::new(ScriptedFactory {
+        plans,
+        ..Default::default()
+    });
+    let mut pairs = Pairs::default();
+    let stats = collect_trajectories(&engine(factory), None, &[scenario()], config, &mut pairs)
+        .await
+        .unwrap();
+    (stats, pairs.0)
+}
+
+#[tokio::test]
+async fn the_best_trace_is_paired_with_the_worst_complete_one() {
+    let (stats, pairs) = run_pairs(
+        vec![
+            plan("call", Some(0.5), "half"),
+            plan("call", Some(1.0), "right"),
+            // Never finishes: truncated, so never the rejected side.
+            plan("loop", Some(0.0), "x"),
+            // A malformed call: the worst, but its error observation answers
+            // no call, so it cannot be written as a record.
+            plan("bad", Some(0.0), "wrong"),
+        ],
+        &pairs_config(4, 0.5),
+    )
+    .await;
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(stats.kept, 1);
+    let pair = &pairs[0];
+    pair.validate().unwrap();
+    assert_eq!(pair.metadata["chosen_reward"], 1.0);
+    assert_eq!(pair.metadata["chosen_seed"], 1);
+    // The next worst stands in for the one that cannot be written.
+    assert_eq!(pair.metadata["rejected_reward"], 0.5);
+    assert_eq!(pair.metadata["rejected_seed"], 0);
+    assert_eq!(pair.metadata["scenario_id"], "task");
+    // The prompt is what both traces open with, up to the first answer.
+    assert_eq!(pair.prompt.last().unwrap().role, "user");
+    assert_eq!(pair.chosen[0].role, "assistant");
+    assert!(!pair.tools.is_empty(), "the catalog is carried");
+    assert_ne!(pair.chosen, pair.rejected);
+}
+
+#[tokio::test]
+async fn a_group_that_prefers_too_little_gives_no_pair() {
+    let (stats, pairs) = run_pairs(
+        vec![plan("call", Some(1.0), "a"), plan("call", Some(0.8), "b")],
+        &pairs_config(2, 0.5),
+    )
+    .await;
+    assert!(pairs.is_empty());
+    assert_eq!(stats.pairs.no_gap, 1);
+    assert_eq!(stats.kept, 0);
+
+    // Everything failed the filters: nothing to prefer.
+    let mut config = pairs_config(2, 0.5);
+    config.min_reward = Some(2.0);
+    let (stats, pairs) = run_pairs(
+        vec![plan("call", Some(1.0), "a"), plan("call", Some(0.0), "b")],
+        &config,
+    )
+    .await;
+    assert!(pairs.is_empty());
+    assert_eq!(stats.pairs.no_gap, 1);
+
+    // One graded trace is nothing to compare it with.
+    let (stats, _) = run_pairs(
+        vec![plan("call", Some(1.0), "a"), plan("loop", Some(0.0), "b")],
+        &pairs_config(2, 0.5),
+    )
+    .await;
+    assert_eq!(stats.pairs.single_member, 1);
+}
+
+#[test]
+fn a_pair_is_cut_where_both_traces_are_answered_next() {
+    let message = |role: &str, content: &str| ChatMessage::text(role, content);
+    let record = |messages: Vec<ChatMessage>| ChatExample {
+        messages,
+        ..ChatExample::default()
+    };
+    let chosen = record(vec![
+        message("system", "s"),
+        message("user", "u"),
+        message("assistant", "a"),
+        message("user", "again"),
+        message("assistant", "good"),
+    ]);
+    let rejected = record(vec![
+        message("system", "s"),
+        message("user", "u"),
+        message("assistant", "a"),
+        message("user", "again"),
+        message("assistant", "bad"),
+    ]);
+    let pair = preference_pair(&chosen, &rejected).unwrap();
+    assert_eq!(pair.prompt.len(), 4, "the shared turns are context");
+    assert_eq!(pair.chosen, [message("assistant", "good")]);
+    pair.validate().unwrap();
+
+    let other = record(vec![
+        message("user", "something else"),
+        message("assistant", "x"),
+    ]);
+    assert!(preference_pair(&chosen, &other).is_none());
+}
+
+#[test]
+fn pairs_mode_needs_two_attempts_and_one_pair_per_scenario() {
+    let scenarios = [scenario()];
+    let error = check_config(&pairs_config(1, 0.5), false, &scenarios).unwrap_err();
+    assert!(error.to_string().contains("two attempts"), "{error}");
+    let mut config = pairs_config(2, 0.5);
+    config.keep = 2;
+    let error = check_config(&config, false, &scenarios).unwrap_err();
+    assert!(error.to_string().contains("--keep"), "{error}");
+    let error = check_config(&pairs_config(2, f32::NAN), false, &scenarios).unwrap_err();
+    assert!(error.to_string().contains("--min-gap"), "{error}");
 }
