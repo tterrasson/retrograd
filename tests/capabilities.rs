@@ -306,6 +306,78 @@ fn real_chat_template_prepares_sft_rows_and_renders_tools_prefix_stably() {
     assert!(trainer.tokenize_fragment("").expect("empty").is_empty());
 }
 
+/// A tool record prepares through the fixture's own template and parser, and the
+/// planner's measure is the row preparation builds.
+#[test]
+fn real_chat_template_prepares_a_tool_record_it_reads_back() {
+    let Some(model) = common::model_path_if_available() else {
+        eprintln!(
+            "skipping: no local model at {}",
+            common::model_path().display()
+        );
+        return;
+    };
+    let _guard = common::serialize_models();
+    let trainer = Trainer::new(&model, cpu_config()).expect("load model");
+    let n_ctx = trainer.context_size().expect("context size");
+    let record = serde_json::json!({
+        "tools": [{"type": "function", "function": {
+            "name": "retro_echo", "description": "echoes its input",
+            "parameters": {"type": "object", "properties": {"text": {"type": "string"}}},
+        }}],
+        "messages": [
+            {"role": "system", "content": "Be concise."},
+            {"role": "user", "content": "Echo hi."},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_0",
+                "type": "function",
+                "function": {"name": "retro_echo", "arguments": {"text": "hi"}}}]},
+            {"role": "tool", "tool_call_id": "call_0", "content": "hi"},
+            {"role": "assistant", "content": "It said hi."},
+        ],
+    });
+    let example: retrograd::dataset::ChatExample =
+        serde_json::from_value(record.clone()).expect("a valid tool record");
+
+    // Preparing is the read-back: the text the template writes for the calling
+    // turn went through the parser derived from the same template.
+    let stream = retrograd::dataset::ToolConversationRenderer::new(&trainer)
+        .stream(&example)
+        .expect("render the tool record through the model template");
+    let trained = stream
+        .tokens
+        .iter()
+        .zip(&stream.train_mask)
+        .filter(|(_, trained)| **trained)
+        .map(|(&token, _)| token)
+        .collect::<Vec<_>>();
+    let text = trainer.detokenize(&trained, true).expect("detokenize");
+    assert!(
+        text.contains("retro_echo") && text.contains("It said hi."),
+        "the calling turn and the answer are what is trained: {text}"
+    );
+    assert!(
+        trainer
+            .is_eog_token(*stream.tokens.last().expect("a stream"))
+            .expect("eog"),
+        "the row ends on the token the policy stops on"
+    );
+
+    let path = std::env::temp_dir().join(format!(
+        "retrograd-tool-record-{}.jsonl",
+        std::process::id()
+    ));
+    std::fs::write(&path, format!("{record}\n")).unwrap();
+    let format = retrograd::dataset::DataFormat::ChatJsonl;
+    let prepared =
+        retrograd::dataset::prepare(&trainer, &path, format, n_ctx).expect("prepare the file");
+    let lengths =
+        retrograd::dataset::measured_lengths(&trainer, &path, format).expect("measure the file");
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(prepared.examples, 1);
+    assert_eq!(prepared.supervised_tokens, trained.len());
+    assert_eq!(lengths, [stream.tokens.len() as u32]);
+}
+
 /// JSON variables reach the fixture's Jinja context through the trainer and FFI.
 #[test]
 fn chat_template_variables_reach_the_template_and_refuse_the_renderers_own_keys() {
