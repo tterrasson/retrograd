@@ -1,13 +1,18 @@
 /* The palette is taken from the logo: the lavender wave, and the sunset that
    runs amber to magenta inside its trough. Light mode darkens the lavender to
    a violet that holds contrast on a pale surface; dark mode uses the logo
-   value as it is. */
+   value as it is.
+
+   Every text color below keeps at least 4.5:1 (WCAG AA) on the surfaces it is
+   drawn on, soft tints included; most keep 7:1. */
 :root {
   /* Give reference pages a little more breathing room on wide displays. */
   --vp-layout-max-width: 1560px;
+
+  /* Hover and active darken in light mode, so they never lose contrast. */
   --vp-c-brand-1: #7a2fd4;
-  --vp-c-brand-2: #8535e0;
-  --vp-c-brand-3: #6d28c4;
+  --vp-c-brand-2: #6a26c0;
+  --vp-c-brand-3: #5c1fae;
   --vp-c-brand-soft: rgba(133, 53, 224, 0.12);
   --retrograd-c-lavender: #c9a0f5;
   --retrograd-c-magenta: #c0157f;
@@ -20,8 +25,36 @@
   --vp-c-bg-alt: #f1ebf8;
   --vp-c-bg-soft: #f7f3fc;
   --vp-c-bg-mute: #ece3f7;
+  --vp-c-bg-elv: #ffffff;
   --vp-c-divider: #d6c8e6;
   --vp-c-border: #bda9d6;
+  --vp-c-gutter: #e6dcf2;
+
+  /* The neutral scale, used by info blocks, line highlights and the search
+     box, is tinted towards the lavender rather than left a blue gray. */
+  --vp-c-default-1: #d6c8e6;
+  --vp-c-default-2: #e2d7ef;
+  --vp-c-default-3: #ece3f7;
+  --vp-c-default-soft: rgba(122, 90, 160, 0.1);
+
+  /* Semantic colors come from the same sunset: amber warns, magenta marks
+     what is important, and danger takes a rose that stays apart from both. */
+  --vp-c-warning-1: #8a560f;
+  --vp-c-warning-2: #74470a;
+  --vp-c-warning-3: #986014;
+  --vp-c-warning-soft: rgba(214, 145, 40, 0.14);
+  --vp-c-important-1: #a8126f;
+  --vp-c-important-2: #8f0d5e;
+  --vp-c-important-3: #c0157f;
+  --vp-c-important-soft: rgba(192, 21, 127, 0.1);
+  --vp-c-danger-1: #b4234a;
+  --vp-c-danger-2: #9a1b3e;
+  --vp-c-danger-3: #c8325a;
+  --vp-c-danger-soft: rgba(224, 64, 95, 0.12);
+  --vp-c-caution-1: var(--vp-c-danger-1);
+  --vp-c-caution-2: var(--vp-c-danger-2);
+  --vp-c-caution-3: var(--vp-c-danger-3);
+  --vp-c-caution-soft: var(--vp-c-danger-soft);
 
   /* The filled button is the deep violet in light mode and the logo lavender
      in dark, each with the text color that carries contrast on it. */
@@ -40,7 +73,19 @@
   --vp-button-alt-hover-text: var(--vp-c-brand-1);
   --vp-button-alt-hover-bg: var(--vp-c-bg-mute);
   --vp-button-alt-active-bg: var(--vp-c-bg-alt);
+
+  /* The github-light tokens are drawn for a white ground: its comments drop
+     to 4.1:1 on the lavender surfaces, and hold 4.8:1 on white. */
   --vp-code-bg: var(--vp-c-bg-mute);
+  --vp-code-block-bg: #ffffff;
+  --vp-code-block-divider-color: var(--vp-c-divider);
+  --vp-code-lang-color: var(--vp-c-text-3);
+  --vp-code-line-highlight-color: rgba(133, 53, 224, 0.08);
+  --vp-code-copy-code-bg: var(--vp-c-bg-soft);
+  --vp-code-copy-code-border-color: var(--vp-c-divider);
+  --vp-code-copy-code-hover-bg: var(--vp-c-bg-mute);
+  --vp-code-copy-code-hover-border-color: var(--vp-c-border);
+
   --vp-sidebar-bg-color: var(--vp-c-bg);
   --vp-home-hero-name-color: transparent;
   --vp-home-hero-name-background: linear-gradient(
@@ -50,6 +95,9 @@
     "Segoe UI", sans-serif;
   --vp-font-family-mono: "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas,
     monospace;
+
+  --retrograd-selection: rgba(133, 53, 224, 0.22);
+  --retrograd-shadow: 0 1px 2px rgba(60, 30, 100, 0.06), 0 6px 20px rgba(60, 30, 100, 0.07);
 }
 
 .dark {
@@ -68,13 +116,51 @@
   --vp-c-bg-alt: #0e0b15;
   --vp-c-bg-soft: #1d1630;
   --vp-c-bg-mute: #281f3d;
+  --vp-c-bg-elv: #1d1630;
   --vp-c-divider: #3a2f56;
   --vp-c-border: #524369;
+  --vp-c-gutter: #0e0b15;
+
+  --vp-c-default-1: #524369;
+  --vp-c-default-2: #3a2f56;
+  --vp-c-default-3: #281f3d;
+  --vp-c-default-soft: rgba(160, 140, 200, 0.12);
+
+  --vp-c-warning-1: #f9c676;
+  --vp-c-warning-2: #fbd699;
+  --vp-c-warning-3: #d9a24e;
+  --vp-c-warning-soft: rgba(249, 198, 118, 0.12);
+  --vp-c-important-1: #f78fb0;
+  --vp-c-important-2: #f9aac3;
+  --vp-c-important-3: #d96d92;
+  --vp-c-important-soft: rgba(247, 143, 176, 0.14);
+  --vp-c-danger-1: #ff8fa3;
+  --vp-c-danger-2: #ffabba;
+  --vp-c-danger-3: #e0677f;
+  --vp-c-danger-soft: rgba(247, 109, 136, 0.14);
 
   --vp-button-brand-text: #1a1027;
   --vp-button-brand-hover-text: #1a1027;
   --vp-button-brand-active-text: #1a1027;
   --vp-button-brand-active-bg: #c08ff0;
+
+  /* The darkest surface: github-dark comments sit lowest on it, and it sets
+     the blocks apart from the page. */
+  --vp-code-block-bg: var(--vp-c-bg-alt);
+  --vp-code-line-highlight-color: rgba(212, 164, 244, 0.1);
+
+  --retrograd-selection: rgba(212, 164, 244, 0.28);
+  --retrograd-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+::selection {
+  background: var(--retrograd-selection);
+}
+
+/* One focus ring for every control, drawn only for keyboard navigation. */
+:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 2px;
 }
 
 /* The wave and its sunset, flattened into the rule under the navigation. */
@@ -124,6 +210,7 @@
 
 .VPHero .tagline {
   max-width: 38rem;
+  color: var(--vp-c-text-2);
 }
 
 /* Size the wide logo by width instead of the default square image bounds. */
@@ -183,12 +270,34 @@
   font-weight: 700;
 }
 
+/* The cards keep a visible edge, and lift with a brand outline when they
+   lead somewhere. */
 .VPFeatures .VPFeature {
-  border-color: var(--vp-c-border);
+  border-color: var(--vp-c-divider);
+  transition:
+    border-color 0.25s,
+    box-shadow 0.25s,
+    transform 0.25s;
+}
+
+.VPFeatures .VPFeature.link:hover {
+  border-color: var(--vp-c-brand-1);
+  box-shadow: var(--retrograd-shadow);
+  transform: translateY(-2px);
 }
 
 .VPFeature .title {
   font-weight: 700;
+}
+
+.VPFeature .details {
+  color: var(--vp-c-text-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .VPFeatures .VPFeature.link:hover {
+    transform: none;
+  }
 }
 
 /* Documentation content */
@@ -208,12 +317,126 @@
   padding-top: 1.5rem;
 }
 
-.vp-doc div[class*='language-'] {
-  border: 1px solid var(--vp-c-border);
+/* Links keep the brand color and a lighter underline that takes the full
+   color on hover, so a paragraph dense with links still reads as text. */
+.vp-doc a {
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+  transition:
+    color 0.2s,
+    text-decoration-color 0.2s;
 }
 
-/* Tables are frequent in the configuration reference. Keep the header and
-   row boundaries visible in either color scheme. */
+.vp-doc a:hover {
+  text-decoration-color: currentColor;
+}
+
+.vp-doc :not(pre) > code {
+  font-size: 0.875em;
+}
+
+.vp-doc kbd {
+  border: 1px solid var(--vp-c-border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0.1em 0.4em;
+  background: var(--vp-c-bg-soft);
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.8em;
+}
+
+.vp-doc blockquote {
+  border-left: 3px solid var(--retrograd-c-lavender);
+  border-radius: 0 6px 6px 0;
+  padding: 0.5rem 1rem;
+  background: var(--vp-c-bg-soft);
+}
+
+/* The rule between sections borrows the gradient of the navigation. */
+.vp-doc hr {
+  height: 1px;
+  border: none;
+  margin: 2rem 0;
+  background: linear-gradient(
+    90deg,
+    var(--vp-c-divider),
+    var(--retrograd-c-lavender) 50%,
+    var(--vp-c-divider)
+  );
+  opacity: 0.7;
+}
+
+/* Below 640px the default theme runs code blocks edge to edge, so the border
+   and the rounding only apply where the block is inset. */
+@media (min-width: 640px) {
+  .vp-doc div[class*='language-'] {
+    border: 1px solid var(--vp-c-divider);
+    border-radius: 10px;
+  }
+}
+
+.vp-doc [class*='language-'] > span.lang {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* Custom blocks keep their soft tint and gain an accent edge in their own
+   color, which also colors the title. */
+.custom-block {
+  border-left-width: 3px;
+}
+
+.custom-block .custom-block-title {
+  font-weight: 700;
+}
+
+.custom-block.info {
+  border-left-color: var(--vp-c-border);
+}
+
+.custom-block.note,
+.custom-block.tip {
+  border-left-color: var(--vp-c-brand-1);
+}
+
+.custom-block.tip .custom-block-title {
+  color: var(--vp-c-brand-1);
+}
+
+.custom-block.important {
+  border-left-color: var(--vp-c-important-1);
+}
+
+.custom-block.important .custom-block-title {
+  color: var(--vp-c-important-1);
+}
+
+.custom-block.warning {
+  border-left-color: var(--vp-c-warning-1);
+}
+
+.custom-block.warning .custom-block-title {
+  color: var(--vp-c-warning-1);
+}
+
+.custom-block.danger,
+.custom-block.caution {
+  border-left-color: var(--vp-c-danger-1);
+}
+
+.custom-block.danger .custom-block-title,
+.custom-block.caution .custom-block-title {
+  color: var(--vp-c-danger-1);
+}
+
+.custom-block.details {
+  border-left-color: var(--vp-c-border);
+}
+
+/* Tables are frequent in the configuration reference. The table is a block,
+   so it carries the outer edge and the rounding; the cells draw only the
+   inner rules, which keeps the outline single. */
 .vp-doc table {
   width: max-content;
   max-width: 100%;
@@ -222,20 +445,55 @@
   font-size: 0.94rem;
 }
 
+.vp-doc tr {
+  border-top: 0;
+}
+
 .vp-doc th,
 .vp-doc td {
   vertical-align: top;
-  border: 1px solid var(--vp-c-divider);
+  border: 0;
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.vp-doc th + th,
+.vp-doc td + td {
+  border-left: 1px solid var(--vp-c-divider);
+}
+
+.vp-doc thead th {
+  border-top: 0;
+  border-bottom: 1px solid var(--vp-c-border);
+}
+
+.vp-doc thead + tbody tr:first-child td {
+  border-top: 0;
 }
 
 .vp-doc th {
   background: var(--vp-c-bg-mute);
-  font-weight: 750;
+  color: var(--vp-c-text-1);
+  font-weight: 700;
   text-align: left;
 }
 
 .vp-doc tr:nth-child(2n) {
   background: var(--vp-c-bg-soft);
+}
+
+.vp-doc tbody tr:hover {
+  background: var(--vp-c-brand-soft);
+}
+
+/* The previous and next links at the foot of a page. */
+.VPDocFooter .pager-link {
+  transition:
+    border-color 0.25s,
+    background-color 0.25s;
+}
+
+.VPDocFooter .pager-link:hover {
+  background-color: var(--vp-c-bg-soft);
 }
 
 /* The default 688px reading column is too narrow for configuration tables.
