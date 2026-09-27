@@ -5,7 +5,7 @@
 use retrograd_core::{Error, Result, SharedPrefixFanout, TrainMetrics};
 use retrograd_engine::Trainer;
 
-use super::packing::{PackOutcome, PackRefusal, WeightedStepScratch, packed_width};
+use super::packing::{PackMember, PackOutcome, PackRefusal, WeightedStepScratch, packed_width};
 use super::sampling::{Rollout, RowLayout};
 use super::weights::{
     TokenStats, grpo_token_weights_into, ppo_token_weights_into, score_train_mask_into,
@@ -119,6 +119,16 @@ pub(crate) struct ChunkMember<'a> {
     pub(crate) token_advantages: Option<&'a [f32]>,
     /// Frozen-reference logprobs aligned with the rollout's trainable tokens.
     pub(crate) reference_logprobs: &'a [f32],
+}
+
+impl PackMember for ChunkMember<'_> {
+    fn group_id(&self) -> u64 {
+        self.group_id
+    }
+
+    fn rollout(&self) -> &Rollout {
+        self.rollout
+    }
 }
 
 /// Greedy partition of `indices` (an already-shuffled epoch order) into
@@ -415,8 +425,8 @@ fn packing_refusal(refusal: PackRefusal) -> PackingSelection {
 /// Plan every pass before starting the optimizer transaction. Auto can keep
 /// short siblings packed while a longer member occupies a pass of its own.
 /// Never mix row and packed training inside an accumulation transaction.
-pub(crate) fn select_packing(
-    chunk: &[ChunkMember<'_>],
+pub(crate) fn select_packing<M: PackMember>(
+    chunk: &[M],
     layout: &RowLayout,
     capability: bool,
 ) -> Result<PackingSelection> {
@@ -513,10 +523,8 @@ pub(crate) fn select_packing(
 
 /// One Dr. GRPO optimizer chunk: PPO clipping against the rollout policy and
 /// a k3 KL penalty against the frozen base-model reference policy. Every
-/// member is re-scored under the same current policy, packed as its own row,
-/// and trained in one weighted call; the runtime accumulates gradients across
-/// the rows' real (ubatch-rounded) content, so short rollouts share optimizer
-/// steps instead of paying one full padded row each.
+/// member is re-scored under the same current policy, then the chunk is trained
+/// as one weighted transaction by [`train_weighted_members`].
 pub(crate) fn grpo_chunk_step(
     trainer: &mut Trainer,
     chunk: &[ChunkMember<'_>],
@@ -570,10 +578,46 @@ pub(crate) fn grpo_chunk_step(
         chunk_stats.ratio_mean += stats.ratio_mean;
         chunk_stats.ratio_max = chunk_stats.ratio_max.max(stats.ratio_max);
     }
+    let (metrics, keep_training) = train_weighted_members(
+        trainer,
+        chunk,
+        layout,
+        params.objective.loss_denominator,
+        params.scheduler_total_steps,
+        scratch,
+        on_step,
+    )?;
+    Ok((metrics, chunk_stats, keep_training))
+}
+
+/// One weighted optimizer transaction over `chunk`, whatever objective
+/// produced its weights: select the packed or the row geometry, lay the
+/// members out, and train. `scratch.member_weights[slot]` must hold the weights
+/// of `chunk[slot]`, one per trained token; the layout scales them for a
+/// `1 / loss_denominator` reduction.
+///
+/// Every member is trained under the same optimizer transaction: the runtime
+/// accumulates gradients across the rows' real (ubatch-rounded) content, so
+/// short members share optimizer steps instead of paying one full padded row
+/// each.
+pub(crate) fn train_weighted_members<M: PackMember>(
+    trainer: &mut Trainer,
+    chunk: &[M],
+    layout: &RowLayout,
+    loss_denominator: usize,
+    scheduler_total_steps: u64,
+    scratch: &mut WeightedStepScratch,
+    on_step: &mut dyn FnMut(&mut Trainer, TrainMetrics) -> Result<bool>,
+) -> Result<(TrainMetrics, bool)> {
+    if scratch.member_weights.len() < chunk.len() {
+        return Err(Error::invalid(
+            "weighted step members outnumber their weight buffers",
+        ));
+    }
     let capability = trainer.supports_shared_prefix_packed_training()?;
     let requested = layout.shared_prefix_fanout;
     let selection = select_packing(chunk, layout, capability)?;
-    let (metrics, keep_training) = if let PackingSelection::Packed(ranges) = &selection {
+    let result = if let PackingSelection::Packed(ranges) = &selection {
         let fanout = ranges.iter().map(|range| range.len()).max().unwrap_or(1);
         let passes = u32::try_from(ranges.len())
             .map_err(|_| Error::overflow("packed pass count exceeds u32"))?;
@@ -593,12 +637,7 @@ pub(crate) fn grpo_chunk_step(
         let mut keep = true;
         for range in ranges {
             let subgroup = &chunk[range.clone()];
-            match scratch.pack_sequences(
-                subgroup,
-                range.start,
-                layout,
-                params.objective.loss_denominator,
-            )? {
+            match scratch.pack_sequences(subgroup, range.start, layout, loss_denominator)? {
                 PackOutcome::Packed {
                     useful_tokens,
                     shared_tokens,
@@ -620,7 +659,7 @@ pub(crate) fn grpo_chunk_step(
             }
             let result = trainer.train_packed_sequences_controlled(
                 &scratch.packed_sequence_batch,
-                params.scheduler_total_steps,
+                scheduler_total_steps,
                 passes,
                 &mut *on_step,
             )?;
@@ -635,8 +674,10 @@ pub(crate) fn grpo_chunk_step(
         scratch.packing_fanout = 1;
         scratch.packing_passes = chunk.len();
         scratch.packing_shared_tokens = 0;
-        scratch.packing_useful_tokens =
-            chunk.iter().map(|member| member.rollout.tokens.len()).sum();
+        scratch.packing_useful_tokens = chunk
+            .iter()
+            .map(|member| member.rollout().tokens.len())
+            .sum();
         scratch.packing_physical_tokens = chunk.len() * layout.row_width;
         if let PackingSelection::Rows { status, reason } = selection {
             scratch.note_packing(
@@ -655,20 +696,15 @@ pub(crate) fn grpo_chunk_step(
         scratch.begin(chunk.len());
         for (slot, member) in chunk.iter().enumerate() {
             // A swap, not a copy: the member's weights are read once, here, and
-            // the buffer handed back is refilled by the next chunk's
-            // `grpo_token_weights_into` before anything reads it.
+            // the buffer handed back is refilled by the caller's next step
+            // before anything reads it.
             std::mem::swap(
                 &mut scratch.token_weights,
                 &mut scratch.member_weights[slot],
             );
-            scratch.pack_row(
-                slot,
-                member.rollout,
-                layout,
-                params.objective.loss_denominator,
-            )?;
+            scratch.pack_row(slot, member.rollout(), layout, loss_denominator)?;
         }
-        trainer.train_weighted_controlled(&scratch.batch, params.scheduler_total_steps, on_step)?
+        trainer.train_weighted_controlled(&scratch.batch, scheduler_total_steps, on_step)?
     };
-    Ok((metrics, chunk_stats, keep_training))
+    Ok(result)
 }

@@ -6,7 +6,14 @@ use retrograd_core::{Error, Result, WeightedBatch};
 use retrograd_engine::PackedSequenceBatch;
 
 use super::sampling::{Rollout, RowLayout};
-use super::step::ChunkMember;
+
+/// What the packers read from one member of a weighted step: the sequence and
+/// the group whose prompt it may share. Its weights are not here - they sit in
+/// [`WeightedStepScratch::member_weights`], at the member's slot.
+pub(crate) trait PackMember {
+    fn group_id(&self) -> u64;
+    fn rollout(&self) -> &Rollout;
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PackRefusal {
@@ -25,16 +32,16 @@ pub(crate) enum PackOutcome {
 }
 
 /// The same compatible runs drive the size check and the physical packer.
-fn compatible_run_end(chunk: &[ChunkMember<'_>], start: usize) -> Result<usize> {
+fn compatible_run_end<M: PackMember>(chunk: &[M], start: usize) -> Result<usize> {
     let first = &chunk[start];
-    let first_train = first.rollout.first_train_index()?;
-    let shared = &first.rollout.tokens[..first_train - 1];
+    let first_train = first.rollout().first_train_index()?;
+    let shared = &first.rollout().tokens[..first_train - 1];
     let mut end = start + 1;
     while end < chunk.len() {
         let candidate = &chunk[end];
-        if candidate.group_id != first.group_id
-            || candidate.rollout.first_train_index()? != first_train
-            || candidate.rollout.tokens.get(..shared.len()) != Some(shared)
+        if candidate.group_id() != first.group_id()
+            || candidate.rollout().first_train_index()? != first_train
+            || candidate.rollout().tokens.get(..shared.len()) != Some(shared)
         {
             break;
         }
@@ -45,8 +52,8 @@ fn compatible_run_end(chunk: &[ChunkMember<'_>], start: usize) -> Result<usize> 
 
 /// Exact width, including isolated tokens for unused sequence slots. No
 /// context-sized buffers or weights are built while choosing a geometry.
-pub(super) fn packed_width(
-    chunk: &[ChunkMember<'_>],
+pub(super) fn packed_width<M: PackMember>(
+    chunk: &[M],
     layout: &RowLayout,
 ) -> Result<std::result::Result<usize, PackRefusal>> {
     if chunk.is_empty() || chunk.len() > layout.n_seq_max {
@@ -55,7 +62,7 @@ pub(super) fn packed_width(
     let mut required = layout.n_seq_max - chunk.len();
     let mut start = 0;
     while start < chunk.len() {
-        let first_train = chunk[start].rollout.first_train_index()?;
+        let first_train = chunk[start].rollout().first_train_index()?;
         if first_train < 2 {
             return Ok(Err(PackRefusal::DivergentPrefix));
         }
@@ -65,7 +72,7 @@ pub(super) fn packed_width(
             .ok_or_else(|| Error::overflow("packed prefix width overflows usize"))?;
         for member in &chunk[start..end] {
             required = required
-                .checked_add(member.rollout.training_span_len()?)
+                .checked_add(member.rollout().training_span_len()?)
                 .ok_or_else(|| Error::overflow("packed training width overflows usize"))?;
         }
         start = end;
@@ -281,9 +288,9 @@ impl WeightedStepScratch {
     /// Different groups use disjoint sequence ids and therefore cannot attend
     /// to one another. Keeping all configured sequence ids present through
     /// isolated padding tokens gives the runtime one stable graph topology.
-    pub(super) fn pack_sequences(
+    pub(super) fn pack_sequences<M: PackMember>(
         &mut self,
-        chunk: &[ChunkMember<'_>],
+        chunk: &[M],
         member_weight_offset: usize,
         layout: &RowLayout,
         loss_denominator: usize,
@@ -301,7 +308,7 @@ impl WeightedStepScratch {
             .iter()
             .zip(&self.member_weights[member_weight_offset..])
         {
-            if member.rollout.completion_len() != weights.len() {
+            if member.rollout().completion_len() != weights.len() {
                 return Err(Error::tokenize("rollout does not match its token weights"));
             }
         }
@@ -326,9 +333,9 @@ impl WeightedStepScratch {
         let mut shared_count = 0_usize;
         let mut group_start = 0_usize;
         while group_start < chunk.len() {
-            let first_train = chunk[group_start].rollout.first_train_index()?;
+            let first_train = chunk[group_start].rollout().first_train_index()?;
             let shared_len = first_train - 1;
-            let shared_tokens = &chunk[group_start].rollout.tokens[..shared_len];
+            let shared_tokens = &chunk[group_start].rollout().tokens[..shared_len];
             // A reward group may contain externally supplied trajectories
             // with different prefixes. Share only the longest contiguous run
             // that is actually compatible; the remaining members become
@@ -351,7 +358,7 @@ impl WeightedStepScratch {
             }
 
             for (member_index, member) in (group_start..group_end).zip(members) {
-                let rollout = member.rollout;
+                let rollout = member.rollout();
                 let training_span = rollout.training_span_len()?;
                 let input = &rollout.tokens[first_train - 1..first_train - 1 + training_span];
                 batch.tokens[cursor..cursor + training_span].copy_from_slice(input);
@@ -394,7 +401,7 @@ impl WeightedStepScratch {
         // ending on an untrained tool observation would otherwise leave a hole
         // and be rejected by llama.cpp's per-sequence continuity check.
         let sequence_zero_end = chunk[0]
-            .rollout
+            .rollout()
             .last_train_index()?
             .checked_sub(1)
             .ok_or_else(|| Error::invalid("rollout is too short for teacher forcing"))?;

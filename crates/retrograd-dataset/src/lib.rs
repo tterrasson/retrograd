@@ -885,14 +885,50 @@ fn prepare_conversation(
         )));
     }
 
+    let spans =
+        assistant_label_spans(trainer, &messages, &full, &full_tokens, 0)?.ok_or_else(|| {
+            Error::invalid(
+                "model chat template does not preserve token prefixes required for SFT masking",
+            )
+        })?;
+    let mut labels = vec![IGNORE_LABEL; full_tokens.len() - 1];
+    for target_index in spans.into_iter().flatten() {
+        if target_index > 0 && target_index <= labels.len() {
+            labels[target_index - 1] = full_tokens[target_index];
+        }
+    }
+    if labels.iter().all(|&label| label == IGNORE_LABEL) {
+        return Err(Error::tokenize(
+            "assistant responses produced no trainable tokens",
+        ));
+    }
+    Ok((full_tokens[..full_tokens.len() - 1].to_vec(), labels))
+}
+
+/// The token positions of `full_tokens` - the tokenized rendering `full` of
+/// `messages` - that each assistant turn at or after `from_index` writes, as
+/// one target range per turn.
+///
+/// A turn's range is the difference between the conversation up to it and the
+/// prompt that opens it, both rendered through the template, so the result is
+/// only meaningful when every such rendering is a token prefix of the whole.
+/// `None` says it is not: the template rewrites earlier text once the
+/// conversation continues, and no masking of this rendering is exact.
+fn assistant_label_spans(
+    trainer: &impl DatasetBackend,
+    messages: &[(&str, &str)],
+    full: &str,
+    full_tokens: &[i32],
+    from_index: usize,
+) -> Result<Option<Vec<std::ops::Range<usize>>>> {
     // Formatting boundaries may repeat (the full conversation is the common
     // one-assistant case). Cache tokenized renderings while retaining the
-    // existing starts_with validation as the correctness guard.
+    // starts_with validation as the correctness guard.
     let mut tokenized_prefixes = std::collections::HashMap::new();
-    tokenized_prefixes.insert(full.clone(), full_tokens.clone());
-    let mut labels = vec![IGNORE_LABEL; full_tokens.len() - 1];
-    for (assistant_index, message) in example.messages.iter().enumerate() {
-        if message.role != "assistant" {
+    tokenized_prefixes.insert(full.to_owned(), full_tokens.to_vec());
+    let mut spans = Vec::new();
+    for (assistant_index, (role, _)) in messages.iter().enumerate().skip(from_index) {
+        if *role != "assistant" {
             continue;
         }
         let prefix_messages = &messages[..assistant_index];
@@ -914,22 +950,11 @@ fn prepare_conversation(
             tokens
         };
         if !full_tokens.starts_with(&prefix) || !full_tokens.starts_with(&upto) {
-            return Err(Error::invalid(
-                "model chat template does not preserve token prefixes required for SFT masking",
-            ));
+            return Ok(None);
         }
-        for target_index in prefix.len()..upto.len() {
-            if target_index > 0 && target_index <= labels.len() {
-                labels[target_index - 1] = full_tokens[target_index];
-            }
-        }
+        spans.push(prefix.len()..upto.len());
     }
-    if labels.iter().all(|&label| label == IGNORE_LABEL) {
-        return Err(Error::tokenize(
-            "assistant responses produced no trainable tokens",
-        ));
-    }
-    Ok((full_tokens[..full_tokens.len() - 1].to_vec(), labels))
+    Ok(Some(spans))
 }
 
 fn dataset_error(path: &Path, line: usize, message: impl std::fmt::Display) -> Error {
