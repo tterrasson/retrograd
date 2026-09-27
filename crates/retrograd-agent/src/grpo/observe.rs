@@ -377,6 +377,7 @@ mod tests {
                 member,
                 seed: 40 + member as u64,
                 step_messages: vec![vec![0, 1], vec![2], vec![3, 4], vec![5], vec![]],
+                ..Default::default()
             }),
         }
     }

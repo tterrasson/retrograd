@@ -368,7 +368,7 @@ impl RolloutEngine {
         Ok(states
             .into_iter()
             .enumerate()
-            .map(|(member, state)| self.finish_trajectory(scenario, member, state))
+            .map(|(member, state)| self.finish_trajectory(scenario, member, state, rendering))
             .collect())
     }
 
@@ -413,6 +413,7 @@ impl RolloutEngine {
                 ..Default::default()
             },
         };
+        state.assistant_prose.push(parsed.content.clone());
         state.messages.push(Message {
             role: Role::Assistant,
             // The fallback chat renderer only sees content, so preserve
@@ -446,6 +447,11 @@ impl RolloutEngine {
             // in a parser because no parser can know it - the text was
             // syntactically fine, it just named nothing.
             parsed.parse_errors.push(no_tool_call_observation());
+        }
+        // Counted even when a valid call sits beside the error: the turn still
+        // shows the policy writing a call it could not make.
+        if !parsed.parse_errors.is_empty() {
+            state.invalid_turns += 1;
         }
         // A turn that reaches here with no call has only errors to show for
         // itself - malformed calls, or the observation just written. Enough of
@@ -570,6 +576,7 @@ impl RolloutEngine {
         scenario: &Scenario,
         member: usize,
         state: RolloutState,
+        rendering: &ToolRendering,
     ) -> Result<Trajectory> {
         if let Some(error) = state.failure {
             return Err(error);
@@ -598,6 +605,10 @@ impl RolloutEngine {
                 member,
                 seed: state.seed,
                 step_messages: state.step_messages,
+                tools: rendering.specs(),
+                rendering: rendering.kind(),
+                assistant_prose: state.assistant_prose,
+                invalid_turns: state.invalid_turns,
             }),
         };
         trajectory.validate()?;

@@ -28,12 +28,15 @@ pub(super) enum ToolRendering {
     /// own `tool` role, and `parser` reads the call format that same template
     /// teaches the model.
     Native {
-        specs: Vec<ToolSpec>,
+        specs: Arc<[ToolSpec]>,
         parser: Arc<dyn ToolCallParser>,
     },
     /// The template is blind to tools, or yields no parser for its own format:
     /// they are described in the system prompt and read back by convention.
-    Prompt { instructions: String, tools: usize },
+    Prompt {
+        instructions: String,
+        specs: Arc<[ToolSpec]>,
+    },
     /// No tools at all - the policy answers in a single turn.
     None,
 }
@@ -44,10 +47,14 @@ impl ToolRendering {
     /// than the diagnostic in
     /// [`tool_call_parse_warning`](crate::grpo::selection::tool_call_parse_warning).
     pub(super) fn declared_tools(&self) -> usize {
+        self.specs().len()
+    }
+
+    /// The catalog, in the order the environment listed it.
+    pub(super) fn specs(&self) -> Arc<[ToolSpec]> {
         match self {
-            Self::Native { specs, .. } => specs.len(),
-            Self::Prompt { tools, .. } => *tools,
-            Self::None => 0,
+            Self::Native { specs, .. } | Self::Prompt { specs, .. } => specs.clone(),
+            Self::None => Arc::default(),
         }
     }
 
@@ -70,11 +77,11 @@ impl std::fmt::Debug for ToolRendering {
                 .finish_non_exhaustive(),
             Self::Prompt {
                 instructions,
-                tools,
+                specs,
             } => formatter
                 .debug_struct("Prompt")
                 .field("instructions", instructions)
-                .field("tools", tools)
+                .field("specs", specs)
                 .finish(),
             Self::None => formatter.write_str("None"),
         }
@@ -101,12 +108,12 @@ pub(super) fn observation_message(observation: &ToolResult, rendering: &ToolRend
 /// The fallback rendering: the catalog written into the system turn, in the
 /// `<tool_call>` convention [`HermesToolCallParser`](crate::tools::HermesToolCallParser)
 /// reads back. Returns the whole [`ToolRendering`] rather than just the text so
-/// that the count the diagnostic needs travels with it.
-pub(super) fn prompt_tool_rendering(tools: &[ToolSpec]) -> Result<ToolRendering> {
+/// that the catalog the diagnostic and the export need travels with it.
+pub(super) fn prompt_tool_rendering(tools: Vec<ToolSpec>) -> Result<ToolRendering> {
     let definitions = tools.iter().map(TemplateTool::from).collect::<Vec<_>>();
     Ok(ToolRendering::Prompt {
         instructions: prompt_tool_instructions(&definitions)?,
-        tools: tools.len(),
+        specs: tools.into(),
     })
 }
 

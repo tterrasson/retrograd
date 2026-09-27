@@ -1,7 +1,9 @@
-use retrograd_dataset::chat_template::SystemTurn;
+use std::sync::Arc;
+
+use retrograd_dataset::chat_template::{SystemTurn, ToolRenderingKind};
 use serde::{Deserialize, Serialize};
 
-use crate::tools::ToolCall;
+use crate::tools::{ToolCall, ToolSpec};
 use crate::{Error, Result};
 
 retrograd_core::wire_enum! {
@@ -76,7 +78,7 @@ pub struct Step {
 }
 
 /// Where a trajectory came from, recorded while it was collected so that
-/// filtering and regrouping never have to guess it back.
+/// filtering, regrouping and exporting never have to guess it back.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Provenance {
     /// Position among the members its group was collected with.
@@ -84,6 +86,17 @@ pub struct Provenance {
     pub seed: u64,
     /// For each entry of `steps`, the indices into `messages` it produced.
     pub step_messages: Vec<Vec<usize>>,
+    /// The catalog the trajectory was offered, in the order the environment
+    /// listed it - the order a native template saw.
+    pub tools: Arc<[ToolSpec]>,
+    /// How that catalog reached the model.
+    pub rendering: ToolRenderingKind,
+    /// For each assistant turn, in order, the prose the parser read out of it:
+    /// the turn without its call markup.
+    pub assistant_prose: Vec<String>,
+    /// Assistant turns that named no valid call: a parse error, or a turn that
+    /// called nothing where a call was expected.
+    pub invalid_turns: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

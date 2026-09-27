@@ -340,7 +340,7 @@ pub fn template_tools(tools: &[TemplateTool]) -> Result<String> {
 
 /// How a conversation's tools reach the model. The payload each side needs - a
 /// parser, the catalog text - stays with that side; this is the decision alone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ToolRenderingKind {
     /// The template renders the catalog and frames the observations in its own
     /// `tool` role; the parser derived from it reads the calls back.
@@ -349,6 +349,7 @@ pub enum ToolRenderingKind {
     /// in the `<tool_call>` convention of [`parse_hermes`].
     Prompt,
     /// No tools at all.
+    #[default]
     None,
 }
 

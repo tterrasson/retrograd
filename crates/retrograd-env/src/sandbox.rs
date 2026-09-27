@@ -70,6 +70,10 @@ pub struct SandboxEnvironment {
     task: EnvTask,
     cumulative_reward: Option<f32>,
     done: bool,
+    /// The last verdict of the task's `verify`, `None` while nothing was
+    /// submitted: an episode that never asked to be verified is unverified,
+    /// which is not the same thing as failed.
+    verified: Option<bool>,
 }
 
 impl SandboxEnvironment {
@@ -87,6 +91,7 @@ impl SandboxEnvironment {
             task: EnvTask::default(),
             cumulative_reward: None,
             done: false,
+            verified: None,
         }
     }
 
@@ -161,6 +166,7 @@ impl Environment for SandboxEnvironment {
         )?;
         self.cumulative_reward = None;
         self.done = false;
+        self.verified = None;
         // Release any previous lease before awaiting a replacement. Holding it
         // while acquiring deadlocks a one-slot pool on reset.
         self.lease.take();
@@ -205,6 +211,7 @@ impl Environment for SandboxEnvironment {
                 "\nverification: failed"
             });
             reward = Some(reward.unwrap_or(0.0) + value);
+            self.verified = Some(passed);
         }
 
         // A task with a verifiable reward is graded by its own command, never by
@@ -259,11 +266,19 @@ impl Environment for SandboxEnvironment {
             }
             _ => None,
         };
+        // The verdict the observation spells out for the policy, kept as data
+        // for whoever filters trajectories after the fact.
+        let metadata = match self.verified {
+            Some(passed) => serde_json::json!({
+                "verification": if passed { "passed" } else { "failed" },
+            }),
+            None => serde_json::Value::Null,
+        };
         Ok(EnvState {
             done: self.done,
             cumulative_reward: self.cumulative_reward,
             summary,
-            metadata: serde_json::Value::Null,
+            metadata,
         })
     }
 
@@ -523,6 +538,53 @@ mod tests {
         assert_eq!(state.summary.as_deref(), Some("yes\n"));
         assert_eq!(state.cumulative_reward, Some(0.5));
         assert!(state.done);
+        // The last verdict is the one that stands.
+        assert_eq!(state.metadata["verification"], "passed");
+    }
+
+    /// The verdict is data on the state, in three shapes: passed, failed, and
+    /// absent for an episode that was never verified.
+    #[tokio::test]
+    async fn the_state_says_whether_the_episode_was_verified_and_how_it_went() {
+        let factory = factory(SandboxEnvironmentConfig::default());
+        let mut environment = factory.create().await.unwrap();
+        let task = scenario(serde_json::json!({
+            "verify": {"command": ["sh", "-c", "test -f answer.txt"]},
+        }));
+
+        environment.reset(&task, 0).await.unwrap();
+        environment
+            .step(&call("list_dir", serde_json::json!({})))
+            .await
+            .unwrap();
+        let state = environment.state().await.unwrap();
+        assert!(
+            state.metadata.get("verification").is_none(),
+            "never submitted is not verified, and not failed either: {:?}",
+            state.metadata
+        );
+
+        environment
+            .step(&call("submit", serde_json::json!({})))
+            .await
+            .unwrap();
+        assert_eq!(
+            environment.state().await.unwrap().metadata["verification"],
+            "failed"
+        );
+
+        // A new episode starts unverified again.
+        environment.reset(&task, 1).await.unwrap();
+        assert!(
+            environment
+                .state()
+                .await
+                .unwrap()
+                .metadata
+                .get("verification")
+                .is_none()
+        );
+        environment.close().await.unwrap();
     }
 
     /// The budget declared by the scenario is the timeout for its verification

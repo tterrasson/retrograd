@@ -31,6 +31,11 @@ pub(super) struct RolloutState {
     /// Turns in a row that named no valid tool call, for
     /// `RolloutLimits::max_failed_turns`. Reset by any turn that did.
     pub(super) failed_turns: usize,
+    /// For each assistant turn, the prose its parser read out of it.
+    pub(super) assistant_prose: Vec<String>,
+    /// Assistant turns with a parse error or no call where one was expected,
+    /// over the whole trajectory - unlike `failed_turns`, never reset.
+    pub(super) invalid_turns: usize,
     pub(super) failure: Option<Error>,
 }
 
@@ -55,6 +60,8 @@ impl RolloutState {
             env_rewarded: false,
             environment_done: false,
             failed_turns: 0,
+            assistant_prose: Vec::new(),
+            invalid_turns: 0,
             failure: None,
         }
     }

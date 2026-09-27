@@ -205,9 +205,10 @@ impl RolloutEngine {
             decide_rendering(specs.len(), native, parser.is_some()),
             parser,
         ) {
-            (ToolRenderingKind::Native, Some(parser)) => {
-                Ok(ToolRendering::Native { specs, parser })
-            }
+            (ToolRenderingKind::Native, Some(parser)) => Ok(ToolRendering::Native {
+                specs: specs.into(),
+                parser,
+            }),
             _ => {
                 // The template renders tools but nothing could be derived to
                 // read them back. Rendering natively anyway would rebuild the
@@ -219,7 +220,7 @@ impl RolloutEngine {
                          own call format; falling back to the prompt-described convention"
                     );
                 }
-                prompt_tool_rendering(&specs)
+                prompt_tool_rendering(specs)
             }
         }
     }
@@ -235,7 +236,7 @@ impl RolloutEngine {
         add_assistant: bool,
     ) -> Result<Vec<Vec<i32>>> {
         let tools = match rendering {
-            ToolRendering::Native { specs, .. } => specs.as_slice(),
+            ToolRendering::Native { specs, .. } => &specs[..],
             // The catalog is in the system turn already, or there is none: the
             // template must not be handed one either way.
             ToolRendering::Prompt { .. } | ToolRendering::None => &[],

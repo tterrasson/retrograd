@@ -107,3 +107,68 @@ async fn each_scenario_is_rendered_with_its_own_tool_list() {
         "the first rendering is the one reported"
     );
 }
+
+/// What an export needs to rebuild the conversation as data - the catalog, how
+/// it was rendered, and each turn's prose without its call markup - is recorded
+/// while the rollout still knows it.
+#[tokio::test]
+async fn provenance_records_the_catalog_the_rendering_and_the_prose() {
+    let native = engine_with(Arc::new(NativeToolPolicy::default()), group_limits())
+        .rollout(&scenario(), 7)
+        .await
+        .unwrap();
+    let provenance = native.provenance.as_ref().expect("a collected trajectory");
+    assert_eq!(
+        provenance.rendering,
+        retrograd_dataset::chat_template::ToolRenderingKind::Native
+    );
+    assert_eq!(
+        provenance
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["test__echo"]
+    );
+    assert_eq!(provenance.invalid_turns, 0);
+
+    let prompt = engine_with(Arc::new(MultiTurnPolicy), group_limits())
+        .rollout(&scenario(), 7)
+        .await
+        .unwrap();
+    let provenance = prompt.provenance.as_ref().expect("a collected trajectory");
+    assert_eq!(
+        provenance.rendering,
+        retrograd_dataset::chat_template::ToolRenderingKind::Prompt
+    );
+    assert_eq!(
+        provenance.tools.len(),
+        1,
+        "the prompt path keeps its catalog too"
+    );
+    // The calling turn is all markup; the answer is all prose.
+    assert_eq!(provenance.assistant_prose, ["", "done"]);
+}
+
+/// A turn that called nothing where a call was expected is counted, and so is
+/// every later one: unlike the failed-turn budget, the count never resets.
+#[tokio::test]
+async fn turns_without_a_valid_call_are_counted_over_the_whole_trajectory() {
+    let engine = engine_with(
+        Arc::new(MultiTurnPolicy),
+        RolloutLimits {
+            max_turns: 8,
+            max_new_tokens_per_turn: 4,
+            max_trajectory_tokens: 64,
+            end_on_no_tool_call: false,
+            max_failed_turns: 2,
+            ..Default::default()
+        },
+    );
+    let trajectory = engine.rollout(&scenario(), 7).await.unwrap();
+    assert_eq!(
+        trajectory.provenance.as_ref().unwrap().invalid_turns,
+        2,
+        "one valid call, then two turns that called nothing"
+    );
+}
