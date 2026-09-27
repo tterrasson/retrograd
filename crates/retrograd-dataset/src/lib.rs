@@ -18,6 +18,8 @@ pub mod chat_template;
 mod tool_conversation;
 pub mod topk;
 
+pub use tool_conversation::{ToolConversationRenderer, ToolRenderError, ToolStream};
+
 pub const IGNORE_LABEL: i32 = -1;
 
 /// How much of a file [`DataFormat::infer`] looks at to recognize its shape.
@@ -420,6 +422,10 @@ fn misplaced_tool_field(message: &ChatMessage) -> std::result::Result<(), ChatEx
 /// tokenizer, its end-of-sequence token, and its chat template. Implemented by
 /// the runtime; kept as a trait so dataset preparation can be tested without a
 /// loaded model.
+///
+/// The methods past `format_chat` serve tool records only, which are rendered
+/// the way an agentic rollout renders them. Their defaults refuse, so a backend
+/// that cannot render tools says so instead of rendering them wrong.
 pub trait DatasetBackend {
     fn tokenize_text(&self, text: &str) -> Result<Vec<i32>>;
     fn eos_token(&self) -> Result<i32>;
@@ -427,6 +433,57 @@ pub trait DatasetBackend {
     /// appends the assistant turn's opening tag with no content, for tokenizing
     /// a prompt that is about to be completed rather than a finished exchange.
     fn format_chat(&self, messages: &[(&str, &str)], add_assistant: bool) -> Result<String>;
+
+    /// Tokenizes text that continues a stream: no BOS, and an empty fragment is
+    /// no tokens.
+    fn tokenize_fragment(&self, text: &str) -> Result<Vec<i32>> {
+        let _ = text;
+        Err(no_tools())
+    }
+
+    /// Whether generation stops on `token`.
+    fn is_eog_token(&self, token: i32) -> Result<bool> {
+        let _ = token;
+        Err(no_tools())
+    }
+
+    /// Renders messages given as a JSON array, with the catalog handed to the
+    /// template when `tools_json` is set.
+    fn format_chat_messages(
+        &self,
+        messages_json: &str,
+        tools_json: Option<&str>,
+        add_assistant: bool,
+    ) -> Result<String> {
+        let _ = (messages_json, tools_json, add_assistant);
+        Err(no_tools())
+    }
+
+    /// Whether the chat template renders a tool catalog itself.
+    fn chat_template_supports_tools(&self) -> Result<bool> {
+        Ok(false)
+    }
+
+    /// The serialized parser the chat template yields for this catalog; `None`
+    /// means the calls are read back in the prompt-described convention.
+    fn tool_call_parser(&self, tools_json: &str) -> Result<Option<String>> {
+        let _ = tools_json;
+        Ok(None)
+    }
+
+    /// Runs a parser from [`DatasetBackend::tool_call_parser`] over one
+    /// assistant turn, returning the JSON document
+    /// [`chat_template::decode_parsed_assistant`] reads.
+    fn parse_assistant(&self, parser: &str, text: &str) -> Result<String> {
+        let _ = (parser, text);
+        Err(no_tools())
+    }
+}
+
+/// The caller handed a backend that cannot render a tool record to a path that
+/// needs one.
+fn no_tools() -> Error {
+    Error::invalid("this backend cannot render tool conversations")
 }
 
 fn read_text(path: impl AsRef<Path>) -> Result<String> {
@@ -640,7 +697,8 @@ pub fn read_chat_jsonl(path: &Path) -> Result<Vec<ChatRecord>> {
 /// A chat-JSONL example's length is its full conversation, formatted exactly
 /// as [`prepare`] would format it (`add_assistant: false`): the same text
 /// `prepare_conversation` tokenizes as `full_tokens`, without building the
-/// label array that goes with it. A text corpus has one length, same as
+/// label array that goes with it. A tool record's is the stream
+/// [`ToolConversationRenderer`] assembles for it. A text corpus has one length, same as
 /// `retrograd_plan`'s character estimate treats it: the whole file.
 pub fn measured_lengths(
     trainer: &impl DatasetBackend,
@@ -652,15 +710,28 @@ pub fn measured_lengths(
             let tokens = trainer.tokenize_text(&read_text(path)?)?;
             Ok(vec![tokens.len().min(u32::MAX as usize) as u32])
         }
-        DataFormat::ChatJsonl => read_chat_jsonl(path.as_ref())?
-            .iter()
-            .map(|record| {
-                let messages = record.example.as_pairs();
-                let full = trainer.format_chat(&messages, false)?;
-                let tokens = trainer.tokenize_text(&full)?;
-                Ok(tokens.len().min(u32::MAX as usize) as u32)
-            })
-            .collect(),
+        DataFormat::ChatJsonl => {
+            let path = path.as_ref();
+            let mut tools = ToolConversationRenderer::new(trainer);
+            read_chat_jsonl(path)?
+                .iter()
+                .map(|record| {
+                    let length = match record.example.is_tool_record() {
+                        true => tools
+                            .stream(&record.example)
+                            .map_err(|error| dataset_error(path, record.line, error))?
+                            .tokens
+                            .len(),
+                        false => {
+                            let messages = record.example.as_pairs();
+                            let full = trainer.format_chat(&messages, false)?;
+                            trainer.tokenize_text(&full)?.len()
+                        }
+                    };
+                    Ok(length.min(u32::MAX as usize) as u32)
+                })
+                .collect()
+        }
     }
 }
 
@@ -737,11 +808,17 @@ fn prepare_chat_jsonl(
     let mut labels = Vec::with_capacity(capacity);
     let mut supervised_tokens = 0;
     let mut examples = 0;
+    let mut tools = ToolConversationRenderer::new(trainer);
 
     for record in records {
+        let prepared = match record.example.is_tool_record() {
+            true => tools
+                .stream(&record.example)
+                .and_then(|stream| stream.into_row(n_ctx)),
+            false => prepare_conversation(trainer, &record.example, n_ctx),
+        };
         let (example_tokens, example_labels) =
-            prepare_conversation(trainer, &record.example, n_ctx)
-                .map_err(|error| dataset_error(path, record.line, error.to_string()))?;
+            prepared.map_err(|error| dataset_error(path, record.line, error.to_string()))?;
         supervised_tokens += example_labels
             .iter()
             .filter(|&&label| label != IGNORE_LABEL)
@@ -1054,6 +1131,29 @@ mod tests {
             tokens.len() - 1,
             "the last input predicts the final A token"
         );
+    }
+
+    /// The plain path is untouched by tool records: the tokens and labels of a
+    /// plain conversation are pinned to what it produced before they existed.
+    #[test]
+    fn a_plain_record_prepares_to_the_same_row_as_before() {
+        let (tokens, labels) = prepare_conversation(
+            &FakeBackend,
+            &example(&[
+                ("user", "Q"),
+                ("assistant", "A"),
+                ("user", "R"),
+                ("assistant", "B"),
+            ]),
+            64,
+        )
+        .unwrap();
+        let text = |text: &str| text.bytes().map(i32::from).collect::<Vec<_>>();
+        assert_eq!(tokens, text("<user>Q<assistant>A<user>R<assistant>"));
+        let mut expected = vec![IGNORE_LABEL; tokens.len()];
+        expected[b"<user>Q<assistant>".len() - 1] = i32::from(b'A');
+        expected[tokens.len() - 1] = i32::from(b'B');
+        assert_eq!(labels, expected);
     }
 
     #[test]

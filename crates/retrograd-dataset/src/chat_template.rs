@@ -91,6 +91,16 @@ impl<'a> TemplateMessage<'a> {
     }
 }
 
+impl SystemTurn for TemplateMessage<'_> {
+    fn system_content(&mut self) -> Option<&mut String> {
+        (self.role == "system").then(|| self.content.to_mut())
+    }
+
+    fn new_system(content: String) -> Self {
+        Self::text("system", content)
+    }
+}
+
 /// Serializes a conversation for the model's chat template, replacing every
 /// assistant turn's content with a sentinel. Returns the JSON and the sentinels
 /// in turn order.

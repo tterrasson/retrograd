@@ -251,6 +251,35 @@ impl retrograd_dataset::DatasetBackend for Trainer {
     fn format_chat(&self, messages: &[(&str, &str)], add_assistant: bool) -> Result<String> {
         Trainer::format_chat(self, messages, add_assistant)
     }
+
+    fn tokenize_fragment(&self, text: &str) -> Result<Vec<i32>> {
+        Trainer::tokenize_fragment(self, text)
+    }
+
+    fn is_eog_token(&self, token: i32) -> Result<bool> {
+        Trainer::is_eog_token(self, token)
+    }
+
+    fn format_chat_messages(
+        &self,
+        messages_json: &str,
+        tools_json: Option<&str>,
+        add_assistant: bool,
+    ) -> Result<String> {
+        Trainer::format_chat_messages(self, messages_json, tools_json, add_assistant)
+    }
+
+    fn chat_template_supports_tools(&self) -> Result<bool> {
+        Trainer::chat_template_supports_tools(self)
+    }
+
+    fn tool_call_parser(&self, tools_json: &str) -> Result<Option<String>> {
+        Trainer::tool_call_parser(self, Some(tools_json))
+    }
+
+    fn parse_assistant(&self, parser: &str, text: &str) -> Result<String> {
+        parse_assistant_output(parser, text)
+    }
 }
 
 mod generate;
