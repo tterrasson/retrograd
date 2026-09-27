@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use retrograd_agent_core::{Error, Result};
+use retrograd_agent_core::{Error, Result, ToolCall};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -11,6 +11,9 @@ use serde_json::Value;
 pub enum Purpose {
     Judge,
     ScenarioGeneration,
+    /// A remote model generating the trajectories a collection keeps: it
+    /// stands where the policy stands, so it fails the way a policy does.
+    Collect,
 }
 
 impl Purpose {
@@ -18,6 +21,7 @@ impl Purpose {
         match self {
             Self::Judge => "judge",
             Self::ScenarioGeneration => "scenario generation",
+            Self::Collect => "collection",
         }
     }
 
@@ -25,6 +29,7 @@ impl Purpose {
         match self {
             Self::Judge => Error::Reward(message.into()),
             Self::ScenarioGeneration => Error::Tool(message.into()),
+            Self::Collect => Error::PolicyGeneration(message.into()),
         }
     }
 }
@@ -46,9 +51,14 @@ pub struct OpenAiClient {
 }
 
 /// The subset of a chat-completion response every current caller needs.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Completion {
+    /// Empty when the model answered with calls alone.
     pub content: String,
+    /// The calls the model made, in order. Their arguments arrive as a JSON
+    /// string and are decoded here; a call whose arguments are not a JSON
+    /// object is refused with the response.
+    pub tool_calls: Vec<ToolCall>,
 }
 
 #[derive(Deserialize)]
@@ -65,6 +75,22 @@ struct Choice {
 #[derive(Deserialize)]
 struct Message {
     content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<WireCall>>,
+}
+
+#[derive(Deserialize)]
+struct WireCall {
+    #[serde(default)]
+    id: Option<String>,
+    function: WireFunction,
+}
+
+#[derive(Deserialize)]
+struct WireFunction {
+    name: String,
+    #[serde(default)]
+    arguments: Option<String>,
 }
 
 impl OpenAiClient {
@@ -161,13 +187,49 @@ fn decode_completion(purpose: Purpose, body: &[u8]) -> Result<Completion> {
             purpose.label()
         )));
     }
-    let content = choice.message.content.ok_or_else(|| {
-        purpose.runtime_error(format!(
+    let wire_calls = choice.message.tool_calls.unwrap_or_default();
+    if choice.message.content.is_none() && wire_calls.is_empty() {
+        return Err(purpose.runtime_error(format!(
             "{} response contained no message content",
             purpose.label()
-        ))
-    })?;
-    Ok(Completion { content })
+        )));
+    }
+    let tool_calls = wire_calls
+        .into_iter()
+        .enumerate()
+        .map(|(index, call)| {
+            let raw = call.function.arguments.unwrap_or_default();
+            let arguments = match raw.trim() {
+                "" => Value::Object(Default::default()),
+                raw => serde_json::from_str(raw).map_err(|error| {
+                    purpose.runtime_error(format!(
+                        "{} response called '{}' with arguments that are not JSON: {error}",
+                        purpose.label(),
+                        call.function.name
+                    ))
+                })?,
+            };
+            if !arguments.is_object() {
+                return Err(purpose.runtime_error(format!(
+                    "{} response called '{}' with arguments that are not a JSON object",
+                    purpose.label(),
+                    call.function.name
+                )));
+            }
+            Ok(ToolCall {
+                id: call
+                    .id
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or_else(|| format!("call_{index}")),
+                name: call.function.name,
+                arguments,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Completion {
+        content: choice.message.content.unwrap_or_default(),
+        tool_calls,
+    })
 }
 
 fn endpoint(base_url: &str) -> std::result::Result<reqwest::Url, &'static str> {
@@ -210,6 +272,46 @@ mod tests {
         );
         assert!(endpoint("https://user@example.test/v1").is_err());
         assert!(endpoint("https://example.test/v1?token=secret").is_err());
+    }
+
+    #[test]
+    fn a_reply_of_calls_alone_is_a_completion_with_its_calls_decoded() {
+        let completion = decode_completion(
+            Purpose::Collect,
+            br#"{"choices":[{"message":{"content":null,"tool_calls":[
+                {"id":"call_a","type":"function","function":{"name":"run","arguments":"{\"cmd\":\"ls\"}"}},
+                {"type":"function","function":{"name":"submit","arguments":""}}]},
+                "finish_reason":"tool_calls"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(completion.content, "");
+        assert_eq!(completion.tool_calls.len(), 2);
+        assert_eq!(completion.tool_calls[0].id, "call_a");
+        assert_eq!(
+            completion.tool_calls[0].arguments,
+            serde_json::json!({"cmd": "ls"})
+        );
+        assert_eq!(
+            completion.tool_calls[1].id, "call_1",
+            "positional, as the parsers do"
+        );
+        assert_eq!(completion.tool_calls[1].arguments, serde_json::json!({}));
+    }
+
+    #[test]
+    fn a_reply_with_neither_content_nor_calls_is_refused() {
+        let error = decode_completion(
+            Purpose::Collect,
+            br#"{"choices":[{"message":{"content":null},"finish_reason":"stop"}]}"#,
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::PolicyGeneration(_)), "{error}");
+        let error = decode_completion(
+            Purpose::Collect,
+            br#"{"choices":[{"message":{"tool_calls":[{"function":{"name":"run","arguments":"[1]"}}]}}]}"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("not a JSON object"), "{error}");
     }
 
     #[test]
