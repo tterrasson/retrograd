@@ -1,8 +1,8 @@
 # Configuration reference
 
 A run is described by one TOML file. `[run].algorithm` selects the algorithm
-and its section: `[sft]`, `[ppo]`, `[grpo]`, `[distill]`, or `[agent]` for
-`agent_grpo`. Unknown keys, and sections that do not apply to the run, are
+and its section: `[sft]`, `[ppo]`, `[grpo]`, `[distill]`, `[preference]`, or
+`[agent]` for `agent_grpo`. Unknown keys, and sections that do not apply to the run, are
 errors. Relative paths resolve against the directory of the TOML file.
 
 ## Common sections
@@ -11,7 +11,7 @@ errors. Relative paths resolve against the directory of the TOML file.
 
 | Key | Default | Description |
 | --- | ---: | --- |
-| `algorithm` | required | `sft`, `ppo`, `grpo`, `distill` or `agent_grpo`. |
+| `algorithm` | required | `sft`, `ppo`, `grpo`, `distill`, `preference` or `agent_grpo`. |
 | `verbose` | `false` | Extra runtime logging. |
 
 ### `[model]`
@@ -171,7 +171,8 @@ PPO, GRPO and agentic GRPO. See [Observing rollouts](../training/observe).
 ### `[reference]`
 
 The frozen model used by the KL penalty (`kl_coefficient > 0`) in GRPO,
-agentic GRPO and on-policy distillation. Without it, the reference is the base
+agentic GRPO and on-policy distillation, and as the reference of a `dpo` or
+`ipo` preference run. Without it, the reference is the base
 model without its adapter, which only works while base weights are frozen: a
 run that trains base weights with a KL penalty requires this section.
 
@@ -284,6 +285,24 @@ Offline only:
 | `offline_epochs` | `1` | Passes over the corpus. |
 
 Keys of one mode are refused in the other.
+
+## `[preference]` {#preference}
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `data` | required | Preference JSONL: `prompt`, `chosen`, `rejected` per line. |
+| `loss` | `dpo` | `dpo`, `ipo`, `simpo` or `orpo`. |
+| `beta` | per loss | `0.1`, or `2.0` for `simpo`. For `orpo`, the weight of the odds-ratio term. |
+| `reference` | `initial` | `dpo` and `ipo` only: `initial` or `base`. Omit it when `[reference]` names the model. |
+| `label_smoothing` | `0.0` | `dpo` only, in `[0, 0.5)`. |
+| `gamma_beta_ratio` | `0.5` | `simpo` only: the target margin. |
+| `shuffle` | `true` | Shuffle pairs at each epoch, seeded from `lora.seed`. |
+| `pairs_per_step` | none | Most pairs per optimizer step. |
+| `logps_drop_warn` | `2.0` | Nats the chosen answers may lose, with the rejected ones, before a warning. |
+
+A key the chosen loss does not read is an error. `training.epochs` counts the
+passes over the pairs; `training.gradient_accumulation` is pinned to
+`ctx / micro_batch`. See [Preference optimization](../training/preference).
 
 ## Agentic GRPO {#agentic-grpo}
 

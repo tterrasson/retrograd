@@ -1,0 +1,45 @@
+# Fetch the CPU fixture once, then run from the repository root:
+# scripts/fetch-cpu-fixture.sh
+# cargo run -q -- train examples/smoke_tiny_preference.toml
+
+[run]
+algorithm = "preference"
+verbose = true
+
+[model]
+# Relative to this file. Any other GGUF with a chat template works.
+path = "../tests/fixtures/LFM2.5-230M-Q4_K_M.gguf"
+device = "cpu"
+
+[output]
+path = "/tmp/retrograd-smoke-preference-adapter.gguf"
+
+[lora]
+dtype = "f32"
+rank = 4
+alpha = 8.0
+seed = 42
+
+[training]
+ctx = 128
+# A step holds whole pairs, so it spans the whole context: the accumulation is
+# pinned to ctx / micro_batch.
+micro_batch = 64
+epochs = 2
+lr = 0.001
+lr_scheduler = "linear"
+
+[preference]
+data = "smoke_preference_pairs.jsonl"
+loss = "dpo"
+beta = 0.1
+pairs_per_step = 2
+
+[evaluation]
+data = "smoke_preference_pairs.jsonl"
+every_iterations = 1
+
+[checkpoint]
+directory = "/tmp/retrograd-smoke-preference-checkpoints"
+mode = "steps_and_best_eval"
+every_steps = 2

@@ -56,6 +56,7 @@ export default defineConfig({
             { text: 'Agentic GRPO', link: '/training/agent' },
             { text: 'Tools and toolsets', link: '/training/tools' },
             { text: 'Distillation', link: '/training/distill' },
+            { text: 'Preference optimization', link: '/training/preference' },
             { text: 'Observing rollouts', link: '/training/observe' },
           ],
         },

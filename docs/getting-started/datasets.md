@@ -94,6 +94,20 @@ tokenizer, and a record can only hold the text.
 `retrograd collect` writes this format from successful rollouts; see
 [Tools](../training/tools#warm-start-sft).
 
+## Preference pairs
+
+A [preference run](../training/preference) reads pairs: a `prompt`, then the
+`chosen` and the `rejected` answer to it, each a list of messages in the chat
+schema above.
+
+```jsonl
+{"prompt":[{"role":"user","content":"What is 2 + 2?"}],"chosen":[{"role":"assistant","content":"4"}],"rejected":[{"role":"assistant","content":"5"}]}
+```
+
+The prompt ends on a user turn; both answers start with an assistant turn and
+must differ. A preference file is never inferred from its content: on the
+server, upload it with `format=preference-jsonl`.
+
 ## Plain text
 
 SFT also accepts plain text. The file is tokenized as one stream and split into

@@ -1,0 +1,4 @@
+{"prompt":[{"role":"user","content":"Shout: hello there"}],"chosen":[{"role":"assistant","content":"HELLO THERE"}],"rejected":[{"role":"assistant","content":"hello there"}]}
+{"prompt":[{"role":"user","content":"Shout: good morning"}],"chosen":[{"role":"assistant","content":"GOOD MORNING"}],"rejected":[{"role":"assistant","content":"good morning"}]}
+{"prompt":[{"role":"user","content":"Shout: thank you"}],"chosen":[{"role":"assistant","content":"THANK YOU"}],"rejected":[{"role":"assistant","content":"thank you"}]}
+{"prompt":[{"role":"user","content":"Shout: well done"}],"chosen":[{"role":"assistant","content":"WELL DONE"}],"rejected":[{"role":"assistant","content":"well done"}]}
