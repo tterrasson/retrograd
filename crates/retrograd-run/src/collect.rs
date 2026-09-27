@@ -212,7 +212,7 @@ impl Collection<'_> {
         let mut limits = agent.config.limits;
         limits.max_trajectory_tokens = agent.trajectory_limit(trainer.context_size()?)?;
 
-        let world = build_world(agent, observer, self.local, self.runtime)?;
+        let world = build_world(agent, true, observer, self.local, self.runtime)?;
         let mut sink = FileSink::create(self.partial, observer)?;
         let training = &config.training;
         let collected = self.local.block_on(self.runtime, async {
@@ -283,13 +283,13 @@ impl Collection<'_> {
         )
         .map_err(Error::from)?;
         observer.info(&format!("generator: {} at {}", api.model, api.base_url));
-        let world = build_world(agent, observer, self.local, self.runtime)?;
-        if world.judge.is_some() {
+        if agent.judge.is_some() {
             observer.info(
                 "[agent.judge] is not used by collect --api: only the environment grades an API \
                  trace",
             );
         }
+        let world = build_world(agent, false, observer, self.local, self.runtime)?;
         let Some(environments) = world.environments.clone() else {
             world.shutdown(self.local, self.runtime);
             return Err(Error::config(

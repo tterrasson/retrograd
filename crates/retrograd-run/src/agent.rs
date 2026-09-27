@@ -274,7 +274,7 @@ fn drive(
     };
     let local = tokio::task::LocalSet::new();
 
-    let world = match build_world(agent, &mut *ctx.observer, &local, &runtime) {
+    let world = match build_world(agent, true, &mut *ctx.observer, &local, &runtime) {
         Ok(world) => world,
         Err(error) => {
             return AgentOutcome {
@@ -396,14 +396,16 @@ impl AgentWorld {
     }
 }
 
-/// Builds the judge, the tools and the environment an `[agent]` section
-/// declares, and installs the interrupt handler that tears them down.
+/// Builds the tools and environment an `[agent]` section declares, and the
+/// judge when this run uses one. Installs the interrupt handler that tears
+/// the world down.
 ///
-/// Everything that can refuse the configuration - a judge that cannot start, a
-/// stateful MCP server shared with an environment, an image that cannot be
-/// pulled - refuses here, before a single token is generated.
+/// Everything this run uses that can refuse the configuration - a judge that
+/// cannot start, a stateful MCP server shared with an environment, an image
+/// that cannot be pulled - refuses here, before a single token is generated.
 pub(crate) fn build_world(
     agent: &AgentRunConfig,
+    use_judge: bool,
     observer: &mut dyn crate::RunObserver,
     local: &tokio::task::LocalSet,
     runtime: &tokio::runtime::Runtime,
@@ -415,6 +417,7 @@ pub(crate) fn build_world(
     let judge = agent
         .judge
         .as_ref()
+        .filter(|_| use_judge)
         .map(|judge| judge.build(|path| path.to_path_buf()).map_err(Error::from))
         .transpose()?;
 
@@ -449,7 +452,7 @@ pub(crate) fn build_world(
     // judge, a group its environment left unscored has no fallback and is
     // dropped. Reading it at startup is what turns a later "unscored" count
     // from a mystery into a consequence.
-    if judge.is_none() {
+    if use_judge && judge.is_none() {
         observer.info("no [agent.judge]: trajectories are graded by the environment alone");
     }
 

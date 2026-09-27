@@ -164,4 +164,3 @@ environment and judge, and keeps the best successful traces as
 model makes a stronger generator: `--model teacher.gguf`. See
 [`collect`](../reference/cli#collect) and
 [an example](./agent#warm-start-from-successful-traces).
-

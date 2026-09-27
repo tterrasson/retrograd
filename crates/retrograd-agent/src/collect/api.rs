@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::future::join_all;
-use retrograd_dataset::chat_template::TemplateTool;
+use retrograd_dataset::chat_template::{TemplateTool, ToolRenderingKind, observation_text};
 use retrograd_dataset::{ChatExample, ChatMessage, ChatToolCall};
 use retrograd_llm_client::{OpenAiClient, Purpose};
 use serde_json::{Value, json};
@@ -213,7 +213,9 @@ async fn episode(
         });
         if calls.is_empty() {
             // An answer, or - when the run expects a call on every turn - a
-            // turn that called nothing, which no record should teach.
+            // turn that called nothing. The latter invalidates the whole
+            // record in keep_best, even if a later turn recovers, so there is
+            // no useful trace to continue collecting.
             if !limits.end_on_no_tool_call && !specs.is_empty() {
                 invalid_turns += 1;
             }
@@ -285,7 +287,17 @@ fn request(generator: &ApiGenerator, messages: &[ChatMessage], specs: &[ToolSpec
     let messages = messages
         .iter()
         .map(|message| {
-            let mut object = json!({"role": message.role, "content": message.content});
+            let content = if message.role == "tool" {
+                observation_text(
+                    ToolRenderingKind::Native,
+                    message.tool_call_id.as_deref().unwrap_or_default(),
+                    &message.content,
+                    message.is_error,
+                )
+            } else {
+                message.content.clone()
+            };
+            let mut object = json!({"role": message.role, "content": content});
             if !message.tool_calls.is_empty() {
                 object["tool_calls"] = message
                     .tool_calls

@@ -99,6 +99,22 @@ fn factory() -> Arc<ScriptedFactory> {
     })
 }
 
+#[test]
+fn a_failed_observation_is_marked_for_the_generator_as_it_is_for_sft() {
+    let generator = generator("http://127.0.0.1:1/v1");
+    let messages = [ChatMessage {
+        tool_call_id: Some("call_x".into()),
+        is_error: true,
+        ..ChatMessage::text("tool", "permission denied")
+    }];
+    let payload = request(&generator, &messages, &[]);
+    assert_eq!(
+        payload["messages"][0]["content"],
+        "ERROR: permission denied"
+    );
+    assert_eq!(messages[0].content, "permission denied");
+}
+
 #[tokio::test]
 async fn a_remote_model_is_collected_into_structured_records() {
     let (url, requests) = endpoint().await;
