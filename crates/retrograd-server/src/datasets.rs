@@ -85,12 +85,95 @@ impl TokenizedStats {
     }
 }
 
+/// What an uploaded file holds, as the server stores and names it.
+///
+/// A superset of [`DataFormat`], which is the shape a *training row* is read
+/// in: a preference file is one JSONL record per pair, read by its own reader,
+/// and nothing infers it from content - `.jsonl` stays chat, and a preference
+/// file is declared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UploadFormat {
+    Text,
+    ChatJsonl,
+    PreferenceJsonl,
+}
+
+impl UploadFormat {
+    /// The name the card records and the API speaks.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::ChatJsonl => "chat-jsonl",
+            Self::PreferenceJsonl => "preference-jsonl",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "text" => Some(Self::Text),
+            "chat-jsonl" => Some(Self::ChatJsonl),
+            "preference-jsonl" => Some(Self::PreferenceJsonl),
+            _ => None,
+        }
+    }
+
+    /// The row shape a length estimate and a planner read the file in: a
+    /// preference file is JSONL, never windowed text.
+    pub fn data_format(self) -> DataFormat {
+        match self {
+            Self::Text => DataFormat::Text,
+            Self::ChatJsonl | Self::PreferenceJsonl => DataFormat::ChatJsonl,
+        }
+    }
+
+    fn data_file(self) -> &'static str {
+        match self {
+            Self::Text => "data.txt",
+            Self::ChatJsonl | Self::PreferenceJsonl => "data.jsonl",
+        }
+    }
+
+    /// The per-line validation of a JSONL format; a text corpus has no records
+    /// to validate.
+    pub fn validate(self, path: &Path) -> retrograd_core::Result<Option<Validation>> {
+        match self {
+            Self::Text => Ok(None),
+            Self::ChatJsonl => retrograd_dataset::validate_chat_jsonl(path).map(Some),
+            Self::PreferenceJsonl => retrograd_dataset::validate_preference_jsonl(path).map(Some),
+        }
+    }
+
+    /// Length statistics from character counts, without a tokenizer. A pair's
+    /// length is both of its sequences.
+    pub fn estimate(self, path: &Path) -> retrograd_core::Result<DatasetStats> {
+        match self {
+            Self::PreferenceJsonl => DatasetStats::estimate_preference_file(path),
+            format => DatasetStats::estimate_from_file(path, format.data_format()),
+        }
+    }
+}
+
+/// Real per-example lengths with `backend`'s tokenizer and chat template: a
+/// record's full conversation, or both sequences of a pair.
+pub fn measured_lengths(
+    backend: &impl retrograd_dataset::DatasetBackend,
+    path: &Path,
+    format: UploadFormat,
+) -> retrograd_core::Result<Vec<u32>> {
+    match format {
+        UploadFormat::PreferenceJsonl => {
+            retrograd_dataset::preference_measured_lengths(backend, path)
+        }
+        format => retrograd_dataset::measured_lengths(backend, path, format.data_format()),
+    }
+}
+
 /// `state_dir/datasets/<id>/meta.json`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DatasetMeta {
     pub id: String,
     pub sha256: String,
-    /// `"chat-jsonl"` | `"text"`.
+    /// `"chat-jsonl"` | `"text"` | `"preference-jsonl"`.
     pub format: String,
     /// The data file's name inside the dataset's own directory
     /// (`"data.jsonl"` | `"data.txt"`), so a future layout (a split's derived
@@ -109,12 +192,8 @@ pub struct DatasetMeta {
 }
 
 impl DatasetMeta {
-    pub fn data_format(&self) -> Option<DataFormat> {
-        match self.format.as_str() {
-            "chat-jsonl" => Some(DataFormat::ChatJsonl),
-            "text" => Some(DataFormat::Text),
-            _ => None,
-        }
+    pub fn upload_format(&self) -> Option<UploadFormat> {
+        UploadFormat::from_name(&self.format)
     }
 
     /// The measured lengths for `model`, if this dataset has already been
@@ -188,7 +267,7 @@ pub enum BodyError {
 #[derive(Clone, Debug, Default)]
 pub struct IngestOptions {
     /// `None` asks [`DataFormat::infer`] to determine it from the content.
-    pub format: Option<DataFormat>,
+    pub format: Option<UploadFormat>,
     pub name: Option<String>,
     /// The size the client announced (`Content-Length`), when it did. Lets both
     /// limits be enforced before a single byte is written; an upload that
@@ -235,31 +314,23 @@ pub enum IngestError {
     Invalid(Validation),
 }
 
-fn data_file_name(format: DataFormat) -> &'static str {
-    match format {
-        DataFormat::ChatJsonl => "data.jsonl",
-        DataFormat::Text => "data.txt",
-    }
-}
-
-fn format_name(format: DataFormat) -> &'static str {
-    match format {
-        DataFormat::ChatJsonl => "chat-jsonl",
-        DataFormat::Text => "text",
-    }
-}
-
 /// Parses the `format` field/query param a client may send. `None` or
 /// `"auto"` defers to [`DataFormat::infer`], the same vocabulary
 /// `resolve::plan_recipe` accepts for a recipe's `data.format`.
-pub fn parse_format_hint(hint: Option<&str>) -> Result<Option<DataFormat>, IngestError> {
+pub fn parse_format_hint(hint: Option<&str>) -> Result<Option<UploadFormat>, IngestError> {
+    parse_format(hint).map_err(IngestError::UnsupportedFormat)
+}
+
+/// The one vocabulary of a declared format, for uploads and recipes alike.
+pub fn parse_format(hint: Option<&str>) -> Result<Option<UploadFormat>, String> {
     match hint {
         None | Some("auto") | Some("") => Ok(None),
-        Some("text") | Some("txt") => Ok(Some(DataFormat::Text)),
-        Some("jsonl") | Some("chat") | Some("chat-jsonl") => Ok(Some(DataFormat::ChatJsonl)),
-        Some(other) => Err(IngestError::UnsupportedFormat(format!(
-            "unknown dataset format '{other}'; use auto, text or jsonl"
-        ))),
+        Some("text") | Some("txt") => Ok(Some(UploadFormat::Text)),
+        Some("jsonl") | Some("chat") | Some("chat-jsonl") => Ok(Some(UploadFormat::ChatJsonl)),
+        Some("preference") | Some("preference-jsonl") => Ok(Some(UploadFormat::PreferenceJsonl)),
+        Some(other) => Err(format!(
+            "unknown dataset format '{other}'; use auto, text, jsonl or preference-jsonl"
+        )),
     }
 }
 
@@ -576,7 +647,7 @@ impl DatasetStore {
         tmp_path: &Path,
         bytes_written: u64,
         sha256: String,
-        format_hint: Option<DataFormat>,
+        format_hint: Option<UploadFormat>,
         name: Option<String>,
         max_datasets_bytes: Option<u64>,
     ) -> Result<Ingested, IngestError> {
@@ -607,17 +678,19 @@ impl DatasetStore {
 
         let format = match format_hint {
             Some(format) => format,
-            None => DataFormat::infer(tmp_path)?,
+            None => match DataFormat::infer(tmp_path)? {
+                DataFormat::Text => UploadFormat::Text,
+                DataFormat::ChatJsonl => UploadFormat::ChatJsonl,
+            },
         };
 
-        if format == DataFormat::ChatJsonl {
-            let validation = retrograd_dataset::validate_chat_jsonl(tmp_path)?;
-            if !validation.is_valid() {
-                return Err(IngestError::Invalid(validation));
-            }
+        if let Some(validation) = format.validate(tmp_path)?
+            && !validation.is_valid()
+        {
+            return Err(IngestError::Invalid(validation));
         }
 
-        let stats = DatasetStats::estimate_from_file(tmp_path, format)?;
+        let stats = format.estimate(tmp_path)?;
 
         if let Some(quota) = max_datasets_bytes {
             let used = self.total_bytes();
@@ -631,7 +704,7 @@ impl DatasetStore {
         }
 
         std::fs::create_dir_all(&dir)?;
-        let data_file = data_file_name(format);
+        let data_file = format.data_file();
         let data_path = dir.join(data_file);
         if let Err(error) = std::fs::rename(tmp_path, &data_path) {
             // The commit lock guarantees this directory was created by this
@@ -643,7 +716,7 @@ impl DatasetStore {
         let meta = DatasetMeta {
             id: id.clone(),
             sha256,
-            format: format_name(format).to_string(),
+            format: format.name().to_string(),
             data_file: data_file.to_string(),
             bytes: bytes_written,
             examples: stats.examples,
@@ -715,7 +788,7 @@ mod tests {
         let store = store("concurrent-dedup");
         let content = b"one complete dataset\n";
         let options = || IngestOptions {
-            format: Some(DataFormat::Text),
+            format: Some(UploadFormat::Text),
             ..Default::default()
         };
         let (left, right) = tokio::join!(
@@ -743,7 +816,7 @@ mod tests {
     async fn concurrent_uploads_cannot_both_spend_the_same_quota() {
         let store = store("concurrent-quota");
         let options = || IngestOptions {
-            format: Some(DataFormat::Text),
+            format: Some(UploadFormat::Text),
             max_datasets_bytes: Some(10),
             ..Default::default()
         };
@@ -790,7 +863,7 @@ mod tests {
             .ingest(
                 body(&content),
                 IngestOptions {
-                    format: Some(DataFormat::Text),
+                    format: Some(UploadFormat::Text),
                     max_dataset_bytes: Some(10),
                     ..Default::default()
                 },
@@ -815,7 +888,7 @@ mod tests {
             .ingest(
                 body(content),
                 IngestOptions {
-                    format: Some(DataFormat::ChatJsonl),
+                    format: Some(UploadFormat::ChatJsonl),
                     ..Default::default()
                 },
             )
@@ -829,6 +902,59 @@ mod tests {
             other => panic!("expected a validation failure, got {other:?}"),
         }
         assert_eq!(store.list().len(), 0);
+        let _ = std::fs::remove_dir_all(store.root.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_preference_upload_is_validated_and_measured_as_pairs() {
+        let store = store("preference");
+        let pair = b"{\"prompt\":[{\"role\":\"user\",\"content\":\"q\"}],\
+                     \"chosen\":[{\"role\":\"assistant\",\"content\":\"a\"}],\
+                     \"rejected\":[{\"role\":\"assistant\",\"content\":\"b\"}]}\n";
+        let meta = store
+            .ingest(
+                body(pair),
+                IngestOptions {
+                    format: Some(UploadFormat::PreferenceJsonl),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .meta()
+            .clone();
+        assert_eq!(meta.format, "preference-jsonl");
+        assert_eq!(meta.upload_format(), Some(UploadFormat::PreferenceJsonl));
+        assert_eq!(meta.data_file, "data.jsonl");
+        assert_eq!(meta.examples, 1);
+
+        // The same line as a chat record, and a pair that prefers nothing, are
+        // refused line by line.
+        let invalid = b"{\"messages\":[{\"role\":\"user\",\"content\":\"q\"}]}\n\
+                        {\"prompt\":[{\"role\":\"user\",\"content\":\"q\"}],\
+                        \"chosen\":[{\"role\":\"assistant\",\"content\":\"a\"}],\
+                        \"rejected\":[{\"role\":\"assistant\",\"content\":\"a\"}]}\n";
+        let error = store
+            .ingest(
+                body(invalid),
+                IngestOptions {
+                    format: Some(UploadFormat::PreferenceJsonl),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        match error {
+            IngestError::Invalid(validation) => {
+                assert_eq!(validation.total, 2, "{validation:?}");
+                assert_eq!(validation.errors[1].line, 2);
+            }
+            other => panic!("expected a validation failure, got {other:?}"),
+        }
+        assert_eq!(
+            parse_format_hint(Some("preference")).unwrap(),
+            Some(UploadFormat::PreferenceJsonl)
+        );
         let _ = std::fs::remove_dir_all(store.root.parent().unwrap());
     }
 
@@ -1029,7 +1155,7 @@ mod tests {
             .ingest(
                 body(&content),
                 IngestOptions {
-                    format: Some(DataFormat::Text),
+                    format: Some(UploadFormat::Text),
                     name: Some("corpus".into()),
                     ..Default::default()
                 },

@@ -22,7 +22,6 @@ use retrograd_config::{CheckpointMode, RunConfig};
 use retrograd_core::{
     Device, MemoryReport, ModelInfo, Result as CoreResult, TargetSet, TrainMetrics,
 };
-use retrograd_dataset::DataFormat;
 use retrograd_metrics::{MetricEvent, MetricValue, MetricsSink};
 use retrograd_plan::MemoryBaseline;
 use retrograd_plan::cost::{self, Calibration, Workload, WorkloadKind};
@@ -92,9 +91,9 @@ impl ModelProbe for FakeProbe {
         &self,
         _model: &Path,
         path: &Path,
-        format: DataFormat,
+        format: retrograd_server::datasets::UploadFormat,
     ) -> CoreResult<Vec<u32>> {
-        retrograd_dataset::measured_lengths(&FakeTokenizer, path, format)
+        retrograd_server::datasets::measured_lengths(&FakeTokenizer, path, format)
     }
 }
 

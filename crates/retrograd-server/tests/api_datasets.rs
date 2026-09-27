@@ -452,3 +452,101 @@ async fn local_dataset_paths_are_refused_when_the_operator_disables_them() {
     let (status, plan) = post(&router, "/v1/plan", body).await;
     assert_eq!(status, StatusCode::OK, "{plan}");
 }
+
+const PREFERENCE_JSONL: &[u8] = b"{\"prompt\":[{\"role\":\"user\",\"content\":\"Q1\"}],\"chosen\":[{\"role\":\"assistant\",\"content\":\"good\"}],\"rejected\":[{\"role\":\"assistant\",\"content\":\"bad\"}]}\n\
+{\"prompt\":[{\"role\":\"user\",\"content\":\"Q2\"}],\"chosen\":[{\"role\":\"assistant\",\"content\":\"right\"}],\"rejected\":[{\"role\":\"assistant\",\"content\":\"wrong\"}]}\n";
+
+#[tokio::test]
+async fn a_preference_file_is_declared_and_validated_pair_by_pair() {
+    let fixture = Fixture::new("datasets-preference");
+    let router = router_for(&fixture, FakeEngine::succeeding());
+    let (status, body) = upload(
+        &router,
+        "/v1/datasets?format=preference-jsonl",
+        PREFERENCE_JSONL,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["format"], "preference-jsonl");
+    assert_eq!(body["examples"], 2);
+
+    // Without the declaration a file of pairs is read as chat, and refused.
+    // Other bytes than the stored ones: the same content would answer the
+    // card it already has.
+    let first_line = PREFERENCE_JSONL
+        .split_inclusive(|&byte| byte == b'\n')
+        .next()
+        .expect("one line");
+    let (status, body) = upload(&router, "/v1/datasets", first_line).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+    let broken = b"{\"messages\":[{\"role\":\"user\",\"content\":\"a\"}]}\n\
+{\"prompt\":[{\"role\":\"user\",\"content\":\"Q\"}],\"chosen\":[{\"role\":\"assistant\",\"content\":\"a\"}],\"rejected\":[{\"role\":\"assistant\",\"content\":\"a\"}]}\n";
+    let (status, body) = upload(&router, "/v1/datasets?format=preference", broken).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let line_errors = body["meta"]["line_errors"]
+        .as_array()
+        .expect("collected errors");
+    assert_eq!(line_errors.len(), 2, "{body}");
+    assert_eq!(line_errors[0]["code"], "invalid_json");
+    assert_eq!(line_errors[1]["line"], 2);
+    assert_eq!(line_errors[1]["code"], "invalid_value");
+}
+
+#[tokio::test]
+async fn a_preference_tuning_recipe_plans_a_preference_run() {
+    let fixture = Fixture::new("datasets-preference-plan");
+    let router = router_for(&fixture, FakeEngine::succeeding());
+    let (status, uploaded) = upload(
+        &router,
+        "/v1/datasets?format=preference-jsonl",
+        PREFERENCE_JSONL,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{uploaded}");
+    let id = uploaded["id"].as_str().unwrap().to_string();
+
+    let body = json!({
+        "recipe": {
+            "objective": "preference-tuning",
+            "model": fixture.path("model.gguf"),
+            "data": {"dataset": id},
+            "budget": {"epochs": 1},
+            "seed": 7
+        }
+    });
+    let (status, plan) = post(&router, "/v1/plan", body).await;
+    assert_eq!(status, StatusCode::OK, "{plan}");
+    let config = &plan["effective_config"];
+    assert_eq!(config["run"]["algorithm"], "preference", "{plan}");
+    assert_eq!(config["preference"]["loss"], "dpo", "{plan}");
+    assert!(
+        config["preference"]["data"]
+            .as_str()
+            .expect("a data path")
+            .ends_with(&format!("datasets/{id}/data.jsonl")),
+        "{plan}"
+    );
+    // One step spans the whole window.
+    let training = &config["training"];
+    assert_eq!(
+        training["micro_batch"].as_u64().unwrap()
+            * training["gradient_accumulation"].as_u64().unwrap(),
+        training["ctx"].as_u64().unwrap(),
+        "{plan}"
+    );
+
+    // The chat file of another objective is refused beside this one.
+    let (status, chat) = upload(&router, "/v1/datasets", CHAT_JSONL).await;
+    assert_eq!(status, StatusCode::CREATED, "{chat}");
+    let body = json!({
+        "recipe": {
+            "objective": "preference-tuning",
+            "model": fixture.path("model.gguf"),
+            "data": {"dataset": chat["id"]},
+            "seed": 7
+        }
+    });
+    let (status, refused) = post(&router, "/v1/plan", body).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+}

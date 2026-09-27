@@ -151,7 +151,7 @@ pub async fn preview(
     let meta = lookup(&state, &id)?;
     let limit = query.limit.unwrap_or(DEFAULT_PREVIEW).clamp(1, 100);
     let path = state.datasets.data_path(&meta);
-    let examples = preview_examples(&path, meta.data_format(), limit).map_err(|error| {
+    let examples = preview_examples(&path, meta.upload_format(), limit).map_err(|error| {
         ApiError::from(error).with_field("/id", ErrorCode::InvalidValue, "could not be read")
     })?;
     Ok(Json(dto::DatasetPreview {
@@ -180,7 +180,7 @@ pub async fn tokenize(
     RequestJson(request): RequestJson<dto::TokenizeRequest>,
 ) -> ApiResult<Json<dto::DatasetTokenization>> {
     let meta = lookup(&state, &id)?;
-    let format = meta.data_format().ok_or_else(|| {
+    let format = meta.upload_format().ok_or_else(|| {
         ApiError::invalid(format!(
             "dataset {id} was stored as '{}', which this server can no longer read",
             meta.format
@@ -261,7 +261,7 @@ fn tokenization(
 /// or a gigabyte.
 fn preview_examples(
     path: &std::path::Path,
-    format: Option<retrograd_dataset::DataFormat>,
+    format: Option<crate::datasets::UploadFormat>,
     limit: usize,
 ) -> retrograd_core::Result<Vec<serde_json::Value>> {
     use std::io::BufRead;
@@ -274,8 +274,8 @@ fn preview_examples(
             continue;
         }
         examples.push(match format {
-            Some(retrograd_dataset::DataFormat::Text) => serde_json::Value::String(line),
-            // Chat-JSONL, or an unsupported format: every line here already
+            Some(crate::datasets::UploadFormat::Text) => serde_json::Value::String(line),
+            // A JSONL format, or an unsupported one: every line here already
             // survived ingestion's
             // validation, so parsing it back as JSON is expected to work - and
             // a line that somehow does not is shown raw rather than hidden.
@@ -349,7 +349,7 @@ fn ingest_problem(error: IngestError) -> ApiError {
         IngestError::UnsupportedFormat(message) => ApiError::invalid(message).with_field(
             "/format",
             ErrorCode::UnsupportedFormat,
-            "expected auto, text or jsonl",
+            "expected auto, text, jsonl or preference-jsonl",
         ),
         IngestError::Unreadable(inner) => ApiError::from(inner).with_field(
             "/",

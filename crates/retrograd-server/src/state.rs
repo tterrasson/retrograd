@@ -414,7 +414,7 @@ pub trait ModelProbe: Send + Sync {
         &self,
         model: &Path,
         path: &Path,
-        format: retrograd_dataset::DataFormat,
+        format: crate::datasets::UploadFormat,
     ) -> CoreResult<Vec<u32>>;
 }
 
@@ -549,7 +549,7 @@ impl ModelProbe for EngineProbe {
         &self,
         model: &Path,
         path: &Path,
-        format: retrograd_dataset::DataFormat,
+        format: crate::datasets::UploadFormat,
     ) -> CoreResult<Vec<u32>> {
         // CPU: the tokenizer and the chat template do not depend on where the
         // weights end up, and loading straight to the device this call
@@ -561,7 +561,7 @@ impl ModelProbe for EngineProbe {
                 ..Default::default()
             },
         )?;
-        retrograd_dataset::measured_lengths(&trainer, path, format)
+        crate::datasets::measured_lengths(&trainer, path, format)
     }
 }
 

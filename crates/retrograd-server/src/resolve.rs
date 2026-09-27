@@ -18,6 +18,7 @@ use retrograd_plan::resolver::{Resolution, ResolveError, ResolveInput};
 use retrograd_plan::{DatasetStats, MemoryEstimate};
 use serde_json::Value;
 
+use crate::datasets::UploadFormat;
 use crate::dto;
 use crate::error::{ApiError, ApiResult, ErrorCode, ProblemKind};
 use crate::lock::Recover as _;
@@ -129,6 +130,7 @@ pub async fn plan_recipe(
         "/ppo/prompts",
         "/grpo/prompts",
         "/agent/scenarios",
+        "/preference/data",
     ] {
         if params.pointer(pointer).is_some() {
             return Err(
@@ -202,23 +204,25 @@ pub async fn plan_recipe(
         })?;
     }
 
-    let format = data_format(recipe.data.format.as_deref(), &data_path).map_err(|error| {
-        error.with_field(
-            "/recipe/data/format",
-            ErrorCode::UnsupportedFormat,
-            "expected auto, text or jsonl",
-        )
-    })?;
+    let preference = recipe.objective == retrograd_plan::recipe::Objective::PreferenceTuning;
+    let format =
+        data_format(recipe.data.format.as_deref(), &data_path, preference).map_err(|error| {
+            error.with_field(
+                "/recipe/data/format",
+                ErrorCode::UnsupportedFormat,
+                "expected auto, text, jsonl or preference-jsonl, as the objective reads",
+            )
+        })?;
     let eval_format = match (&recipe.eval, &eval_path) {
-        (Some(spec), Some(path)) => {
-            Some(data_format(spec.format.as_deref(), path).map_err(|error| {
+        (Some(spec), Some(path)) => Some(
+            data_format(spec.format.as_deref(), path, preference).map_err(|error| {
                 error.with_field(
                     "/recipe/eval/format",
                     ErrorCode::UnsupportedFormat,
-                    "expected auto, text or jsonl",
+                    "expected auto, text, jsonl or preference-jsonl, as the objective reads",
                 )
-            })?)
-        }
+            })?,
+        ),
         _ => None,
     };
 
@@ -300,7 +304,7 @@ pub async fn plan_recipe(
             inventory: inventory.as_ref(),
             data: &data,
             eval: eval_data.as_ref(),
-            data_format: format,
+            data_format: format.data_format(),
             baseline: state.baseline,
             hardware: state.hardware(device),
             execution_profile: Some(&execution_profile),
@@ -952,7 +956,7 @@ fn resolve_data_source(
 fn dataset_stats(
     source: &DataSource,
     path: &std::path::Path,
-    format: DataFormat,
+    format: UploadFormat,
     tokenizer_key: Option<&str>,
 ) -> ApiResult<DatasetStats> {
     if let Some(measured) = source
@@ -963,17 +967,36 @@ fn dataset_stats(
     {
         return Ok(measured);
     }
-    DatasetStats::estimate_from_file(path, format).map_err(ApiError::from)
+    format.estimate(path).map_err(ApiError::from)
 }
 
-fn data_format(requested: Option<&str>, path: &std::path::Path) -> ApiResult<DataFormat> {
-    match requested {
-        None | Some("auto") => DataFormat::infer(path).map_err(ApiError::from),
-        Some("text") | Some("txt") => Ok(DataFormat::Text),
-        Some("jsonl") | Some("chat") | Some("chat-jsonl") => Ok(DataFormat::ChatJsonl),
-        Some(other) => Err(ApiError::invalid(format!(
-            "unknown data format '{other}'; use auto, text or jsonl"
+/// The format a recipe's file is read in: what it declares, or what the
+/// content implies when it declares nothing. A preference file is never
+/// inferred from its content - `preference-tuning` is what implies it, and a
+/// file declared in the other shape is refused beside that objective.
+fn data_format(
+    requested: Option<&str>,
+    path: &std::path::Path,
+    preference: bool,
+) -> ApiResult<UploadFormat> {
+    let declared = crate::datasets::parse_format(requested).map_err(ApiError::invalid)?;
+    match (declared, preference) {
+        (None, true) | (Some(UploadFormat::PreferenceJsonl), true) => {
+            Ok(UploadFormat::PreferenceJsonl)
+        }
+        (Some(format), true) => Err(ApiError::invalid(format!(
+            "the preference-tuning objective reads preference pairs, and this data is \
+             declared '{}'",
+            format.name()
         ))),
+        (Some(UploadFormat::PreferenceJsonl), false) => Err(ApiError::invalid(
+            "preference pairs are read by the preference-tuning objective only",
+        )),
+        (Some(format), false) => Ok(format),
+        (None, false) => Ok(match DataFormat::infer(path).map_err(ApiError::from)? {
+            DataFormat::Text => UploadFormat::Text,
+            DataFormat::ChatJsonl => UploadFormat::ChatJsonl,
+        }),
     }
 }
 
@@ -1110,12 +1133,22 @@ seed = 1
     #[test]
     fn the_data_format_is_inferred_or_named() {
         let path = std::path::Path::new("data.jsonl");
-        assert_eq!(data_format(None, path).unwrap(), DataFormat::ChatJsonl);
         assert_eq!(
-            data_format(Some("text"), path).unwrap(),
-            DataFormat::Text,
+            data_format(None, path, false).unwrap(),
+            UploadFormat::ChatJsonl
+        );
+        assert_eq!(
+            data_format(Some("text"), path, false).unwrap(),
+            UploadFormat::Text,
             "an explicit format wins over the extension"
         );
-        assert!(data_format(Some("parquet"), path).is_err());
+        assert!(data_format(Some("parquet"), path, false).is_err());
+        // Pairs are implied by the objective, and never mixed with the others.
+        assert_eq!(
+            data_format(None, path, true).unwrap(),
+            UploadFormat::PreferenceJsonl
+        );
+        assert!(data_format(Some("jsonl"), path, true).is_err());
+        assert!(data_format(Some("preference-jsonl"), path, false).is_err());
     }
 }

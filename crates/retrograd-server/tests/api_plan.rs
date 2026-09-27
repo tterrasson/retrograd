@@ -184,7 +184,7 @@ impl ModelProbe for FakeProbe {
         &self,
         _model: &Path,
         _path: &Path,
-        _format: retrograd_dataset::DataFormat,
+        _format: retrograd_server::datasets::UploadFormat,
     ) -> CoreResult<Vec<u32>> {
         // This binary covers the plan seam, not tokenization - `api_datasets`
         // owns that, with a fake tokenizer behind it. Failing loudly beats

@@ -29,7 +29,7 @@ schema! {
 pub struct DatasetView {
     pub id: String,
     pub sha256: String,
-    /// `chat-jsonl` | `text`.
+    /// `chat-jsonl` | `text` | `preference-jsonl`.
     pub format: String,
     pub bytes: u64,
     pub examples: u64,
@@ -75,8 +75,9 @@ pub struct DatasetListing {
 schema! {
 /// `GET /v1/datasets/{id}/preview`
 ///
-/// Examples exactly as they are read off disk: a `chat-jsonl` dataset answers
-/// parsed JSON objects, a `text` dataset answers raw lines - never
+/// Examples exactly as they are read off disk: a `chat-jsonl` or
+/// `preference-jsonl` dataset answers parsed JSON objects, a `text` dataset
+/// answers raw lines - never
 /// re-formatted, since the point of a preview is to show what training would
 /// actually see.
 #[derive(Clone, Debug, Serialize, PartialEq)]

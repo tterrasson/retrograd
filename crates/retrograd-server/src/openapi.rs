@@ -302,8 +302,9 @@ const OPERATIONS: &[Operation] = &[
         query(
             "format",
             "string",
-            "auto (default) | text | jsonl. Absent or auto determines the \
-             format from the content.",
+            "auto (default) | text | jsonl | preference-jsonl. Absent or auto \
+             determines the format from the content, which never infers \
+             preference-jsonl: a file of pairs is declared.",
         ),
     ]),
     op(

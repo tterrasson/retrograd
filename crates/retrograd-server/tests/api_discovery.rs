@@ -87,7 +87,7 @@ impl ModelProbe for FakeProbe {
         &self,
         _model: &Path,
         _path: &Path,
-        _format: retrograd_dataset::DataFormat,
+        _format: retrograd_server::datasets::UploadFormat,
     ) -> CoreResult<Vec<u32>> {
         // Same reasoning as `measure`: no discovery route tokenizes anything.
         Err(retrograd_core::Error::invalid(
