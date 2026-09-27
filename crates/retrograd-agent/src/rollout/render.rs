@@ -1,8 +1,12 @@
 use std::sync::Arc;
 
+use retrograd_dataset::chat_template::{
+    self, TemplateTool, ToolRenderingKind, observation_text, prompt_tool_instructions,
+};
+
+use crate::Result;
 use crate::tools::{ToolCallParser, ToolResult, ToolSpec};
 use crate::trajectory::{Message, Role};
-use crate::{Error, Result};
 
 /// How the model gets told what tools it has.
 ///
@@ -46,6 +50,15 @@ impl ToolRendering {
             Self::None => 0,
         }
     }
+
+    /// The decision alone, without the payload each branch carries.
+    pub(super) fn kind(&self) -> ToolRenderingKind {
+        match self {
+            Self::Native { .. } => ToolRenderingKind::Native,
+            Self::Prompt { .. } => ToolRenderingKind::Prompt,
+            Self::None => ToolRenderingKind::None,
+        }
+    }
 }
 
 impl std::fmt::Debug for ToolRendering {
@@ -68,26 +81,17 @@ impl std::fmt::Debug for ToolRendering {
     }
 }
 
-/// Turns one observation into the message the template will render.
-///
-/// Under native rendering the template has a `tool` role of its own and the call
-/// id travels as `tool_call_id`, so the content is the tool's output and nothing
-/// else. Without it, the same information has to survive inside free text, which
-/// is what the `id: content` shape is for. The error marker stays in the content
-/// either way: no chat template has a concept of a failed tool result, and the
-/// policy needs to read the failure to react to it.
+/// Turns one observation into the message the template will render; the text
+/// is [`observation_text`], shared with SFT on tool conversations.
 pub(super) fn observation_message(observation: &ToolResult, rendering: &ToolRendering) -> Message {
-    let error_marker = if observation.is_error { "ERROR: " } else { "" };
-    let content = match rendering {
-        ToolRendering::Native { .. } => format!("{error_marker}{}", observation.content),
-        ToolRendering::Prompt { .. } | ToolRendering::None => format!(
-            "{}: {error_marker}{}",
-            observation.call_id, observation.content
-        ),
-    };
     Message {
         role: Role::Tool,
-        content,
+        content: observation_text(
+            rendering.kind(),
+            &observation.call_id,
+            &observation.content,
+            observation.is_error,
+        ),
         tool_calls: Vec::new(),
         tool_call_id: Some(observation.call_id.clone()),
         is_error: observation.is_error,
@@ -99,27 +103,13 @@ pub(super) fn observation_message(observation: &ToolResult, rendering: &ToolRend
 /// reads back. Returns the whole [`ToolRendering`] rather than just the text so
 /// that the count the diagnostic needs travels with it.
 pub(super) fn prompt_tool_rendering(tools: &[ToolSpec]) -> Result<ToolRendering> {
-    let mut canonical = tools.to_vec();
-    canonical.sort_by(|a, b| a.name.cmp(&b.name));
-    let definitions = serde_json::to_string(&canonical)
-        .map_err(|error| Error::invalid(format!("serialize tool definitions: {error}")))?;
+    let definitions = tools.iter().map(TemplateTool::from).collect::<Vec<_>>();
     Ok(ToolRendering::Prompt {
-        instructions: format!(
-            "Available tools (JSON): {definitions}\n\
-             Call a tool with <tool_call>{{\"name\":\"tool_name\",\"arguments\":{{...}}}}</tool_call>."
-        ),
+        instructions: prompt_tool_instructions(&definitions)?,
         tools: tools.len(),
     })
 }
 
-pub(super) fn inject_tool_instructions(messages: &mut Vec<Message>, instructions: String) {
-    if let Some(system) = messages
-        .iter_mut()
-        .find(|message| message.role == Role::System)
-    {
-        system.content.push_str("\n\n");
-        system.content.push_str(&instructions);
-    } else {
-        messages.insert(0, Message::text(Role::System, instructions));
-    }
+pub(super) fn inject_tool_instructions(messages: &mut Vec<Message>, instructions: &str) {
+    chat_template::inject_tool_instructions(messages, instructions);
 }

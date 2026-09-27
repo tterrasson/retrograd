@@ -1,3 +1,4 @@
+use retrograd_dataset::chat_template::SystemTurn;
 use serde::{Deserialize, Serialize};
 
 use crate::tools::ToolCall;
@@ -32,6 +33,17 @@ pub struct Message {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// Where the prompt-described tool catalog is written.
+impl SystemTurn for Message {
+    fn system_content(&mut self) -> Option<&mut String> {
+        (self.role == Role::System).then_some(&mut self.content)
+    }
+
+    fn new_system(content: String) -> Self {
+        Self::text(Role::System, content)
+    }
 }
 
 impl Message {

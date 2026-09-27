@@ -7,120 +7,44 @@
 //! a format it never saw during pre-training. This module builds what the
 //! template expects instead.
 
-use serde_json::{Map, Value, json};
+use retrograd_dataset::chat_template::{self, TemplateMessage, TemplateTool};
 
+pub use retrograd_dataset::chat_template::split_assistant_spans;
+
+use crate::Result;
 use crate::tools::ToolSpec;
-use crate::trajectory::{Message, Role};
-use crate::{Error, Result};
+use crate::trajectory::Message;
 
-/// The placeholder an assistant turn's sampled text is replaced by before the
-/// template sees it.
-///
-/// Deliberately plain: no whitespace at either edge and no markup, so a template
-/// that trims content or splits it on `</think>` - Qwen's does both - passes it
-/// through byte for byte and stays findable in the output. Suffixed rather than
-/// prefixed with the index so no sentinel is a prefix of another.
-fn assistant_span(index: usize) -> String {
-    format!("retro_span_{index}_9d41c7")
+/// The template's view of a rollout message. Its calls are never handed over:
+/// an assistant turn is always a sentinel, and the calls are already inside the
+/// sampled tokens.
+fn template_message(message: &Message) -> TemplateMessage<'_> {
+    TemplateMessage {
+        role: message.role.as_str(),
+        content: message.content.as_str().into(),
+        tool_call_id: message.tool_call_id.as_deref(),
+        tool_calls: &[],
+    }
 }
 
-/// Serializes a conversation for the model's chat template, replacing every
-/// assistant turn's content with a sentinel. Returns the JSON and the sentinels
-/// in turn order.
-///
-/// The template never sees a sampled turn, on purpose. It cannot be trusted with
-/// one: it is free to trim the content, to lift a `<think>` block out of it and
-/// re-emit it somewhere else, or to render its own serialization of the tool
-/// calls - and even a template that does none of that only gets the *text* back,
-/// while what is being trained on is the *tokens*, which sampling does not
-/// produce in canonical form (a model that sampled `"]]` + `])` re-tokenizes as
-/// `"]` + `]])`). Splitting the rendered text on the sentinels yields the framing
-/// around the sampled turns, which is the only part of a multi-turn prompt the
-/// template gets to decide.
-///
-/// An assistant turn's `tool_calls` are not handed over either, for the same
-/// reason: the calls are already inside the sampled tokens.
+/// Serializes a conversation for the model's chat template, every assistant
+/// turn replaced by a sentinel; see [`chat_template::template_messages`].
 pub fn template_messages(messages: &[Message]) -> Result<(String, Vec<String>)> {
-    let mut sentinels = Vec::new();
-    let rendered = messages
-        .iter()
-        .map(|message| {
-            let content = if message.role == Role::Assistant {
-                let sentinel = assistant_span(sentinels.len());
-                sentinels.push(sentinel.clone());
-                sentinel
-            } else {
-                message.content.clone()
-            };
-            let mut object = Map::new();
-            object.insert("role".into(), Value::String(message.role.as_str().into()));
-            object.insert("content".into(), Value::String(content));
-            if let Some(call_id) = &message.tool_call_id {
-                object.insert("tool_call_id".into(), Value::String(call_id.clone()));
-            }
-            Value::Object(object)
-        })
-        .collect::<Vec<_>>();
-    let json = serde_json::to_string(&rendered)
-        .map_err(|error| Error::invalid(format!("serialize chat messages: {error}")))?;
-    Ok((json, sentinels))
-}
-
-/// Cuts a rendered conversation into the framing around the sampled turns.
-///
-/// Returns `sentinels.len() + 1` pieces: what the template put before the first
-/// sampled turn, between consecutive ones, and after the last. The sentinels are
-/// consumed in order, so a template that reorders or drops an assistant turn is
-/// caught here rather than corrupting the token stream downstream.
-pub fn split_assistant_spans(rendered: &str, sentinels: &[String]) -> Result<Vec<String>> {
-    let mut segments = Vec::with_capacity(sentinels.len() + 1);
-    let mut rest = rendered;
-    for sentinel in sentinels {
-        let Some((before, after)) = rest.split_once(sentinel.as_str()) else {
-            return Err(Error::invalid(format!(
-                "chat template did not render assistant turn {} of {}: a template that drops or \
-                 reorders a turn cannot be used for multi-turn rollouts",
-                segments.len(),
-                sentinels.len()
-            )));
-        };
-        segments.push(before.to_string());
-        rest = after;
-    }
-    if let Some(sentinel) = sentinels
-        .iter()
-        .find(|sentinel| rest.contains(&***sentinel))
-    {
-        return Err(Error::invalid(format!(
-            "chat template rendered the assistant span sentinel {sentinel} more than once"
-        )));
-    }
-    segments.push(rest.to_string());
-    Ok(segments)
+    let messages = messages.iter().map(template_message).collect::<Vec<_>>();
+    Ok(chat_template::template_messages(&messages)?)
 }
 
 /// Serializes the tool catalog in the OpenAI function shape, the one HF chat
 /// templates iterate over.
 pub fn template_tools(tools: &[ToolSpec]) -> Result<String> {
-    let rendered = tools
-        .iter()
-        .map(|tool| {
-            json!({
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.input_schema,
-                },
-            })
-        })
-        .collect::<Vec<_>>();
-    serde_json::to_string(&rendered)
-        .map_err(|error| Error::invalid(format!("serialize tool definitions: {error}")))
+    let tools = tools.iter().map(TemplateTool::from).collect::<Vec<_>>();
+    Ok(chat_template::template_tools(&tools)?)
 }
 
 #[cfg(test)]
 mod tests {
+    use serde_json::{Value, json};
+
     use super::*;
     use crate::tools::ToolCall;
     use crate::trajectory::Role;

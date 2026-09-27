@@ -12,6 +12,7 @@ use serde::Deserialize;
 
 use retrograd_core::{Error, Result};
 
+pub mod chat_template;
 pub mod topk;
 
 pub const IGNORE_LABEL: i32 = -1;

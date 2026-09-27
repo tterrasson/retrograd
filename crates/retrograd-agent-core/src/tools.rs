@@ -1,6 +1,7 @@
 //! What the policy may ask for, and what comes back.
 
 use async_trait::async_trait;
+use retrograd_dataset::chat_template::{TemplateCall, TemplateTool};
 use serde::{Deserialize, Serialize};
 
 use crate::Result;
@@ -57,4 +58,36 @@ impl ToolResult {
 pub trait ToolProvider: Send + Sync {
     async fn list_tools(&self) -> Result<Vec<ToolSpec>>;
     async fn call(&self, call: &ToolCall) -> Result<ToolResult>;
+}
+
+/// The chat-template view of a catalog entry. `input_schema` is what the
+/// OpenAI function shape calls `parameters`.
+impl From<&ToolSpec> for TemplateTool {
+    fn from(spec: &ToolSpec) -> Self {
+        Self {
+            name: spec.name.clone(),
+            description: spec.description.clone(),
+            parameters: spec.input_schema.clone(),
+        }
+    }
+}
+
+impl From<&ToolCall> for TemplateCall {
+    fn from(call: &ToolCall) -> Self {
+        Self {
+            id: call.id.clone(),
+            name: call.name.clone(),
+            arguments: call.arguments.clone(),
+        }
+    }
+}
+
+impl From<TemplateCall> for ToolCall {
+    fn from(call: TemplateCall) -> Self {
+        Self {
+            id: call.id,
+            name: call.name,
+            arguments: call.arguments,
+        }
+    }
 }

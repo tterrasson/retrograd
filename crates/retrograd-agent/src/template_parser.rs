@@ -18,9 +18,10 @@
 //! The type is deliberately not in `retrograd-tools`, which stays free of the
 //! FFI bridge.
 
-use retrograd_agent_core::tools::{ToolCall, ToolResult};
+use retrograd_dataset::chat_template::{DocumentError, decode_parsed_assistant};
+use retrograd_tools::parser::parse_error;
 
-use crate::tools::{ParsedAssistant, ToolCallParseError, ToolCallParser};
+use crate::tools::{ParsedAssistant, ToolCallParser};
 
 /// A serialized PEG parser produced from one model's chat template and one tool
 /// catalog, ready to run on any thread.
@@ -70,104 +71,19 @@ impl ToolCallParser for TemplateToolCallParser {
     }
 }
 
-/// Why the runtime's document could not be read at all - a runtime defect, not
-/// a model output.
-#[derive(Debug, thiserror::Error)]
-enum DocumentError {
-    #[error("invalid parsed-assistant document: {0}")]
-    InvalidJson(#[source] serde_json::Error),
-    #[error("parsed assistant must be a JSON object")]
-    NotAnObject,
-    #[error("parsed assistant must carry a tool_calls array")]
-    NoToolCalls,
-}
-
 /// Turns the runtime's JSON into a [`ParsedAssistant`].
 ///
 /// Only a malformed *document* is an `Err` here - that would be a runtime bug,
 /// not a model output. A malformed `arguments` string is the model's doing and
 /// becomes one observation, leaving the other calls of the same turn usable.
 fn decode(document: &str) -> Result<ParsedAssistant, DocumentError> {
-    let value: serde_json::Value =
-        serde_json::from_str(document).map_err(DocumentError::InvalidJson)?;
-    let object = value.as_object().ok_or(DocumentError::NotAnObject)?;
-    let field = |name: &str| {
-        object
-            .get(name)
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-    };
-    // Reasoning is left in the content by the parser this crate builds, but a
-    // template whose parser splits it anyway must not lose the text.
-    let mut content = field("reasoning_content").to_owned();
-    content.push_str(field("content"));
-
-    let mut parsed = ParsedAssistant {
-        content: content.trim().to_owned(),
-        tool_calls: Vec::new(),
-        parse_errors: Vec::new(),
-    };
-    let calls = object
-        .get("tool_calls")
-        .and_then(serde_json::Value::as_array)
-        .ok_or(DocumentError::NoToolCalls)?;
-    for (index, call) in calls.iter().enumerate() {
-        match decode_call(call, index) {
-            Ok(call) => parsed.tool_calls.push(call),
-            Err(error) => parsed.parse_errors.push(parse_error(index, error)),
-        }
-    }
-    Ok(parsed)
-}
-
-fn decode_call(call: &serde_json::Value, index: usize) -> Result<ToolCall, ToolCallParseError> {
-    let object = call.as_object().ok_or(ToolCallParseError::NotAnObject)?;
-    let name = object
-        .get("name")
-        .and_then(serde_json::Value::as_str)
-        .filter(|name| !name.is_empty())
-        .ok_or(ToolCallParseError::MissingName)?;
-    let raw = object
-        .get("arguments")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    // An absent argument list is an empty one: a template may render a
-    // no-argument call with nothing between its markers.
-    let arguments = match raw.is_empty() {
-        true => serde_json::Value::Object(Default::default()),
-        false => serde_json::from_str(raw).map_err(ToolCallParseError::InvalidArguments)?,
-    };
-    if !arguments.is_object() {
-        return Err(ToolCallParseError::ArgumentsNotAnObject);
-    }
-    // Templates that carry no call id give the same positional one the Hermes
-    // parser falls back to, so a tool result can be matched to its call either
-    // way.
-    let id = object
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .filter(|id| !id.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("call_{index}"));
-    Ok(ToolCall {
-        id,
-        name: name.to_owned(),
-        arguments,
-    })
-}
-
-fn parse_error(index: usize, error: impl std::fmt::Display) -> ToolResult {
-    ToolResult {
-        call_id: format!("parse_error_{index}"),
-        content: error.to_string(),
-        is_error: true,
-    }
+    decode_parsed_assistant(document).map(ParsedAssistant::from)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::ToolCallParseError;
 
     // The FFI half needs a model; what is testable without one is the
     // translation, which is where a call can silently go missing.

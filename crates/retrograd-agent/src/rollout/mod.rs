@@ -26,6 +26,7 @@ use std::time::Duration;
 use retrograd_training::batch::TrainSequence;
 // Tokio's clock rather than `std`'s: identical in production, but it lets the
 // rollout deadline be tested under a paused clock instead of a real sleep.
+use retrograd_dataset::chat_template::{ToolRenderingKind, decide_rendering};
 use tokio::time::Instant;
 
 use self::deadline::{before_deadline, deadline_expired};
@@ -191,24 +192,33 @@ impl RolloutEngine {
         if specs.is_empty() {
             return Ok(ToolRendering::None);
         }
-        if !self.policy.supports_native_tools().await? {
-            return prompt_tool_rendering(&specs);
-        }
+        let native = self.policy.supports_native_tools().await?;
         // Asked here and not at construction, because the generated grammar
         // may name the functions: the parser is derived from the template
         // *and* the catalog, and the catalog is only known once the
         // environment has listed it.
-        match self.policy.tool_call_parser(&specs).await? {
-            Some(parser) => Ok(ToolRendering::Native { specs, parser }),
-            // The template renders tools but nothing could be derived to read
-            // them back. Rendering natively anyway would rebuild the exact
-            // asymmetry this is here to prevent, so both halves fall back
-            // together.
-            None => {
-                tracing::warn!(
-                    "the model's chat template renders tools but yields no parser for its own \
-                     call format; falling back to the prompt-described convention"
-                );
+        let parser = match native {
+            true => self.policy.tool_call_parser(&specs).await?,
+            false => None,
+        };
+        match (
+            decide_rendering(specs.len(), native, parser.is_some()),
+            parser,
+        ) {
+            (ToolRenderingKind::Native, Some(parser)) => {
+                Ok(ToolRendering::Native { specs, parser })
+            }
+            _ => {
+                // The template renders tools but nothing could be derived to
+                // read them back. Rendering natively anyway would rebuild the
+                // exact asymmetry this is here to prevent, so both halves fall
+                // back together.
+                if native {
+                    tracing::warn!(
+                        "the model's chat template renders tools but yields no parser for its \
+                         own call format; falling back to the prompt-described convention"
+                    );
+                }
                 prompt_tool_rendering(&specs)
             }
         }

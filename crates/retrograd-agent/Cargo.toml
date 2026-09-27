@@ -11,6 +11,7 @@ async-trait.workspace = true
 futures-util.workspace = true
 retrograd-agent-core.workspace = true
 retrograd-core.workspace = true
+retrograd-dataset.workspace = true
 retrograd-engine.workspace = true
 retrograd-env = { workspace = true, features = ["local-sandbox"] }
 retrograd-judge.workspace = true

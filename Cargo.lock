@@ -1528,6 +1528,7 @@ dependencies = [
  "futures-util",
  "retrograd-agent-core",
  "retrograd-core",
+ "retrograd-dataset",
  "retrograd-engine",
  "retrograd-env",
  "retrograd-judge",
@@ -1547,6 +1548,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "retrograd-core",
+ "retrograd-dataset",
  "retrograd-metrics",
  "serde",
  "serde_json",
@@ -1843,6 +1845,7 @@ dependencies = [
  "http",
  "retrograd-agent-core",
  "retrograd-core",
+ "retrograd-dataset",
  "retrograd-spec",
  "rmcp",
  "serde",

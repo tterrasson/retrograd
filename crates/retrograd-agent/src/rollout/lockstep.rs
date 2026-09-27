@@ -54,7 +54,7 @@ impl RolloutEngine {
         // Only the prompt path writes a catalog into the system turn: under
         // native rendering the template already has the tools.
         if let ToolRendering::Prompt { instructions, .. } = rendering {
-            inject_tool_instructions(&mut messages, instructions.clone());
+            inject_tool_instructions(&mut messages, instructions);
         }
         messages.push(Message::text(Role::User, &scenario.user));
 

@@ -1,4 +1,7 @@
 use retrograd_agent_core::tools::{ToolCall, ToolResult};
+use retrograd_dataset::chat_template::{ParsedCalls, parse_hermes};
+
+pub use retrograd_dataset::chat_template::ToolCallParseError;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ParsedAssistant {
@@ -9,45 +12,27 @@ pub struct ParsedAssistant {
     pub parse_errors: Vec<ToolResult>,
 }
 
+/// Each call that could not be read becomes the observation of its position,
+/// `parse_error_{index}`, carrying the variant's text.
+impl From<ParsedCalls> for ParsedAssistant {
+    fn from(parsed: ParsedCalls) -> Self {
+        Self {
+            content: parsed.content,
+            tool_calls: parsed.calls.into_iter().map(ToolCall::from).collect(),
+            parse_errors: parsed
+                .errors
+                .into_iter()
+                .map(|(index, error)| parse_error(index, error))
+                .collect(),
+        }
+    }
+}
+
 /// Splits a model's raw generation into its prose content and the tool calls
 /// it asked for, recovering as an observation ([`ParsedAssistant::parse_errors`])
 /// whatever it could not read rather than failing the turn outright.
 pub trait ToolCallParser: Send + Sync {
     fn parse(&self, output: &str) -> ParsedAssistant;
-}
-
-/// Why one tool call could not be read.
-///
-/// The message is what the policy reads back as an observation, so it is part
-/// of the training data: a variant's wording does not change without a reason.
-#[derive(Debug, thiserror::Error)]
-pub enum ToolCallParseError {
-    #[error("unterminated <tool_call> block")]
-    UnterminatedToolCall,
-    #[error("invalid tool-call JSON: {0}")]
-    InvalidJson(#[source] serde_json::Error),
-    #[error("invalid tool-call arguments: {0}")]
-    InvalidArguments(#[source] serde_json::Error),
-    #[error("tool call must be a JSON object")]
-    NotAnObject,
-    #[error("tool call requires a non-empty string name")]
-    MissingName,
-    #[error("tool call arguments must be a JSON object")]
-    ArgumentsNotAnObject,
-    #[error("tool call must be a JSON object or a <function=name> block")]
-    UnknownForm,
-    #[error("unterminated <function= tag")]
-    UnterminatedFunctionTag,
-    #[error("tool call requires a non-empty function name")]
-    MissingFunctionName,
-    #[error("unterminated <function> block")]
-    UnterminatedFunctionBlock,
-    #[error("unterminated <parameter= tag")]
-    UnterminatedParameterTag,
-    #[error("tool call parameter requires a non-empty name")]
-    MissingParameterName,
-    #[error("unterminated <parameter={0}> block")]
-    UnterminatedParameterBlock(String),
 }
 
 /// Parser for the `<tool_call>...</tool_call>` conventions.
@@ -67,139 +52,20 @@ pub enum ToolCallParseError {
 /// template blind to tools, whose catalog goes into the system prompt in the
 /// `<tool_call>` convention above; a template no parser can be derived from; and
 /// the tests, which fabricate their generations in this format.
+///
+/// The reading itself is [`parse_hermes`], which SFT on tool conversations
+/// shares, so what a warm-start teaches is what a rollout reads back.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HermesToolCallParser;
 
 impl ToolCallParser for HermesToolCallParser {
     fn parse(&self, output: &str) -> ParsedAssistant {
-        const OPEN: &str = "<tool_call>";
-        const CLOSE: &str = "</tool_call>";
-
-        let mut parsed = ParsedAssistant::default();
-        let mut remainder = output;
-        let mut call_index = 0_usize;
-        while let Some(open) = remainder.find(OPEN) {
-            parsed.content.push_str(&remainder[..open]);
-            let body_start = open + OPEN.len();
-            let Some(relative_close) = remainder[body_start..].find(CLOSE) else {
-                parsed.parse_errors.push(parse_error(
-                    call_index,
-                    ToolCallParseError::UnterminatedToolCall,
-                ));
-                parsed.content.push_str(&remainder[open..]);
-                remainder = "";
-                break;
-            };
-            let close = body_start + relative_close;
-            let body = remainder[body_start..close].trim();
-            match parse_call(body, call_index) {
-                Ok(call) => parsed.tool_calls.push(call),
-                Err(error) => parsed.parse_errors.push(parse_error(call_index, error)),
-            }
-            call_index += 1;
-            remainder = &remainder[close + CLOSE.len()..];
-        }
-        parsed.content.push_str(remainder);
-        parsed.content = parsed.content.trim().to_owned();
-        parsed
+        parse_hermes(output).into()
     }
 }
 
-fn parse_call(body: &str, index: usize) -> Result<ToolCall, ToolCallParseError> {
-    match body.starts_with('{') {
-        true => parse_json_call(body, index),
-        false => parse_tagged_call(body, index),
-    }
-}
-
-fn parse_json_call(body: &str, index: usize) -> Result<ToolCall, ToolCallParseError> {
-    let value: serde_json::Value =
-        serde_json::from_str(body).map_err(ToolCallParseError::InvalidJson)?;
-    let object = value.as_object().ok_or(ToolCallParseError::NotAnObject)?;
-    let name = object
-        .get("name")
-        .and_then(serde_json::Value::as_str)
-        .filter(|name| !name.is_empty())
-        .ok_or(ToolCallParseError::MissingName)?;
-    let arguments = object
-        .get("arguments")
-        .cloned()
-        .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
-    if !arguments.is_object() {
-        return Err(ToolCallParseError::ArgumentsNotAnObject);
-    }
-    let id = object
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("call_{index}"));
-    Ok(ToolCall {
-        id,
-        name: name.to_owned(),
-        arguments,
-    })
-}
-
-/// Reads the tag form: `<function=name>` wrapping one `<parameter=name>` block
-/// per argument. The call carries no id of its own, so it gets the positional
-/// one the JSON form falls back to.
-fn parse_tagged_call(body: &str, index: usize) -> Result<ToolCall, ToolCallParseError> {
-    let after = body
-        .strip_prefix("<function=")
-        .ok_or(ToolCallParseError::UnknownForm)?;
-    let (name, body) = after
-        .split_once('>')
-        .ok_or(ToolCallParseError::UnterminatedFunctionTag)?;
-    if name.is_empty() {
-        return Err(ToolCallParseError::MissingFunctionName);
-    }
-    let body = body
-        .trim_end()
-        .strip_suffix("</function>")
-        .ok_or(ToolCallParseError::UnterminatedFunctionBlock)?;
-
-    let mut arguments = serde_json::Map::new();
-    let mut remainder = body;
-    while let Some(open) = remainder.find("<parameter=") {
-        let after = &remainder[open + "<parameter=".len()..];
-        let (argument, after) = after
-            .split_once('>')
-            .ok_or(ToolCallParseError::UnterminatedParameterTag)?;
-        if argument.is_empty() {
-            return Err(ToolCallParseError::MissingParameterName);
-        }
-        let (value, after) = after
-            .split_once("</parameter>")
-            .ok_or_else(|| ToolCallParseError::UnterminatedParameterBlock(argument.to_owned()))?;
-        arguments.insert(argument.to_owned(), parameter_value(value));
-        remainder = after;
-    }
-    Ok(ToolCall {
-        id: format!("call_{index}"),
-        name: name.to_owned(),
-        arguments: serde_json::Value::Object(arguments),
-    })
-}
-
-/// Recovers a parameter's type the way the template encoded it: an object or an
-/// array was written as JSON, and everything else - including a number or a
-/// boolean - was stringified. Inverting more than that would turn a path named
-/// `123` into an integer.
-fn parameter_value(raw: &str) -> serde_json::Value {
-    // The template puts the value on its own lines, so exactly one newline on
-    // each side belongs to the framing rather than to the value.
-    let value = raw.strip_prefix('\n').unwrap_or(raw);
-    let value = value.strip_suffix('\n').unwrap_or(value);
-    let trimmed = value.trim();
-    if (trimmed.starts_with('{') || trimmed.starts_with('['))
-        && let Ok(json) = serde_json::from_str(trimmed)
-    {
-        return json;
-    }
-    serde_json::Value::String(value.to_owned())
-}
-
-fn parse_error(index: usize, error: impl std::fmt::Display) -> ToolResult {
+/// The observation a call that could not be read comes back as.
+pub fn parse_error(index: usize, error: impl std::fmt::Display) -> ToolResult {
     ToolResult {
         call_id: format!("parse_error_{index}"),
         content: error.to_string(),

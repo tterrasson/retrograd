@@ -94,6 +94,14 @@ impl Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// A conversation the chat template could not be driven through is a template
+/// unusable for the run, which is how the rollout has always reported it.
+impl From<retrograd_dataset::chat_template::ChatTemplateError> for Error {
+    fn from(error: retrograd_dataset::chat_template::ChatTemplateError) -> Self {
+        Self::Invalid(error.to_string())
+    }
+}
+
 /// Back to the applicative facade, with the class preserved.
 ///
 /// It lives here and not in `retrograd-core` because that crate knows nothing of
