@@ -6,6 +6,8 @@ use bollard::models::{ContainerCreateBody, HostConfig, Mount, MountType};
 use retrograd_agent_core::{Error, Result, SandboxLimits};
 use serde::{Deserialize, Serialize};
 
+use crate::client::Engine;
+
 /// Every episode gets the *same* working directory.
 ///
 /// Not cosmetic: a path is a deterministic function of the action only if it is
@@ -82,6 +84,12 @@ pub struct ContainerSpec {
     pub read_only_rootfs: bool,
     /// Writable tmpfs mounts, size in bytes. The workdir is one of them, so a
     /// read-only rootfs still leaves the episode somewhere to work.
+    ///
+    /// Each one belongs to [`Self::user`], not to root. `mode=1777` alone makes
+    /// a root-owned directory writable, but not *owned*, and git refuses a
+    /// repository whose top level another uid owns ("dubious ownership"): the
+    /// commit a scenario's `setup` makes, its `git diff` summary and every git
+    /// command the model runs would all fail on it.
     #[serde(default = "default_tmpfs")]
     pub tmpfs: BTreeMap<String, u64>,
     /// `uid:gid`. Never root.
@@ -306,6 +314,20 @@ impl ContainerSpec {
         format!("{hash:016x}")
     }
 
+    /// The tmpfs option that hands a mount to [`Self::user`], in the spelling
+    /// the engine accepts: each refuses the other's.
+    fn tmpfs_owner(&self, engine: Engine) -> String {
+        match engine {
+            Engine::Podman => "U".into(),
+            // Validated as `uid[:gid]`; without a gid the group stays the
+            // runtime's default, as it does for the process itself.
+            Engine::Docker => match self.user.split_once(':') {
+                Some((uid, gid)) => format!("uid={uid},gid={gid}"),
+                None => format!("uid={}", self.user),
+            },
+        }
+    }
+
     /// Builds the create request. The container runs an infinite sleep loop as
     /// pid 1 and every tool call is an exec into it: the episode's lifetime is
     /// ours to decide, not the entrypoint's.
@@ -313,6 +335,7 @@ impl ContainerSpec {
         &self,
         image: &str,
         labels: BTreeMap<String, String>,
+        engine: Engine,
     ) -> ContainerCreateBody {
         let memory_bytes = self
             .limits
@@ -321,6 +344,7 @@ impl ContainerSpec {
             .and_then(|bytes| i64::try_from(bytes).ok())
             .expect("validated container memory limit");
         let nano_cpus = (f64::from(self.limits.cpus) * 1e9).round() as i64;
+        let owner = self.tmpfs_owner(engine);
         let host_config = HostConfig {
             network_mode: Some(self.network.as_docker().to_string()),
             readonly_rootfs: Some(self.read_only_rootfs),
@@ -330,7 +354,7 @@ impl ContainerSpec {
                     .map(|(path, size)| {
                         (
                             path.clone(),
-                            format!("rw,exec,nosuid,size={size},mode=1777"),
+                            format!("rw,exec,nosuid,size={size},mode=1777,{owner}"),
                         )
                     })
                     .collect(),
@@ -513,7 +537,7 @@ mod tests {
     #[test]
     fn the_create_body_carries_the_hardening() {
         let spec = ContainerSpec::new("python:3.12-slim");
-        let body = spec.to_create_body("python@sha256:abc", BTreeMap::new());
+        let body = spec.to_create_body("python@sha256:abc", BTreeMap::new(), Engine::Docker);
         let host = body.host_config.unwrap();
         assert_eq!(host.network_mode.as_deref(), Some("none"));
         assert_eq!(host.cap_drop, Some(vec!["ALL".to_string()]));
@@ -525,5 +549,29 @@ mod tests {
         // The hostname is ours and not the container id, or `hostname` alone
         // would make two members of a group read different bytes.
         assert_eq!(body.hostname.as_deref(), Some(HOSTNAME));
+    }
+
+    /// A tmpfs is root's unless the mount says otherwise, and git will not work
+    /// in a directory another uid owns. Each engine refuses the other's option.
+    #[test]
+    fn every_tmpfs_is_owned_by_the_sandbox_user_in_the_engine_s_own_spelling() {
+        let tmpfs = |spec: &ContainerSpec, engine| {
+            spec.to_create_body("image", BTreeMap::new(), engine)
+                .host_config
+                .unwrap()
+                .tmpfs
+                .unwrap()
+        };
+        let spec = ContainerSpec::new("python:3.12-slim");
+        for options in tmpfs(&spec, Engine::Docker).values() {
+            assert!(options.ends_with(",uid=10001,gid=10001"), "{options}");
+        }
+        for options in tmpfs(&spec, Engine::Podman).values() {
+            assert!(options.ends_with(",U"), "{options}");
+        }
+
+        let mut uid_only = spec.clone();
+        uid_only.user = "10002".into();
+        assert!(tmpfs(&uid_only, Engine::Docker)[WORKDIR].ends_with(",uid=10002"));
     }
 }

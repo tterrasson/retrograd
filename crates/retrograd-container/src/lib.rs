@@ -34,7 +34,7 @@ pub mod reaper;
 pub mod sandbox;
 pub mod spec;
 
-pub use client::DockerClient;
+pub use client::{DockerClient, Engine};
 pub use image::ensure_image;
 pub use metrics::SandboxMetrics;
 pub use pool::{ManagedSandbox, PoolConfig, ReusePolicy, SandboxPool, SandboxSource};

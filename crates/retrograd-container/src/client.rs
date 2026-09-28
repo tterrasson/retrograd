@@ -14,6 +14,20 @@ use retrograd_agent_core::{Error, Result};
 pub struct DockerClient {
     docker: Arc<Docker>,
     version: String,
+    engine: Engine,
+}
+
+/// Which daemon answers behind the Docker-compatible API.
+///
+/// The two agree on almost everything a sandbox asks of them, but not on how a
+/// tmpfs is handed to a user: Docker passes `uid=`/`gid=` through to the kernel
+/// and rejects Podman's `U`, Podman rejects `uid=` and wants `U`. See
+/// [`ContainerSpec`](crate::ContainerSpec)'s `tmpfs`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Engine {
+    #[default]
+    Docker,
+    Podman,
 }
 
 impl DockerClient {
@@ -33,21 +47,31 @@ impl DockerClient {
                  default socket"
             ))
         })?;
-        let version = docker
-            .version()
-            .await
-            .map_err(|error| {
-                Error::Tool(format!(
-                    "reach the Docker daemon: {error}; is it running? (DOCKER_HOST={})",
-                    std::env::var("DOCKER_HOST").unwrap_or_else(|_| "unset".into())
-                ))
-            })?
-            .version
-            .unwrap_or_else(|| "unknown".into());
-        tracing::info!(version = %version, "connected to the Docker daemon");
+        let answer = docker.version().await.map_err(|error| {
+            Error::Tool(format!(
+                "reach the Docker daemon: {error}; is it running? (DOCKER_HOST={})",
+                std::env::var("DOCKER_HOST").unwrap_or_else(|_| "unset".into())
+            ))
+        })?;
+        // Podman names itself in the components list (`Podman Engine`); Docker
+        // says `Engine`. Anything else is treated as Docker, whose options are
+        // the documented ones.
+        let engine = if answer
+            .components
+            .iter()
+            .flatten()
+            .any(|component| component.name.contains("Podman"))
+        {
+            Engine::Podman
+        } else {
+            Engine::Docker
+        };
+        let version = answer.version.unwrap_or_else(|| "unknown".into());
+        tracing::info!(version = %version, ?engine, "connected to the Docker daemon");
         Ok(Self {
             docker: Arc::new(docker),
             version,
+            engine,
         })
     }
 
@@ -57,6 +81,10 @@ impl DockerClient {
 
     pub fn version(&self) -> &str {
         &self.version
+    }
+
+    pub fn engine(&self) -> Engine {
+        self.engine
     }
 }
 

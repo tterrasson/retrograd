@@ -99,6 +99,14 @@ async fn a_container_round_trips_commands_and_files() {
     assert_eq!(failed.exit_code, Some(3));
     assert_eq!(failed.stderr.trim(), "oops");
 
+    // Owned, not merely writable: git refuses a repository whose top level
+    // belongs to another uid, and a tmpfs is root's unless the mount says so.
+    let owner = lease
+        .exec(ExecRequest::new(["stat", "-c", "%u:%g", "/work", "/tmp"]))
+        .await
+        .unwrap();
+    assert_eq!(owner.stdout, "10001:10001\n10001:10001\n");
+
     lease.write_file("src/a.py", b"print(1)\n").await.unwrap();
     assert_eq!(lease.read_file("src/a.py").await.unwrap(), b"print(1)\n");
 

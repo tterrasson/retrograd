@@ -150,6 +150,12 @@ as non-root, with a read-only root filesystem. Pin images by digest
 (`image = "name@sha256:..."`) for reproducible runs. Docker is not a security
 boundary against hostile code.
 
+`/work` and `/tmp` are tmpfs mounts owned by the sandbox user, so git works in
+them without a `safe.directory` entry. A custom image must not have the code a
+task edits already installed: a copy in `site-packages` (often pulled in as a
+dependency of the test runner) is imported instead of the one in `/work`, and
+every edit, right or wrong, then leaves `verify` unchanged.
+
 `type = "local"` runs the same tools directly on the host, without isolation.
 It is refused unless `allow_unsandboxed = true`.
 

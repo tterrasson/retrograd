@@ -683,9 +683,11 @@ impl ContainerSource {
 #[async_trait]
 impl SandboxSource for ContainerSource {
     async fn create(&self) -> Result<Arc<dyn ManagedSandbox>> {
-        let body = self
-            .spec
-            .to_create_body(&self.image, self.labels.to_map().into_iter().collect());
+        let body = self.spec.to_create_body(
+            &self.image,
+            self.labels.to_map().into_iter().collect(),
+            self.client.engine(),
+        );
         let created = self
             .client
             .docker()
