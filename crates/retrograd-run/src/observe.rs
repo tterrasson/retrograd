@@ -9,15 +9,17 @@ use serde_json::{Map, Value};
 
 use crate::observer::RunObserver;
 
-/// Opens the sink when the configuration asks for one.
+/// Opens the sink when the configuration asks for one, and says where it
+/// writes and how to look at it.
 ///
 /// `resumed_from_update` is the number of updates the restored checkpoint
-/// consumed; `params` are the hyperparameters the viewer shows.
+/// consumed; `params` are the hyperparameters the trajectories view shows.
 pub(crate) fn open(
     config: &RunConfig,
     algorithm: Algorithm,
     resumed_from_update: Option<u64>,
     params: impl IntoIterator<Item = (&'static str, u64)>,
+    observer: &mut dyn RunObserver,
 ) -> Result<Option<ObserveSink>> {
     let Some(observe) = &config.observe else {
         return Ok(None);
@@ -42,6 +44,11 @@ pub(crate) fn open(
             params,
         },
     )?;
+    let directory = observe.directory.display();
+    observer.info(&format!(
+        "observe: writing {directory}/observe.jsonl; view it with `retrograd-server view \
+         {directory}`"
+    ));
     Ok(Some(sink))
 }
 

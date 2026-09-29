@@ -37,6 +37,9 @@ pub(crate) struct Shared {
     /// Held by a test to stall the writer between two batches.
     #[cfg(test)]
     pub(crate) gate: Mutex<()>,
+    /// Set by a test to make the writer's next append fail like a disk would.
+    #[cfg(test)]
+    pub(crate) fail_next: AtomicBool,
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -57,6 +60,15 @@ impl Shared {
 
     pub(crate) fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn every(&self) -> u32 {
+        self.every
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_write(&self) {
+        self.fail_next.store(true, Ordering::SeqCst);
     }
 
     fn close(&self) {
@@ -134,6 +146,8 @@ impl ObserveSink {
             warnings: Mutex::new(Vec::new()),
             #[cfg(test)]
             gate: Mutex::new(()),
+            #[cfg(test)]
+            fail_next: AtomicBool::new(false),
         });
         let refusal = match lock_directory(&config.directory).unwrap_or_else(Lock::Unsupported) {
             Lock::Held(file) => Ok(file),

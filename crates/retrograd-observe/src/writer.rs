@@ -1,10 +1,10 @@
-//! The writer thread: recovery, `observe.jsonl`, and the feed the viewer
-//! polls. All serialization and I/O of the export happens here.
+//! The writer thread: recovery and `observe.jsonl`. All serialization and I/O
+//! of the export happens here.
 
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc::Receiver;
 
 use serde_json::{Value, json};
@@ -15,12 +15,6 @@ use crate::record::{self, Header};
 use crate::sink::Shared;
 
 pub(crate) const LOG_FILE: &str = "observe.jsonl";
-pub(crate) const FEED_DIR: &str = "feed";
-pub(crate) const MANIFEST_FILE: &str = "manifest.js";
-
-const INDEX_HTML: &str = include_str!("../assets/index.html");
-const VIEWER_CSS: &str = include_str!("../assets/viewer.css");
-const VIEWER_JS: &str = include_str!("../assets/viewer.js");
 
 pub(crate) fn run(
     directory: &Path,
@@ -45,7 +39,18 @@ pub(crate) fn run(
         let Some(writer) = active.as_mut() else {
             continue;
         };
-        if let Err(error) = writer.write(batch, shared) {
+        #[cfg(test)]
+        let batch = if shared
+            .fail_next
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            Err(io::Error::other("injected by a test"))
+        } else {
+            Ok(batch)
+        };
+        #[cfg(not(test))]
+        let batch: io::Result<ObserveBatch> = Ok(batch);
+        if let Err(error) = batch.and_then(|batch| writer.write(batch)) {
             shared.fail(format!(
                 "observe: writing to {} failed: {error}; the export stops here, training goes on",
                 directory.display()
@@ -59,11 +64,8 @@ pub(crate) fn run(
 }
 
 struct Active {
-    directory: PathBuf,
     max_text_chars: usize,
     log: BufWriter<File>,
-    generation: String,
-    chunks: u64,
     segment: u32,
     next_batch_id: u64,
     /// Prompt keys already written in this segment.
@@ -71,23 +73,14 @@ struct Active {
 }
 
 impl Active {
-    /// Recovers the log and rebuilds the feed. `None` when the log cannot be
-    /// trusted and is left untouched.
+    /// Recovers the log. `None` when the log cannot be trusted and is left
+    /// untouched.
     fn start(
         directory: &Path,
         max_text_chars: usize,
         shared: &Shared,
         run: &RunInfo,
     ) -> io::Result<Option<Self>> {
-        write_atomic(
-            &directory.join("index.html"),
-            INDEX_HTML
-                .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"))
-                .as_bytes(),
-        )?;
-        write_atomic(&directory.join("viewer.css"), VIEWER_CSS.as_bytes())?;
-        write_atomic(&directory.join("viewer.js"), VIEWER_JS.as_bytes())?;
-
         let path = directory.join(LOG_FILE);
         let recovered = match fs::read(&path) {
             Ok(bytes) => match recover(&bytes) {
@@ -114,29 +107,22 @@ impl Active {
             log.set_len(recovered.valid_len)?;
         }
 
-        let feed = directory.join(FEED_DIR);
-        fs::create_dir_all(&feed)?;
-        let generation = next_generation(&feed)?;
-        fs::create_dir(feed.join(&generation))?;
         let mut active = Self {
-            directory: directory.to_path_buf(),
             max_text_chars,
             log: BufWriter::new(log),
-            generation,
-            chunks: 0,
             segment: recovered.max_segment.map_or(0, |segment| segment + 1),
             next_batch_id: recovered.max_batch_id.map_or(0, |id| id + 1),
             prompts: HashSet::new(),
         };
-        for lines in &recovered.batches {
-            active.publish_chunk(lines)?;
-        }
-        active.publish_manifest(shared)?;
-        active.append(vec![("run", body(run)?)], shared)?;
+        // The cadence goes into the run record, so a reader knows which
+        // updates were meant to carry texts without the run's configuration.
+        let mut run = body(run)?;
+        run["every"] = shared.every().into();
+        active.append(vec![("run", run)])?;
         Ok(Some(active))
     }
 
-    fn write(&mut self, batch: ObserveBatch, shared: &Shared) -> io::Result<()> {
+    fn write(&mut self, batch: ObserveBatch) -> io::Result<()> {
         let mut records = Vec::new();
         let mut new_prompts = Vec::new();
         match batch {
@@ -162,14 +148,13 @@ impl Active {
         if records.is_empty() {
             return Ok(());
         }
-        self.append(records, shared)?;
+        self.append(records)?;
         self.prompts.extend(new_prompts);
         Ok(())
     }
 
-    /// Writes one batch: the log first, then its chunk, then the manifest that
-    /// names the chunk.
-    fn append(&mut self, records: Vec<(&str, Value)>, shared: &Shared) -> io::Result<()> {
+    /// Writes one batch, flushed whole.
+    fn append(&mut self, records: Vec<(&str, Value)>) -> io::Result<()> {
         let time = record::utc_now();
         let batch_id = self.next_batch_id;
         let batch_len = records.len();
@@ -193,38 +178,7 @@ impl Active {
         }
         self.log.flush()?;
         self.next_batch_id += 1;
-        self.publish_chunk(&lines)?;
-        self.publish_manifest(shared)
-    }
-
-    fn publish_chunk(&mut self, lines: &[String]) -> io::Result<()> {
-        let path = self
-            .directory
-            .join(FEED_DIR)
-            .join(&self.generation)
-            .join(format!("{:06}.js", self.chunks));
-        let script = format!(
-            "RG_FEED.chunk({}, [\n{}\n]);\n",
-            self.chunks,
-            lines.join(",\n")
-        );
-        write_atomic(&path, script.as_bytes())?;
-        self.chunks += 1;
         Ok(())
-    }
-
-    fn publish_manifest(&self, shared: &Shared) -> io::Result<()> {
-        let manifest = json!({
-            "generation": self.generation,
-            "chunks": self.chunks,
-            "segment": self.segment,
-            "dropped_batches": shared.dropped(),
-            "updated_at": record::utc_now(),
-        });
-        write_atomic(
-            &self.directory.join(FEED_DIR).join(MANIFEST_FILE),
-            format!("RG_FEED.manifest({manifest});\n").as_bytes(),
-        )
     }
 }
 
@@ -232,34 +186,10 @@ fn body(value: &impl serde::Serialize) -> io::Result<Value> {
     serde_json::to_value(value).map_err(io::Error::other)
 }
 
-/// Replaces `path` in one step, so a reader sees the old file or the new one.
-fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
-    fs::write(&temporary, bytes)?;
-    fs::rename(&temporary, path)
-}
-
-/// One past the highest numbered generation under `feed`.
-fn next_generation(feed: &Path) -> io::Result<String> {
-    let mut highest = 0_u32;
-    for entry in fs::read_dir(feed)? {
-        let entry = entry?;
-        if let Some(number) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<u32>().ok())
-        {
-            highest = highest.max(number);
-        }
-    }
-    Ok(format!("{:06}", highest + 1))
-}
-
 #[derive(Debug, Default)]
 struct Recovered {
-    /// The complete batches, each as its lines.
-    batches: Vec<Vec<String>>,
+    /// How many complete batches the log holds.
+    batches: usize,
     max_segment: Option<u32>,
     max_batch_id: Option<u64>,
     /// Bytes up to the end of the last complete batch.
@@ -323,8 +253,8 @@ fn recover(bytes: &[u8]) -> Result<Recovered, Corruption> {
         };
         lines.push(text.to_string());
         if lines.len() == header.batch_len {
-            let (first, lines) = open.take().expect("the batch was just filled");
-            recovered.batches.push(lines);
+            let (first, _) = open.take().expect("the batch was just filled");
+            recovered.batches += 1;
             recovered.max_segment = recovered.max_segment.max(Some(first.segment));
             recovered.max_batch_id = recovered.max_batch_id.max(Some(first.batch_id));
             recovered.valid_len = offset as u64;
@@ -352,8 +282,7 @@ mod tests {
     fn complete_batches_are_kept_in_order() {
         let bytes = log(&[line(0, (0, 0, 1)), line(0, (1, 0, 2)), line(0, (1, 1, 2))]);
         let recovered = recover(&bytes).unwrap();
-        assert_eq!(recovered.batches.len(), 2);
-        assert_eq!(recovered.batches[1].len(), 2);
+        assert_eq!(recovered.batches, 2);
         assert_eq!(recovered.valid_len, bytes.len() as u64);
         assert_eq!(recovered.max_batch_id, Some(1));
         assert_eq!(recovered.max_segment, Some(0));
@@ -366,7 +295,7 @@ mod tests {
         bytes.extend(log(&[line(0, (1, 0, 2))]));
         bytes.extend_from_slice(b"{\"v\":1,\"trunc");
         let recovered = recover(&bytes).unwrap();
-        assert_eq!(recovered.batches.len(), 1);
+        assert_eq!(recovered.batches, 1);
         assert_eq!(recovered.valid_len, complete.len() as u64);
         assert_eq!(recovered.max_batch_id, Some(0));
     }

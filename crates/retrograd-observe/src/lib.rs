@@ -4,11 +4,13 @@
 //! The training loops only know [`TrajectoryObserver`] and the plain types of
 //! [`batch`]. [`ObserveSink`] implements it with a bounded channel and a
 //! writer thread, so a slow or broken disk costs dropped batches, never a
-//! stalled update. The directory it writes is described in
+//! stalled update. [`reader::ObserveIndex`] reads the file back, and is the
+//! only reader of the format. The file is described in
 //! `docs/training/observe.md`.
 
 pub mod batch;
 mod error;
+pub mod reader;
 mod record;
 mod sink;
 #[cfg(test)]

@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value};
 
 use crate::batch::*;
+use crate::reader::{ObserveIndex, RolloutText};
 use crate::sink::{ObserveSink, SinkConfig};
-use crate::writer::{FEED_DIR, LOG_FILE, MANIFEST_FILE};
+use crate::writer::LOG_FILE;
 
 fn temp_dir(label: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -100,35 +101,17 @@ fn of_type<'a>(records: &'a [Value], kind: &str) -> Vec<&'a Value> {
         .collect()
 }
 
-fn manifest(directory: &Path) -> Value {
-    let text = fs::read_to_string(directory.join(FEED_DIR).join(MANIFEST_FILE)).unwrap();
-    let json = text
-        .strip_prefix("RG_FEED.manifest(")
-        .and_then(|rest| rest.strip_suffix(");\n"))
-        .expect("the manifest callback");
-    serde_json::from_str(json).unwrap()
-}
-
-fn chunk(directory: &Path, generation: &str, index: u64) -> Vec<Value> {
-    let path = directory
-        .join(FEED_DIR)
-        .join(generation)
-        .join(format!("{index:06}.js"));
-    let text = fs::read_to_string(path).unwrap();
-    let prefix = format!("RG_FEED.chunk({index}, ");
-    let json = text
-        .strip_prefix(&prefix)
-        .and_then(|rest| rest.strip_suffix(");\n"))
-        .expect("the chunk callback");
-    serde_json::from_str(json).unwrap()
-}
-
-fn feed_records(directory: &Path) -> Vec<Value> {
-    let manifest = manifest(directory);
-    let generation = manifest["generation"].as_str().unwrap();
-    (0..manifest["chunks"].as_u64().unwrap())
-        .flat_map(|index| chunk(directory, generation, index))
-        .collect()
+/// How many whole batches the log holds right now. Read while the writer
+/// writes, so a line still being written is skipped rather than parsed.
+fn batches(directory: &Path) -> usize {
+    fs::read_to_string(directory.join(LOG_FILE))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|record| {
+            record["batch_index"].as_u64().map(|index| index + 1) == record["batch_len"].as_u64()
+        })
+        .count()
 }
 
 fn wait_until(mut condition: impl FnMut() -> bool) {
@@ -140,7 +123,7 @@ fn wait_until(mut condition: impl FnMut() -> bool) {
 }
 
 #[test]
-fn records_are_complete_ordered_and_mirrored_in_the_feed() {
+fn records_are_complete_ordered_and_read_back() {
     let directory = temp_dir("ordered");
     let mut sink = ObserveSink::open(&config(&directory), run_info(None)).unwrap();
     let observer = sink.observer();
@@ -195,56 +178,38 @@ fn records_are_complete_ordered_and_mirrored_in_the_feed() {
     assert_eq!(records[2]["completion"], "answer");
     assert_eq!(records[5]["metrics"]["reward/mean"], 0.5);
 
-    let manifest = manifest(&directory);
-    assert_eq!(manifest["chunks"], 4);
-    assert_eq!(manifest["dropped_batches"], 0);
-    assert_eq!(feed_records(&directory), records);
-    for name in ["index.html", "viewer.css", "viewer.js"] {
-        assert!(directory.join(name).is_file(), "{name}");
-    }
-    let _ = fs::remove_dir_all(directory);
-}
+    assert_eq!(records[0]["every"], 2, "the run record carries the cadence");
 
-#[test]
-fn the_manifest_never_names_a_chunk_that_is_not_there() {
-    let directory = temp_dir("manifest");
-    let mut sink = ObserveSink::open(&config(&directory), run_info(None)).unwrap();
-    let observer = sink.observer();
-    let stop = Instant::now() + Duration::from_millis(300);
-    let reader = {
-        let directory = directory.clone();
-        std::thread::spawn(move || {
-            let mut checked = 0;
-            while Instant::now() < stop {
-                let Ok(text) = fs::read_to_string(directory.join(FEED_DIR).join(MANIFEST_FILE))
-                else {
-                    std::thread::sleep(Duration::from_millis(1));
-                    continue;
-                };
-                let manifest: Value = serde_json::from_str(
-                    text.strip_prefix("RG_FEED.manifest(")
-                        .and_then(|rest| rest.strip_suffix(");\n"))
-                        .expect("a manifest is never read half-written"),
-                )
-                .unwrap();
-                let generation = manifest["generation"].as_str().unwrap();
-                for index in 0..manifest["chunks"].as_u64().unwrap() {
-                    let path = directory
-                        .join(FEED_DIR)
-                        .join(generation)
-                        .join(format!("{index:06}.js"));
-                    assert!(path.is_file(), "{} is named but missing", path.display());
-                }
-                checked += 1;
-            }
-            checked
-        })
-    };
-    for update in 1..=40 {
-        observer.observe(summary(update));
-    }
-    assert!(reader.join().unwrap() > 0);
-    sink.finish();
+    let index = ObserveIndex::open(&directory).unwrap();
+    assert_eq!(index.run().unwrap().every, Some(2));
+    let updates = index.updates();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].update, 2);
+    assert_eq!(updates[0].rollouts, 2);
+    assert_eq!(updates[0].trained, 1);
+    assert_eq!(updates[0].metrics["reward/mean"], 0.5);
+    let (_, groups) = index.update(2).unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].prompt, "p:0");
+    let trained: Vec<Option<bool>> = groups[0].members.iter().map(|m| m.trained).collect();
+    assert_eq!(trained, [Some(true), None]);
+    let texts = index.rollouts(2, Some(0), None).unwrap();
+    assert_eq!(texts[0].text, RolloutText::Completion("answer".into()));
+    assert_eq!(
+        index.prompt(0, "p:0").unwrap().unwrap().messages[0].content,
+        "question"
+    );
+
+    let mut files: Vec<String> = fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    files.sort();
+    assert_eq!(
+        files,
+        [".observe.lock", LOG_FILE],
+        "the log is the whole export"
+    );
     let _ = fs::remove_dir_all(directory);
 }
 
@@ -274,13 +239,9 @@ fn a_full_channel_drops_the_batch_and_warns_once() {
     let warnings = sink.take_warnings();
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("dropped"), "{warnings:?}");
-    wait_until(|| manifest_chunks(&directory) >= 2);
+    wait_until(|| batches(&directory) >= 2);
     sink.update_summary(2, []);
     sink.finish();
-    assert_eq!(
-        manifest(&directory)["dropped_batches"].as_u64(),
-        Some(sink.dropped_batches())
-    );
     let _ = fs::remove_dir_all(directory);
 }
 
@@ -288,10 +249,8 @@ fn a_full_channel_drops_the_batch_and_warns_once() {
 fn a_disk_error_warns_once_and_turns_the_export_off() {
     let directory = temp_dir("io");
     let mut sink = ObserveSink::open(&config(&directory), run_info(None)).unwrap();
-    wait_until(|| manifest_chunks(&directory) >= 1);
-    let feed = directory.join(FEED_DIR);
-    fs::remove_dir_all(&feed).unwrap();
-    fs::write(&feed, b"not a directory").unwrap();
+    wait_until(|| batches(&directory) >= 1);
+    sink.shared().fail_next_write();
     let observer = sink.observer();
     assert!(observer.wants(2));
     observer.observe(summary(2));
@@ -319,22 +278,12 @@ fn wants_follows_every_and_the_sink_state() {
 }
 
 #[test]
-fn a_resume_opens_a_new_segment_in_a_new_generation() {
+fn a_resume_opens_a_new_segment_that_supersedes_the_replayed_updates() {
     let directory = temp_dir("resume");
     let mut first = ObserveSink::open(&config(&directory), run_info(None)).unwrap();
     first.observer().observe(rollouts(2, "p:0"));
+    first.update_summary(2, []);
     first.finish();
-    let old_generation = manifest(&directory)["generation"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let old_chunk = fs::read(
-        directory
-            .join(FEED_DIR)
-            .join(&old_generation)
-            .join("000000.js"),
-    )
-    .unwrap();
 
     let mut second = ObserveSink::open(&config(&directory), run_info(Some(1))).unwrap();
     second.observer().observe(rollouts(2, "p:0"));
@@ -347,23 +296,17 @@ fn a_resume_opens_a_new_segment_in_a_new_generation() {
     assert_eq!(runs[1]["resumed_from_update"], 1);
     // Prompts belong to their segment: the second one writes its own.
     assert_eq!(of_type(&records, "prompt").len(), 2);
-    assert_eq!(records.last().unwrap()["batch_id"], 3);
+    assert_eq!(records.last().unwrap()["batch_id"], 4);
 
-    let manifest = manifest(&directory);
-    assert_ne!(manifest["generation"], old_generation.as_str());
-    assert_eq!(manifest["segment"], 1);
-    assert_eq!(feed_records(&directory), records);
-    assert_eq!(
-        fs::read(
-            directory
-                .join(FEED_DIR)
-                .join(&old_generation)
-                .join("000000.js")
-        )
-        .unwrap(),
-        old_chunk,
-        "a published chunk is never rewritten"
-    );
+    // The first segment's update 2 is the one the resume replayed: only the
+    // second segment's is in view, without the summary the first one wrote.
+    let index = ObserveIndex::open(&directory).unwrap();
+    let updates = index.updates();
+    assert_eq!(updates.len(), 1);
+    assert_eq!((updates[0].update, updates[0].segment), (2, 1));
+    assert_eq!(updates[0].status, None);
+    let (_, groups) = index.update(2).unwrap();
+    assert_eq!(groups[0].members.len(), 2);
     let _ = fs::remove_dir_all(directory);
 }
 
@@ -393,6 +336,9 @@ fn an_incomplete_tail_is_dropped_and_internal_damage_is_left_alone() {
     );
     let records = records(&directory);
     assert_eq!(records.len(), 5, "two runs, one prompt, two rollouts");
+    let index = ObserveIndex::open(&directory).unwrap();
+    assert_eq!(index.runs().len(), 2);
+    assert!(index.updates().is_empty(), "a fresh run starts over");
     assert_eq!(records[4]["segment"], 1);
     assert_eq!(records[4]["batch_id"], 2, "the dropped batch id is reused");
 
@@ -408,25 +354,6 @@ fn an_incomplete_tail_is_dropped_and_internal_damage_is_left_alone() {
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("left untouched"), "{warnings:?}");
     assert_eq!(fs::read(&log).unwrap(), corrupt);
-    let _ = fs::remove_dir_all(directory);
-}
-
-#[test]
-fn a_log_without_its_feed_is_projected_again() {
-    let directory = temp_dir("rebuild");
-    let mut sink = ObserveSink::open(&config(&directory), run_info(None)).unwrap();
-    sink.observer().observe(rollouts(2, "p:0"));
-    sink.update_summary(2, []);
-    sink.finish();
-    // Interrupted after the log and before any feed file.
-    fs::remove_dir_all(directory.join(FEED_DIR)).unwrap();
-
-    let mut sink = ObserveSink::open(&config(&directory), run_info(Some(2))).unwrap();
-    sink.finish();
-    let records = records(&directory);
-    assert_eq!(records.len(), 6);
-    assert_eq!(feed_records(&directory), records);
-    assert_eq!(manifest(&directory)["chunks"], 4);
     let _ = fs::remove_dir_all(directory);
 }
 
@@ -477,8 +404,8 @@ fn a_prompt_lost_with_its_batch_comes_back_with_the_next_rollout() {
         queued
     };
     // The run record and every queued filler come first.
-    for (chunks, update) in (1 + queued..).zip([4, 6]) {
-        wait_until(|| manifest_chunks(&directory) == chunks);
+    for (chunks, update) in (1 + queued as usize..).zip([4, 6]) {
+        wait_until(|| batches(&directory) == chunks);
         sink.observer().observe(rollouts(update, "p:0"));
     }
     sink.finish();
@@ -494,18 +421,6 @@ fn a_prompt_lost_with_its_batch_comes_back_with_the_next_rollout() {
     assert_eq!(rollouts[0]["update"], 4);
     assert_eq!(prompts[0]["batch_id"], rollouts[0]["batch_id"]);
     let _ = fs::remove_dir_all(directory);
-}
-
-fn manifest_chunks(directory: &Path) -> u64 {
-    fs::read_to_string(directory.join(FEED_DIR).join(MANIFEST_FILE))
-        .ok()
-        .and_then(|text| {
-            let json = text
-                .strip_prefix("RG_FEED.manifest(")?
-                .strip_suffix(");\n")?;
-            serde_json::from_str::<Value>(json).ok()?["chunks"].as_u64()
-        })
-        .unwrap_or(0)
 }
 
 #[test]

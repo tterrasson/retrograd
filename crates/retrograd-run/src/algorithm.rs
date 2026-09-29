@@ -488,6 +488,7 @@ pub(crate) fn run_ppo(
             ("updates", u64::from(ppo.updates)),
             ("epochs", u64::from(ppo.ppo_epochs)),
         ],
+        &mut *ctx.observer,
     )?;
     run_rollout_updates(
         trainer,
@@ -550,6 +551,7 @@ pub(crate) fn run_grpo(
             ("updates", u64::from(grpo.updates)),
             ("epochs", u64::from(grpo.grpo_epochs)),
         ],
+        &mut *ctx.observer,
     )?;
     run_rollout_updates(
         trainer,

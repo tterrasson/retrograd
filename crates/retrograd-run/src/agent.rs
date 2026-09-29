@@ -306,6 +306,7 @@ fn drive(
             ("updates", u64::from(updates)),
             ("epochs", u64::from(epochs_per_update)),
         ],
+        &mut *ctx.observer,
     ) {
         Ok(sink) => sink,
         Err(error) => {
