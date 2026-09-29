@@ -6,15 +6,14 @@
 //! loops do. That is what makes these assertions about the control channel
 //! rather than about the test.
 
-
 use std::time::Duration;
 
-use http::StatusCode;
-use serde_json::json;
 use crate::support::{
     FakeEngine, Fixture, get, patch, post, post_empty, recipe, recipe_with_schedules, router_for,
     wait_for_status, wait_for_terminal,
 };
+use http::StatusCode;
+use serde_json::json;
 
 /// Long enough that a command reaches the run while it is alive, short enough
 /// that a lane does not notice.

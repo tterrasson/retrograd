@@ -5,17 +5,16 @@
 //! who holds the device, and that every failure reaches the client in the
 //! envelope an OpenAI SDK reads.
 
-
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::support::*;
 use axum::Router;
 use axum::body::Body;
 use http::{Request, StatusCode};
 use retrograd_openai::testing::FakeLoader;
 use retrograd_server::AppState;
 use serde_json::{Value, json};
-use crate::support::*;
 
 fn serving(fixture: &Fixture, engine: Arc<FakeEngine>) -> (Router, FakeLoader, AppState) {
     let loader = FakeLoader::new("from the run");

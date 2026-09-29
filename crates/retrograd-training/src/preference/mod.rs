@@ -563,9 +563,7 @@ pub fn run_resumed(
             epoch_totals.merge(&totals);
 
             let mut progress = Progress::sft(metrics, false);
-            progress
-                .values
-                .extend(totals.values(&config.loss));
+            progress.values.extend(totals.values(&config.loss));
             progress.notes.append(&mut scratch.notes);
             if let Some(warning) = drift.observe(totals.chosen_logps(), totals.rejected_logps()) {
                 progress.notes.push(warning);
@@ -591,9 +589,7 @@ pub fn run_resumed(
                 metrics.train_loss = epoch_totals.loss() as f32;
                 final_metrics = metrics;
                 let mut progress = Progress::sft(metrics, false);
-                progress
-                    .values
-                    .extend(epoch_totals.values(&config.loss));
+                progress.values.extend(epoch_totals.values(&config.loss));
                 if !on_progress(trainer, progress)? || !keep_going {
                     return Ok(final_metrics);
                 }

@@ -180,8 +180,7 @@ pub(crate) fn pair_terms(
             PairTerms {
                 loss: -chosen_mean + lambda * softplus(-z),
                 chosen_weight: live(chosen_clamped) * (1.0 + pull * chosen_slope) / chosen.count(),
-                rejected_weight: live(rejected_clamped) * -pull * rejected_slope
-                    / rejected.count(),
+                rejected_weight: live(rejected_clamped) * -pull * rejected_slope / rejected.count(),
                 chosen_reward: beta * chosen_mean,
                 rejected_reward: beta * rejected_mean,
                 orpo: Some(OrpoTerms {
