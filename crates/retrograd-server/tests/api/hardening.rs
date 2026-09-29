@@ -6,14 +6,13 @@
 //! problem document, and does a message on the way out describe the server's
 //! filesystem.
 
-
 use std::sync::Arc;
 
+use crate::support::*;
 use axum::body::Body;
 use http::{Request, StatusCode};
 use retrograd_server::dto;
 use serde_json::json;
-use crate::support::*;
 
 /// The fixture's server with `config` fields replaced.
 fn hardened(
@@ -373,12 +372,12 @@ fn the_reference_model_is_held_to_the_path_roots() {
     )
     .expect("build");
     state
-        .validate_run_paths(&config, false)
+        .validate_run_paths(&config, retrograd_server::state::Managed::default())
         .expect("inside the root");
     let outside = Fixture::new("hardening-reference-outside");
     config.reference.as_mut().expect("reference").model = outside.dir.join("model.gguf");
     let error = state
-        .validate_run_paths(&config, false)
+        .validate_run_paths(&config, retrograd_server::state::Managed::default())
         .expect_err("outside the root");
     let body = format!("{error:?}");
     assert!(body.contains("/config/reference/model"), "{body}");
@@ -412,14 +411,17 @@ fn the_observe_directory_is_held_to_the_path_roots() {
         .expect("build")
     };
     state
-        .validate_run_paths(&build(document(&fixture.dir.join("observe"))), false)
+        .validate_run_paths(
+            &build(document(&fixture.dir.join("observe"))),
+            retrograd_server::state::Managed::default(),
+        )
         .expect("inside the root");
     let error = state
         .validate_run_paths(
             &build(document(
                 &std::env::temp_dir().join("retrograd-outside-observe"),
             )),
-            false,
+            retrograd_server::state::Managed::default(),
         )
         .expect_err("outside every root");
     let body = format!("{error:?}");
@@ -500,7 +502,13 @@ async fn the_openapi_document_describes_the_routes_the_router_serves() {
         "/v1/runs/{id}/generate",
         "/v1/runs/{id}/artifacts",
         "/v1/runs/{id}/artifacts/{name}",
+        "/v1/runs/{id}/artifacts/{name}/link",
         "/v1/runs/{id}/metrics",
+        "/v1/runs/{id}/trajectories",
+        "/v1/runs/{id}/trajectories/updates/{update}",
+        "/v1/runs/{id}/trajectories/updates/{update}/groups/{group}",
+        "/v1/model-files",
+        "/v1/config-schema",
         "/v1/runs/{id}/events",
         "/v1/events",
         "/v1/datasets",

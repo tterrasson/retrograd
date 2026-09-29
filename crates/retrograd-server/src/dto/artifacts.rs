@@ -77,3 +77,15 @@ pub struct ArtifactListing {
     pub artifacts: Vec<ArtifactEntry>,
 }
 }
+
+schema! {
+/// `POST /v1/runs/{id}/artifacts/{name}/link`: a download a browser can
+/// navigate to without a token.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct DownloadLink {
+    /// Same-origin path, query included. Good for this one artefact only.
+    pub href: String,
+    /// Unix seconds after which the link is refused.
+    pub expires_at: u64,
+}
+}

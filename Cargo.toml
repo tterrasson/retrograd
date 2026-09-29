@@ -32,6 +32,7 @@ members = [
     "crates/retrograd-plan",
     "crates/retrograd-run",
     "crates/retrograd-server",
+    "crates/retrograd-ui",
     "crates/retrograd-openai",
     "crates/retrograd-agent-core",
     "crates/retrograd-agent",
@@ -99,6 +100,7 @@ retrograd-run = { path = "crates/retrograd-run", default-features = false }
 retrograd-scenario-gen = { path = "crates/retrograd-scenario-gen" }
 retrograd-server = { path = "crates/retrograd-server" }
 retrograd-training = { path = "crates/retrograd-training" }
+retrograd-ui = { path = "crates/retrograd-ui" }
 # Two crates every consumer takes without its default features: the declarations
 # without the container type (`retrograd-spec`), and the tool registry without
 # the MCP transport (`retrograd-tools`). Written here rather than repeated at

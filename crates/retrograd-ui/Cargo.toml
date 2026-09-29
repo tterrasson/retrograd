@@ -1,0 +1,27 @@
+[package]
+name = "retrograd-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - the web interface's static assets, embedded and served"
+publish = false
+
+[features]
+# Embeds `web/dist` into the binary. Off by default so that a workspace build -
+# clippy, rustdoc, the fast lane - compiles this crate without a UI build; the
+# server's `ui` feature is what turns it on, and `build.rs` then refuses a
+# missing `web/dist` with the command that produces it.
+embed = ["dep:rust-embed"]
+
+[dependencies]
+axum.workspace = true
+http.workspace = true
+rust-embed = { version = "8", optional = true }
+
+[dev-dependencies]
+http-body-util.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true

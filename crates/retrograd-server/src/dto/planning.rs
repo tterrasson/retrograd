@@ -25,7 +25,10 @@ pub struct PlanRequest {
     /// A whole configuration document. Skips the semantic phases but not the
     /// budget check.
     #[serde(default)]
-    #[cfg_attr(feature = "openapi", schema(value_type = Object))]
+    #[cfg_attr(
+        feature = "openapi",
+        schema(value_type = Option<retrograd_config::ConfigDocument>)
+    )]
     pub config: Option<retrograd_config::ConfigDocument>,
     /// The client's own parameters: a partial document tree, spelled exactly as
     /// the CLI's TOML spells it. Every leaf it sets is **locked** - no phase may
@@ -78,7 +81,6 @@ pub struct PlanResponse {
     pub name: Option<String>,
     /// The effective configuration, in the same schema `config` takes on input.
     /// Server-declared values are redacted to their catalogue id.
-    #[cfg_attr(feature = "openapi", schema(value_type = Object))]
     pub effective_config: retrograd_config::ConfigDocument,
     /// Flat map, keyed by dotted field path.
     pub provenance: Provenance,

@@ -20,14 +20,26 @@ use retrograd_plan::tuning::Scope;
 
 use crate::dto;
 
-pub fn listing() -> dto::Defaults {
+/// `observe_target_updates` is the operator's setting, and replaces the
+/// resolver's default in the rule that reads it: the listing describes what
+/// *this* server does.
+pub fn listing(observe_target_updates: u32) -> dto::Defaults {
     dto::Defaults {
         derived: retrograd_plan::DERIVATIONS
             .iter()
             .map(|derivation| dto::DerivedField {
                 path: derivation.path,
                 rule: derivation.rule,
-                thresholds: derivation.thresholds.iter().copied().collect(),
+                thresholds: derivation
+                    .thresholds
+                    .iter()
+                    .map(|&(name, value)| match (derivation.path, name) {
+                        ("observe.every", "target_updates") => {
+                            (name, f64::from(observe_target_updates))
+                        }
+                        _ => (name, value),
+                    })
+                    .collect(),
                 applies_to: scope_id(derivation.scope),
                 // Every derivable field is a `params` field. Stated rather than
                 // implied, because "the server decides this" and "you may not"
@@ -70,7 +82,7 @@ mod tests {
 
     #[test]
     fn the_listing_is_the_resolvers_own_tables() {
-        let listing = listing();
+        let listing = listing(100);
         assert_eq!(listing.derived.len(), retrograd_plan::DERIVATIONS.len());
         assert_eq!(
             listing.active_defaults.len(),
@@ -90,7 +102,7 @@ mod tests {
             "evaluation",
             "checkpoint",
         ];
-        for field in listing().derived {
+        for field in listing(100).derived {
             // One path grammar across `params`, `provenance` and the PATCH
             // whitelist: dotted, no leading or trailing separator.
             assert!(
@@ -118,7 +130,7 @@ mod tests {
     #[test]
     fn every_degrading_default_publishes_the_code_it_raises() {
         let mut degrading = 0;
-        for entry in listing().active_defaults {
+        for entry in listing(100).active_defaults {
             assert!(!entry.paths.is_empty(), "{}", entry.id);
             assert!(!entry.condition.is_empty(), "{}", entry.id);
             assert!(entry.client_can_disable, "{}", entry.id);
@@ -140,7 +152,7 @@ mod tests {
     /// numbers in its sentence come out as numbers, not only as prose.
     #[test]
     fn a_rule_publishes_the_thresholds_its_sentence_names() {
-        let rank = listing()
+        let rank = listing(100)
             .derived
             .into_iter()
             .find(|field| field.path == "lora.rank")

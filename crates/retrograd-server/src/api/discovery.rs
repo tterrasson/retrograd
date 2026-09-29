@@ -20,6 +20,30 @@ pub async fn health(State(state): State<AppState>) -> Json<dto::Health> {
 }
 
 pub async fn capabilities(State(state): State<AppState>) -> ApiResult<Json<dto::Capabilities>> {
+    Ok(Json(describe(
+        state.backends.as_ref().clone(),
+        state.baseline.unified,
+        state.budgets(),
+        dto::Features {
+            openapi: cfg!(feature = "openapi"),
+            max_concurrent_runs: state.config.concurrency(),
+            serving_enabled: state.config.serving.enabled(),
+            ui: state.config.serves_ui(),
+            auth: state.config.auth_token.is_some(),
+            mode: dto::ServerMode::Server,
+        },
+    )?))
+}
+
+/// The capabilities document, from what the process knows about itself.
+/// Shared with the viewer, which answers the same shape about the same
+/// machine and runs nothing on it.
+pub(crate) fn describe(
+    backends: Vec<String>,
+    unified_memory: bool,
+    budgets: retrograd_plan::Budgets,
+    features: dto::Features,
+) -> ApiResult<dto::Capabilities> {
     let catalog = crate::resolve::kernel_catalog()?;
     let (rir_mode, rir_policy_latched) = retrograd_engine::rir_runtime_policy()
         .map_err(|error| ApiError::internal(format!("could not read RIR policy: {error}")))?;
@@ -29,20 +53,17 @@ pub async fn capabilities(State(state): State<AppState>) -> ApiResult<Json<dto::
         retrograd_core::RirMode::Prefer => "prefer",
         retrograd_core::RirMode::Require => "require",
     };
-    Ok(Json(dto::Capabilities {
+    Ok(dto::Capabilities {
         execution_profile_schema_version: retrograd_core::EXECUTION_PROFILE_VERSION,
         kernel_catalog_fingerprint: catalog.fingerprint.clone(),
         rir_mode: rir_mode.to_string(),
         rir_policy_latched,
-        backends: state.backends.as_ref().clone(),
+        backends,
         devices: devices(),
-        unified_memory: state.baseline.unified,
-        budgets: state.budgets(),
-        features: dto::Features {
-            openapi: cfg!(feature = "openapi"),
-            max_concurrent_runs: state.config.concurrency(),
-        },
-    }))
+        unified_memory,
+        budgets,
+        features,
+    })
 }
 
 /// The device list, with the memory budget attached to the first GPU.
@@ -86,8 +107,8 @@ fn devices() -> Vec<dto::DeviceInfo> {
 ///
 /// Rendered from the resolver's own tables, so a client reading this reads what
 /// will actually happen rather than a copy of it.
-pub async fn defaults() -> Json<dto::Defaults> {
-    Json(defaults::listing())
+pub async fn defaults(State(state): State<AppState>) -> Json<dto::Defaults> {
+    Json(defaults::listing(state.config.observe_target_updates()))
 }
 
 pub async fn rewards(State(state): State<AppState>) -> Json<dto::Rewards> {
@@ -173,4 +194,46 @@ fn parse_targets(values: Option<&[String]>) -> ApiResult<TargetSet> {
             ApiError::from(error).with_field("/targets", ErrorCode::InvalidValue, "unknown target")
         }),
     }
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelFilesQuery {
+    /// Read the disk again even when the last listing is still fresh.
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+/// `GET /v1/model-files`
+///
+/// The roots are the server's `path_roots`; a server that declares none -
+/// loopback only - lists its working directory, which is what a relative
+/// `recipe.model` resolves against.
+pub async fn model_files(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<ModelFilesQuery>,
+) -> ApiResult<Json<dto::ModelFileListing>> {
+    use crate::lock::Recover as _;
+
+    if !query.refresh
+        && let Some(cached) = state.model_files.lock().recover().as_ref()
+        && cached.fresh()
+    {
+        return Ok(Json(cached.listing.clone()));
+    }
+    let roots = if state.config.path_roots.is_empty() {
+        vec![std::env::current_dir().map_err(|error| {
+            ApiError::internal(format!("working directory is unavailable: {error}"))
+        })?]
+    } else {
+        state.config.path_roots.clone()
+    };
+    let listing = tokio::task::spawn_blocking(move || crate::model_files::scan(&roots))
+        .await
+        .map_err(|error| ApiError::internal(format!("the model listing failed: {error}")))?;
+    *state.model_files.lock().recover() = Some(crate::model_files::Cached {
+        taken: std::time::Instant::now(),
+        listing: listing.clone(),
+    });
+    Ok(Json(listing))
 }

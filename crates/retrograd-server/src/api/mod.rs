@@ -9,3 +9,4 @@ pub mod inference;
 pub mod openai;
 pub mod plan;
 pub mod runs;
+pub mod trajectories;

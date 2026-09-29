@@ -466,10 +466,12 @@ impl Drop for Fixture {
 /// tests are about the runtime, and measuring on every creation would put the
 /// calibration pass in the way of every assertion.
 pub fn state_of(fixture: &Fixture, engine: Arc<dyn RunEngine>, calibrate: bool) -> AppState {
-    let toml = format!(
-        "state_dir = \"{}\"\ncalibrate_runs = {calibrate}\n",
-        fixture.path("state")
-    );
+    state_with(fixture, engine, &format!("calibrate_runs = {calibrate}\n"))
+}
+
+/// [`state_of`] with more of the server's TOML: a token, path roots, `ui`.
+pub fn state_with(fixture: &Fixture, engine: Arc<dyn RunEngine>, extra: &str) -> AppState {
+    let toml = format!("state_dir = \"{}\"\n{extra}", fixture.path("state"));
     let config: ServerConfig = toml::from_str(&toml).expect("parse the server config");
     let catalog = Catalog::declare(
         &config.rewards,
@@ -705,6 +707,10 @@ pub async fn post_empty(router: &Router, uri: &str) -> (StatusCode, Value) {
 
 pub async fn get(router: &Router, uri: &str) -> (StatusCode, Value) {
     send(router, build(http::Method::GET, uri, None, &[])).await
+}
+
+pub async fn get_with(router: &Router, uri: &str, headers: &[(&str, &str)]) -> (StatusCode, Value) {
+    send(router, build(http::Method::GET, uri, None, headers)).await
 }
 
 fn build(

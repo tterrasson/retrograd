@@ -29,6 +29,7 @@ mod inference;
 mod observation;
 mod planning;
 mod runs;
+mod trajectories;
 
 pub use artifacts::*;
 pub use control::*;
@@ -37,6 +38,7 @@ pub use inference::*;
 pub use observation::*;
 pub use planning::*;
 pub use runs::*;
+pub use trajectories::*;
 
 schema! {
 /// `GET /v1/health`
@@ -96,7 +98,30 @@ schema! {
 pub struct Features {
     pub openapi: bool,
     pub max_concurrent_runs: usize,
+    /// `/v1/chat/completions` and `/v1/models` answer.
+    pub serving_enabled: bool,
+    /// The web interface is served under `/`.
+    pub ui: bool,
+    /// Requests need a bearer token. Informational: a client learns that it
+    /// needs one from the `401`, not from here.
+    pub auth: bool,
+    /// `server` for the control plane; `viewer` for the read-only process of
+    /// `retrograd-server view`, which serves one run's trajectories and
+    /// nothing else.
+    pub mode: ServerMode,
 }
+}
+
+retrograd_core::wire_enum! {
+    /// What kind of process answers. `rename_all` is kept for the same reason
+    /// as on [`RunStatus`]: the schema reads the container rule only.
+    #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+    #[serde(rename_all = "snake_case")]
+    #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+    pub enum ServerMode: serde {
+        Server = "server",
+        Viewer = "viewer",
+    }
 }
 
 schema! {
@@ -264,6 +289,53 @@ schema! {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct Environments {
     pub environments: Vec<EnvironmentEntry>,
+}
+}
+
+retrograd_core::wire_enum! {
+    /// What a GGUF file is for, judged by its name.
+    #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+    #[serde(rename_all = "snake_case")]
+    #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+    pub enum ModelFileRole: serde {
+        /// Weights a recipe may train.
+        Model = "model",
+        /// A vision projector (`mmproj-*`), loaded beside a model.
+        Projector = "projector",
+        /// A tokenizer without weights (`*vocab*`).
+        Vocab = "vocab",
+    }
+}
+
+schema! {
+/// One GGUF file under the path roots.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ModelFile {
+    /// Exactly what `recipe.model` accepts.
+    pub path: String,
+    /// The root it was found under.
+    pub root: String,
+    /// `path` relative to `root`, for display.
+    pub relative: String,
+    pub bytes: u64,
+    /// Unix seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<u64>,
+    pub role: ModelFileRole,
+}
+}
+
+schema! {
+/// `GET /v1/model-files`
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ModelFileListing {
+    /// The roots walked: the server's `path_roots`, or its working directory
+    /// when it declares none.
+    pub roots: Vec<String>,
+    /// Sorted by path.
+    pub files: Vec<ModelFile>,
+    /// The walk stopped at its bound; some files are not listed.
+    pub truncated: bool,
 }
 }
 

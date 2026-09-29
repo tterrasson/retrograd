@@ -94,6 +94,18 @@ pub struct RunSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub status: RunStatus,
+    /// The `run.algorithm` spelling: `sft`, `grpo`, `ppo`, `preference`, …
+    pub algorithm: String,
+    /// The recipe objective, for a run created from a recipe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective: Option<String>,
+    /// The base model's file name - not its path, which is the server's.
+    pub model: String,
+    /// The run exports trajectories (`GET /v1/runs/{id}/trajectories`).
+    pub observed: bool,
+    /// Rank in the device queue, from one, while the run is `queued`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_position: Option<u32>,
     /// Unix seconds. Not RFC 3339: every other time in this API is a number,
     /// and one format is easier to consume than two.
     pub created_at: u64,
@@ -133,6 +145,15 @@ pub struct RunView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub status: RunStatus,
+    /// The `run.algorithm` spelling.
+    pub algorithm: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub objective: Option<String>,
+    /// The base model's file name.
+    pub model: String,
+    pub observed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_position: Option<u32>,
     pub created_at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<u64>,
@@ -144,11 +165,11 @@ pub struct RunView {
     /// Weights, KV caches and optimizer state stay allocated while a run is
     /// paused. True whenever this run is holding the device.
     pub holds_device: bool,
-    #[cfg_attr(feature = "openapi", schema(value_type = Object))]
+    #[cfg_attr(feature = "openapi", schema(value_type = retrograd_config::ConfigDocument))]
     pub effective_config: Box<serde_json::value::RawValue>,
-    #[cfg_attr(feature = "openapi", schema(value_type = Object))]
+    #[cfg_attr(feature = "openapi", schema(value_type = Provenance))]
     pub provenance: Box<serde_json::value::RawValue>,
-    #[cfg_attr(feature = "openapi", schema(value_type = Object))]
+    #[cfg_attr(feature = "openapi", schema(value_type = PlanSummary))]
     pub plan: Box<serde_json::value::RawValue>,
 }
 }

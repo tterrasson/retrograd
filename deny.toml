@@ -23,5 +23,8 @@ allow = [
     "MIT-0",
     "Unicode-3.0",
     "Unlicense",
+    # `foldhash`, through the hash map of `jsonschema` - a dev-dependency of
+    # retrograd-config that checks the published configuration schema.
+    "Zlib",
 ]
 confidence-threshold = 0.8

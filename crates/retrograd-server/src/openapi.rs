@@ -162,12 +162,31 @@ const OPERATIONS: &[Operation] = &[
     ),
     op("get", "/v1/openapi.json", "This document", None, None),
     op(
+        "get",
+        "/v1/config-schema",
+        "The configuration document as a JSON Schema 2020-12, with this server's marks",
+        None,
+        None,
+    ),
+    op(
         "post",
         "/v1/preflight",
         "Build the training graph and report on it",
         Some("PreflightRequest"),
         Some("PreflightResponse"),
     ),
+    op(
+        "get",
+        "/v1/model-files",
+        "GGUF files under the path roots, by name, for picking a model",
+        None,
+        Some("ModelFileListing"),
+    )
+    .with_query(&[query(
+        "refresh",
+        "boolean",
+        "Read the disk again instead of the listing of the last 30 seconds.",
+    )]),
     op(
         "post",
         "/v1/plan",
@@ -190,7 +209,22 @@ const OPERATIONS: &[Operation] = &[
         "List runs, newest first",
         None,
         Some("RunListing"),
-    ),
+    )
+    .with_query(&[
+        query("status", "string", "Only runs in this state."),
+        query(
+            "algorithm",
+            "string",
+            "Only runs of this `run.algorithm` (sft, grpo, ppo, preference, …).",
+        ),
+        query("name", "string", "Only runs with exactly this name."),
+        query("limit", "integer", "Page size, 1 to 500. Default 50."),
+        query(
+            "cursor",
+            "string",
+            "The id of the last run of the previous page.",
+        ),
+    ]),
     op(
         "get",
         "/v1/runs/{id}",
@@ -274,21 +308,93 @@ const OPERATIONS: &[Operation] = &[
         "Download one artifact",
         None,
         None,
+    )
+    .with_query(&[
+        query(
+            "sig",
+            "string",
+            "Signature of a link from POST …/link; with `exp`, stands in for the bearer token.",
+        ),
+        query("exp", "integer", "Expiry of that link, unix seconds."),
+    ]),
+    op(
+        "post",
+        "/v1/runs/{id}/artifacts/{name}/link",
+        "A signed, one-minute link to download one artifact without a token",
+        None,
+        Some("DownloadLink"),
     ),
+    op(
+        "get",
+        "/v1/runs/{id}/trajectories",
+        "The updates of a rollout run's trajectory export",
+        None,
+        Some("TrajectoryOverview"),
+    ),
+    op(
+        "get",
+        "/v1/runs/{id}/trajectories/updates/{update}",
+        "The groups of one update, members without their texts",
+        None,
+        Some("UpdateDetail"),
+    )
+    .with_query(&[
+        query(
+            "cursor",
+            "string",
+            "Where the next page of groups starts, as the last page returned it.",
+        ),
+        query("limit", "integer", "Groups per page, 1 to 500. Default 50."),
+        query(
+            "preview_chars",
+            "integer",
+            "Characters of each prompt message. Default 400; 0 keeps them whole.",
+        ),
+    ]),
+    op(
+        "get",
+        "/v1/runs/{id}/trajectories/updates/{update}/groups/{group}",
+        "One group with every text; `-` is the group of a PPO update",
+        None,
+        Some("GroupDetail"),
+    )
+    .with_query(&[query(
+        "member",
+        "integer",
+        "Only this member, for a group too heavy to load whole.",
+    )]),
     op(
         "get",
         "/v1/runs/{id}/metrics",
         "Metric samples, pull form",
         None,
         Some("MetricsPage"),
-    ),
+    )
+    .with_query(&[
+        query(
+            "since",
+            "integer",
+            "Only samples after this event seq. Default 0.",
+        ),
+        query(
+            "names",
+            "string",
+            "Comma-separated metric names. Absent means every name.",
+        ),
+        query("limit", "integer", "Samples per page."),
+    ]),
     op(
         "get",
         "/v1/runs/{id}/events",
         "Server-sent events for one run",
         None,
         None,
-    ),
+    )
+    .with_query(&[query(
+        "since",
+        "integer",
+        "Replay after this seq; `Last-Event-ID` takes precedence.",
+    )]),
     op(
         "get",
         "/v1/events",
@@ -508,16 +614,7 @@ fn responses(operation: &Operation) -> Value {
     // attached to every operation rather than enumerated per route.
     responses["default"] = json!({
         "description": "a problem document (RFC 9457)",
-        "content": {"application/problem+json": {"schema": {"type": "object", "properties": {
-            "type": {"type": "string"},
-            "title": {"type": "string"},
-            "status": {"type": "integer"},
-            "detail": {"type": "string"},
-            "errors": {"type": "array", "items": {"type": "object", "properties": {
-                "pointer": {"type": "string"},
-                "message": {"type": "string"}
-            }}}
-        }}}}
+        "content": {"application/problem+json": {"schema": reference("Problem")}}
     });
     responses
 }
@@ -537,6 +634,23 @@ fn info() -> Value {
 /// `GET /v1/openapi.json`
 pub async fn document() -> axum::response::Response {
     Json(render()).into_response()
+}
+
+/// `GET /v1/config-schema`: the configuration document as a standalone JSON
+/// Schema - the same component the OpenAPI document references, for a client
+/// or an editor that wants only it.
+#[cfg(feature = "openapi")]
+pub async fn config_schema() -> axum::response::Response {
+    Json(crate::config_schema::document()).into_response()
+}
+
+/// Without the derived schemas there is nothing true to answer with.
+#[cfg(not(feature = "openapi"))]
+pub async fn config_schema() -> crate::error::ApiError {
+    crate::error::ApiError::new(
+        crate::error::ProblemKind::NotImplemented,
+        "this server was built without the `openapi` feature, so it has no configuration schema",
+    )
 }
 
 #[cfg(feature = "openapi")]
@@ -597,11 +711,38 @@ pub fn render() -> Value {
         crate::dto::DatasetPreview,
         crate::dto::TokenizeRequest,
         crate::dto::DatasetTokenization,
+        crate::dto::ServerMode,
+        crate::dto::DownloadLink,
+        crate::dto::ModelFileRole,
+        crate::dto::ModelFile,
+        crate::dto::ModelFileListing,
+        crate::dto::TrajectoryOverview,
+        crate::dto::UpdateSummary,
+        crate::dto::UpdateDetail,
+        crate::dto::GroupSummary,
+        crate::dto::PromptView,
+        crate::dto::MessageView,
+        crate::dto::ToolCallView,
+        crate::dto::MemberSummary,
+        crate::dto::GroupDetail,
+        crate::dto::MemberDetail,
+        crate::dto::Conversation,
+        crate::dto::StepRewardView,
+        crate::error::ProblemDocument,
+        crate::error::FieldError,
+        crate::error::ErrorCode,
     )))]
     struct ApiDoc;
 
     let mut document =
         serde_json::to_value(ApiDoc::openapi()).unwrap_or_else(|_| json!({"openapi": "3.1.0"}));
+    // The configuration document's tables, derived by `retrograd-config` and
+    // marked with what this server enforces on them.
+    let mut configuration = retrograd_config::schema::components();
+    crate::config_schema::annotate(&mut configuration);
+    if let Some(schemas) = document["components"]["schemas"].as_object_mut() {
+        schemas.extend(configuration);
+    }
     document["openapi"] = json!("3.1.0");
     document["info"] = info();
     document["paths"] = paths();

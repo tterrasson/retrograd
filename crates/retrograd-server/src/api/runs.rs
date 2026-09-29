@@ -24,7 +24,9 @@ use crate::dto;
 use crate::error::{ApiError, ApiResult, ErrorCode, ProblemKind};
 use crate::resolve::Resolved;
 use crate::runtime::control;
-use crate::runtime::registry::{RunArtifacts, RunControls, RunFilter, RunRecord, ServingSpec};
+use crate::runtime::registry::{
+    RunArtifacts, RunControls, RunFilter, RunIdentity, RunRecord, ServingSpec, model_file_name,
+};
 use crate::runtime::worker;
 use crate::state::AppState;
 
@@ -51,6 +53,9 @@ pub struct CreateQuery {
 pub struct ListQuery {
     #[serde(default)]
     pub status: Option<dto::RunStatus>,
+    /// The `run.algorithm` spelling.
+    #[serde(default)]
+    pub algorithm: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -73,7 +78,7 @@ pub async fn create(
     if let Some(key) = &idempotency_key
         && let Some(existing) = state.registry.by_idempotency_key(key)
     {
-        return Ok((StatusCode::OK, Json(existing.view())).into_response());
+        return Ok((StatusCode::OK, Json(state.registry.view(&existing))).into_response());
     }
 
     let calibrate = match (query.dry_run, query.calibrate) {
@@ -96,6 +101,8 @@ pub async fn create(
         mut config,
         iterations,
         managed_adapter,
+        managed_observe,
+        objective,
     } = resolved;
     let id = Uuid::new_v4();
     if managed_adapter {
@@ -111,6 +118,21 @@ pub async fn create(
             // the default kind rather than pinning one the client never chose.
             kind: None,
         });
+    }
+    if managed_observe
+        && let (Some(built), Some(document)) = (
+            config.observe.as_mut(),
+            response.effective_config.observe.as_mut(),
+        )
+    {
+        // Under the run's own directory, so purging the run purges its export.
+        let directory = state
+            .registry
+            .state_dir()
+            .join(id.to_string())
+            .join("observe");
+        built.directory = directory.clone();
+        document.directory = directory;
     }
     // Rendered once, from the typed resolution, and then reused verbatim by the
     // response, the journal and every later `GET`. Serializing the typed value is
@@ -131,13 +153,18 @@ pub async fn create(
         // this process only read back from disk, so these paths go into
         // `run.json` instead of being re-derived from the rendered document.
         artifacts: artifacts_of(&config),
+        identity: RunIdentity {
+            algorithm: response.effective_config.run.algorithm.clone(),
+            objective,
+            model: model_file_name(&config.model),
+        },
     };
     let (sender, commands) = control::channel();
     let handle = state
         .registry
         .create_with_id(id, response.name.clone(), record, idempotency_key, sender)
         .map_err(ApiError::from)?;
-    let view = handle.view();
+    let view = state.registry.view(&handle);
     worker::spawn(
         state.engine.clone(),
         state.device.clone(),
@@ -156,6 +183,7 @@ pub async fn list(
 ) -> ApiResult<Json<dto::RunListing>> {
     let page = state.registry.list(&RunFilter {
         status: query.status,
+        algorithm: query.algorithm,
         name: query.name,
         limit: query.limit.unwrap_or(DEFAULT_PAGE),
         cursor: query.cursor,
@@ -172,7 +200,7 @@ pub async fn get(
     Path(id): Path<String>,
 ) -> ApiResult<Json<dto::RunView>> {
     let handle = lookup(&state, &id)?;
-    Ok(Json(handle.view()))
+    Ok(Json(state.registry.view(&handle)))
 }
 
 pub(crate) fn lookup(state: &AppState, id: &str) -> ApiResult<Arc<crate::runtime::RunHandle>> {

@@ -54,6 +54,66 @@ pub struct RunRecord {
     /// The files this run writes, so the inventory is a directory read rather
     /// than a re-parse of the rendered configuration.
     pub artifacts: RunArtifacts,
+    /// What the run is, in the words a listing shows.
+    pub identity: RunIdentity,
+}
+
+/// What a listing shows about a run besides its state: the algorithm, the
+/// objective it was asked for, and the base model's file name.
+///
+/// Fixed at creation and kept in `run.json`, so a listing - which is polled -
+/// never re-reads a rendered configuration.
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+pub struct RunIdentity {
+    /// The `run.algorithm` spelling.
+    pub algorithm: String,
+    /// The recipe objective, for a run created from a recipe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective: Option<String>,
+    /// The file name of the base model, not its path.
+    pub model: String,
+}
+
+impl RunIdentity {
+    /// Reads the identity off a rendered configuration: for a `run.json`
+    /// written before the identity was recorded.
+    pub fn from_rendered(effective_config: &RawValue) -> Self {
+        #[derive(serde::Deserialize, Default)]
+        #[serde(default)]
+        struct Rendered {
+            run: RenderedRun,
+            model: RenderedModel,
+        }
+        #[derive(serde::Deserialize, Default)]
+        #[serde(default)]
+        struct RenderedRun {
+            algorithm: String,
+        }
+        #[derive(serde::Deserialize, Default)]
+        #[serde(default)]
+        struct RenderedModel {
+            path: Option<PathBuf>,
+        }
+        let rendered: Rendered = serde_json::from_str(effective_config.get()).unwrap_or_default();
+        Self {
+            algorithm: rendered.run.algorithm,
+            objective: None,
+            model: rendered
+                .model
+                .path
+                .as_deref()
+                .map(model_file_name)
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// The last component of a model path: what a listing shows, without telling a
+/// client where the server keeps its models.
+pub fn model_file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// Where a run's outputs land, read off the resolved configuration at creation.
@@ -71,7 +131,7 @@ pub struct RunArtifacts {
     pub checkpoint_directory: Option<PathBuf>,
     pub tensorboard_directory: Option<PathBuf>,
     pub wandb_export_directory: Option<PathBuf>,
-    /// The `[observe]` directory: the viewer, its feed and `observe.jsonl`.
+    /// The `[observe]` directory, where `observe.jsonl` is written.
     pub observe: Option<PathBuf>,
     /// What it takes to load this run's weights again, off its thread. `None`
     /// for a `run.json` older than the field.
@@ -365,12 +425,26 @@ impl RunHandle {
         )
     }
 
-    pub fn summary(&self) -> dto::RunSummary {
+    /// Whether an `[observe]` directory is configured for this run.
+    pub fn observed(&self) -> bool {
+        self.record.artifacts.observe.is_some()
+    }
+
+    /// `queue_position` is the registry's to compute - a handle does not know
+    /// the runs ahead of it - so it is passed in; see
+    /// [`RunRegistry::queue_position`].
+    pub fn summary(&self, queue_position: Option<u32>) -> dto::RunSummary {
         let state = self.state();
+        let identity = &self.record.identity;
         dto::RunSummary {
             id: self.id.to_string(),
             name: self.name.clone(),
             status: state.status,
+            algorithm: identity.algorithm.clone(),
+            objective: identity.objective.clone(),
+            model: identity.model.clone(),
+            observed: self.observed(),
+            queue_position,
             created_at: self.created_at,
             started_at: state.started_at,
             finished_at: state.finished_at,
@@ -379,12 +453,18 @@ impl RunHandle {
         }
     }
 
-    pub fn view(&self) -> dto::RunView {
+    pub fn view(&self, queue_position: Option<u32>) -> dto::RunView {
         let state = self.state();
+        let identity = &self.record.identity;
         dto::RunView {
             id: self.id.to_string(),
             name: self.name.clone(),
             status: state.status,
+            algorithm: identity.algorithm.clone(),
+            objective: identity.objective.clone(),
+            model: identity.model.clone(),
+            observed: self.observed(),
+            queue_position,
             created_at: self.created_at,
             started_at: state.started_at,
             finished_at: state.finished_at,
@@ -432,6 +512,7 @@ impl RunHandle {
             provenance: self.record.provenance.clone(),
             plan: self.record.plan.clone(),
             artifacts: self.record.artifacts.clone(),
+            identity: Some(self.record.identity.clone()),
         }
     }
 }
@@ -440,6 +521,8 @@ impl RunHandle {
 #[derive(Clone, Debug)]
 pub struct RunFilter {
     pub status: Option<dto::RunStatus>,
+    /// The `run.algorithm` spelling, exactly.
+    pub algorithm: Option<String>,
     /// Exact match, not a substring: a name is a label a client chose, and a
     /// substring filter would make two runs called `sft` and `sft-v2`
     /// indistinguishable to a paging client.
@@ -455,6 +538,7 @@ impl Default for RunFilter {
     fn default() -> Self {
         Self {
             status: None,
+            algorithm: None,
             name: None,
             limit: 50,
             cursor: None,
@@ -517,6 +601,10 @@ impl RunRegistry {
                     // what a client comes back for.
                     controls: RunControls::default(),
                     artifacts: stored.artifacts.clone(),
+                    identity: stored
+                        .identity
+                        .clone()
+                        .unwrap_or_else(|| RunIdentity::from_rendered(&stored.effective_config)),
                 },
                 state: RwLock::new(RunState {
                     status: stored.status,
@@ -668,6 +756,18 @@ impl RunRegistry {
             .cloned()
     }
 
+    /// The run's rank among the queued ones, from one, while it is `queued`.
+    pub fn queue_position(&self, handle: &RunHandle) -> Option<u32> {
+        queue_positions(&self.inner.read().recover())
+            .get(&handle.id)
+            .copied()
+    }
+
+    /// A run's view, with its place in the queue.
+    pub fn view(&self, handle: &RunHandle) -> dto::RunView {
+        handle.view(self.queue_position(handle))
+    }
+
     /// Every run this registry knows about, live and restored.
     pub fn len(&self) -> usize {
         self.inner.read().recover().runs.len()
@@ -741,10 +841,17 @@ impl RunRegistry {
                 .then(left.id.cmp(&right.id))
         });
 
+        let positions = queue_positions(&inner);
         let mut summaries: Vec<dto::RunSummary> = handles
             .into_iter()
-            .map(|handle| handle.summary())
+            .map(|handle| handle.summary(positions.get(&handle.id).copied()))
             .filter(|summary| filter.status.is_none_or(|status| summary.status == status))
+            .filter(|summary| {
+                filter
+                    .algorithm
+                    .as_ref()
+                    .is_none_or(|algorithm| &summary.algorithm == algorithm)
+            })
             .filter(|summary| {
                 filter
                     .name
@@ -774,6 +881,27 @@ impl RunRegistry {
     }
 }
 
+/// Every queued run's rank, from one, in the order the device serves them.
+///
+/// The device semaphore hands out permits in request order and a run requests
+/// one as soon as it is created, so creation order within this process *is*
+/// the queue. Computed on each read rather than stored: it changes whenever any
+/// run ahead of it starts or is cancelled, and nothing of it is worth
+/// journaling.
+fn queue_positions(inner: &Inner) -> HashMap<Uuid, u32> {
+    let mut queued: Vec<&Arc<RunHandle>> = inner
+        .runs
+        .values()
+        .filter(|handle| handle.status() == dto::RunStatus::Queued)
+        .collect();
+    queued.sort_by_key(|handle| handle.sequence);
+    queued
+        .into_iter()
+        .zip(1u32..)
+        .map(|(handle, position)| (handle.id, position))
+        .collect()
+}
+
 /// Handles built without a registry, for the unit tests of the control channel.
 #[cfg(test)]
 pub mod testing {
@@ -799,6 +927,7 @@ pub mod testing {
                 iterations: 0,
                 controls: RunControls::default(),
                 artifacts: RunArtifacts::default(),
+                identity: RunIdentity::default(),
             },
             state: RwLock::new(RunState {
                 status: dto::RunStatus::Running,
@@ -835,6 +964,11 @@ mod tests {
             iterations: 3,
             controls: RunControls::default(),
             artifacts: RunArtifacts::default(),
+            identity: RunIdentity {
+                algorithm: "sft".to_string(),
+                objective: None,
+                model: "model.gguf".to_string(),
+            },
         }
     }
 

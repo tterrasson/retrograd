@@ -56,6 +56,18 @@ impl Adjustments {
         *self == Self::default()
     }
 
+    /// Every path a `PATCH` can reach: the whitelist, spelled as paths.
+    pub fn whitelist() -> Vec<&'static str> {
+        Self {
+            learning_rate: Some(0.0),
+            evaluation_every_iterations: Some(0),
+            evaluation_patience: Some(0),
+            checkpoint_every_steps: Some(0),
+            checkpoint_mode: Some(CheckpointMode::Steps),
+        }
+        .paths()
+    }
+
     /// The dotted document paths this set touches, in a fixed order, for the
     /// response and the run's log.
     pub fn paths(&self) -> Vec<&'static str> {

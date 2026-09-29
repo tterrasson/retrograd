@@ -9,14 +9,21 @@
 mod support;
 
 mod artifacts;
+mod config_schema;
 mod control;
 mod datasets;
 mod discovery;
+mod download_links;
 mod error_catalog;
 mod events;
 mod fork;
 mod hardening;
 mod inference;
+mod model_files;
 mod openai;
+mod openapi_snapshot;
 mod plan;
 mod runs;
+mod trajectories;
+mod ui;
+mod viewer;

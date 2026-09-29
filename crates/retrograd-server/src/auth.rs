@@ -11,6 +11,16 @@
 //! one character at a time to anyone who can measure a few thousand requests. And
 //! `/v1/health` is exempt, because a liveness probe is the one caller that has no
 //! credentials by definition, and it learns nothing a port scan does not.
+//!
+//! Two more ways through, each narrower than a token:
+//!
+//! - outside `/v1`, in a build that serves the web interface, everything is
+//!   public: those are static files, the same for every installation, with no
+//!   data in them - the data is behind `/v1`, where the interface asks for the
+//!   token like any other client;
+//! - a download of one artefact accepts a signed link in place of the token
+//!   ([`crate::links`]), because a browser cannot attach a header to a
+//!   navigation. Every other route ignores a `sig`.
 
 use axum::extract::{Request, State};
 use axum::middleware::Next;
@@ -20,8 +30,14 @@ use http::header;
 use crate::error::{ApiError, ErrorCode, ProblemKind};
 use crate::state::AppState;
 
-/// Paths reachable without a token. Deliberately a list of exactly one.
+/// Paths under `/v1` reachable without a token: `/v1/health`, and nothing else
+/// under `/v1`.
 const PUBLIC: [&str; 1] = ["/v1/health"];
+
+/// Whether `path` belongs to the API rather than to the web interface.
+pub fn is_api_path(path: &str) -> bool {
+    path == "/v1" || path.starts_with("/v1/")
+}
 
 pub async fn require_token(
     State(state): State<AppState>,
@@ -31,7 +47,11 @@ pub async fn require_token(
     let Some(expected) = state.config.auth_token.as_deref() else {
         return next.run(request).await;
     };
-    if PUBLIC.contains(&request.uri().path()) {
+    let path = request.uri().path();
+    if PUBLIC.contains(&path) || (!is_api_path(path) && state.config.serves_ui()) {
+        return next.run(request).await;
+    }
+    if request.method() == http::Method::GET && signed(&state, path, request.uri().query()) {
         return next.run(request).await;
     }
     let presented = request
@@ -62,6 +82,24 @@ pub async fn require_token(
         )
         .into_response(),
     }
+}
+
+/// Whether the request is a download of one artefact carrying a valid,
+/// unexpired signature for exactly that artefact.
+fn signed(state: &AppState, path: &str, query: Option<&str>) -> bool {
+    let Some((run, name)) = crate::links::artifact_route(path) else {
+        return false;
+    };
+    let Some((signature, expires)) = query.and_then(crate::links::signature_of) else {
+        return false;
+    };
+    state.link_key.verify(
+        run,
+        name,
+        expires,
+        signature,
+        crate::runtime::unix_seconds(),
+    )
 }
 
 /// The token out of an `Authorization` header, scheme matched case-insensitively

@@ -110,6 +110,12 @@ pub struct Resolved {
     /// A recipe omitted `output`; run creation replaces the resolver's
     /// placeholder with `<state_dir>/<run-id>/adapter.gguf`.
     pub managed_adapter: bool,
+    /// The resolver drafted `[observe]` itself; run creation replaces its
+    /// placeholder directory with `<state_dir>/<run-id>/observe`.
+    pub managed_observe: bool,
+    /// The recipe objective, in its wire spelling, for a run resolved from a
+    /// recipe.
+    pub objective: Option<String>,
 }
 
 /// Resolves a recipe into a full plan.
@@ -124,6 +130,9 @@ pub async fn plan_recipe(
     // `[output].path` is where a run names its result; when neither the recipe
     // nor the params name one, the server substitutes a managed path.
     let managed_adapter = recipe.output.is_none() && params.pointer("/output/path").is_none();
+    // Likewise `[observe].directory`: the resolver drafts a placeholder for a
+    // rollout objective, and run creation puts it under the run's directory.
+    let managed_observe = params.pointer("/observe/directory").is_none();
     for pointer in [
         "/model/path",
         "/sft/data",
@@ -316,9 +325,16 @@ pub async fn plan_recipe(
             reward_command: reward_command.clone(),
             reward_protocol,
             root: PathBuf::from("."),
+            observe_target_updates: Some(state.config.observe_target_updates()),
         })
         .map_err(problem)?;
-        state.validate_run_paths(&resolution.config, managed_adapter)?;
+        state.validate_run_paths(
+            &resolution.config,
+            crate::state::Managed {
+                adapter: managed_adapter,
+                observe: managed_observe,
+            },
+        )?;
         // Re-resolve the set the resolution priced: the correction factor
         // depends on the selection, not just the shape.
         let base_trainable = retrograd_plan::resolve_trainable_set(
@@ -423,9 +439,13 @@ pub async fn plan_recipe(
             recipe.reward.as_ref().map(|r| r.id.as_str()),
             name,
         ),
+        managed_observe: managed_observe && config.observe.is_some(),
         config,
         iterations,
         managed_adapter,
+        objective: serde_json::to_value(recipe.objective)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned)),
     })
 }
 
@@ -495,7 +515,7 @@ pub async fn plan_config(
                 "invalid configuration",
             )
         })?;
-    state.validate_run_paths(&config, false)?;
+    state.validate_run_paths(&config, crate::state::Managed::default())?;
     let model_path = config.model.clone();
     let model = geometry(state, &model_path, config.training.device).await?;
     // The per-tensor table, read only for a policy priced from one; a base
@@ -649,6 +669,8 @@ pub async fn plan_config(
         config: Box::new(config),
         iterations,
         managed_adapter: false,
+        managed_observe: false,
+        objective: None,
     })
 }
 

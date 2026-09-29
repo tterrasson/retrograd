@@ -90,6 +90,11 @@ const SERVER_DECLARED_KEYS: &[(&str, &str)] = &[
     ),
 ];
 
+/// The keys [`reject_server_declared`] refuses, by name.
+pub fn server_declared_keys() -> impl Iterator<Item = &'static str> {
+    SERVER_DECLARED_KEYS.iter().map(|(key, _)| *key)
+}
+
 /// Rejects a request body that carries a server-declared value.
 ///
 /// `root` is the JSON Pointer prefix of `value` in the request body (`""` for the

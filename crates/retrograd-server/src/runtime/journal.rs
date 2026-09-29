@@ -55,6 +55,10 @@ pub struct StoredRun {
     /// process only read back from disk - which is most of them.
     #[serde(default)]
     pub artifacts: super::registry::RunArtifacts,
+    /// Absent from a `run.json` written before it was recorded; read back from
+    /// `effective_config` then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<super::registry::RunIdentity>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -213,6 +217,7 @@ mod tests {
             provenance: raw("{}"),
             plan: raw("{}"),
             artifacts: Default::default(),
+            identity: None,
         }
     }
 

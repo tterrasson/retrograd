@@ -7,15 +7,14 @@
 //! queue, the journal on disk, idempotency, the listing and its paging - which is
 //! the part a GPU lane would only slow down without covering better.
 
-
 use std::sync::Arc;
 
-use http::StatusCode;
-use serde_json::Value;
 use crate::support::{
     Behaviour, FakeEngine, Fixture, Gate, build_router, get, post, post_with, recipe, router_for,
     state_of, wait_for_status, wait_for_terminal,
 };
+use http::StatusCode;
+use serde_json::Value;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -332,4 +331,94 @@ async fn creating_a_run_measures_the_candidate_unless_told_not_to() {
     let (_, created) = post(&plain, "/v1/runs", recipe(&fixture, "estimated")).await;
     assert!(created["plan"]["memory"].get("measured").is_none());
     wait_for_terminal(&plain, created["id"].as_str().unwrap()).await;
+}
+
+// ---------------------------------------------------------------------------
+// What a listing says about a run
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_run_says_what_it_trains_on_what_and_where_it_waits() {
+    let fixture = Fixture::new("runs-identity");
+    let gate = Arc::new(Gate::default());
+    let router = router_for(&fixture, FakeEngine::gated(gate.clone()));
+
+    let (_, first) = post(&router, "/v1/runs", recipe(&fixture, "first")).await;
+    let first_id = first["id"].as_str().unwrap().to_string();
+    assert_eq!(first["algorithm"], "sft");
+    assert_eq!(first["objective"], "instruction-tuning");
+    assert_eq!(
+        first["model"], "model.gguf",
+        "a file name, never the server's path"
+    );
+    assert_eq!(first["observed"], false);
+    wait_for_status(&router, &first_id, "running").await;
+
+    let (_, second) = post(&router, "/v1/runs", recipe(&fixture, "second")).await;
+    let second_id = second["id"].as_str().unwrap().to_string();
+    let (_, queued) = get(&router, &format!("/v1/runs/{second_id}")).await;
+    assert_eq!(queued["status"], "queued");
+    assert_eq!(queued["queue_position"], 1);
+    let (_, listing) = get(&router, "/v1/runs").await;
+    let entry = |id: &str| -> Value {
+        listing["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|run| run["id"] == id)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(entry(&second_id)["queue_position"], 1);
+    assert!(
+        entry(&first_id).get("queue_position").is_none(),
+        "a running run has no place in the queue"
+    );
+
+    gate.release();
+    wait_for_terminal(&router, &first_id).await;
+    let done = wait_for_terminal(&router, &second_id).await;
+    assert!(done.get("queue_position").is_none());
+}
+
+#[tokio::test]
+async fn the_listing_filters_on_the_algorithm() {
+    let fixture = Fixture::new("runs-filter-algorithm");
+    let router = router_for(&fixture, FakeEngine::succeeding());
+    let (_, created) = post(&router, "/v1/runs", recipe(&fixture, "sft")).await;
+    wait_for_terminal(&router, created["id"].as_str().unwrap()).await;
+
+    let (status, sft) = get(&router, "/v1/runs?algorithm=sft").await;
+    assert_eq!(status, StatusCode::OK, "{sft}");
+    assert_eq!(sft["runs"].as_array().unwrap().len(), 1);
+    let (_, grpo) = get(&router, "/v1/runs?algorithm=grpo").await;
+    assert_eq!(grpo["runs"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn a_run_json_from_before_the_identity_reads_it_off_its_configuration() {
+    let fixture = Fixture::new("runs-old-run-json");
+    let id = "5d9f2c1a-7b3e-4f60-8a21-c4d5e6f7a8b9";
+    let directory = fixture.state_dir().join(id);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("run.json"),
+        serde_json::json!({
+            "id": id,
+            "status": "completed",
+            "created_at": 1,
+            "effective_config": {"run": {"algorithm": "ppo"}, "model": {"path": "/models/base.gguf"}},
+            "provenance": {},
+            "plan": {}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let router = build_router(state_of(&fixture, FakeEngine::succeeding(), false));
+    let (status, view) = get(&router, &format!("/v1/runs/{id}")).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(view["algorithm"], "ppo");
+    assert_eq!(view["model"], "base.gguf");
+    assert!(view.get("objective").is_none());
+    assert_eq!(view["observed"], false);
 }

@@ -1112,3 +1112,115 @@ command = ["true"]
     );
     assert!(probe.packing_calls.lock().unwrap().is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Trajectories exported by default
+// ---------------------------------------------------------------------------
+
+const REWARD: &str = r#"
+[[reward]]
+id = "sql-exec"
+description = "runs the generated query"
+command = ["python3", "rewards/sql_exec.py"]
+"#;
+
+fn rollout_recipe(fixture: &Fixture, updates: u32) -> Value {
+    json!({
+        "recipe": {
+            "objective": "reasoning-rl",
+            "model": fixture.path("model.gguf"),
+            "data": {"path": fixture.path("data.jsonl"), "format": "jsonl"},
+            "reward": {"id": "sql-exec"},
+            "budget": {"updates": updates}
+        }
+    })
+}
+
+#[tokio::test]
+async fn a_rollout_recipe_exports_its_trajectories_one_update_in_n() {
+    let fixture = Fixture::new("observe-derived");
+    let (status, body) = post(
+        router_with(REWARD, 24 * GIB),
+        "/v1/plan",
+        rollout_recipe(&fixture, 400),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body["effective_config"]["observe"]["directory"].is_string(),
+        "{body}"
+    );
+    assert_eq!(body["effective_config"]["observe"]["every"], 4);
+    assert_eq!(body["provenance"]["observe.every"]["source"], "derived");
+    assert_eq!(body["provenance"]["observe.directory"]["source"], "derived");
+
+    let (_, body) = post(
+        router_with(REWARD, 24 * GIB),
+        "/v1/plan",
+        rollout_recipe(&fixture, 50),
+    )
+    .await;
+    assert_eq!(body["effective_config"]["observe"]["every"], 1);
+}
+
+#[tokio::test]
+async fn the_operator_sets_the_target_and_the_defaults_publish_it() {
+    let fixture = Fixture::new("observe-target");
+    let config = format!("observe_target_updates = 10\n{REWARD}");
+    let (_, body) = post(
+        router_with(&config, 24 * GIB),
+        "/v1/plan",
+        rollout_recipe(&fixture, 400),
+    )
+    .await;
+    assert_eq!(body["effective_config"]["observe"]["every"], 40, "{body}");
+
+    let response = router_with(&config, 24 * GIB)
+        .oneshot(
+            Request::builder()
+                .uri("/v1/defaults")
+                .body(Body::empty())
+                .expect("build the request"),
+        )
+        .await
+        .expect("route the request");
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let defaults: Value = serde_json::from_slice(&bytes).expect("JSON");
+    let every = defaults["derived"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|field| field["path"] == "observe.every")
+        .expect("observe.every is a published rule");
+    assert_eq!(every["thresholds"]["target_updates"], 10.0);
+}
+
+#[tokio::test]
+async fn a_supervised_recipe_exports_nothing() {
+    let fixture = Fixture::new("observe-sft");
+    let (status, body) = post(router(), "/v1/plan", recipe(&fixture)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["effective_config"].get("observe").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn the_client_chooses_the_cadence_or_declines_the_export() {
+    let fixture = Fixture::new("observe-override");
+    let mut request = rollout_recipe(&fixture, 400);
+    request["params"] = json!({"observe": {"every": 1}});
+    let (status, body) = post(router_with(REWARD, 24 * GIB), "/v1/plan", request).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["effective_config"]["observe"]["every"], 1);
+    assert_eq!(body["provenance"]["observe.every"]["source"], "override");
+
+    let mut request = rollout_recipe(&fixture, 400);
+    request["params"] = json!({"observe": {"enabled": false}});
+    let (status, body) = post(router_with(REWARD, 24 * GIB), "/v1/plan", request).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["effective_config"]["observe"]["enabled"], false);
+}

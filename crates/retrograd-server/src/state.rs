@@ -102,6 +102,13 @@ pub struct ServerConfig {
     /// `[serving]`: `/v1/chat/completions` and `/v1/models` over the runs'
     /// weights.
     pub serving: ServingConfig,
+    /// Whether the web interface is served under `/`, in a build that embeds
+    /// one. On by default there; a build without it has nothing to turn on.
+    pub ui: Option<bool>,
+    /// How many updates of a rollout run export their texts when the client
+    /// does not choose: `observe.every` is derived so the run exports about
+    /// this many. Default 100.
+    pub observe_target_updates: Option<u32>,
 }
 
 /// `[serving]`: the OpenAI-compatible endpoint.
@@ -190,6 +197,10 @@ impl ServerConfig {
             ("max_body_bytes", self.max_body_bytes),
             ("serving.queue", self.serving.queue),
             ("serving.max_body_bytes", self.serving.max_body_bytes),
+            (
+                "observe_target_updates",
+                self.observe_target_updates.map(|value| value as usize),
+            ),
         ] {
             if value == Some(0) {
                 return Err(retrograd_core::Error::invalid(format!(
@@ -318,6 +329,16 @@ impl ServerConfig {
 
     pub fn max_datasets_bytes(&self) -> u64 {
         self.max_datasets_bytes.unwrap_or(20 * 1024 * 1024 * 1024)
+    }
+
+    /// Whether `/` serves the web interface: asked for (the default) *and*
+    /// compiled in.
+    pub fn serves_ui(&self) -> bool {
+        cfg!(feature = "ui") && self.ui.unwrap_or(true)
+    }
+
+    pub fn observe_target_updates(&self) -> u32 {
+        self.observe_target_updates.unwrap_or(100)
     }
 }
 
@@ -695,6 +716,10 @@ pub struct AppState {
     /// The thread that loads a run's weights to answer chat requests, on the
     /// device permit the runs queue on.
     pub serving: Arc<retrograd_openai::Session>,
+    /// What signs download links. Drawn at startup: a restart invalidates them.
+    pub link_key: crate::links::LinkKey,
+    /// The last listing of `GET /v1/model-files`, reused for a few seconds.
+    pub(crate) model_files: Arc<std::sync::Mutex<Option<crate::model_files::Cached>>>,
 }
 
 /// What a cached fingerprint stays valid for: the file's size and modification
@@ -733,6 +758,8 @@ impl AppState {
             model_fingerprints: Arc::new(RwLock::new(BTreeMap::new())),
             datasets: Arc::new(datasets),
             serving,
+            link_key: crate::links::LinkKey::generate(),
+            model_files: Arc::new(std::sync::Mutex::new(None)),
             config: Arc::new(config),
         }
     }
@@ -954,7 +981,7 @@ impl AppState {
     pub fn validate_run_paths(
         &self,
         config: &retrograd_config::RunConfig,
-        managed_adapter: bool,
+        managed: Managed,
     ) -> ApiResult<()> {
         self.resolve_path(&config.model.to_string_lossy(), "/config/model/path")?;
         if let Some(reference) = &config.reference {
@@ -1017,7 +1044,7 @@ impl AppState {
                 }
             }
         }
-        if !managed_adapter {
+        if !managed.adapter {
             self.resolve_output_path(&config.output.path, "/config/output/path")?;
         }
         if let Some(path) = config
@@ -1045,16 +1072,27 @@ impl AppState {
         if let Some(path) = &config.metrics.wandb_export_dir {
             self.resolve_output_path(path, "/config/metrics/wandb_export_dir")?;
         }
-        if let Some(observe) = &config.observe {
+        if let Some(observe) = &config.observe
+            && !managed.observe
+        {
             self.resolve_output_path(&observe.directory, "/config/observe/directory")?;
         }
         Ok(())
     }
 }
 
+/// Output paths the server chooses itself, under the run's own directory, and
+/// which a path check therefore skips: they are placeholders until the run
+/// exists.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Managed {
+    pub adapter: bool,
+    pub observe: bool,
+}
+
 /// Backends compiled into this build, derived from the device list rather than
 /// from build-time cfgs, so it reports what is actually registered.
-fn compiled_backends() -> Vec<String> {
+pub(crate) fn compiled_backends() -> Vec<String> {
     let Ok(list) = retrograd_engine::backend_list() else {
         return Vec::new();
     };

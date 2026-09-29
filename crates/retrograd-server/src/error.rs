@@ -112,7 +112,12 @@ retrograd_core::wire_enum! {
     /// The spelling beside each variant is the one serde writes *and* the one
     /// `as_str()` returns - one token, so the two cannot drift and no test has
     /// to check them against each other.
+    ///
+    /// `rename_all` is for the schema, which reads the container rule and not
+    /// the per-variant spelling; every spelling below is already snake case.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     pub enum ErrorCode: serde {
         /// A required field was absent.
         MissingField = "missing_field",
@@ -150,6 +155,7 @@ retrograd_core::wire_enum! {
 /// One field-level problem, located by a JSON Pointer (RFC 6901) into the
 /// request body.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct FieldError {
     pub pointer: String,
     pub code: ErrorCode,
@@ -243,20 +249,31 @@ pub fn current_trace_id() -> Option<String> {
     TRACE_ID.try_with(Clone::clone).ok()
 }
 
-/// Wire shape of a problem document. Serialized by hand rather than derived
-/// from `ApiError` so the field order - and therefore the bytes - is fixed.
+/// Wire shape of a problem document (RFC 9457). Serialized by hand rather than
+/// derived from `ApiError` so the field order - and therefore the bytes - is
+/// fixed. Published as the `Problem` component: every failure of the API but
+/// the OpenAI routes' has this body.
 #[derive(Serialize)]
-struct ProblemDocument<'a> {
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = Problem))]
+pub(crate) struct ProblemDocument<'a> {
+    /// `https://retrograd.dev/problems/<slug>`: the slug is what a client
+    /// branches on.
     #[serde(rename = "type")]
     problem_type: String,
     title: &'a str,
     status: u16,
     detail: &'a str,
+    /// The id every log line of this request carries.
     #[serde(skip_serializing_if = "Option::is_none")]
     trace_id: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Vec<FieldError>))]
     errors: &'a Vec<FieldError>,
+    /// The payload specific to the problem type, e.g. the dominant memory
+    /// posts of `insufficient-memory`.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<Object>))]
     meta: &'a Option<serde_json::Value>,
 }
 

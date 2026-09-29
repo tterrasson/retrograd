@@ -22,6 +22,7 @@ use retrograd_checkpoint as checkpoint;
 
 use crate::dto;
 use crate::error::{ApiError, ApiResult, ErrorCode, ProblemKind};
+use crate::links::LINK_TTL_SECONDS;
 use crate::runtime::registry::RunArtifacts;
 use crate::state::AppState;
 
@@ -72,12 +73,67 @@ pub async fn list(
 }
 
 /// `GET /v1/runs/{id}/artifacts/{name}`
+///
+/// Reached with the bearer token, or with a signed link from
+/// [`link`] in its place ([`crate::auth`]).
 pub async fn download(
     State(state): State<AppState>,
     Path((id, name)): Path<(String, String)>,
 ) -> ApiResult<Response> {
     let handle = super::runs::lookup(&state, &id)?;
     let inventory = inventory(&handle.record.artifacts, handle.state_directory());
+    let item = downloadable(&inventory, &id, &name)?;
+    let body = std::fs::read(&item.path).map_err(|error| {
+        ApiError::internal(format!("could not read the artifact '{name}': {error}"))
+    })?;
+    let filename = item
+        .path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| name.clone());
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, item.content_type.to_string()),
+            // `attachment`, always: an artefact is a file to save, and serving a
+            // client-influenced payload inline is how a control plane becomes an
+            // XSS vector for whoever opens it in a browser.
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", sanitize(&filename)),
+            ),
+            // A signed link is good for a minute; neither it nor what it
+            // opened belongs in a cache.
+            (header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        body,
+    )
+        .into_response())
+}
+
+/// `POST /v1/runs/{id}/artifacts/{name}/link`
+///
+/// A link a browser can navigate to without a token: the same download, signed
+/// for this one artefact, for [`LINK_TTL_SECONDS`]. Refused exactly as the
+/// download itself would be, so a link that is handed out is a link that works.
+pub async fn link(
+    State(state): State<AppState>,
+    Path((id, name)): Path<(String, String)>,
+) -> ApiResult<Json<dto::DownloadLink>> {
+    let handle = super::runs::lookup(&state, &id)?;
+    let inventory = inventory(&handle.record.artifacts, handle.state_directory());
+    downloadable(&inventory, &id, &name)?;
+    let expires_at = crate::runtime::unix_seconds() + LINK_TTL_SECONDS;
+    let signature = state.link_key.sign(&id, &name, expires_at);
+    Ok(Json(dto::DownloadLink {
+        href: format!("/v1/runs/{id}/artifacts/{name}?sig={signature}&exp={expires_at}"),
+        expires_at,
+    }))
+}
+
+/// The member of the inventory a download of `name` serves, or the reason it
+/// serves none.
+fn downloadable<'a>(inventory: &'a [Item], id: &str, name: &str) -> ApiResult<&'a Item> {
     let item = inventory
         .iter()
         .find(|item| item.name == name)
@@ -108,29 +164,7 @@ pub async fn download(
             ),
         ));
     }
-    let body = std::fs::read(&item.path).map_err(|error| {
-        ApiError::internal(format!("could not read the artifact '{name}': {error}"))
-    })?;
-    let filename = item
-        .path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| name.clone());
-    Ok((
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, item.content_type.to_string()),
-            // `attachment`, always: an artefact is a file to save, and serving a
-            // client-influenced payload inline is how a control plane becomes an
-            // XSS vector for whoever opens it in a browser.
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", sanitize(&filename)),
-            ),
-        ],
-        body,
-    )
-        .into_response())
+    Ok(item)
 }
 
 /// `DELETE /v1/runs/{id}` - forget a finished run.
