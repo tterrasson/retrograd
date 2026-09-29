@@ -65,6 +65,7 @@ export default defineConfig({
           items: [
             { text: 'Checkpoints and metrics', link: '/operations/checkpoints' },
             { text: 'Performance and memory', link: '/operations/performance' },
+            { text: 'Web interface', link: '/operations/web-ui' },
           ],
         },
         {

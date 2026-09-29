@@ -13,6 +13,13 @@ RIR lane covers:
   hand-written one, correctness *and* timing against the native kernel on the
   same shapes, no model.
 
+The web interface lives in `web/` (Vue, Bun) and is embedded by the
+`retrograd-ui` crate behind `retrograd-server`'s `ui` feature (off by default).
+`test-web.sh` is its lane: contract, lint, tests, licences, build, then the
+server's `ui` tests against the fresh `web/dist`. After changing a route or a
+DTO, regenerate the contract: `cargo run -p retrograd-server --bin
+retrograd-server -- openapi > web/openapi.json` then `cd web && bun run gen:api`.
+
 The PyO3 package in `python/native` is named `retrograd-python` (its library is
 `_native`): exclude it from a workspace command with
 `--exclude retrograd-python`.

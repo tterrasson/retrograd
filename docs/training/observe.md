@@ -1,14 +1,15 @@
 # Observing rollouts
 
 `[observe]` records what a PPO, GRPO or agentic GRPO run generates, update by
-update (prompts, answers or conversations, tool calls, rewards, advantages)
-and writes a viewer next to it. It is not available for SFT and distillation.
+update (prompts, answers or conversations, tool calls, rewards, advantages),
+to `observe.jsonl`. It is not available for SFT and distillation.
 
 ```toml
 [observe]
 directory = "runs/42/observe"   # created if missing
 every = 10                      # rollouts for updates 10, 20, …; summaries every update
 max_text_chars = 0              # truncate long texts; 0 keeps them whole
+# enabled = false               # keep the table, export nothing
 ```
 
 Exporting never slows training down: if the disk cannot keep up, a batch is
@@ -17,11 +18,23 @@ the export without stopping the run.
 
 ## Viewing a run
 
-Open `<directory>/index.html` in a browser. No server is needed, and the page
-refreshes as the run progresses. The directory can also be served statically,
-synced from a remote machine, or opened later with **Open .jsonl**.
+The **Trajectories** tab of a run in the [web interface](../operations/web-ui)
+reads the export as the run writes it. A run started from a recipe on
+`retrograd-server` exports by default when its objective generates rollouts:
+the texts of about a hundred updates over the run, and the summary of every
+update. Set `params.observe.every` to choose the cadence, or
+`params.observe.enabled = false` to export nothing.
 
-The viewer shows:
+For a run started with `retrograd train`, serve its directory:
+
+```bash
+retrograd-server view runs/42/observe --open
+```
+
+This serves the interface on loopback, read-only, for that one directory. It
+needs a `retrograd-server` built with the `ui` feature.
+
+The view shows:
 
 - curves of reward, trained fraction, answer length and KL (plus turns and tool
   calls for agentic runs); click a point to open its update;
@@ -37,14 +50,13 @@ Use `j`/`k` or the arrow keys to move between updates.
 
 ```text
 <directory>/
-  index.html, viewer.css, viewer.js
   observe.jsonl     all records, append-only: the file to read with jq or pandas
-  feed/             what the viewer loads, rebuilt from observe.jsonl
 ```
 
 Only one run can write to a directory at a time. When a run resumes from a
-checkpoint in the same directory, it continues the same log; the viewer hides
-updates that the resumed run will replay.
+checkpoint in the same directory, it continues the same log in a new segment.
+An update above a later segment's `resumed_from_update` is superseded: the
+resumed run produces it again.
 
 ## Record schema
 
@@ -52,7 +64,7 @@ Each line of `observe.jsonl` is a JSON object with a `type`:
 
 | `type` | Written | Main fields |
 | --- | --- | --- |
-| `run` | when the run starts | `algorithm`, `model`, `resumed_from_update`, `params` |
+| `run` | when the run starts | `algorithm`, `model`, `resumed_from_update`, `every`, `params` |
 | `prompt` | once per prompt | `key`, `messages` |
 | `rollout` | once per answer or trajectory | `update`, `group`, `member`, `prompt`, `completion` or `messages`, `tokens`, `truncated`, `reward`, `advantage`, `trained`, `skip_reason` |
 | `selection` | agentic runs, before training | `update`, `entries`: advantage and eligibility per member |

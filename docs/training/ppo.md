@@ -112,5 +112,5 @@ to use the whitened sequence reward instead. Its settings are in the
 
 ## Watching a run
 
-`[observe]` saves every prompt, answer, reward and advantage, with a viewer.
-See [Observing rollouts](./observe).
+`[observe]` saves every prompt, answer, reward and advantage, shown in the
+Trajectories tab of the web interface. See [Observing rollouts](./observe).

@@ -5,6 +5,15 @@ and its section: `[sft]`, `[ppo]`, `[grpo]`, `[distill]`, `[preference]`, or
 `[agent]` for `agent_grpo`. Unknown keys, and sections that do not apply to the run, are
 errors. Relative paths resolve against the directory of the TOML file.
 
+The same schema is published as JSON Schema, for an editor to complete and
+check a run file (with Taplo or Even Better TOML):
+
+```bash
+retrograd-server config-schema > retrograd.schema.json
+```
+
+A running server serves it at `GET /v1/config-schema`.
+
 ## Common sections
 
 ### `[run]`
@@ -167,6 +176,7 @@ PPO, GRPO and agentic GRPO. See [Observing rollouts](../training/observe).
 | `directory` | required | Output directory. |
 | `every` | `1` | Record rollouts every N updates. |
 | `max_text_chars` | `0` | Truncate texts to N characters; `0` keeps them whole. |
+| `enabled` | `true` | `false` keeps the table and exports nothing. |
 
 ### `[reference]`
 

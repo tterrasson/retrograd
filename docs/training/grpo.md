@@ -147,5 +147,5 @@ does not. See [Performance and memory](../operations/performance).
 
 ## Watching a run
 
-`[observe]` saves each group's answers, rewards and advantages, with a viewer.
-See [Observing rollouts](./observe).
+`[observe]` saves each group's answers, rewards and advantages, shown in the
+Trajectories tab of the web interface. See [Observing rollouts](./observe).
