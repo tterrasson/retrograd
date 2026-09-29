@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use retrograd_config::{
     CheckpointToml, ConfigDocument, EvaluationToml, GrpoToml, LoraToml, MetricsToml, ModelToml,
-    OutputToml, PpoToml, PreferenceToml, RunConfig, RunToml, SamplingToml, SftToml,
+    ObserveToml, OutputToml, PpoToml, PreferenceToml, RunConfig, RunToml, SamplingToml, SftToml,
     SharedPrefixFanoutToml, TrainingToml, build as build_run_config,
 };
 use retrograd_core::{
@@ -123,6 +123,11 @@ pub struct ResolveInput<'a> {
     pub reward_protocol: Option<RewardProtocol>,
     /// Base directory relative paths in the document resolve against.
     pub root: PathBuf,
+    /// How many updates a rollout run should export the texts of. `Some` adds
+    /// an `[observe]` to every rollout draft, at
+    /// [`tuning::OBSERVE_DIRECTORY_PLACEHOLDER`] for the caller to replace;
+    /// `None` - a caller with nowhere to put one - adds none.
+    pub observe_target_updates: Option<u32>,
 }
 
 impl<'a> ResolveInput<'a> {
@@ -714,8 +719,8 @@ fn rebuild_and_validate(
     write_cadences(
         &mut document,
         &mut config,
-        iterations,
-        total_steps,
+        (iterations, total_steps),
+        input.observe_target_updates,
         &is_locked,
         &mut provenance,
     );

@@ -62,7 +62,9 @@ impl Default for CriticConfig {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PpoToml {
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = "path"))]
     pub prompts: PathBuf,
     pub reward_command: Vec<String>,
     /// `"persistent"` (default) or `"oneshot"`. Persistent keeps one worker
@@ -85,6 +87,7 @@ pub struct PpoToml {
 }
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CriticToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,

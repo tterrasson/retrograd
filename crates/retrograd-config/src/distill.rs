@@ -189,19 +189,23 @@ impl DistillConfig {
 /// budget, and the rest is tuning.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DistillToml {
     /// `on_policy` (the default) or `topk_offline`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
     /// Offline mode only: the chat JSONL the sidecar describes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = "path"))]
     pub data: Option<PathBuf>,
     /// Offline mode only: the `.topk` sidecar.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = "path"))]
     pub sidecar: Option<PathBuf>,
     /// Offline mode only: passes over the corpus.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offline_epochs: Option<u32>,
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = "path"))]
     pub teacher_path: PathBuf,
     /// On-policy mode only. Optional in the schema and required by
     /// `build_distill` for that mode, rather than required here: an offline
@@ -209,6 +213,7 @@ pub struct DistillToml {
     /// it to write three ignored keys is how a reader ends up believing they
     /// mean something.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = "path"))]
     pub prompts: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updates: Option<u32>,

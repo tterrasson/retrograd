@@ -34,7 +34,9 @@ impl SftConfig {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SftToml {
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = "path"))]
     pub data: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_format: Option<String>,
@@ -46,6 +48,7 @@ pub struct SftToml {
     /// The runtime rejects `messages`, `tools`, `bos_token`, `eos_token` and
     /// `add_generation_prompt`, which are supplied by the renderer.
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Object))]
     pub template_variables: serde_json::Map<String, serde_json::Value>,
 }
 

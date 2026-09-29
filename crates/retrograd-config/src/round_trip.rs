@@ -404,6 +404,7 @@ fn exhaustive_document() -> ConfigDocument {
             directory: PathBuf::from("out/observe"),
             every: Some(3),
             max_text_chars: Some(2000),
+            enabled: None,
         }),
         // Legal here only because the GRPO section above carries a positive KL
         // coefficient.

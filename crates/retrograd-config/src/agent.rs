@@ -51,6 +51,7 @@ pub struct AgentRunConfig {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ScenarioGenerationConfig {
     pub model: String,
     pub base_url: String,
@@ -93,6 +94,7 @@ impl Default for ScenarioGenerationConfig {
 /// from the document.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CollectApiConfig {
     pub base_url: String,
     pub model: String,
@@ -203,17 +205,22 @@ impl AgentRunConfig {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AgentToml {
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = "path"))]
     pub scenarios: PathBuf,
     /// An addition, not a default. Absent, the environment's own reward is the
     /// only one - which is the whole configuration of a verifiable task.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<Object>))]
     pub judge: Option<JudgeConfig>,
     /// Tools served over MCP. With an environment, every server must be
     /// explicitly declared stateless before it may be shared across members.
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Vec<Object>))]
     pub mcp_servers: Vec<McpServerConfig>,
     #[serde(default, deserialize_with = "deserialize_paths")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Vec<String>))]
     pub mcp_config: Vec<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scenario_generation: Option<ScenarioGenerationConfig>,
@@ -223,6 +230,7 @@ pub struct AgentToml {
     /// One stateful environment per trajectory - HTTP, container or (explicitly)
     /// the host.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<Object>))]
     pub environment: Option<EnvironmentConfig>,
     pub updates: u32,
     pub scenarios_per_update: usize,
@@ -268,6 +276,7 @@ pub struct AgentToml {
     /// The runtime rejects `messages`, `tools`, `bos_token`, `eos_token` and
     /// `add_generation_prompt`, which are supplied by the renderer.
     #[serde(skip_serializing_if = "serde_json::Map::is_empty")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Object))]
     pub template_variables: serde_json::Map<String, serde_json::Value>,
     pub seed: u64,
 }

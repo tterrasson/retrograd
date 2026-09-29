@@ -215,5 +215,8 @@ pub fn input_with_eval<'a>(
         packing_measurements: None,
         reward_command: Vec::new(),
         root: PathBuf::from("."),
+        // What the server passes by default, so the fixtures resolve what a
+        // client of it would get.
+        observe_target_updates: Some(crate::tuning::OBSERVE_TARGET_UPDATES),
     }
 }

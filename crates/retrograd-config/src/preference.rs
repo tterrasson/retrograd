@@ -142,7 +142,9 @@ impl PreferenceConfig {
 /// does not read is refused beside it.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PreferenceToml {
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = "path"))]
     pub data: PathBuf,
     /// `dpo` (the default), `ipo`, `simpo` or `orpo`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

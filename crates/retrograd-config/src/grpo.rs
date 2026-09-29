@@ -29,6 +29,7 @@ pub enum AdvantageBaseline {
 /// overruns (as `mask_truncated` does).
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OverlongPenalty {
     pub buffer_tokens: usize,
     pub max_penalty: f32,
@@ -41,6 +42,7 @@ pub struct OverlongPenalty {
 /// effective batch full as the policy converges.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DynamicSampling {
     /// Cap on candidate groups per update, as a multiple of
     /// `prompts_per_update`. Must be at least 2 (1 would allow no resampling).
@@ -220,7 +222,9 @@ impl GrpoConfig {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GrpoToml {
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = "path"))]
     pub prompts: PathBuf,
     pub reward_command: Vec<String>,
     /// `"persistent"` (default) or `"oneshot"`. Persistent keeps one worker
@@ -253,6 +257,7 @@ pub struct GrpoToml {
     pub dynamic_sampling: Option<DynamicSampling>,
     /// `[grpo.judge]`, in the same spelling as `[agent.judge]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<Object>))]
     pub judge: Option<retrograd_spec::judge::JudgeConfig>,
     /// Default weight of a verdict in the final reward. Required as soon as a
     /// judge is declared: a judge that contributes an unstated amount to the
@@ -272,6 +277,7 @@ pub struct GrpoToml {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct KlScheduleToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warmup_updates: Option<u32>,

@@ -178,9 +178,10 @@ pub fn build_with(
             )?)
         }
         _ => {
-            return Err(Error::config(
-                "run.algorithm must be one of sft, ppo, grpo, distill, agent_grpo, or preference",
-            ));
+            return Err(Error::config(format!(
+                "run.algorithm must be one of {}",
+                crate::ALGORITHMS.join(", ")
+            )));
         }
     };
 
@@ -202,6 +203,7 @@ pub fn build_with(
         .map(|value| build_checkpoint(value, root))
         .transpose()?;
     let observe = observe
+        .filter(|value| value.enabled != Some(false))
         .map(|value| build_observe(value, &algorithm, root))
         .transpose()?;
     let reference = reference_toml
@@ -614,10 +616,10 @@ fn only_the_selected_section(file: &ConfigDocument, algorithm_name: &str) -> Res
         ("agent", file.agent.is_some()),
         ("preference", file.preference.is_some()),
     ] {
-        let selected = match name {
-            "agent" => algorithm_name == "agent_grpo",
-            other => algorithm_name == other,
-        };
+        let selected = crate::SECTION_ALGORITHMS
+            .iter()
+            .find(|(section, _)| *section == name)
+            .is_some_and(|(_, algorithms)| algorithms.contains(&algorithm_name));
         if present && !selected {
             return Err(Error::config(format!(
                 "only the section for the selected algorithm may be present: \

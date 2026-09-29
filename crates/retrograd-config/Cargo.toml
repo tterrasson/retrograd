@@ -21,12 +21,21 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 tracing.workspace = true
+utoipa = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Checks the derived schema against the parser, behind `openapi` like the schema
+# itself. No default features: they fetch remote references over HTTP.
+jsonschema = { version = "0.58", default-features = false }
 
 [features]
 default = []
 # Type the `[agent.environment]` container table instead of accepting it as an
 # opaque map. Forwarded from whichever binary can actually run one.
 container = ["retrograd-spec/container"]
+# The document's JSON Schema, derived from these types: what the server
+# publishes as `GET /v1/config-schema` and in its OpenAPI document.
+openapi = ["dep:utoipa", "retrograd-core/openapi", "retrograd-agent-core/openapi"]
 
 [lints]
 workspace = true

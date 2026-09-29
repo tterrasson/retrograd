@@ -420,6 +420,30 @@ pub fn eval_every(iterations: u64) -> Choice<u32> {
     )
 }
 
+/// How many updates of a rollout run export their texts when neither the
+/// client nor the operator says otherwise.
+pub const OBSERVE_TARGET_UPDATES: u32 = 100;
+
+/// Where a derived `[observe]` writes, until the caller that knows the run's
+/// own directory replaces it.
+pub const OBSERVE_DIRECTORY_PLACEHOLDER: &str = "observe";
+
+/// One update in `every` exports its texts, chosen so about `target` of them
+/// do. Every update still writes its summary.
+pub fn observe_every(iterations: u64, target: u32) -> Choice<u32> {
+    let target = u64::from(target.max(1));
+    let every = iterations.div_ceil(target).max(1);
+    let every = u32::try_from(every).unwrap_or(u32::MAX);
+    let exported = iterations / u64::from(every);
+    choose(
+        every,
+        format!(
+            "one update in {every}: {exported} of the run's {iterations} updates export their \
+             texts, for a target of about {target}"
+        ),
+    )
+}
+
 /// Evaluations without improvement before a run stops on its own.
 pub const PATIENCE_EVALUATIONS: u32 = 5;
 
@@ -726,6 +750,18 @@ pub static DERIVATIONS: &[Derivation] = &[
         path: "evaluation.max_examples",
         rule: "four updates' worth of prompts, for a rollout objective",
         thresholds: &[("updates_worth", 4.0)],
+        scope: Scope::Rollout,
+    },
+    Derivation {
+        path: "observe.directory",
+        rule: "a rollout run exports its trajectories to its own directory",
+        thresholds: &[],
+        scope: Scope::Rollout,
+    },
+    Derivation {
+        path: "observe.every",
+        rule: "texts of about a hundred updates over the run, every update's summary",
+        thresholds: &[("target_updates", OBSERVE_TARGET_UPDATES as f64)],
         scope: Scope::Rollout,
     },
     Derivation {

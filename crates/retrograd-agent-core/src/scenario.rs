@@ -129,6 +129,7 @@ impl RolloutLimits {
 /// is the point at which the trade above stops being academic.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum TruncationPolicy {
     /// Truncated members never reach the optimizer. They still count against
     /// `max_dropped_fraction`.

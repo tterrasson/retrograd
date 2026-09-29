@@ -6,7 +6,13 @@ license.workspace = true
 description = "Retrograd - shared types and the applicative error facade"
 publish = false
 
+[features]
+# Schemas of the vocabularies a configuration document spells, for the
+# server's published configuration schema. Off everywhere else.
+openapi = ["dep:utoipa"]
+
 [dependencies]
+utoipa = { workspace = true, optional = true }
 # The kernel catalog schema lives in the leaf crate shared by its RIR producer
 # and the planner that consumes it. This crate must not reverse that dependency.
 rir-core.workspace = true

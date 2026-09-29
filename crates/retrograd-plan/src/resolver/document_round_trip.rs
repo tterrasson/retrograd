@@ -105,16 +105,16 @@ pub(super) fn write_back(
     }
 }
 
-/// The four cadences that can only be derived once the step count exists.
+/// The cadences that can only be derived once the step count exists.
 ///
 /// Written into the document *and* into the already-built configuration: none of
 /// them can turn a valid configuration invalid, and a third `config::build` to
-/// carry four scalars would be the expensive way to learn nothing.
+/// carry a few scalars would be the expensive way to learn nothing.
 pub(super) fn write_cadences(
     document: &mut ConfigDocument,
     config: &mut RunConfig,
-    iterations: u64,
-    total_steps: u64,
+    (iterations, total_steps): (u64, u64),
+    observe_target_updates: Option<u32>,
     is_locked: &dyn Fn(&str) -> bool,
     provenance: &mut Provenance,
 ) {
@@ -156,5 +156,17 @@ pub(super) fn write_cadences(
             built.every_steps = Some(choice.value);
         }
         provenance.derived("checkpoint.every_steps", choice.reason);
+    }
+    if !is_locked("observe.every")
+        && let Some(target) = observe_target_updates
+        && let Some(observe) = document.observe.as_mut()
+        && observe.enabled != Some(false)
+    {
+        let choice = tuning::observe_every(iterations, target);
+        observe.every = Some(choice.value);
+        if let Some(built) = config.observe.as_mut() {
+            built.every = choice.value;
+        }
+        provenance.derived("observe.every", choice.reason);
     }
 }

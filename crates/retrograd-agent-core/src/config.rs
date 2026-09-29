@@ -13,6 +13,7 @@ use crate::{Error, Result};
 /// What a judge failure does to the update it happened in.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum JudgeFailurePolicy {
     #[default]
     DropGroup,

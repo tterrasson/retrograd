@@ -58,6 +58,9 @@ timed_step compile cargo test "${workspace_cpu[@]}" --lib --bins --no-run
 timed_step compile:root cargo test "${root_cpu[@]}" --lib --bins --test profile_cli --no-run
 timed_step compile:python cargo test "${python_cpu[@]}" --lib --bins --no-run
 timed_step compile:plan cargo test -p retrograd-plan --tests --no-run
+# The configuration schema against the parser: behind `openapi`, like the
+# schema itself, so it has to be asked for.
+timed_step compile:config-schema cargo test -p retrograd-config --features openapi --test schema --no-run
 timed_step compile:mcp cargo test -p retrograd-tools --test mcp_stdio --no-run
 # The other half of the judge's `http` feature: the graph check
 # below proves `rustls` is absent, but only a build proves the crate still
@@ -87,6 +90,7 @@ timed_step run cargo test "${workspace_cpu[@]}" --lib --bins
 timed_step run:root cargo test "${root_cpu[@]}" --lib --bins --test profile_cli
 timed_step run:python cargo test "${python_cpu[@]}" --lib --bins
 timed_step run:plan cargo test -p retrograd-plan --tests
+timed_step run:config-schema cargo test -p retrograd-config --features openapi --test schema
 # The stdio MCP transport end to end: the test re-executes this same binary as
 # the server, so it needs no daemon and no network.
 timed_step run:mcp cargo test -p retrograd-tools --test mcp_stdio

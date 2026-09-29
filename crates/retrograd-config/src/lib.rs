@@ -23,6 +23,8 @@ mod optimizer;
 mod ppo;
 mod preference;
 mod reference;
+#[cfg(feature = "openapi")]
+pub mod schema;
 mod sft;
 
 #[cfg(test)]
@@ -56,6 +58,22 @@ pub use preference::{
 };
 pub use reference::ReferenceConfig;
 pub use sft::{SftConfig, SftToml};
+/// Every `run.algorithm` a document may name.
+pub const ALGORITHMS: &[&str] = &["sft", "ppo", "grpo", "distill", "agent_grpo", "preference"];
+
+/// The sections that belong to some algorithms only, and which. A document
+/// whose `run.algorithm` is not listed for a section it carries is refused.
+pub const SECTION_ALGORITHMS: &[(&str, &[&str])] = &[
+    ("sft", &["sft"]),
+    ("ppo", &["ppo"]),
+    ("grpo", &["grpo"]),
+    ("distill", &["distill"]),
+    ("agent", &["agent_grpo"]),
+    ("preference", &["preference"]),
+    // Only the rollout algorithms generate something to export.
+    ("observe", &["ppo", "grpo", "agent_grpo"]),
+];
+
 /// The engine-shaped configuration a run is built from. Produced from a
 /// [`ConfigDocument`] by [`build`]/[`build_with`], which is the only path a
 /// document may reach it by - see [`ConfigDocument`] for why.
@@ -158,6 +176,9 @@ pub enum OutputKind {
 }
 
 impl OutputKind {
+    /// Every kind, in declaration order.
+    pub const ALL: [Self; 3] = [Self::Adapter, Self::Trainable, Self::Model];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Adapter => "adapter",
@@ -223,6 +244,9 @@ pub enum CheckpointMode {
 }
 
 impl CheckpointMode {
+    /// The `checkpoint.mode` spellings, in declaration order.
+    pub const NAMES: [&'static str; 3] = ["steps", "best_eval", "steps_and_best_eval"];
+
     pub fn includes_steps(self) -> bool {
         matches!(self, Self::Steps | Self::StepsAndBestEval)
     }

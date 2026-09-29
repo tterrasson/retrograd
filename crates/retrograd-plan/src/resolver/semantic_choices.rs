@@ -307,6 +307,27 @@ pub(super) fn draft_document(
         }
     });
 
+    // A rollout run exports what it generates, so a run started from a recipe
+    // has something to look at. The directory is a placeholder the caller
+    // replaces with the run's own; the cadence needs the update count and is
+    // written with the other cadences.
+    let observe =
+        (recipe.objective.is_rollout() && input.observe_target_updates.is_some()).then(|| {
+            if !is_locked("observe.directory") {
+                provenance.derived(
+                    "observe.directory",
+                    "a rollout run exports its trajectories to its own directory",
+                );
+            }
+            ObserveToml {
+                directory: PathBuf::from(tuning::OBSERVE_DIRECTORY_PLACEHOLDER),
+                // A placeholder, like the evaluation cadence.
+                every: Some(1),
+                max_text_chars: None,
+                enabled: None,
+            }
+        });
+
     Ok((
         ConfigDocument {
             run: RunToml {
@@ -357,7 +378,7 @@ pub(super) fn draft_document(
             // of the shapes it derives, so the section is never emitted.
             agent: None,
             preference,
-            observe: None,
+            observe,
             // The drafts are LoRA runs, whose anchor is their own frozen base
             // weights; a separate one is declared in the document, if at all.
             reference: None,

@@ -23,6 +23,7 @@ pub enum Device {
 /// other device falls back explicitly to F32.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum KvDtype {
     #[default]
     F32,
@@ -50,6 +51,7 @@ impl KvDtype {
 /// run would not otherwise fit, not a free win.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum CheckpointDtype {
     /// Keep the checkpoints as the forward built them. No casts are inserted, so
     /// the recompute stays bit-exact.
@@ -82,6 +84,7 @@ impl CheckpointDtype {
 /// rates trainable at four bytes per trained element.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum MasterWeights {
     /// On when this run marks a half-precision base tensor, off otherwise.
     #[default]
@@ -135,6 +138,7 @@ impl std::fmt::Display for MasterWeights {
 /// current default stays until a measurement asks for the memory back.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum FeatureDtype {
     /// Store the hidden states exactly as the runtime produced them.
     #[default]
@@ -148,6 +152,9 @@ pub enum FeatureDtype {
 }
 
 impl Device {
+    /// The spellings [`Device::from_str`](std::str::FromStr) accepts.
+    pub const NAMES: [&'static str; 3] = ["auto", "cpu", "gpu"];
+
     pub fn as_ffi(self) -> i32 {
         match self {
             Device::Auto => 0,
@@ -181,6 +188,9 @@ pub enum LrScheduler {
 }
 
 impl LrScheduler {
+    /// Every scheduler, in declaration order.
+    pub const ALL: [Self; 3] = [Self::Constant, Self::Linear, Self::Cosine];
+
     pub fn as_ffi(self) -> i32 {
         match self {
             Self::Constant => 0,
@@ -630,6 +640,7 @@ pub enum TargetSet {
 /// same way and none of them can silently drop the field.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum LoraDtype {
     F32,
     /// The default: gradients and optimizer state stay F32, so halving the A/B
@@ -934,7 +945,12 @@ crate::wire_enum! {
     /// in, one JSON response per line out, in order. What differs is the
     /// lifetime of the process that speaks it - and with it, who pays the
     /// command's startup.
+    ///
+    /// `rename_all` is for the schema, which reads the container rule and not
+    /// the per-variant spelling; the spellings below are already lowercase.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+    #[serde(rename_all = "lowercase")]
+    #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     pub enum RewardMode: serde {
         /// One process for the whole loop, kept alive between batches after a
         /// version handshake. The default: a rollout algorithm calls its reward

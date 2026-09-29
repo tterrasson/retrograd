@@ -61,6 +61,10 @@
         "max_new_tokens": 512,
         "seed": 7
       }
+    },
+    "observe": {
+      "directory": "observe",
+      "every": 1
     }
   },
   "plan": {
@@ -296,6 +300,14 @@
     "lora.targets": {
       "source": "derived",
       "reason": "500 examples, below 2000: q and v only"
+    },
+    "observe.directory": {
+      "source": "derived",
+      "reason": "a rollout run exports its trajectories to its own directory"
+    },
+    "observe.every": {
+      "source": "derived",
+      "reason": "one update in 1: 40 of the run's 40 updates export their texts, for a target of about 100"
     },
     "sampling.max_new_tokens": {
       "source": "derived",

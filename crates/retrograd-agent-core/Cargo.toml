@@ -14,7 +14,13 @@ publish = false
 # `retrograd-dataset` owns the chat-template contract a rollout and an SFT
 # record are both rendered through; it depends on nothing but core, serde and
 # thiserror, so reading it keeps the engine out.
+[features]
+# Schemas of the policies a configuration document spells. See
+# `retrograd-config`'s feature of the same name.
+openapi = ["dep:utoipa", "retrograd-core/openapi"]
+
 [dependencies]
+utoipa = { workspace = true, optional = true }
 async-trait.workspace = true
 retrograd-core.workspace = true
 retrograd-dataset.workspace = true

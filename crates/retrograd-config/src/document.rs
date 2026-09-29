@@ -31,6 +31,7 @@ use crate::sft::SftToml;
 /// engine's shape and changes at the engine's pace.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ConfigDocument {
     pub run: RunToml,
     #[serde(default)]
@@ -87,6 +88,7 @@ pub struct ConfigDocument {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OptimizerToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub muon: Option<MuonToml>,
@@ -97,6 +99,7 @@ pub struct OptimizerToml {
 /// `[optimizer.muon]`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MuonToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub momentum: Option<f32>,
@@ -116,6 +119,7 @@ pub struct MuonToml {
 /// layout version rather than appearing as a declared hyperparameter.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GefenToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
@@ -139,7 +143,9 @@ pub struct GefenToml {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RunToml {
+    #[cfg_attr(feature = "openapi", schema(schema_with = crate::schema::algorithm))]
     pub algorithm: String,
     #[serde(default)]
     pub verbose: bool,
@@ -151,10 +157,13 @@ pub struct RunToml {
 /// refuses a document whose path is neither written nor overridden.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ModelToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = "path"))]
     pub path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(schema_with = crate::schema::device))]
     pub device: Option<String>,
 }
 /// `[output]`: the run's result.
@@ -165,16 +174,20 @@ pub struct ModelToml {
 /// `adapter` export of a full run would be an empty file.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OutputToml {
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = "path"))]
     pub path: PathBuf,
     /// `adapter`, `trainable` or `model`. Defaults to `adapter` for a `lora`
     /// run and `trainable` for every policy that trains base tensors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(schema_with = crate::schema::output_kind))]
     pub kind: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct LoraToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rank: Option<u32>,
@@ -185,12 +198,14 @@ pub struct LoraToml {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = "path"))]
     pub init_adapter: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dtype: Option<LoraDtype>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TrainingToml {
     /// Which family of parameters this run trains: `"lora"` (the default),
     /// `"full"`, `"partial"` or `"hybrid"`. See `retrograd_core::TrainablePolicy`.
@@ -230,6 +245,7 @@ pub struct TrainingToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_grad_norm: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(schema_with = crate::schema::lr_scheduler))]
     pub lr_scheduler: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warmup_steps: Option<u64>,
@@ -273,6 +289,7 @@ pub struct TrainingToml {
 /// resolving to the empty set.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TrainableToml {
     /// `"all"`, `"last:<count>"` or an inclusive `"<first>..<last>"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -291,16 +308,20 @@ pub struct TrainableToml {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum SharedPrefixFanoutToml {
     Name(String),
     Exact(u32),
 }
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MetricsToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = "path"))]
     pub tensorboard_dir: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = "path"))]
     pub wandb_export_dir: Option<PathBuf>,
 }
 
@@ -311,7 +332,9 @@ impl MetricsToml {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct EvaluationToml {
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = "path"))]
     pub data: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every_iterations: Option<u32>,
@@ -324,22 +347,32 @@ pub struct EvaluationToml {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CheckpointToml {
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = "path"))]
     pub directory: PathBuf,
+    #[cfg_attr(feature = "openapi", schema(schema_with = crate::schema::checkpoint_mode))]
     pub mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every_steps: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = "path"))]
     pub resume_from: Option<PathBuf>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ObserveToml {
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = "path"))]
     pub directory: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_text_chars: Option<usize>,
+    /// `false` turns the export off while keeping the table: how a client
+    /// declines an export the server would otherwise add. Absent means on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 /// `[reference]`: the anchor, and the width it runs at.
 ///
@@ -348,7 +381,9 @@ pub struct ObserveToml {
 /// path names.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ReferenceToml {
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = "path"))]
     pub model: PathBuf,
     /// Context width of the anchor. Absent follows `[training].ctx`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -357,6 +392,7 @@ pub struct ReferenceToml {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SamplingToml {
     pub temperature: f32,
     pub top_p: f32,
