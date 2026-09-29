@@ -182,12 +182,16 @@ mod tests {
             );
         }
 
-        // A JSON number valid for f64 but beyond f32::MAX: serde_json parses it
-        // into f32 as infinity instead of erroring, so this exercises the
-        // is_finite() check rather than the JSON-parsing branch above.
+        // A JSON number valid for f64 but beyond f32::MAX. Depending on the
+        // serde_json version, decoding into f32 rejects it or produces infinity;
+        // either way, the backend must reject the reward.
         let judge = CommandReward::new(shell("printf '{\"reward\":1e39}\\n'")).unwrap();
         let error = judge.score_group(&group()).await.unwrap_err();
-        assert!(error.to_string().contains("not finite"), "{error}");
+        assert!(
+            error.to_string().contains("invalid reward response")
+                || error.to_string().contains("not finite"),
+            "{error}"
+        );
     }
 
     #[tokio::test]
