@@ -3,7 +3,7 @@
 //! Everything about the assets lives here - where they come from, their media
 //! types, their cache and security headers, and the fallback that lets the
 //! single-page application own its URLs - so that the server sees one function,
-//! [`router`], and nothing else.
+//! `router`, and nothing else.
 //!
 //! The resolution of a path, in order:
 //!
