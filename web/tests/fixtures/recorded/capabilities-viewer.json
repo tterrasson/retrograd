@@ -1,0 +1,44 @@
+{
+  "execution_profile_schema_version": 2,
+  "kernel_catalog_fingerprint": "sha256:a76013f200afb9fa8b2de63963ab5faca3c5aba5671713b7d0fd1e2f36c1bfcc",
+  "rir_mode": "prefer",
+  "rir_policy_latched": false,
+  "backends": [
+    "cpu"
+  ],
+  "devices": [
+    {
+      "kind": "cpu",
+      "name": "CPU",
+      "description": "Apple M5"
+    }
+  ],
+  "unified_memory": true,
+  "budgets": {
+    "vram": {
+      "requested": "all",
+      "total_bytes": 34359738368,
+      "baseline_bytes": 4243984,
+      "margin_bytes": 1717986918,
+      "effective_bytes": 32637507466,
+      "capped": false
+    },
+    "ram": {
+      "requested": "all",
+      "total_bytes": 34359738368,
+      "baseline_bytes": 4243984,
+      "margin_bytes": 1717986918,
+      "effective_bytes": 32637507466,
+      "capped": false
+    },
+    "unified": true
+  },
+  "features": {
+    "openapi": true,
+    "max_concurrent_runs": 0,
+    "serving_enabled": false,
+    "ui": true,
+    "auth": false,
+    "mode": "viewer"
+  }
+}

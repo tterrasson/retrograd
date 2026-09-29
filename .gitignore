@@ -23,6 +23,13 @@ __pycache__/
 *.gguf
 *.gguf.verified
 
+# Web interface: dependencies and build output. `web/openapi.json` and
+# `web/src/api/schema.d.ts` are generated but versioned: they are the contract.
+/web/node_modules/
+/web/dist/
+/web/test-results/
+/web/playwright-report/
+
 # Local run output
 
 # Run output resolved against the directory of a config kept at the root.
@@ -35,6 +42,8 @@ __pycache__/
 *.jsonl
 # The examples' prompts and evaluation sets ship with the repository.
 !/examples/**/*.jsonl
+# As do the web interface's recorded fixtures.
+!/web/tests/fixtures/**/*.jsonl
 .ruff_cache
 
 # Operating system files

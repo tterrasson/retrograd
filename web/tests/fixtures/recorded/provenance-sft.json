@@ -1,0 +1,64 @@
+{
+  "lora.alpha": {
+    "source": "derived",
+    "reason": "twice the rank"
+  },
+  "lora.dtype": {
+    "source": "default"
+  },
+  "lora.rank": {
+    "source": "derived",
+    "reason": "4000 examples: rank 16"
+  },
+  "lora.targets": {
+    "source": "derived",
+    "reason": "4000 examples: the architecture's automatic target set"
+  },
+  "training.chunked_ce_seq_chunk": {
+    "source": "derived",
+    "reason": "active by default: always - every backend the project ships carries both fused nodes"
+  },
+  "training.chunked_ce_tiles": {
+    "source": "derived",
+    "reason": "active by default: always - every backend the project ships carries both fused nodes"
+  },
+  "training.chunked_cross_entropy": {
+    "source": "derived",
+    "reason": "active by default: always - every backend the project ships carries both fused nodes"
+  },
+  "training.ctx": {
+    "source": "derived",
+    "reason": "P99 of the example lengths, rounded up to a power of two"
+  },
+  "training.epochs": {
+    "source": "derived",
+    "reason": "3600000 tokens: 1 pass(es) towards the 1500000-token exposure target"
+  },
+  "training.gradient_accumulation": {
+    "source": "derived",
+    "reason": "largest optimizer window whose estimate fits the budget and its safety margin"
+  },
+  "training.lr": {
+    "source": "derived",
+    "reason": "rank 16: the reference rate"
+  },
+  "training.lr_scheduler": {
+    "source": "derived",
+    "reason": "4000 optimizer steps: a cosine has room to decay"
+  },
+  "training.max_grad_norm": {
+    "source": "default"
+  },
+  "training.micro_batch": {
+    "source": "derived",
+    "reason": "divides the resolved optimizer window"
+  },
+  "training.warmup_steps": {
+    "source": "derived",
+    "reason": "3% of the 4000 optimizer steps"
+  },
+  "training.weight_decay": {
+    "source": "derived",
+    "reason": "4000 examples: the usual decay"
+  }
+}

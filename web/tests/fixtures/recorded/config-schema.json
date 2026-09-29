@@ -1,0 +1,1873 @@
+{
+  "$defs": {
+    "AgentToml": {
+      "additionalProperties": false,
+      "properties": {
+        "clip_range_high": {
+          "default": 0.2800000011920929,
+          "format": "float",
+          "type": "number"
+        },
+        "clip_range_low": {
+          "default": 0.20000000298023224,
+          "format": "float",
+          "type": "number"
+        },
+        "collect_api": {
+          "default": null,
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/CollectApiConfig",
+              "description": "The endpoint `retrograd collect --api` generates with."
+            }
+          ]
+        },
+        "drop_degenerate_groups": {
+          "default": false,
+          "description": "Drop groups the judge scored identically across every member; see\n[`AgentGrpoConfig::drop_degenerate_groups`].",
+          "type": "boolean"
+        },
+        "end_on_no_tool_call": {
+          "default": true,
+          "description": "`false` turns a turn that named no tool into an error observation\ninstead of the end of the trajectory; see\n[`RolloutLimits::end_on_no_tool_call`]. Leave it alone for a run whose\npolicy answers, set it for a world that decides when the episode is\nover.",
+          "type": "boolean"
+        },
+        "environment": {
+          "description": "One stateful environment per trajectory - HTTP, container or (explicitly)\nthe host.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "epochs_per_update": {
+          "default": 4,
+          "description": "Optimizer passes over one update's rollouts. Spelled in full because\n`training.epochs` is a different quantity - passes over an SFT dataset.",
+          "format": "int32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "group_size": {
+          "default": 8,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "judge": {
+          "description": "An addition, not a default. Absent, the environment's own reward is the\nonly one - which is the whole configuration of a verifiable task.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "judge_failure": {
+          "default": "drop_group",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/JudgeFailurePolicy"
+            }
+          ]
+        },
+        "kl_coefficient": {
+          "default": 0.0,
+          "format": "float",
+          "type": "number"
+        },
+        "max_dropped_fraction": {
+          "default": 0.5,
+          "format": "float",
+          "type": "number"
+        },
+        "max_failed_turns": {
+          "default": 0,
+          "description": "Consecutive turns without a valid tool call before the trajectory is\ncut as a truncation; see [`RolloutLimits::max_failed_turns`]. Zero\nnever cuts.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_new_tokens_per_turn": {
+          "default": 512,
+          "description": "Generation budget for one assistant turn. `[grpo.sampling]`'s\n`max_new_tokens` is the single-turn equivalent; the two live in\ndifferent sections because a turn is not a completion.",
+          "format": "int32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_rollout_secs": {
+          "default": 300,
+          "format": "int64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_trajectory_tokens": {
+          "default": null,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_turns": {
+          "default": 6,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mcp_config": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mcp_servers": {
+          "default": [],
+          "description": "Tools served over MCP. With an environment, every server must be\nexplicitly declared stateless before it may be shared across members.",
+          "items": {
+            "type": "object"
+          },
+          "type": "array",
+          "x-retrograd-server-declared": true
+        },
+        "scenario_generation": {
+          "default": null,
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/ScenarioGenerationConfig"
+            }
+          ]
+        },
+        "scenarios": {
+          "default": "",
+          "format": "path",
+          "type": "string"
+        },
+        "scenarios_per_update": {
+          "default": 1,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "seed": {
+          "default": 42,
+          "format": "int64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "skip_empty_updates": {
+          "default": false,
+          "description": "Skip an update left with fewer than two trainable trajectories rather\nthan failing the run; see [`AgentGrpoConfig::skip_empty_updates`].",
+          "type": "boolean"
+        },
+        "system_suffix": {
+          "default": "",
+          "description": "Text appended to training and held-out system turns; creates a turn if absent.",
+          "type": "string"
+        },
+        "template_variables": {
+          "description": "Chat-template variables, e.g. `template_variables = { enable_thinking = false }`.\nThe runtime rejects `messages`, `tools`, `bos_token`, `eos_token` and\n`add_generation_prompt`, which are supplied by the renderer.",
+          "type": "object"
+        },
+        "truncation": {
+          "default": "drop",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/TruncationPolicy",
+              "description": "`\"drop\"` (default) or `\"min_reward\"` - see [`TruncationPolicy`]."
+            }
+          ]
+        },
+        "updates": {
+          "default": 1,
+          "format": "int32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "CheckpointDtype": {
+      "description": "Storage precision for the layer outputs retained by gradient checkpointing.\n\nA 16-bit checkpoint halves that term, and would halve the host-transfer traffic\nif activation offloading were combined with it. It is opt-in, and not merely\nbecause it breaks bit-parity: measurement on the CPU fixture shows a 16-bit\ncheckpoint perturbs the LoRA update by roughly its own relative precision\n(~1e-3), which is about four orders of magnitude more than the F32 recompute's\nreassociation error. Neither F16 nor BF16 was clearly better at that scale. So\nthis trades a real amount of gradient fidelity for memory - appropriate when a\nrun would not otherwise fit, not a free win.",
+      "enum": [
+        "f32",
+        "f16",
+        "bf16"
+      ],
+      "type": "string"
+    },
+    "CheckpointToml": {
+      "additionalProperties": false,
+      "properties": {
+        "directory": {
+          "format": "path",
+          "type": "string"
+        },
+        "every_steps": {
+          "format": "int64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "x-retrograd-patchable": true
+        },
+        "mode": {
+          "enum": [
+            "steps",
+            "best_eval",
+            "steps_and_best_eval"
+          ],
+          "type": "string",
+          "x-retrograd-patchable": true
+        },
+        "resume_from": {
+          "format": "path",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "directory",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "CollectApiConfig": {
+      "additionalProperties": false,
+      "description": "An OpenAI-compatible endpoint that stands in for the policy while a\ncollection runs: the teacher a warm-start dataset is distilled from when no\nlocal model is strong enough. The key is read from `api_key_env`, never\nfrom the document.",
+      "properties": {
+        "api_key_env": {
+          "default": "",
+          "type": "string",
+          "x-retrograd-server-declared": true
+        },
+        "base_url": {
+          "default": "",
+          "type": "string",
+          "x-retrograd-server-declared": true
+        },
+        "model": {
+          "default": "",
+          "type": "string"
+        },
+        "temperature": {
+          "default": null,
+          "description": "Sent when set; the provider's default otherwise.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "timeout_secs": {
+          "default": 120,
+          "format": "int64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "CriticToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "feature_dtype": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/FeatureDtype"
+            }
+          ]
+        },
+        "gae_lambda": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "gamma": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "value_epochs": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "value_lr": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "DistillToml": {
+      "additionalProperties": false,
+      "description": "`[distill]`. Every key that has a sensible value without being written has\none: a distillation run is described by a teacher, a prompt file and a\nbudget, and the rest is tuning.",
+      "properties": {
+        "clip_range_high": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "clip_range_low": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "data": {
+          "description": "Offline mode only: the chat JSONL the sidecar describes.",
+          "format": "path",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "distill_epochs": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kl_coefficient": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "mask_truncated": {
+          "type": "boolean"
+        },
+        "mode": {
+          "description": "`on_policy` (the default) or `topk_offline`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "offline_epochs": {
+          "description": "Offline mode only: passes over the corpus.",
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "prompt_order": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompts": {
+          "description": "On-policy mode only. Optional in the schema and required by\n`build_distill` for that mode, rather than required here: an offline\ndocument has no prompt file, no update count and no sampler, and forcing\nit to write three ignored keys is how a reader ends up believing they\nmean something.",
+          "format": "path",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompts_per_update": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "samples_per_prompt": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sampling": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/SamplingToml",
+              "description": "On-policy mode only, same reasoning as `prompts`."
+            }
+          ]
+        },
+        "sidecar": {
+          "description": "Offline mode only: the `.topk` sidecar.",
+          "format": "path",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "teacher_path": {
+          "format": "path",
+          "type": "string"
+        },
+        "updates": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "weight_clip": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "teacher_path"
+      ],
+      "type": "object"
+    },
+    "DynamicSampling": {
+      "additionalProperties": false,
+      "description": "DAPO dynamic sampling: after the group baseline drops zero-signal groups,\nkeep drawing replacement prompts (continuing the round-robin) until the\nupdate carries `prompts_per_update` informative groups, or the candidate\nbudget `prompts_per_update * max_resample_factor` is exhausted. Keeps the\neffective batch full as the policy converges.",
+      "properties": {
+        "max_resample_factor": {
+          "description": "Cap on candidate groups per update, as a multiple of\n`prompts_per_update`. Must be at least 2 (1 would allow no resampling).",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_resample_factor"
+      ],
+      "type": "object"
+    },
+    "EvaluationToml": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "format": "path",
+          "type": "string"
+        },
+        "every_iterations": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "x-retrograd-patchable": true
+        },
+        "max_examples": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "min_delta": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "patience": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "x-retrograd-patchable": true
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "type": "object"
+    },
+    "FeatureDtype": {
+      "description": "Storage precision for the PPO critic's host-side feature matrix.\n\nThe critic keeps one row of `hidden_dim` features per completion state for the\nwhole update - predictions, GAE and `value_epochs` passes of full-batch Adam all\nread the same matrix - so the buffer is `total_completion_states * hidden_dim`\nand it lives in host RAM, not on the device. A 16-bit row halves it; the fit\nstill runs in F32, one chunk converted at a time, so the arithmetic is unchanged\nand only the stored rows are rounded.\n\nOpt-in, and the reason is the same one [`CheckpointDtype`] gives: rounding the\nfeatures perturbs the value regression. That perturbation is benign in a way the\ngradient one is not - the baseline only reduces the variance of the policy\ngradient and never biases the update - but \"benign\" is not \"absent\", and the\ncurrent default stays until a measurement asks for the memory back.",
+      "enum": [
+        "f32",
+        "f16",
+        "bf16"
+      ],
+      "type": "string"
+    },
+    "GefenToml": {
+      "additionalProperties": false,
+      "description": "`[optimizer.gefen]`. `variant` selects a slot table, so it moves the\nlayout version rather than appearing as a declared hyperparameter.",
+      "properties": {
+        "beta1": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "beta2": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "block_size": {
+          "format": "int64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "codebook": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codebook_levels": {
+          "format": "int64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "eps": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "min_numel": {
+          "format": "int64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "partition": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "variant": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "GrpoToml": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "clip_range_high": {
+          "format": "float",
+          "type": "number"
+        },
+        "clip_range_low": {
+          "format": "float",
+          "type": "number"
+        },
+        "dynamic_sampling": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/DynamicSampling"
+            }
+          ]
+        },
+        "group_size": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "grpo_epochs": {
+          "format": "int32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "judge": {
+          "description": "`[grpo.judge]`, in the same spelling as `[agent.judge]`.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "judge_failure": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/JudgeFailurePolicy",
+              "description": "`\"drop_group\"` (default) or `\"fail\"`, as in `[agent].judge_failure`."
+            }
+          ]
+        },
+        "judge_weight": {
+          "description": "Default weight of a verdict in the final reward. Required as soon as a\njudge is declared: a judge that contributes an unstated amount to the\ngradient is the one thing this section must not allow.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "kl_coefficient": {
+          "format": "float",
+          "type": "number"
+        },
+        "kl_schedule": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/KlScheduleToml"
+            }
+          ]
+        },
+        "mask_truncated": {
+          "type": "boolean"
+        },
+        "max_judge_dropped_fraction": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_stalled_updates": {
+          "description": "Consecutive zero-signal updates tolerated before the run stops; `0`\nnever stops. Defaults to `DEFAULT_MAX_STALLED_UPDATES`.",
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "overlong_penalty": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/OverlongPenalty"
+            }
+          ]
+        },
+        "prompt_order": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompts": {
+          "format": "path",
+          "type": "string"
+        },
+        "prompts_per_update": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reward_command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "x-retrograd-server-declared": true
+        },
+        "reward_mode": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/RewardMode",
+              "description": "`\"persistent\"` (default) or `\"oneshot\"`. Persistent keeps one worker\nalive for the whole loop behind a version handshake; a command that\nreads its stdin to the end before answering needs `\"oneshot\"`."
+            }
+          ]
+        },
+        "reward_timeout_seconds": {
+          "description": "Deadline of one reward batch, in seconds. Also covers the first batch's\nworker startup in the persistent mode.",
+          "format": "int64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sampling": {
+          "$ref": "#/$defs/SamplingToml"
+        },
+        "updates": {
+          "format": "int32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "prompts",
+        "reward_command",
+        "updates",
+        "prompts_per_update",
+        "group_size",
+        "grpo_epochs",
+        "clip_range_low",
+        "clip_range_high",
+        "kl_coefficient",
+        "sampling"
+      ],
+      "type": "object"
+    },
+    "JudgeFailurePolicy": {
+      "description": "What a judge failure does to the update it happened in.",
+      "enum": [
+        "drop_group",
+        "fail"
+      ],
+      "type": "string"
+    },
+    "KlScheduleToml": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "warmup_updates": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "KvDtype": {
+      "description": "Storage precision requested for the differentiable training KV cache.\nF16 is enabled only when the active device reports the differentiable Flash\nAttention forward and backward ops for the model's head geometry; every\nother device falls back explicitly to F32.",
+      "enum": [
+        "f32",
+        "f16"
+      ],
+      "type": "string"
+    },
+    "LoraDtype": {
+      "description": "Storage precision for trainable LoRA A/B matrices. Gradients and optimizer\nstate remain F32 for both variants.\n\nDeserializes from `\"f32\"` / `\"f16\"` so every TOML frontend spells it the\nsame way and none of them can silently drop the field.",
+      "enum": [
+        "f32",
+        "f16"
+      ],
+      "type": "string"
+    },
+    "LoraToml": {
+      "additionalProperties": false,
+      "properties": {
+        "alpha": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "dtype": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/LoraDtype"
+            }
+          ]
+        },
+        "init_adapter": {
+          "format": "path",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rank": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "seed": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "targets": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "MasterWeights": {
+      "description": "Whether a half-precision base weight is trained through an F32 master copy.\n\nWithout one the update kernel reads the parameter, adds the step and rounds\nthe sum back onto the same grid, so a step below one ulp is a whole ulp\ntaken at random: the trajectory follows the rounding rather than the\ngradient. That is what [`crate::MIN_BASE_STEP_ULPS`] refuses. A master copy\naccumulates in F32 and writes the store through one cast, which makes those\nrates trainable at four bytes per trained element.",
+      "enum": [
+        "auto",
+        "f32",
+        "off"
+      ],
+      "type": "string"
+    },
+    "MetricsToml": {
+      "additionalProperties": false,
+      "properties": {
+        "tensorboard_dir": {
+          "format": "path",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wandb_export_dir": {
+          "format": "path",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ModelToml": {
+      "additionalProperties": false,
+      "description": "`[model]` is optional as a *document* section because a frontend may supply\nthe base model itself - the CLI's `--model`/`--device`, a request field.\nWhat is not optional is the resolved\n[`RunConfig::model`](crate::RunConfig::model): [`build_with`](crate::build_with)\nrefuses a document whose path is neither written nor overridden.",
+      "properties": {
+        "device": {
+          "enum": [
+            "auto",
+            "cpu",
+            "gpu",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "format": "path",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "MuonToml": {
+      "additionalProperties": false,
+      "description": "`[optimizer.muon]`.",
+      "properties": {
+        "fallback_learning_rate": {
+          "description": "The rate the parameters Muon declines are updated at: its own value,\nnot a ratio of `training.lr`.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "momentum": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "nesterov": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "ns_epsilon": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "ns_steps": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ObserveToml": {
+      "additionalProperties": false,
+      "properties": {
+        "directory": {
+          "format": "path",
+          "type": "string"
+        },
+        "enabled": {
+          "description": "`false` turns the export off while keeping the table: how a client\ndeclines an export the server would otherwise add. Absent means on.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "every": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_text_chars": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "directory"
+      ],
+      "type": "object"
+    },
+    "OptimizerToml": {
+      "additionalProperties": false,
+      "properties": {
+        "gefen": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/GefenToml"
+            }
+          ]
+        },
+        "muon": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/MuonToml"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "OutputToml": {
+      "additionalProperties": false,
+      "description": "`[output]`: the run's result.\n\n`path` is where it is written; `kind` is what it is. The two are separate\nbecause they answer different questions and only the second can be wrong:\na `model` export of a hybrid run would silently drop the adapter, and an\n`adapter` export of a full run would be an empty file.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "adapter",
+            "trainable",
+            "model",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "format": "path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "OverlongPenalty": {
+      "additionalProperties": false,
+      "description": "DAPO soft overlong punishment: a progressive reward penalty over the last\n`buffer_tokens` of the generation budget, applied before the group\nbaseline. Teaches the policy to conclude instead of merely ignoring\noverruns (as `mask_truncated` does).",
+      "properties": {
+        "buffer_tokens": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_penalty": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "buffer_tokens",
+        "max_penalty"
+      ],
+      "type": "object"
+    },
+    "PpoToml": {
+      "additionalProperties": false,
+      "properties": {
+        "clip_range": {
+          "format": "float",
+          "type": "number"
+        },
+        "critic": {
+          "$ref": "#/$defs/CriticToml"
+        },
+        "kl_coefficient": {
+          "format": "float",
+          "type": "number"
+        },
+        "ppo_epochs": {
+          "format": "int32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "prompts": {
+          "format": "path",
+          "type": "string"
+        },
+        "reward_command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "x-retrograd-server-declared": true
+        },
+        "reward_mode": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/RewardMode",
+              "description": "`\"persistent\"` (default) or `\"oneshot\"`. Persistent keeps one worker\nalive for the whole loop behind a version handshake; a command that\nreads its stdin to the end before answering needs `\"oneshot\"`."
+            }
+          ]
+        },
+        "reward_timeout_seconds": {
+          "description": "Deadline of one reward batch, in seconds. Also covers the first batch's\nworker startup in the persistent mode.",
+          "format": "int64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "rollout_batch_size": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sampling": {
+          "$ref": "#/$defs/SamplingToml"
+        },
+        "updates": {
+          "format": "int32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "prompts",
+        "reward_command",
+        "updates",
+        "rollout_batch_size",
+        "ppo_epochs",
+        "clip_range",
+        "kl_coefficient",
+        "sampling"
+      ],
+      "type": "object"
+    },
+    "PreferenceToml": {
+      "additionalProperties": false,
+      "description": "`[preference]`. Everything but `data` has a default; the constant a loss\ndoes not read is refused beside it.",
+      "properties": {
+        "beta": {
+          "description": "Defaults per loss: 0.1 for dpo, ipo and orpo, 2.0 for simpo.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "data": {
+          "format": "path",
+          "type": "string"
+        },
+        "gamma_beta_ratio": {
+          "description": "simpo only, non-negative. Defaults to 0.5.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "label_smoothing": {
+          "description": "dpo only, in [0, 0.5). Defaults to 0.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "logps_drop_warn": {
+          "description": "In nats, greater than zero. Defaults to 2.0.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "loss": {
+          "description": "`dpo` (the default), `ipo`, `simpo` or `orpo`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pairs_per_step": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reference": {
+          "description": "dpo and ipo: `initial` (the default) or `base`. Absent when\n`[reference]` declares the anchor.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shuffle": {
+          "description": "Defaults to `true`.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "type": "object"
+    },
+    "ReferenceToml": {
+      "additionalProperties": false,
+      "description": "`[reference]`: the anchor, and the width it runs at.\n\nThe anchor's precision is the one in its file: a quantization key here\nwould make the scores depend on a setting rather than on the model the\npath names.",
+      "properties": {
+        "ctx": {
+          "description": "Context width of the anchor. Absent follows `[training].ctx`.",
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "model": {
+          "format": "path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "type": "object"
+    },
+    "RewardMode": {
+      "description": "How the reward command is spoken to.\n\nThe protocol on the wire is the same in both: one JSON request per line\nin, one JSON response per line out, in order. What differs is the\nlifetime of the process that speaks it - and with it, who pays the\ncommand's startup.\n\n`rename_all` is for the schema, which reads the container rule and not\nthe per-variant spelling; the spellings below are already lowercase.",
+      "enum": [
+        "persistent",
+        "oneshot"
+      ],
+      "type": "string"
+    },
+    "RunToml": {
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": {
+          "enum": [
+            "sft",
+            "ppo",
+            "grpo",
+            "distill",
+            "agent_grpo",
+            "preference"
+          ],
+          "type": "string"
+        },
+        "verbose": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "algorithm"
+      ],
+      "type": "object"
+    },
+    "SamplingToml": {
+      "additionalProperties": false,
+      "properties": {
+        "max_new_tokens": {
+          "format": "int32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "seed": {
+          "format": "int32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "temperature": {
+          "format": "float",
+          "type": "number"
+        },
+        "top_p": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "temperature",
+        "top_p",
+        "max_new_tokens",
+        "seed"
+      ],
+      "type": "object"
+    },
+    "ScenarioGenerationConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "api_key_env": {
+          "default": "",
+          "type": "string",
+          "x-retrograd-server-declared": true
+        },
+        "base_url": {
+          "default": "",
+          "type": "string",
+          "x-retrograd-server-declared": true
+        },
+        "batch_size": {
+          "default": 12,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "count": {
+          "default": 24,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "custom_instructions": {
+          "default": "",
+          "type": "string"
+        },
+        "max_catalog_bytes": {
+          "default": 262144,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_difficulty": {
+          "default": 5,
+          "format": "int32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_retries": {
+          "default": 2,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "min_difficulty": {
+          "default": 1,
+          "format": "int32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "default": "",
+          "type": "string"
+        },
+        "seed": {
+          "default": null,
+          "format": "int64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "shuffle": {
+          "default": true,
+          "type": "boolean"
+        },
+        "timeout_secs": {
+          "default": 120,
+          "format": "int64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "SftToml": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "format": "path",
+          "type": "string"
+        },
+        "data_format": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shuffle": {
+          "description": "Shuffle the training rows between epochs, seeded from `lora.seed`.\nDefaults to `true`; set it to `false` to replay the file order.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "template_variables": {
+          "description": "Chat-template variables, e.g. `template_variables = { enable_thinking = false }`.\nThe runtime rejects `messages`, `tools`, `bos_token`, `eos_token` and\n`add_generation_prompt`, which are supplied by the renderer.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "type": "object"
+    },
+    "SharedPrefixFanoutToml": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "format": "int32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      ]
+    },
+    "TrainableToml": {
+      "additionalProperties": false,
+      "description": "`[trainable]`: the base selection of a `partial` or `hybrid` run.\n\nEvery selector is off by default and an omitted `layers` means all blocks,\nso an empty section selects nothing - which `build` refuses rather than\nresolving to the empty set.",
+      "properties": {
+        "biases": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "layers": {
+          "description": "`\"all\"`, `\"last:<count>\"` or an inclusive `\"<first>..<last>\"`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modules": {
+          "description": "Module aliases (`\"attn\"`, `\"ffn\"`), individual stems (`\"attn_q\"`) or\nexplicit tensor patterns. Norms are not modules: they follow `norms`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "norms": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "output_head": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "TrainingToml": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_dtype": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/CheckpointDtype"
+            }
+          ]
+        },
+        "checkpoint_every_n_layers": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "chunked_ce_seq_chunk": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "chunked_ce_tiles": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "chunked_cross_entropy": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "ctx": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "epochs": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "fast_sampling_context": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "generation_batch": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "generation_concurrency": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "gradient_accumulation": {
+          "description": "Micro-batches accumulated before one optimizer step - TRL's\n`gradient_accumulation_steps`. `micro_batch * gradient_accumulation` is\nthe token window one AdamW step trains, and it must divide `ctx`.\nOptional on a rollout algorithm, where it is pinned to\n`ctx / micro_batch` (one step never spans less than a whole rollout).",
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "gradient_checkpointing": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "kv_dtype": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/KvDtype"
+            }
+          ]
+        },
+        "lr": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ],
+          "x-retrograd-patchable": true
+        },
+        "lr_scheduler": {
+          "enum": [
+            "constant",
+            "linear",
+            "cosine",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "master_weights": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/MasterWeights",
+              "description": "Train half-precision base weights through an F32 master copy:\n`\"auto\"` (default), `\"f32\"` or `\"off\"`."
+            }
+          ]
+        },
+        "max_gpu_duty_cycle": {
+          "description": "Upper target for the fraction of wall time this trainer spends waiting\non GPU work it submitted, so a neighbouring workload gets regular\ncompute windows. Finite, in `(0, 1]`; `1.0` is the unthrottled default.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_grad_norm": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "micro_batch": {
+          "description": "Physical forward/backward width, in tokens - llama.cpp's `n_ubatch` and\nthe equivalent of TRL's `per_device_train_batch_size`. This is the\nactivation-memory lever.",
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "optimizer": {
+          "description": "Which optimizer updates them: `\"adamw\"` (the default), `\"sgd\"`,\n`\"muon\"` or `\"gefen\"`. A name this build cannot honour is refused\nrather than accepted and ignored.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "require_gpu_resident": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "shared_prefix_fanout": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/SharedPrefixFanoutToml",
+              "description": "Physical completion fanout for differentiable shared-prefix training:\n\"auto\", \"off\", \"max\", or an integer >= 2."
+            }
+          ]
+        },
+        "threads": {
+          "format": "int32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "trainable": {
+          "description": "Which family of parameters this run trains: `\"lora\"` (the default),\n`\"full\"`, `\"partial\"` or `\"hybrid\"`. See `retrograd_core::TrainablePolicy`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "warmup_steps": {
+          "format": "int64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "weight_decay": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "TruncationPolicy": {
+      "description": "What becomes of a member that ran out of budget mid-response.\n\nNeither branch is free. A partial response cannot be judged as a completed\ntrajectory, so `Drop` is the honest reading of the reward - but dropping is a\nselection on length: the model never receives a negative signal for\noverrunning, and a task that systematically overruns disappears from the\ngradient entirely rather than being learned out of. `MinReward` keeps the\nmember at the bottom of its own group, which makes overrunning cost\nsomething at the price of a reward nobody measured.\n\nWatch `agent/truncated_fraction` before switching: past roughly 20% the\ntraining distribution is no longer the one the scenarios describe, and that\nis the point at which the trade above stops being academic.",
+      "enum": [
+        "drop",
+        "min_reward"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "https://retrograd.dev/schemas/config-0.1.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The configuration *document*: the exact schema of the CLI's TOML file.\n\nPublic because it is the one schema three frontends share: the CLI reads it\nfrom TOML, the server accepts it as JSON, and the resolver renders its own\noutput back through it. The resolver builds one of these instead of a\n[`RunConfig`](crate::RunConfig) directly, so that \"the resolver cannot\nproduce a config the CLI would refuse\" holds *by construction*: the only way\nfrom a document to a `RunConfig` is [`build`](crate::build()), which is what\n`load` calls.\n\n[`RunConfig`](crate::RunConfig), by contrast, stays internal: it is the\nengine's shape and changes at the engine's pace.",
+  "properties": {
+    "agent": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/AgentToml"
+        }
+      ],
+      "x-retrograd-applies-to": [
+        "agent_grpo"
+      ]
+    },
+    "checkpoint": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/CheckpointToml"
+        }
+      ]
+    },
+    "distill": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/DistillToml"
+        }
+      ],
+      "x-retrograd-applies-to": [
+        "distill"
+      ]
+    },
+    "evaluation": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/EvaluationToml"
+        }
+      ]
+    },
+    "grpo": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/GrpoToml"
+        }
+      ],
+      "x-retrograd-applies-to": [
+        "grpo"
+      ]
+    },
+    "lora": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/LoraToml",
+          "description": "`[lora]`: required by `lora` and `hybrid`, refused by `full` and\n`partial`. Optional as a *document* section because a run that trains\nbase tensors has no adapter at all, and demanding rank, alpha and\ntargets from it would be demanding the shape of something it does not\ncreate."
+        }
+      ]
+    },
+    "metrics": {
+      "$ref": "#/$defs/MetricsToml"
+    },
+    "model": {
+      "$ref": "#/$defs/ModelToml"
+    },
+    "observe": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/ObserveToml"
+        }
+      ],
+      "x-retrograd-applies-to": [
+        "ppo",
+        "grpo",
+        "agent_grpo"
+      ]
+    },
+    "optimizer": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/OptimizerToml",
+          "description": "`[optimizer.<name>]`: the chosen optimizer's own knobs. A table for an\noptimizer the run did not choose is refused at build time."
+        }
+      ]
+    },
+    "output": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/OutputToml",
+          "description": "`[output]`: where the run's result goes, and which kind of result it is.\nThe kind is defaulted from the policy when absent; the path is not, so\na document that names no output is refused."
+        }
+      ]
+    },
+    "ppo": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/PpoToml"
+        }
+      ],
+      "x-retrograd-applies-to": [
+        "ppo"
+      ]
+    },
+    "preference": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/PreferenceToml"
+        }
+      ],
+      "x-retrograd-applies-to": [
+        "preference"
+      ]
+    },
+    "reference": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/ReferenceToml",
+          "description": "`[reference]`: the frozen model a KL penalty is scored against. Its own\nsection rather than a field of `[ppo]` or `[grpo]`, because one file\nserves every objective that declares a KL term."
+        }
+      ]
+    },
+    "run": {
+      "$ref": "#/$defs/RunToml"
+    },
+    "sft": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/SftToml"
+        }
+      ],
+      "x-retrograd-applies-to": [
+        "sft"
+      ]
+    },
+    "trainable": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/TrainableToml",
+          "description": "`[trainable]`: which base tensors a `partial` or `hybrid` run selects.\nAbsent for `lora`, and refused when present alongside it - a selector a\npolicy ignores is a selector the user believes is in effect."
+        }
+      ]
+    },
+    "training": {
+      "$ref": "#/$defs/TrainingToml"
+    }
+  },
+  "required": [
+    "run"
+  ],
+  "title": "retrograd run configuration",
+  "type": "object"
+}

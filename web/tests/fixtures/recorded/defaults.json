@@ -1,0 +1,316 @@
+{
+  "derived": [
+    {
+      "path": "training.ctx",
+      "rule": "the 99th percentile of the example lengths, rounded up to a power of two and capped at the model's trained context",
+      "thresholds": {
+        "percentile": 0.99
+      },
+      "applies_to": "any",
+      "client_can_set": true
+    },
+    {
+      "path": "lora.rank",
+      "rule": "8 below 2 000 examples, 16 below 20 000, 32 below 200 000, 64 above; lowered so the adapter stays inside 2% of the VRAM budget",
+      "thresholds": {
+        "examples_rank_16": 20000.0,
+        "examples_rank_32": 200000.0,
+        "examples_rank_8": 2000.0,
+        "parameter_budget_percent": 2.0
+      },
+      "applies_to": "any",
+      "client_can_set": true
+    },
+    {
+      "path": "lora.alpha",
+      "rule": "twice the rank",
+      "thresholds": {
+        "multiple_of_rank": 2.0
+      },
+      "applies_to": "any",
+      "client_can_set": true
+    },
+    {
+      "path": "lora.targets",
+      "rule": "q and v below 2 000 examples, the architecture's automatic set above",
+      "thresholds": {
+        "examples": 2000.0
+      },
+      "applies_to": "any",
+      "client_can_set": true
+    },
+    {
+      "path": "training.lr",
+      "rule": "1e-4 scaled by sqrt(16 / rank), held inside [2e-5, 3e-4]",
+      "thresholds": {
+        "ceiling": 0.0003000000142492354,
+        "floor": 0.000019999999494757503,
+        "reference_lr": 0.00009999999747378752,
+        "reference_rank": 16.0
+      },
+      "applies_to": "any",
+      "client_can_set": true
+    },
+    {
+      "path": "training.lr_scheduler",
+      "rule": "cosine from 100 optimizer steps up, constant below",
+      "thresholds": {
+        "total_steps": 100.0
+      },
+      "applies_to": "any",
+      "client_can_set": true
+    },
+    {
+      "path": "training.warmup_steps",
+      "rule": "3% of the optimizer steps",
+      "thresholds": {
+        "fraction": 0.03
+      },
+      "applies_to": "any",
+      "client_can_set": true
+    },
+    {
+      "path": "training.weight_decay",
+      "rule": "0.01, and 0.0 below 500 examples",
+      "thresholds": {
+        "decay": 0.01,
+        "examples": 500.0
+      },
+      "applies_to": "any",
+      "client_can_set": true
+    },
+    {
+      "path": "training.epochs",
+      "rule": "ceil(1.5e6 / total_tokens), clamped to [1, 8]; ignored when budget.epochs or budget.minutes says otherwise",
+      "thresholds": {
+        "max_epochs": 8.0,
+        "token_exposure_target": 1500000.0
+      },
+      "applies_to": "sft",
+      "client_can_set": true
+    },
+    {
+      "path": "training.max_grad_norm",
+      "rule": "left at the engine's own default of 1.0 - nothing observable would justify moving it",
+      "thresholds": {
+        "value": 1.0
+      },
+      "applies_to": "any",
+      "client_can_set": true
+    },
+    {
+      "path": "lora.dtype",
+      "rule": "left at the engine's own default (f16)",
+      "applies_to": "any",
+      "client_can_set": true
+    },
+    {
+      "path": "training.gradient_accumulation",
+      "rule": "the largest optimizer window (micro_batch x gradient_accumulation) whose estimate fits the budget with its safety margin",
+      "applies_to": "any",
+      "client_can_set": true
+    },
+    {
+      "path": "training.micro_batch",
+      "rule": "divides the resolved optimizer window; on a packed rollout it is a physical width jointly selected with prefix fanout and checkpointing",
+      "thresholds": {
+        "discrete_tokens": 512.0,
+        "unified_tokens": 32.0
+      },
+      "applies_to": "any",
+      "client_can_set": true
+    },
+    {
+      "path": "training.shared_prefix_fanout",
+      "rule": "the non-dominated physical prompt-sharing width with the lowest predicted execution cost at the highest allowed fidelity",
+      "applies_to": "grpo",
+      "client_can_set": true
+    },
+    {
+      "path": "sampling.max_new_tokens",
+      "rule": "half the resolved context, so a prompt and its completion both fit",
+      "thresholds": {
+        "fraction_of_context": 0.5
+      },
+      "applies_to": "rollout",
+      "client_can_set": true
+    },
+    {
+      "path": "grpo.updates",
+      "rule": "two passes over the prompt set, clamped to [20, 500]; ignored when budget.updates says otherwise",
+      "thresholds": {
+        "max": 500.0,
+        "min": 20.0,
+        "passes": 2.0
+      },
+      "applies_to": "grpo",
+      "client_can_set": true
+    },
+    {
+      "path": "ppo.updates",
+      "rule": "two passes over the prompt set, clamped to [20, 500]; ignored when budget.updates says otherwise",
+      "thresholds": {
+        "max": 500.0,
+        "min": 20.0,
+        "passes": 2.0
+      },
+      "applies_to": "ppo",
+      "client_can_set": true
+    },
+    {
+      "path": "grpo.group_size",
+      "rule": "8, lowered to the largest power of two whose generation KV cache fits 25% of the VRAM budget",
+      "thresholds": {
+        "generation_kv_budget_percent": 25.0,
+        "preferred": 8.0
+      },
+      "applies_to": "grpo",
+      "client_can_set": true
+    },
+    {
+      "path": "grpo.prompts_per_update",
+      "rule": "the largest p whose p × group_size rollouts fit the generation concurrency, clamped to [2, 16]",
+      "thresholds": {
+        "max": 16.0,
+        "min": 2.0
+      },
+      "applies_to": "grpo",
+      "client_can_set": true
+    },
+    {
+      "path": "ppo.rollout_batch_size",
+      "rule": "the largest p whose p rollouts fit the generation concurrency, clamped to [2, 16]",
+      "thresholds": {
+        "max": 16.0,
+        "min": 2.0
+      },
+      "applies_to": "ppo",
+      "client_can_set": true
+    },
+    {
+      "path": "grpo.grpo_epochs",
+      "rule": "2, and 1 above 200 updates",
+      "thresholds": {
+        "updates": 200.0
+      },
+      "applies_to": "grpo",
+      "client_can_set": true
+    },
+    {
+      "path": "ppo.ppo_epochs",
+      "rule": "2, and 1 above 200 updates",
+      "thresholds": {
+        "updates": 200.0
+      },
+      "applies_to": "ppo",
+      "client_can_set": true
+    },
+    {
+      "path": "evaluation.every_iterations",
+      "rule": "ten evaluations over the run",
+      "thresholds": {
+        "evaluations_per_run": 10.0
+      },
+      "applies_to": "evaluation",
+      "client_can_set": true
+    },
+    {
+      "path": "evaluation.patience",
+      "rule": "five evaluations without a gain",
+      "thresholds": {
+        "evaluations": 5.0
+      },
+      "applies_to": "evaluation",
+      "client_can_set": true
+    },
+    {
+      "path": "evaluation.max_examples",
+      "rule": "four updates' worth of prompts, for a rollout objective",
+      "thresholds": {
+        "updates_worth": 4.0
+      },
+      "applies_to": "rollout",
+      "client_can_set": true
+    },
+    {
+      "path": "observe.directory",
+      "rule": "a rollout run exports its trajectories to its own directory",
+      "applies_to": "rollout",
+      "client_can_set": true
+    },
+    {
+      "path": "observe.every",
+      "rule": "texts of about a hundred updates over the run, every update's summary",
+      "thresholds": {
+        "target_updates": 100.0
+      },
+      "applies_to": "rollout",
+      "client_can_set": true
+    },
+    {
+      "path": "checkpoint.mode",
+      "rule": "steps and best evaluation when held-out data is available, steps alone otherwise",
+      "applies_to": "checkpoint",
+      "client_can_set": true
+    },
+    {
+      "path": "checkpoint.every_steps",
+      "rule": "ten checkpoints over the run",
+      "thresholds": {
+        "checkpoints_per_run": 10.0
+      },
+      "applies_to": "checkpoint",
+      "client_can_set": true
+    }
+  ],
+  "active_defaults": [
+    {
+      "id": "gradient_checkpointing",
+      "condition": "at least 8 layers and activations above 15% of the VRAM budget",
+      "cost": "one extra forward pass per segment - numerically inert",
+      "note": "layer activations are recomputed instead of retained",
+      "paths": [
+        "training.gradient_checkpointing",
+        "training.checkpoint_every_n_layers"
+      ],
+      "degrades": false,
+      "client_can_disable": true
+    },
+    {
+      "id": "chunked_cross_entropy",
+      "condition": "always - every backend the project ships carries both fused nodes",
+      "cost": "none - the tile recompute costs less bandwidth than the tensor it avoids building",
+      "note": "the vocabulary logits are streamed tile by tile, over a bounded token chunk",
+      "paths": [
+        "training.chunked_cross_entropy",
+        "training.chunked_ce_tiles",
+        "training.chunked_ce_seq_chunk"
+      ],
+      "degrades": false,
+      "client_can_disable": true
+    },
+    {
+      "id": "fast_sampling_context",
+      "condition": "any objective that samples rollouts",
+      "cost": "the sampling distribution differs from the trained policy by rounding",
+      "note": "the sampling cache is F16 with flash attention",
+      "paths": [
+        "training.fast_sampling_context"
+      ],
+      "degrades": true,
+      "warning": "sampling_distribution_approximated",
+      "client_can_disable": true
+    },
+    {
+      "id": "generation_concurrency",
+      "condition": "any objective that samples rollouts: one whole group decodes at once when its KV cache fits",
+      "cost": "none - it only sets how many completions share one decode wave",
+      "note": "as many sequences decode at once as the generation cache holds",
+      "paths": [
+        "training.generation_concurrency"
+      ],
+      "degrades": false,
+      "client_can_disable": true
+    }
+  ]
+}

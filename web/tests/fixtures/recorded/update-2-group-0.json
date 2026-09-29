@@ -1,0 +1,140 @@
+{
+  "update": 2,
+  "group": 0,
+  "prompt": {
+    "key": "s:0",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You can search.",
+        "is_error": false
+      },
+      {
+        "role": "user",
+        "content": "Scenario 0: explain the borrow checker.",
+        "is_error": false
+      }
+    ],
+    "cut": false
+  },
+  "members": [
+    {
+      "summary": {
+        "member": 0,
+        "seed": 7,
+        "tokens": 120,
+        "truncated": false,
+        "reward": 0.0,
+        "reward_raw": 0.0,
+        "advantage": -1.0,
+        "eligible": true,
+        "trained": true,
+        "turns": 2,
+        "tool_calls": 1,
+        "tool_errors": 0
+      },
+      "conversation": {
+        "messages": [
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call-0",
+                "name": "search",
+                "arguments": {
+                  "query": "rust borrow checker"
+                }
+              }
+            ],
+            "is_error": false
+          },
+          {
+            "role": "tool",
+            "content": "3 results",
+            "tool_call_id": "call-0",
+            "is_error": false
+          },
+          {
+            "role": "assistant",
+            "content": "Final answer from member 0: the borrow checker enforces aliasing rules.",
+            "is_error": false
+          }
+        ],
+        "prefix": false,
+        "step_rewards": [
+          {
+            "step_index": 0,
+            "kind": "tool",
+            "reward": 0.1,
+            "message_indices": [
+              0
+            ]
+          }
+        ],
+        "terminal_reward_raw": 0.0,
+        "judge_explanation": "vague",
+        "metadata": {}
+      }
+    },
+    {
+      "summary": {
+        "member": 1,
+        "seed": 8,
+        "tokens": 130,
+        "truncated": false,
+        "reward": 1.0,
+        "reward_raw": 1.0,
+        "advantage": 1.0,
+        "eligible": true,
+        "trained": true,
+        "turns": 2,
+        "tool_calls": 1,
+        "tool_errors": 1
+      },
+      "conversation": {
+        "messages": [
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call-1",
+                "name": "search",
+                "arguments": {
+                  "query": "rust borrow checker"
+                }
+              }
+            ],
+            "is_error": false
+          },
+          {
+            "role": "tool",
+            "content": "timeout",
+            "tool_call_id": "call-1",
+            "is_error": true
+          },
+          {
+            "role": "assistant",
+            "content": "Final answer from member 1: the borrow checker enforces aliasing rules.",
+            "is_error": false
+          }
+        ],
+        "prefix": false,
+        "step_rewards": [
+          {
+            "step_index": 0,
+            "kind": "tool",
+            "reward": 0.1,
+            "message_indices": [
+              0
+            ]
+          }
+        ],
+        "terminal_reward_raw": 1.0,
+        "judge_explanation": "cites the rule",
+        "metadata": {}
+      }
+    }
+  ]
+}

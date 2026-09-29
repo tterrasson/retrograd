@@ -1,0 +1,69 @@
+{
+  "observed": true,
+  "algorithm": "agent_grpo",
+  "model": "qwen3-0.6b.gguf",
+  "every": 2,
+  "segments": 1,
+  "skipped": 0,
+  "updates": [
+    {
+      "update": 1,
+      "segment": 0,
+      "status": "completed",
+      "time": "2026-09-29T10:00:00.000Z",
+      "metrics": {
+        "agent/tool_calls_per_traj": 1.0,
+        "agent/turns_per_traj_mean": 2.0,
+        "batch/trained_fraction": 0.5,
+        "policy/kl": 0.01,
+        "reward/mean": 0.25,
+        "reward/std": 0.4
+      },
+      "groups": 0,
+      "rollouts": 0,
+      "texts": false
+    },
+    {
+      "update": 2,
+      "segment": 0,
+      "status": "completed",
+      "time": "2026-09-29T10:00:00.000Z",
+      "metrics": {
+        "agent/tool_calls_per_traj": 1.0,
+        "agent/turns_per_traj_mean": 2.0,
+        "batch/trained_fraction": 0.5,
+        "policy/kl": 0.02,
+        "reward/mean": 0.5,
+        "reward/std": 0.4
+      },
+      "groups": 2,
+      "rollouts": 4,
+      "trained_fraction": 0.5,
+      "reward_mean": 0.5,
+      "reward_min": 0.0,
+      "reward_max": 1.0,
+      "texts": true
+    },
+    {
+      "update": 3,
+      "segment": 0,
+      "status": "completed",
+      "time": "2026-09-29T10:00:00.000Z",
+      "metrics": {
+        "agent/tool_calls_per_traj": 1.0,
+        "agent/turns_per_traj_mean": 2.0,
+        "batch/trained_fraction": 0.5,
+        "policy/kl": 0.03,
+        "reward/mean": 0.75,
+        "reward/std": 0.4
+      },
+      "groups": 2,
+      "rollouts": 4,
+      "trained_fraction": 0.5,
+      "reward_mean": 0.5,
+      "reward_min": 0.0,
+      "reward_max": 1.0,
+      "texts": true
+    }
+  ]
+}

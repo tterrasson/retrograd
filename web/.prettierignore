@@ -1,0 +1,7 @@
+dist
+node_modules
+openapi.json
+bun.lock
+test-results
+playwright-report
+tests/fixtures

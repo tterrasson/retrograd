@@ -1,0 +1,89 @@
+:root {
+  --rg-mono: 'SFMono-Regular', 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+}
+
+html {
+  overflow-y: auto;
+}
+
+.mono {
+  font-family: var(--rg-mono);
+  font-size: 0.85em;
+}
+
+.text-pre {
+  font-family: var(--rg-mono);
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+
+.rg-code {
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  border-radius: 6px;
+  padding: 8px 10px;
+  overflow: auto;
+}
+
+.rg-markdown > :first-child {
+  margin-top: 0;
+}
+.rg-markdown > :last-child {
+  margin-bottom: 0;
+}
+.rg-markdown pre,
+.rg-markdown code {
+  font-family: var(--rg-mono);
+  font-size: 0.85em;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  border-radius: 4px;
+}
+.rg-markdown pre {
+  padding: 8px;
+  overflow: auto;
+}
+.rg-markdown code {
+  padding: 0 3px;
+}
+.rg-markdown pre code {
+  padding: 0;
+  background: none;
+}
+.rg-markdown p {
+  margin: 0.25em 0;
+}
+.rg-markdown ul,
+.rg-markdown ol {
+  padding-left: 1.4em;
+}
+
+.rg-muted {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+}
+
+.rg-clickable {
+  cursor: pointer;
+}
+
+kbd {
+  font-family: var(--rg-mono);
+  font-size: 0.8em;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 4px;
+  padding: 0 4px;
+}

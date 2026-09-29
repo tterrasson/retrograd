@@ -1,0 +1,131 @@
+{
+  "summary": {
+    "update": 2,
+    "segment": 0,
+    "status": "completed",
+    "time": "2026-09-29T10:00:00.000Z",
+    "metrics": {
+      "agent/tool_calls_per_traj": 1.0,
+      "agent/turns_per_traj_mean": 2.0,
+      "batch/trained_fraction": 0.5,
+      "policy/kl": 0.02,
+      "reward/mean": 0.5,
+      "reward/std": 0.4
+    },
+    "groups": 2,
+    "rollouts": 4,
+    "trained_fraction": 0.5,
+    "reward_mean": 0.5,
+    "reward_min": 0.0,
+    "reward_max": 1.0,
+    "texts": true
+  },
+  "groups": [
+    {
+      "group": 0,
+      "prompt": {
+        "key": "s:0",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You can search.",
+            "is_error": false
+          },
+          {
+            "role": "user",
+            "content": "Scenario 0: explain the borrow checker.",
+            "is_error": false
+          }
+        ],
+        "cut": false
+      },
+      "members": [
+        {
+          "member": 0,
+          "seed": 7,
+          "tokens": 120,
+          "truncated": false,
+          "reward": 0.0,
+          "reward_raw": 0.0,
+          "advantage": -1.0,
+          "eligible": true,
+          "trained": true,
+          "turns": 2,
+          "tool_calls": 1,
+          "tool_errors": 0
+        },
+        {
+          "member": 1,
+          "seed": 8,
+          "tokens": 130,
+          "truncated": false,
+          "reward": 1.0,
+          "reward_raw": 1.0,
+          "advantage": 1.0,
+          "eligible": true,
+          "trained": true,
+          "turns": 2,
+          "tool_calls": 1,
+          "tool_errors": 1
+        }
+      ],
+      "reward_mean": 0.5,
+      "reward_std": 0.5,
+      "trained": 2
+    },
+    {
+      "group": 1,
+      "prompt": {
+        "key": "s:1",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You can search.",
+            "is_error": false
+          },
+          {
+            "role": "user",
+            "content": "Scenario 1: explain the borrow checker.",
+            "is_error": false
+          }
+        ],
+        "cut": false
+      },
+      "members": [
+        {
+          "member": 0,
+          "seed": 7,
+          "tokens": 120,
+          "truncated": false,
+          "reward": 0.5,
+          "reward_raw": 0.5,
+          "advantage": 0.0,
+          "eligible": false,
+          "trained": false,
+          "skip_reason": "zero_signal",
+          "turns": 2,
+          "tool_calls": 1,
+          "tool_errors": 0
+        },
+        {
+          "member": 1,
+          "seed": 8,
+          "tokens": 130,
+          "truncated": false,
+          "reward": 0.5,
+          "reward_raw": 0.5,
+          "advantage": 0.0,
+          "eligible": false,
+          "trained": false,
+          "skip_reason": "zero_signal",
+          "turns": 2,
+          "tool_calls": 1,
+          "tool_errors": 1
+        }
+      ],
+      "reward_mean": 0.5,
+      "reward_std": 0.0,
+      "trained": 0
+    }
+  ]
+}

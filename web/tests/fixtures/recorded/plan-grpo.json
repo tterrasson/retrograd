@@ -1,0 +1,202 @@
+{
+  "schema_version": 2,
+  "total_steps": 5120,
+  "iterations": 40,
+  "memory": {
+    "resources": {
+      "cost_model_version": 4,
+      "persistent_device": {
+        "bytes": 882049024,
+        "posts": [
+          {
+            "name": "model_weight_bytes",
+            "bytes": 419430400,
+            "origin": "exact",
+            "bound": "exact"
+          },
+          {
+            "name": "optimizer_kv_bytes",
+            "bytes": 50331648,
+            "origin": "analytical",
+            "bound": "upper"
+          },
+          {
+            "name": "generation_kv_bytes",
+            "bytes": 402653184,
+            "origin": "analytical",
+            "bound": "upper"
+          },
+          {
+            "name": "trainable_parameter_bytes",
+            "bytes": 1376256,
+            "origin": "analytical",
+            "bound": "upper"
+          },
+          {
+            "name": "trainable_gradient_bytes",
+            "bytes": 2752512,
+            "origin": "analytical",
+            "bound": "upper"
+          },
+          {
+            "name": "optimizer_state_bytes",
+            "bytes": 5505024,
+            "origin": "analytical",
+            "bound": "upper"
+          }
+        ]
+      },
+      "persistent_host": {
+        "bytes": 5144576,
+        "posts": [
+          {
+            "name": "host_dataset_bytes",
+            "bytes": 4096000,
+            "origin": "analytical",
+            "bound": "upper"
+          },
+          {
+            "name": "host_rollout_bytes",
+            "bytes": 1048576,
+            "origin": "analytical",
+            "bound": "upper"
+          }
+        ]
+      },
+      "optimizer_transient": {
+        "bytes": 2591383552,
+        "posts": [
+          {
+            "name": "dequant_scratch_bytes",
+            "bytes": 419430400,
+            "origin": "calibrated",
+            "bound": "upper"
+          },
+          {
+            "name": "optimizer_compute_bytes",
+            "bytes": 2171953152,
+            "origin": "calibrated",
+            "bound": "upper"
+          }
+        ]
+      },
+      "generation_transient": {
+        "bytes": 491688960,
+        "posts": [
+          {
+            "name": "dequant_scratch_bytes",
+            "bytes": 419430400,
+            "origin": "calibrated",
+            "bound": "upper"
+          },
+          {
+            "name": "generation_compute_bytes",
+            "bytes": 72258560,
+            "origin": "calibrated",
+            "bound": "upper"
+          }
+        ]
+      },
+      "kernel": {
+        "bytes": 0,
+        "posts": []
+      },
+      "device_peak_bytes": 3545691136,
+      "host_peak_bytes": 5144576,
+      "lower_bound_device_bytes": 429064192,
+      "upper_bound_device_bytes": 3545691136
+    },
+    "budgets": {
+      "vram": {
+        "requested": "all",
+        "total_bytes": 25769803776,
+        "baseline_bytes": 0,
+        "margin_bytes": 1288490188,
+        "effective_bytes": 24481313588,
+        "capped": false
+      },
+      "ram": {
+        "requested": "all",
+        "total_bytes": 68719476736,
+        "baseline_bytes": 0,
+        "margin_bytes": 3435973836,
+        "effective_bytes": 65283502900,
+        "capped": false
+      },
+      "unified": false
+    }
+  },
+  "execution": {
+    "schema_version": 2,
+    "confidence": "analytical",
+    "profile_fingerprint": "unavailable",
+    "expected_backend": "cuda",
+    "rir_mode": "unknown",
+    "kernel_coverage": [],
+    "cpu_fallbacks": [],
+    "assumptions": [
+      {
+        "code": "execution_profile_unavailable",
+        "message": "kernel and device capabilities were not supplied; execution claims are analytical only"
+      }
+    ],
+    "alternatives": [
+      {
+        "code": "cost_superior",
+        "candidate": "ctx=1024/batch=1024/ubatch=1/fanout=auto/checkpoint=false:4:f32",
+        "reason": "predicted relative cost 1058304"
+      },
+      {
+        "code": "cost_superior",
+        "candidate": "ctx=1024/batch=1024/ubatch=1/fanout=auto/checkpoint=true:5:f16",
+        "reason": "predicted relative cost 1058305"
+      },
+      {
+        "code": "cost_superior",
+        "candidate": "ctx=1024/batch=1024/ubatch=1/fanout=auto/checkpoint=true:5:f32",
+        "reason": "predicted relative cost 1058305"
+      },
+      {
+        "code": "cost_superior",
+        "candidate": "ctx=1024/batch=1024/ubatch=128/fanout=auto/checkpoint=false:4:f32",
+        "reason": "predicted relative cost 17920"
+      },
+      {
+        "code": "cost_superior",
+        "candidate": "ctx=1024/batch=1024/ubatch=128/fanout=auto/checkpoint=true:5:f16",
+        "reason": "predicted relative cost 18048"
+      }
+    ]
+  },
+  "defaults_applied": [
+    {
+      "id": "chunked_cross_entropy",
+      "from": "8 tiles, 512-token chunks",
+      "to": "3 tiles, 512-token chunks",
+      "note": "the vocabulary logits are streamed tile by tile, over a bounded token chunk",
+      "cost": "none - the tile recompute costs less bandwidth than the tensor it avoids building"
+    },
+    {
+      "id": "generation_concurrency",
+      "from": "64",
+      "to": "8",
+      "note": "as many sequences decode at once as the generation cache holds",
+      "cost": "none - it only sets how many completions share one decode wave"
+    }
+  ],
+  "levers": [],
+  "truncation_fraction": 0.0,
+  "judge_calls_expected": 0,
+  "warnings": [
+    {
+      "code": "kv_f16_may_fall_back",
+      "field": "training.kv_dtype",
+      "message": "kv_dtype = f16 is the default and falls back to F32 on a device without differentiable flash attention for this head geometry; the estimate then understates the KV cache"
+    },
+    {
+      "code": "sampling_distribution_approximated",
+      "field": "training.fast_sampling_context",
+      "message": "fast_sampling_context makes the sampling distribution differ from the trained policy by rounding; set training.fast_sampling_context = false for exact parity"
+    }
+  ]
+}

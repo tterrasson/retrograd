@@ -1,0 +1,20 @@
+{
+  "summary": {
+    "update": 1,
+    "segment": 0,
+    "status": "completed",
+    "time": "2026-09-29T10:00:00.000Z",
+    "metrics": {
+      "agent/tool_calls_per_traj": 1.0,
+      "agent/turns_per_traj_mean": 2.0,
+      "batch/trained_fraction": 0.5,
+      "policy/kl": 0.01,
+      "reward/mean": 0.25,
+      "reward/std": 0.4
+    },
+    "groups": 0,
+    "rollouts": 0,
+    "texts": false
+  },
+  "groups": []
+}
