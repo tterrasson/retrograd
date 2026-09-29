@@ -86,6 +86,94 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  web:
+    name: web (contract, lint, tests, licences, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: bun-web-${{ runner.os }}-${{ hashFiles('web/bun.lock') }}
+          restore-keys: |
+            bun-web-${{ runner.os }}-
+
+      # Without the Cargo half: this job has no Rust toolchain. `server-ui`
+      # below runs it on the dist built here.
+      - name: Web lane
+        run: scripts/test-web.sh --no-cargo
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: web-dist
+          path: web/dist
+          retention-days: 1
+
+  server-ui:
+    name: server with the embedded interface
+    needs: web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: web-dist
+          path: web/dist
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: rust-ui-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            rust-ui-v1-${{ runner.os }}-
+
+      - name: Build and test the server with `ui`
+        run: |
+          cargo build -p retrograd-server --features ui
+          cargo test -p retrograd-server --features ui --test api ui::
+
+  e2e:
+    # Temporarily skip end-to-end tests in CI.
+    if: false
+    name: web end-to-end (Playwright, not blocking yet)
+    needs: web
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.bun/install/cache
+            ~/.cache/ms-playwright
+          key: bun-e2e-${{ runner.os }}-${{ hashFiles('web/bun.lock') }}
+
+      - name: Playwright
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          bunx playwright install --with-deps chromium
+          bun run test:e2e
+
   python:
     name: python (fast lane + ruff)
     runs-on: ubuntu-latest

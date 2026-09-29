@@ -10,6 +10,8 @@ naively run. To pick the lane for a change, start with
 scripts/test-fast-rust.sh       # ~5 min cold, ~27 s warm - every commit
 scripts/test-fast-python.sh     # ~1 min cold (build) - every commit
 scripts/test-server.sh          # ~30 s - the HTTP control plane on its own
+scripts/test-web.sh             # needs Bun - the web interface, then the
+                                #   server's `ui` tests on the fresh web/dist
 scripts/test-abi.sh             # ~1 min - before a PR touching the runtime
 scripts/test-cpu-integration.sh # ~2 min warm - before a PR touching training
 scripts/test-cpu-integration.sh grpo_runtime # one model test binary while iterating
