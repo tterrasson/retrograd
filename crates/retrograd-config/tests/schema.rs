@@ -89,6 +89,11 @@ path = "model.gguf"
 [output]
 path = "adapter.gguf"
 
+[lora]
+rank = 1
+alpha = 2.0
+targets = ["q"]
+
 [training]
 lr = 0.0001
 
@@ -111,7 +116,12 @@ fn parser_refuses(text: &str) -> bool {
 fn the_base_document_is_accepted_by_both() {
     let document: Value = toml::from_str(BASE).expect("TOML");
     assert!(errors(&validator(), &document).is_empty());
-    assert!(!parser_refuses(BASE));
+    assert!(
+        !parser_refuses(BASE),
+        "{:?}",
+        retrograd_config::parse_toml(BASE, "run.toml")
+            .and_then(|document| retrograd_config::build(document, Path::new("/")))
+    );
 }
 
 #[test]
