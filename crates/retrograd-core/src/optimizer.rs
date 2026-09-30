@@ -712,10 +712,15 @@ pub enum HyperparameterBound {
     NonNegative,
     /// `0 <= x <= 1`.
     UnitInterval,
+    /// `0 <= x < 1`: an EMA coefficient. At one the average never leaves its
+    /// zero initializer, and a bias correction `1/(1 - beta^t)` is infinite.
+    EmaCoefficient,
     /// A positive power of two.
     PowerOfTwo,
     /// An integer of at least this value.
     AtLeast(i64),
+    /// An integer in `least..=most`.
+    Within(i64, i64),
 }
 
 impl HyperparameterBound {
@@ -748,6 +753,13 @@ impl HyperparameterBound {
                     refuse("between zero and one")
                 }
             }
+            (Self::EmaCoefficient, HyperparameterValue::Scalar(scalar)) => {
+                if scalar.is_finite() && (0.0..1.0).contains(&scalar) {
+                    Ok(())
+                } else {
+                    refuse("at least zero and below one")
+                }
+            }
             (Self::PowerOfTwo, HyperparameterValue::Structural(integer)) => {
                 if integer > 0 && integer.count_ones() == 1 {
                     Ok(())
@@ -760,6 +772,13 @@ impl HyperparameterBound {
                     Ok(())
                 } else {
                     refuse(&format!("at least {least}"))
+                }
+            }
+            (Self::Within(least, most), HyperparameterValue::Structural(integer)) => {
+                if (least..=most).contains(&integer) {
+                    Ok(())
+                } else {
+                    refuse(&format!("between {least} and {most}"))
                 }
             }
             // A bound and a value of different shapes: the definition is wrong.
@@ -1208,12 +1227,12 @@ const ADAMW_HYPERPARAMETERS: [HyperparameterDefinition; 6] = [
     HyperparameterDefinition::new(
         "beta1",
         HyperparameterValue::Scalar(0.9),
-        HyperparameterBound::UnitInterval,
+        HyperparameterBound::EmaCoefficient,
     ),
     HyperparameterDefinition::new(
         "beta2",
         HyperparameterValue::Scalar(0.999),
-        HyperparameterBound::UnitInterval,
+        HyperparameterBound::EmaCoefficient,
     ),
     HyperparameterDefinition::new(
         "eps",
@@ -1223,7 +1242,7 @@ const ADAMW_HYPERPARAMETERS: [HyperparameterDefinition; 6] = [
     HyperparameterDefinition::new(
         "weight_decay",
         HyperparameterValue::Scalar(0.0),
-        HyperparameterBound::NonNegative,
+        HyperparameterBound::UnitInterval,
     ),
     HyperparameterDefinition::new(
         "max_grad_norm",
@@ -1242,7 +1261,7 @@ const SGD_HYPERPARAMETERS: [HyperparameterDefinition; 3] = [
     HyperparameterDefinition::new(
         "weight_decay",
         HyperparameterValue::Scalar(0.0),
-        HyperparameterBound::NonNegative,
+        HyperparameterBound::UnitInterval,
     ),
     HyperparameterDefinition::new(
         "max_grad_norm",
@@ -1262,13 +1281,15 @@ const MUON_HYPERPARAMETERS: [HyperparameterDefinition; 8] = [
     HyperparameterDefinition::new(
         "momentum",
         HyperparameterValue::Scalar(0.95),
-        HyperparameterBound::UnitInterval,
+        HyperparameterBound::EmaCoefficient,
     ),
     HyperparameterDefinition::toggle("nesterov", true),
+    // Bounded above: every iteration adds a dozen nodes per eligible matrix to
+    // the update graph, and the runtime carries the count as an i32.
     HyperparameterDefinition::new(
         "ns_steps",
         HyperparameterValue::Structural(5),
-        HyperparameterBound::AtLeast(1),
+        HyperparameterBound::Within(1, MUON_MAX_NS_STEPS),
     ),
     HyperparameterDefinition::new(
         "ns_epsilon",
@@ -1283,7 +1304,7 @@ const MUON_HYPERPARAMETERS: [HyperparameterDefinition; 8] = [
     HyperparameterDefinition::new(
         "weight_decay",
         HyperparameterValue::Scalar(0.0),
-        HyperparameterBound::NonNegative,
+        HyperparameterBound::UnitInterval,
     ),
     HyperparameterDefinition::new(
         "max_grad_norm",
@@ -1305,12 +1326,12 @@ const GEFEN_SHARED_V_HYPERPARAMETERS: [HyperparameterDefinition; 8] = [
     HyperparameterDefinition::new(
         "beta1",
         HyperparameterValue::Scalar(0.9),
-        HyperparameterBound::UnitInterval,
+        HyperparameterBound::EmaCoefficient,
     ),
     HyperparameterDefinition::new(
         "beta2",
         HyperparameterValue::Scalar(0.999),
-        HyperparameterBound::UnitInterval,
+        HyperparameterBound::EmaCoefficient,
     ),
     HyperparameterDefinition::new(
         "eps",
@@ -1330,7 +1351,7 @@ const GEFEN_SHARED_V_HYPERPARAMETERS: [HyperparameterDefinition; 8] = [
     HyperparameterDefinition::new(
         "weight_decay",
         HyperparameterValue::Scalar(0.0),
-        HyperparameterBound::NonNegative,
+        HyperparameterBound::UnitInterval,
     ),
     HyperparameterDefinition::new(
         "max_grad_norm",
@@ -1356,6 +1377,10 @@ const GEFEN_QUANTIZED_M_HYPERPARAMETERS: [HyperparameterDefinition; 9] = [
     GEFEN_SHARED_V_HYPERPARAMETERS[6],
     GEFEN_SHARED_V_HYPERPARAMETERS[7],
 ];
+
+/// The most Newton-Schulz iterations a Muon run may declare, mirrored by the
+/// runtime's own validation (`retro_runtime.cpp`). Six times the frozen five.
+pub const MUON_MAX_NS_STEPS: i64 = 32;
 
 /// Default `min_numel` below which a Gefen-selected parameter falls back to
 /// AdamW. Named rather than inlined because the plan's own warning depends on
@@ -1847,6 +1872,52 @@ mod tests {
             muon.set("ns_steps", HyperparameterValue::Structural(0))
                 .is_err()
         );
+        assert!(
+            muon.set(
+                "ns_steps",
+                HyperparameterValue::Structural(MUON_MAX_NS_STEPS)
+            )
+            .is_ok()
+        );
+        let refused = muon
+            .set(
+                "ns_steps",
+                HyperparameterValue::Structural(MUON_MAX_NS_STEPS + 1),
+            )
+            .expect_err("above the ceiling");
+        assert!(
+            refused.to_string().contains("between 1 and 32"),
+            "{refused}"
+        );
+    }
+
+    /// An EMA coefficient of exactly one is refused: its bias correction is
+    /// `1/(1 - 1^t)`, and Muon's momentum would never leave zero. The kernels
+    /// assert `wd <= 1`, so a weight decay above one is refused before them.
+    #[test]
+    fn an_ema_coefficient_of_one_and_a_decay_above_one_are_refused() {
+        for kind in [OptimizerKind::AdamW, shared_v(), quantized_m()] {
+            let mut vector = kind.declared_hyperparameters();
+            for beta in ["beta1", "beta2"] {
+                let refused = vector.set_scalar(beta, 1.0).expect_err("beta of one");
+                assert!(refused.to_string().contains("below one"), "{refused}");
+                assert!(vector.set_scalar(beta, 0.0).is_ok());
+                assert!(vector.set_scalar(beta, 0.999_999).is_ok());
+            }
+        }
+        let mut muon = OptimizerKind::Muon.declared_hyperparameters();
+        assert!(muon.set_scalar("momentum", 1.0).is_err());
+        assert!(muon.set_scalar("momentum", 0.0).is_ok());
+        for kind in [
+            OptimizerKind::AdamW,
+            OptimizerKind::Sgd,
+            OptimizerKind::Muon,
+            shared_v(),
+        ] {
+            let mut vector = kind.declared_hyperparameters();
+            assert!(vector.set_scalar("weight_decay", 1.0).is_ok());
+            assert!(vector.set_scalar("weight_decay", 1.5).is_err(), "{kind}");
+        }
     }
 
     #[test]

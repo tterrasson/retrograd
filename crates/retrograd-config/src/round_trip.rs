@@ -833,8 +833,16 @@ fn an_optimizer_section_is_validated_against_the_optimizer_that_reads_it() {
     .expect_err("shared_v has no codebook");
     assert!(error.to_string().contains("codebook_levels"), "{error}");
 
-    // A research option is rejected, not accepted and ignored.
+    // A research option is rejected, not accepted and ignored; a block wider
+    // than the kernels' i32 op parameter is refused by the document.
     for (section, needle) in [
+        (
+            GefenToml {
+                block_size: Some(1 << 31),
+                ..Default::default()
+            },
+            "at most",
+        ),
         (
             GefenToml {
                 codebook: Some("learned".to_string()),

@@ -10,6 +10,9 @@ use retrograd_core::{
 
 use crate::document::{GefenToml, MuonToml, OptimizerToml};
 
+/// The widest block the runtime admits (`retro_runtime.cpp`).
+const GEFEN_MAX_BLOCK_SIZE: u64 = 1 << 30;
+
 /// The chosen optimizer with its layout resolved, and the vector its update
 /// reads. The vector is built from the layout, so a key one variant does not
 /// declare is refused by the vector itself.
@@ -75,9 +78,12 @@ fn gefen_layout(declared: GefenLayout, value: &GefenToml) -> Result<GefenLayout>
         layout.variant = GefenVariant::parse(variant)?;
     }
     if let Some(block_size) = value.block_size {
-        if block_size == 0 || !block_size.is_power_of_two() {
+        // At most 2^30: the kernels carry the block size as an i32 op
+        // parameter, and the runtime refuses anything wider.
+        if block_size == 0 || !block_size.is_power_of_two() || block_size > GEFEN_MAX_BLOCK_SIZE {
             return Err(Error::config(format!(
-                "optimizer.gefen.block_size must be a positive power of two; got {block_size}"
+                "optimizer.gefen.block_size must be a positive power of two, at most \
+                 {GEFEN_MAX_BLOCK_SIZE}; got {block_size}"
             )));
         }
         layout.block_size = block_size;

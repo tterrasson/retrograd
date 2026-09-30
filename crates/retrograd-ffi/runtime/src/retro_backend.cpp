@@ -415,9 +415,9 @@ bool supports_opt_step_dtype(
     ggml_tensor * step = nullptr;
     switch (optimizer) {
         case RETRO_OPTIMIZER_SGD: {
-            // alpha, weight decay and the rounding seed the half-precision
-            // stores read.
-            ggml_tensor * pars = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 3);
+            // alpha, weight decay, the rounding seed the half-precision
+            // stores read, and the clipping scale.
+            ggml_tensor * pars = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 4);
             if (!g || !pars) {
                 return false;
             }

@@ -83,7 +83,7 @@ rotary constants are never trained; the run lists what it excluded at start-up.
 | `lr` | `0.0001` | Learning rate. |
 | `lr_scheduler` | `constant` | `constant`, `linear` or `cosine`. `linear` and `cosine` decay to zero by the end of the run. |
 | `warmup_steps` | `0` | Warm-up steps. |
-| `weight_decay` | `0.0` | Decoupled weight decay. |
+| `weight_decay` | `0.0` | Decoupled weight decay, in `[0, 1]`. |
 | `max_grad_norm` | `1.0` | Global gradient-norm clipping. |
 | `epochs` | `1` | Passes over the SFT dataset. Rollout algorithms use their own counters. |
 | `ctx` | `128` | Context length in tokens. |
@@ -117,9 +117,9 @@ factors, uses AdamW at `fallback_learning_rate`.
 
 | Key | Default | Description |
 | --- | ---: | --- |
-| `momentum` | `0.95` | Momentum coefficient, in `[0, 1]`. |
+| `momentum` | `0.95` | Momentum coefficient, in `[0, 1)`. |
 | `nesterov` | `true` | Nesterov momentum. |
-| `ns_steps` | `5` | Newton-Schulz iterations. |
+| `ns_steps` | `5` | Newton-Schulz iterations, from 1 to 32. |
 | `ns_epsilon` | `1e-7` | Normalization epsilon. |
 | `fallback_learning_rate` | `0.001` | AdamW learning rate for parameters Muon does not handle. |
 
@@ -130,10 +130,10 @@ Experimental. Block-wise second moments to reduce optimizer memory.
 | Key | Default | Description |
 | --- | ---: | --- |
 | `variant` | `shared_v` | `shared_v`, or `quantized_m` (8-bit first moment). Checkpoints are not interchangeable between variants. |
-| `block_size` | `1024` | Elements per block; a power of two. |
+| `block_size` | `1024` | Elements per block; a power of two, at most 2^30. |
 | `min_numel` | `4096` | Smaller parameters use AdamW. |
-| `beta1` | `0.9` | First-moment coefficient. |
-| `beta2` | `0.999` | Second-moment coefficient. |
+| `beta1` | `0.9` | First-moment coefficient, in `[0, 1)`. |
+| `beta2` | `0.999` | Second-moment coefficient, in `[0, 1)`. |
 | `eps` | `1e-8` | Update epsilon. |
 
 `codebook = "uniform"`, `codebook_levels = 256` and `partition = "fixed"` are

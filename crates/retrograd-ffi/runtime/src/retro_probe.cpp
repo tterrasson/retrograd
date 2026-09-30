@@ -493,7 +493,7 @@ static int probe_op_run_locked(
                     ne_src0[0], ne_src0[1], ne_src0[2], ne_src0[3]);
             ggml_tensor * v = sgd ? nullptr : ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32,
                     ne_src0[0], ne_src0[1], ne_src0[2], ne_src0[3]);
-            ggml_tensor * p = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, sgd ? 3 : 9);
+            ggml_tensor * p = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, sgd ? 4 : 9);
             ggml_set_param(w);
             ggml_tensor * out = sgd
                     ? ggml_opt_step_sgd(ctx.get(), w, g, p)
@@ -516,20 +516,14 @@ static int probe_op_run_locked(
             }
             // AdamW: pars[7] seeds the stochastic rounding of the half
             // precision store, pars[8] is the clipping scale. SGD: pars[2]
-            // is the seed and the gradient is pre-scaled. src2, when given,
+            // is the seed, pars[3] the clipping scale. src2, when given,
             // carries {scale, seed} so a test can pin them down.
             const float gscale = src2 ? src2[0] : 1.0f;
             const float sr_seed = (src2 && ne_src2[0] > 1) ? src2[1] : 0.0f;
             ggml_backend_tensor_set(w, stored.data(), 0, n*sizeof(uint16_t));
             if (sgd) {
-                // The SGD kernel takes an already-scaled gradient, as the
-                // graph multiplies it in.
-                std::vector<float> scaled(n);
-                for (size_t i = 0; i < n; ++i) {
-                    scaled[i] = src1[i] * gscale;
-                }
-                const float pars[3] = { param0, param1, sr_seed };
-                ggml_backend_tensor_set(g, scaled.data(), 0, n*sizeof(float));
+                const float pars[4] = { param0, param1, sr_seed, gscale };
+                ggml_backend_tensor_set(g, src1, 0, n*sizeof(float));
                 ggml_backend_tensor_set(p, pars, 0, sizeof(pars));
             } else {
                 const float pars[9] = {

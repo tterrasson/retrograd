@@ -335,6 +335,8 @@ class TrainingConfig:
             raise ValueError("learning_rate must be greater than zero")
         if self.weight_decay < 0:
             raise ValueError("weight_decay must not be negative")
+        if self.weight_decay > 1:
+            raise ValueError("weight_decay must be at most 1")
         if self.warmup_steps < 0:
             raise ValueError("warmup_steps must not be negative")
         if self.generation_concurrency < 0:

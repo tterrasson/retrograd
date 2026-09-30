@@ -6,7 +6,7 @@
 mod common;
 
 use retrograd::{
-    Device, LoraConfig, SamplingParams, TargetSet, TrainConfig, Trainer, WeightedBatch,
+    Device, LoraConfig, LrScheduler, SamplingParams, TargetSet, TrainConfig, Trainer, WeightedBatch,
 };
 
 use common::serialize_models;
@@ -206,6 +206,48 @@ fn unit_weights_reproduce_the_sft_loss() {
         weighted.train_loss,
         sft.train_loss
     );
+}
+
+/// A schedule that has reached its horizon hands the step a rate of exactly
+/// zero - a cosine over ~13k steps rounds its last factor to `0.0f`, and GRPO's
+/// skipped rollouts can push the counter past a pinned horizon. The step used
+/// to assert `alpha > 0` and abort the process; a zero-rate step is a no-op.
+#[test]
+fn a_step_past_the_schedule_horizon_runs_at_a_zero_rate() {
+    let _guard = serialize_models();
+    let Some(model) = common::model_path_if_available() else {
+        eprintln!("skipping: no local test model");
+        return;
+    };
+    let mut trainer = Trainer::new(
+        model,
+        TrainConfig {
+            lr_scheduler: LrScheduler::Linear,
+            ..config()
+        },
+    )
+    .expect("load trainer");
+    trainer.create_lora(&lora()).expect("create lora");
+    trainer.advance_scheduler_steps(4).expect("advance");
+
+    let n_ctx = trainer.context_size().expect("context");
+    let (tokens, labels) = packed_rows(&trainer, 1);
+    let metrics = trainer
+        .train_weighted(
+            &WeightedBatch {
+                weights: vec![1.0; tokens.len()],
+                tokens,
+                labels,
+                n_rows: 1,
+                n_ctx,
+                n_topk: 1,
+            },
+            // A horizon the counter has already passed.
+            2,
+        )
+        .expect("a zero-rate step is a step");
+    assert_eq!(metrics.learning_rate, 0.0);
+    assert!(metrics.train_loss.is_finite(), "{}", metrics.train_loss);
 }
 
 #[test]

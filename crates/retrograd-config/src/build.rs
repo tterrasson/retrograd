@@ -385,6 +385,15 @@ fn build_training(
     )?;
     require_positive_f32(training.learning_rate, "training.lr")?;
     require_non_negative_f32(training.weight_decay, "training.weight_decay")?;
+    // Every optimizer's step decays by `1 - lr*wd` and the kernels assert
+    // `wd <= 1`: a larger value is refused here, by name, rather than by an
+    // abort at the first update.
+    if training.weight_decay > 1.0 {
+        return Err(Error::config(format!(
+            "training.weight_decay must be at most 1; got {}",
+            training.weight_decay
+        )));
+    }
     require_positive_f32(training.max_grad_norm, "training.max_grad_norm")?;
     Ok(training)
 }

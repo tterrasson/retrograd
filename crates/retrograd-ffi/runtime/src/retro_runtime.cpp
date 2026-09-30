@@ -203,8 +203,16 @@ bool validate_train_config(const retro_train_config & config) {
         set_error("epochs must be greater than zero");
         return false;
     }
-    if (config.learning_rate <= 0.0f) {
-        set_error("learning_rate must be greater than zero");
+    // Written as the negation of the valid range so a NaN, which fails every
+    // comparison, is refused here rather than by an assertion inside the step.
+    if (!(config.learning_rate > 0.0f) || !std::isfinite(config.learning_rate)) {
+        set_error("learning_rate must be finite and greater than zero");
+        return false;
+    }
+    // ggml's step asserts 0 <= wd <= 1 for every optimizer, so a larger value
+    // would abort the process at the first update instead of failing here.
+    if (!(config.weight_decay >= 0.0f && config.weight_decay <= 1.0f)) {
+        set_error("weight_decay must be between zero and one");
         return false;
     }
     if (!std::isfinite(config.max_grad_norm) || config.max_grad_norm <= 0.0f) {
@@ -236,15 +244,23 @@ bool validate_train_config(const retro_train_config & config) {
         return false;
     }
     if (config.optimizer == RETRO_OPTIMIZER_MUON) {
-        if (config.muon_momentum < 0.0f || config.muon_momentum > 1.0f) {
-            set_error("muon_momentum must be between zero and one");
+        // Below one: at one the momentum never leaves its zero initializer
+        // and every Muon-owned parameter is silently frozen.
+        if (!(config.muon_momentum >= 0.0f && config.muon_momentum < 1.0f)) {
+            set_error("muon_momentum must be at least zero and below one");
             return false;
         }
-        if (config.muon_ns_epsilon < 0.0f || !std::isfinite(config.muon_ns_epsilon)) {
+        // Zero selects the frozen default; the ceiling mirrors
+        // MUON_MAX_NS_STEPS and keeps the i32 layout field in range.
+        if (config.muon_ns_steps > 32) {
+            set_error("muon_ns_steps must be at most 32");
+            return false;
+        }
+        if (!(config.muon_ns_epsilon >= 0.0f) || !std::isfinite(config.muon_ns_epsilon)) {
             set_error("muon_ns_epsilon must be finite and not negative");
             return false;
         }
-        if (config.muon_fallback_learning_rate < 0.0f
+        if (!(config.muon_fallback_learning_rate >= 0.0f)
                 || !std::isfinite(config.muon_fallback_learning_rate)) {
             set_error("muon_fallback_learning_rate must be finite and not negative");
             return false;
@@ -258,17 +274,20 @@ bool validate_train_config(const retro_train_config & config) {
         }
         // A power of two, because the block index is a shift and the tail block
         // is the only partial one a kernel has to reason about.
+        // At most 2^30: the block size travels as an i32 op parameter.
         if (config.gefen_block_size != 0
-                && (config.gefen_block_size & (config.gefen_block_size - 1)) != 0) {
-            set_error("gefen_block_size must be a positive power of two");
+                && ((config.gefen_block_size & (config.gefen_block_size - 1)) != 0
+                    || config.gefen_block_size > (1u << 30))) {
+            set_error("gefen_block_size must be a positive power of two, at most 2^30");
             return false;
         }
-        if (config.gefen_beta1 < 0.0f || config.gefen_beta1 > 1.0f
-                || config.gefen_beta2 < 0.0f || config.gefen_beta2 > 1.0f) {
-            set_error("gefen betas must be between zero and one");
+        // Below one: the bias correction is 1/(1 - beta^t), infinite at one.
+        if (!(config.gefen_beta1 >= 0.0f && config.gefen_beta1 < 1.0f)
+                || !(config.gefen_beta2 >= 0.0f && config.gefen_beta2 < 1.0f)) {
+            set_error("gefen betas must be at least zero and below one");
             return false;
         }
-        if (config.gefen_eps < 0.0f || !std::isfinite(config.gefen_eps)) {
+        if (!(config.gefen_eps >= 0.0f) || !std::isfinite(config.gefen_eps)) {
             set_error("gefen_eps must be finite and not negative");
             return false;
         }

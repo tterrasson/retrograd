@@ -864,6 +864,7 @@ fn training_and_lora_values_are_rejected_before_model_loading() {
         ("lr=nan", "lr must be finite"),
         ("weight_decay=-0.1", "weight_decay"),
         ("weight_decay=nan", "weight_decay"),
+        ("weight_decay=1.5", "weight_decay must be at most 1"),
         ("max_grad_norm=0.0", "max_grad_norm"),
         ("max_grad_norm=-1.0", "max_grad_norm"),
         ("max_grad_norm=nan", "max_grad_norm"),
