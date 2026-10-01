@@ -21,9 +21,9 @@ fork. By default it trains a LoRA adapter, written as a standard GGUF that
 all of them or a selection. One TOML file describes the whole run.
 
 - **Algorithms**: SFT (plain text, chat or tool conversations), offline
-  preference optimization (DPO, IPO, SimPO, ORPO), PPO, GRPO, distillation
-  from a teacher model, and multi-turn agentic GRPO with MCP tools and
-  sandboxed environments.
+  preference optimization (DPO, IPO, SimPO, ORPO), PPO, GRPO (token- or
+  sequence-level importance sampling, as in GSPO), distillation from a teacher
+  model, and multi-turn agentic GRPO with MCP tools and sandboxed environments.
 - **Data from rollouts**: `retrograd collect` turns the successful traces of
   an agentic configuration into SFT records, or into preference pairs with
   `--pairs`, from the local model or an OpenAI-compatible endpoint.
@@ -84,7 +84,8 @@ The example runs on the CPU; add `--device gpu` to use the GPU. A successful
 run ends with a finite `train_loss` and writes the adapter to
 `/tmp/retrograd-smoke-adapter.gguf`.
 
-`examples/smoke_tiny_ppo.toml` and `examples/smoke_tiny_grpo.toml` do the same
+`examples/smoke_tiny_ppo.toml`, `examples/smoke_tiny_grpo.toml` and
+`examples/smoke_tiny_gspo.toml` (GRPO with sequence-level ratios) do the same
 for the reinforcement learning algorithms, on eight arithmetic questions
 scored by `examples/smoke_rl_reward.py`, and
 `examples/smoke_tiny_preference.toml` for DPO on a few preference pairs. The
@@ -118,7 +119,8 @@ a VitePress site in [`docs/`](docs/) (`cd docs && bun install && bun run docs:de
 - **Training**: [SFT](https://tterrasson.github.io/retrograd/training/sft),
   [preference optimization](https://tterrasson.github.io/retrograd/training/preference),
   [PPO](https://tterrasson.github.io/retrograd/training/ppo),
-  [GRPO](https://tterrasson.github.io/retrograd/training/grpo),
+  [GRPO](https://tterrasson.github.io/retrograd/training/grpo)
+  (and its [GSPO option](https://tterrasson.github.io/retrograd/training/grpo#sequence-level-importance-sampling-gspo)),
   [agentic GRPO](https://tterrasson.github.io/retrograd/training/agent),
   [tools and toolsets](https://tterrasson.github.io/retrograd/training/tools),
   [distillation](https://tterrasson.github.io/retrograd/training/distill),

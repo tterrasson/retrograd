@@ -242,6 +242,7 @@ run that trains base weights with a KL penalty requires this section.
 | `grpo_epochs` | required | Optimizer passes per update. |
 | `clip_range_low` | required | Lower clip, in `(0, 1)`, e.g. `0.2`. |
 | `clip_range_high` | required | Upper clip, at least the lower one, e.g. `0.28`. |
+| `importance_sampling_level` | `token` | `token` or `sequence` ([GSPO](../training/grpo#sequence-level-importance-sampling-gspo)). |
 | `kl_coefficient` | required | KL penalty toward the reference; `0` disables it. |
 | `mask_truncated` | `false` | Ignore answers cut at `max_new_tokens`. |
 | `baseline` | `mean` | `mean` or `leave_one_out`. |
@@ -341,6 +342,7 @@ passes over the pairs; `training.gradient_accumulation` is pinned to
 | `judge_failure` | `drop_group` | `drop_group` or `fail`. |
 | `drop_degenerate_groups` | `false` | Drop groups the judge scored identically. |
 | `clip_range_low` / `clip_range_high` | `0.2` / `0.28` | Clip range. |
+| `importance_sampling_level` | `token` | `token` or `sequence` ([GSPO](../training/grpo#sequence-level-importance-sampling-gspo)). |
 | `kl_coefficient` | `0.0` | KL penalty toward the reference. |
 | `system_suffix` | `""` | Text appended to every system message. |
 | `template_variables` | `{}` | Chat template variables, e.g. `{ enable_thinking = false }`. |

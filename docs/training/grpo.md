@@ -6,7 +6,8 @@ reward only has to rank answers to the same prompt, not be on an absolute scale.
 
 Retrograd implements Dr. GRPO with the DAPO refinements: no reward
 normalization by the group's standard deviation, a constant loss divisor, an
-asymmetric clip range, and optional truncation masking.
+asymmetric clip range, and optional truncation masking. GSPO's sequence-level
+importance ratio is available as an option.
 
 ## Configuration
 
@@ -91,6 +92,38 @@ max_resample_factor = 3
 `overlong_penalty` and `mask_truncated` are two ways of handling long answers:
 the first teaches the model to finish in time, the second ignores unfinished
 answers. Pick one based on whether your reward can judge an incomplete answer.
+
+## Sequence-level importance sampling (GSPO)
+
+By default the clipped ratio between the current and the sampling policy is
+taken token by token. With `importance_sampling_level = "sequence"`, each answer
+gets one ratio, the geometric mean of its token ratios, and is clipped as a
+whole. The advantage is already one value for the whole answer; a per-token
+ratio adds noise that grows with the answer's length, and with Mixture-of-Experts
+models whose routing changes between updates. This is GSPO (Zheng et al.,
+"Group Sequence Policy Optimization", 2025).
+
+```toml
+[grpo]
+importance_sampling_level = "sequence"
+clip_range_low = 0.0003
+clip_range_high = 0.0004
+```
+
+- A geometric mean stays very close to 1, so the clip ranges must be much
+  narrower than per token: the values above are the paper's. With `0.2`, the
+  clip almost never binds, and the run logs a warning at startup.
+- Those ranges assume long answers, where the mean smooths the token ratios.
+  On answers of a few tokens it smooths almost nothing: after a few optimizer
+  steps every answer can be outside the band, and the run stops on the
+  trust-region guard. Use fewer `grpo_epochs` there, or wider ranges.
+- `policy/clip_fraction` is much higher than in token mode: around 10-20 % of
+  the tokens is normal, since an answer is clipped all at once. The trust-region
+  guard, which stops a run above 90 %, is unchanged.
+- The KL penalty toward the reference stays per token.
+- This is the `importance_sampling_level = "sequence"` setting of TRL and
+  Unsloth. Their `loss_type = "dr_grpo"` has nothing to match here: retrograd
+  always uses the Dr. GRPO loss.
 
 ## Adding an LLM judge
 

@@ -24,7 +24,7 @@ features:
     details: Learn from pairs of answers, one preferred over the other, with DPO, IPO, SimPO or ORPO.
     link: /training/preference
   - title: PPO and GRPO
-    details: Learn from a reward program that scores the model's own answers.
+    details: Learn from a reward program that scores the model's own answers, with GSPO's sequence-level ratio as an option.
     link: /training/grpo
   - title: Agentic GRPO
     details: Multi-turn training with tool calls, MCP servers and sandboxed environments.

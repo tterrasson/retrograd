@@ -190,6 +190,7 @@ A `reward` returned by `/step` is a step reward; `done: true` ends the episode.
 | `end_on_no_tool_call` | `true` | A turn without a tool call ends the trajectory. Set `false` when the environment decides when the task is over. |
 | `truncation` | `"drop"` | What to do with a trajectory that ran out of budget: drop it, or keep it with the group's lowest reward (`"min_reward"`). |
 | `max_dropped_fraction` | `0.5` | Stop if more than this share of an update's trajectories is lost. |
+| `importance_sampling_level` | `"token"` | `"sequence"` takes one ratio per trajectory over its action tokens, as in [GSPO](./grpo#sequence-level-importance-sampling-gspo). With intermediate returns, each token keeps its own advantage and shares its trajectory's ratio. |
 
 The loss is divided by the token budget (`max_turns × max_new_tokens_per_turn`,
 capped at `max_trajectory_tokens`), so changing these limits scales the gradient: re-tune `lr` when you change
