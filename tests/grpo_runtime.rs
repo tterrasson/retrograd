@@ -2,7 +2,10 @@
 //! runtime building blocks (generation, scoring, weighted step) are already
 //! pinned by `ppo_runtime.rs`; this suite exercises what GRPO adds on top:
 //! group sampling and the group-relative baseline. Skipped when no local
-//! model exists (override with `RETRO_TEST_MODEL`).
+//! model exists (override with `RETRO_CPU_FIXTURE`). Automatic packing and
+//! geometry benchmarks use the attention-only Qwen2 fixture
+//! (`RETRO_TINY_FIXTURE`), since the recurrent LFM2 fixture does not advertise
+//! that training capability.
 
 mod common;
 
@@ -142,8 +145,8 @@ fn packed_fanout_transaction_publishes_only_on_the_final_pass() {
 #[test]
 fn auto_packing_trains_unequal_passes_in_one_optimizer_update() {
     let _guard = serialize_models();
-    let Some(model) = common::model_path_if_available() else {
-        eprintln!("skipping: no local test model");
+    let Some(model) = common::tiny_model_path_if_available() else {
+        eprintln!("skipping: no local tiny test model");
         return;
     };
     let mut trainer = Trainer::new(model, config()).expect("load trainer");
@@ -1264,8 +1267,8 @@ fn packing_geometry_benchmarks_complete_updates_on_disposable_adapters() {
     use retrograd::training::packing_benchmark::PackingBenchmark;
 
     let _guard = serialize_models();
-    let Some(model) = common::model_path_if_available() else {
-        eprintln!("skipping: no local test model");
+    let Some(model) = common::tiny_model_path_if_available() else {
+        eprintln!("skipping: no local tiny test model");
         return;
     };
     for (width, fanout) in [(64, 4), (32, 2)] {
