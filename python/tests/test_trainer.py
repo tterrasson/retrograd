@@ -348,6 +348,7 @@ def test_rollout_configurations_translate_every_native_keyword(tmp_path: Path) -
         "grpo_epochs": 5,
         "clip_range_low": 0.1,
         "clip_range_high": 0.3,
+        "importance_sampling_level": "token",
         "kl_coefficient": 0.2,
         "mask_truncated": True,
         "max_new_tokens": 12,
@@ -377,8 +378,14 @@ def test_pre_generated_grpo_batch_maps_masks_groups_and_progress() -> None:
     assert args[2] == [[False, False, True], [False, False, True]]
     assert args[4] == [9, 9]
     assert kwargs["loss_denominator"] == 8
+    assert kwargs["importance_sampling_level"] == "token"
     assert metrics.global_step == 3
     assert progress[0].values["batch/trained_fraction"] == 1.0
+
+    model.train_grpo_batch(rows, loss_denominator=8, importance_sampling_level="sequence")
+    assert model._native.grpo_batch_call[1]["importance_sampling_level"] == "sequence"
+    with pytest.raises(ValueError, match="importance_sampling_level"):
+        model.train_grpo_batch(rows, loss_denominator=8, importance_sampling_level="segment")
 
 
 def test_train_sequence_rejects_misaligned_policy_scores() -> None:

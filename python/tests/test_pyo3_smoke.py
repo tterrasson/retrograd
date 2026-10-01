@@ -405,3 +405,43 @@ def test_pyo3_trains_preference_pairs_on_the_real_fixture(tmp_path: Path) -> Non
             trainer.fit_preference(str(pairs), loss="simpo", reference="base")
     finally:
         trainer.close()
+
+
+def test_pyo3_trains_a_sequence_level_grpo_batch_on_the_real_fixture() -> None:
+    native = pytest.importorskip("retrograd._native")
+    trainer = native._Trainer(
+        str(_fixture()), n_ctx=128, n_batch=128, n_ubatch=64, n_seq_max=2, device="cpu"
+    )
+    try:
+        trainer.create_lora(rank=4, alpha=8.0, dtype="f32")
+        rows = [trainer.tokenize(text) for text in ("The answer is four.", "The answer is five.")]
+        masks = [[False] * (len(row) - 3) + [True] * 3 for row in rows]
+        # `score` returns one value per target, so target i is at index i - 1.
+        old_logprobs = [trainer.score(row)[-3:] for row in rows]
+        metrics = trainer.train_grpo_batch(
+            rows,
+            old_logprobs,
+            masks,
+            [0.0, 1.0],
+            [7, 7],
+            epochs=2,
+            clip_range_low=3e-4,
+            clip_range_high=4e-4,
+            importance_sampling_level="sequence",
+            loss_denominator=8,
+        )
+        # (epoch, epoch_complete, global_step, train_loss, ...)
+        assert metrics[2] >= 1
+        assert metrics[3] == metrics[3], "train_loss is NaN"
+        with pytest.raises(ValueError, match="importance_sampling_level"):
+            trainer.train_grpo_batch(
+                rows,
+                old_logprobs,
+                masks,
+                [0.0, 1.0],
+                [7, 7],
+                importance_sampling_level="segment",
+                loss_denominator=8,
+            )
+    finally:
+        trainer.close()

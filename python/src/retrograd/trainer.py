@@ -4,7 +4,7 @@ import os
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
-from typing import Any, TypeAlias, TypeVar
+from typing import Any, Literal, TypeAlias, TypeVar
 
 from ._binding import load_native
 from .agent import AgenticGRPOConfig
@@ -435,6 +435,7 @@ class Trainer:
         epochs: int = 4,
         clip_range_low: float = 0.2,
         clip_range_high: float = 0.28,
+        importance_sampling_level: Literal["token", "sequence"] = "token",
         kl_coefficient: float = 0.0,
         seed: int = 42,
         scheduler_total_rollouts: int | None = None,
@@ -447,6 +448,9 @@ class Trainer:
         accumulates across calls, so a decaying learning rate needs the global
         horizon; without it the rate would reach zero on the second call, and a
         non-constant scheduler is rejected outright.
+
+        ``importance_sampling_level="sequence"`` replaces the per-token ratio
+        with one length-normalized ratio per sequence, as in GSPO.
         """
         rows = tuple(sequences)
         if not rows:
@@ -455,6 +459,8 @@ class Trainer:
             raise ValueError("loss_denominator and epochs must be greater than zero")
         if not 0 < clip_range_low < 1 or not 0 < clip_range_high < 1:
             raise ValueError("clip ranges must be in (0, 1)")
+        if importance_sampling_level not in ("token", "sequence"):
+            raise ValueError("importance_sampling_level must be token or sequence")
         if kl_coefficient < 0:
             raise ValueError("kl_coefficient must not be negative")
         if scheduler_total_rollouts is not None and scheduler_total_rollouts <= 0:
@@ -472,6 +478,7 @@ class Trainer:
             epochs=epochs,
             clip_range_low=clip_range_low,
             clip_range_high=clip_range_high,
+            importance_sampling_level=importance_sampling_level,
             kl_coefficient=kl_coefficient,
             loss_denominator=loss_denominator,
             seed=seed,

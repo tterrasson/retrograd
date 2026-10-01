@@ -2,7 +2,7 @@
 //! the exact clipped-surrogate step, one GRPO epoch, and the learning-rate
 //! horizon they advance.
 
-use retrograd_core::{Error, Result, SharedPrefixFanout, TrainMetrics};
+use retrograd_core::{Error, ImportanceSamplingLevel, Result, SharedPrefixFanout, TrainMetrics};
 use retrograd_engine::Trainer;
 
 use super::packing::{PackMember, PackOutcome, PackRefusal, WeightedStepScratch, packed_width};
@@ -87,11 +87,11 @@ pub(crate) fn surrogate_step(
     Ok((metrics, stats, keep_training))
 }
 
-/// The four numbers that define the Dr. GRPO loss, as opposed to the schedule
-/// it is stepped on.
+/// What defines the Dr. GRPO loss, as opposed to the schedule it is stepped
+/// on.
 ///
-/// Named because they always travel together, from [`GrpoStepParams`] to
-/// [`grpo_token_weights_into`].
+/// Named because these fields always travel together, from [`GrpoStepParams`]
+/// to [`grpo_token_weights_into`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GrpoObjective {
     /// Clip-Higher band: the surrogate ratio is clipped to
@@ -102,6 +102,9 @@ pub(crate) struct GrpoObjective {
     /// Dr. GRPO's constant loss denominator: the configured generation budget,
     /// identical for every completion regardless of its sampled length.
     pub(crate) loss_denominator: usize,
+    /// Whether the surrogate ratio is taken per token or, as in GSPO, once per
+    /// sequence.
+    pub(crate) importance_sampling: ImportanceSamplingLevel,
 }
 
 #[derive(Clone, Copy, Debug)]

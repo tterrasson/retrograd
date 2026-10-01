@@ -9,7 +9,7 @@ use super::reward::*;
 use super::sampling::*;
 use super::step::*;
 use super::weights::*;
-use retrograd_core::{RewardMode, RewardProtocol, SharedPrefixFanout};
+use retrograd_core::{ImportanceSamplingLevel, RewardMode, RewardProtocol, SharedPrefixFanout};
 
 /// Builds the four objective values by name so call sites state which value is
 /// the clip range, KL coefficient, or loss denominator.
@@ -24,6 +24,25 @@ fn objective(
         clip_range_high,
         kl_coefficient,
         loss_denominator,
+        importance_sampling: ImportanceSamplingLevel::Token,
+    }
+}
+
+/// [`objective`], with GSPO's sequence-level ratio.
+fn sequence_objective(
+    clip_range_low: f32,
+    clip_range_high: f32,
+    kl_coefficient: f32,
+    loss_denominator: usize,
+) -> GrpoObjective {
+    GrpoObjective {
+        importance_sampling: ImportanceSamplingLevel::Sequence,
+        ..objective(
+            clip_range_low,
+            clip_range_high,
+            kl_coefficient,
+            loss_denominator,
+        )
     }
 }
 
@@ -1268,5 +1287,260 @@ fn grpo_weight_matches_the_numeric_objective_derivative() {
             (numeric + weights[0]).abs() < 2.0e-3,
             "{numeric} {weights:?}"
         );
+    }
+}
+
+/// The exact GSPO loss of one sequence under a constant advantage, spread over
+/// its tokens the way the Dr. GRPO reduction does: `-|y| * min(s*A, clip(s)*A)`
+/// (flattened to `-|y| * c*A` past the dual clip) plus the per-token k3 terms.
+/// Evaluated in f64 so a finite difference is not drowned in rounding.
+fn exact_gspo_loss(
+    new: &[f32],
+    old: &[f32],
+    reference: &[f32],
+    advantage: f32,
+    clip_range_low: f32,
+    clip_range_high: f32,
+    beta: f32,
+) -> f64 {
+    let length = new.len() as f64;
+    let advantage = f64::from(advantage);
+    let mean = new
+        .iter()
+        .zip(old)
+        .map(|(&new, &old)| f64::from(new) - f64::from(old))
+        .sum::<f64>()
+        / length;
+    let ratio = mean.exp();
+    let clipped = ratio.clamp(
+        1.0 - f64::from(clip_range_low),
+        1.0 + f64::from(clip_range_high),
+    );
+    let mut objective = (advantage * ratio).min(advantage * clipped);
+    if advantage < 0.0 && ratio > f64::from(DUAL_CLIP_C) {
+        objective = f64::from(DUAL_CLIP_C) * advantage;
+    }
+    let kl = new
+        .iter()
+        .zip(reference)
+        .map(|(&new, &reference)| {
+            let log_ratio = f64::from(reference) - f64::from(new);
+            log_ratio.exp() - log_ratio - 1.0
+        })
+        .sum::<f64>();
+    -length * objective + f64::from(beta) * kl
+}
+
+#[test]
+fn gspo_weight_matches_the_numeric_sequence_objective_derivative() {
+    let old = [-1.0_f32, -1.2, -0.8, -1.1];
+    let reference = [-1.1_f32, -1.0, -0.9, -1.3];
+    let (low, high, beta) = (0.15_f32, 0.28_f32, 0.3_f32);
+    let epsilon = 1.0e-3_f32;
+    // Mean log-ratio per case: inside the band, above it, below it, and past
+    // the dual clip - each against both signs of the advantage.
+    for shift in [
+        [0.1_f32, -0.05, 0.08, 0.07],
+        [0.6, 0.2, 0.5, 0.3],
+        [-0.5, -0.2, -0.3, -0.2],
+        [1.5, 1.0, 1.2, 1.1],
+    ] {
+        let new: Vec<f32> = old
+            .iter()
+            .zip(shift)
+            .map(|(&old, shift)| old + shift)
+            .collect();
+        for advantage in [0.7_f32, -0.7] {
+            let (weights, _) = grpo_token_weights(
+                advantage,
+                &old,
+                &new,
+                &reference,
+                &sequence_objective(low, high, beta, 1),
+            );
+            for token in 0..new.len() {
+                let mut above = new.clone();
+                above[token] += epsilon;
+                let mut below = new.clone();
+                below[token] -= epsilon;
+                let numeric =
+                    (exact_gspo_loss(&above, &old, &reference, advantage, low, high, beta)
+                        - exact_gspo_loss(&below, &old, &reference, advantage, low, high, beta))
+                        / (2.0 * f64::from(epsilon));
+                assert!(
+                    (numeric + f64::from(weights[token])).abs() < 2.0e-3,
+                    "shift {shift:?}, advantage {advantage}, token {token}: {numeric} {weights:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn gspo_clips_a_sequence_as_a_whole() {
+    let old = [-1.0_f32; 4];
+    // One token far outside the band, the mean inside it: the per-token ratio
+    // clips that token, the sequence ratio clips nothing.
+    let new = [-0.2_f32, -1.1, -1.1, -1.1];
+    let (token_weights, token_stats) =
+        grpo_token_weights(1.0, &old, &new, &[], &objective(0.2, 0.28, 0.0, 4));
+    assert_eq!(token_weights[0], 0.0);
+    assert_eq!(token_stats.clip_fraction, 0.25);
+    let (weights, stats) =
+        grpo_token_weights(1.0, &old, &new, &[], &sequence_objective(0.2, 0.28, 0.0, 4));
+    let ratio = 0.125_f32.exp();
+    assert!(
+        weights.iter().all(|&weight| (weight - ratio).abs() < 1e-6),
+        "{weights:?}"
+    );
+    assert_eq!(stats.clip_fraction, 0.0);
+
+    // A mean outside the band clips every token of the sequence at once.
+    let new = [0.0_f32, -0.6, -0.6, -0.8];
+    let (weights, stats) =
+        grpo_token_weights(1.0, &old, &new, &[], &sequence_objective(0.2, 0.28, 0.0, 4));
+    assert_eq!(weights, [0.0; 4]);
+    assert_eq!(stats.clip_fraction, 1.0);
+}
+
+#[test]
+fn gspo_is_the_token_objective_on_a_single_token() {
+    for (advantage, new) in [
+        (0.7_f32, -0.95_f32),
+        (-0.7, -1.05),
+        (0.7, -0.5),
+        (-0.7, 0.5),
+        (-1.0, 20.0),
+    ] {
+        let (token_weights, token_stats) = grpo_token_weights(
+            advantage,
+            &[-1.0],
+            &[new],
+            &[-1.2],
+            &objective(0.15, 0.28, 0.3, 4),
+        );
+        let (weights, stats) = grpo_token_weights(
+            advantage,
+            &[-1.0],
+            &[new],
+            &[-1.2],
+            &sequence_objective(0.15, 0.28, 0.3, 4),
+        );
+        assert_eq!(weights, token_weights, "advantage {advantage}, new {new}");
+        assert_eq!(stats.kl, token_stats.kl);
+        assert_eq!(stats.clip_fraction, token_stats.clip_fraction);
+        assert_eq!(stats.surrogate_loss, token_stats.surrogate_loss);
+        assert_eq!(stats.ratio_mean, token_stats.ratio_mean);
+        assert_eq!(stats.ratio_max, token_stats.ratio_max);
+    }
+}
+
+#[test]
+fn gspo_ratio_is_exactly_one_on_the_behavior_policy() {
+    // The first step of an epoch reuses the behavior log-probabilities.
+    let old = [-1.0_f32, -2.5, -0.3];
+    let (weights, stats) = grpo_token_weights(
+        0.6,
+        &old,
+        &old,
+        &[],
+        &sequence_objective(3e-4, 4e-4, 0.0, 3),
+    );
+    assert_eq!(weights, [0.6; 3]);
+    assert_eq!(
+        (stats.ratio_mean, stats.ratio_max, stats.clip_fraction),
+        (1.0, 1.0, 0.0)
+    );
+
+    // The k3 term stays per token.
+    let reference = [-1.2_f32, -2.0, -0.3];
+    let (weights, _) = grpo_token_weights(
+        0.6,
+        &old,
+        &old,
+        &reference,
+        &sequence_objective(3e-4, 4e-4, 0.5, 3),
+    );
+    for ((&weight, &reference), &new) in weights.iter().zip(&reference).zip(&old) {
+        let expected = 0.6 + 0.5 * ((reference - new).exp() - 1.0);
+        assert!((weight - expected).abs() < 1e-6, "{weights:?}");
+    }
+}
+
+#[test]
+fn gspo_token_keeps_each_advantage_and_its_own_clip_decision() {
+    let old = [-1.0_f32; 3];
+    let advantages = [2.0_f32, -1.0, 0.5];
+    // Above the band: the promotions clip, the demotion does not.
+    let new = [-0.6_f32; 3];
+    let ratio = 0.4_f32.exp();
+    let mut weights = Vec::new();
+    let stats = grpo_token_weights_into(
+        &mut weights,
+        0.0,
+        Some(&advantages),
+        &old,
+        &new,
+        &[],
+        &sequence_objective(0.15, 0.28, 0.0, 3),
+    );
+    assert_eq!(weights[0], 0.0);
+    assert!((weights[1] + ratio).abs() < 1e-6, "{weights:?}");
+    assert_eq!(weights[2], 0.0);
+    assert!((stats.clip_fraction - 2.0 / 3.0).abs() < 1e-6);
+
+    // Below the band: the reverse.
+    let new = [-1.3_f32; 3];
+    let ratio = (-0.3_f32).exp();
+    let stats = grpo_token_weights_into(
+        &mut weights,
+        0.0,
+        Some(&advantages),
+        &old,
+        &new,
+        &[],
+        &sequence_objective(0.15, 0.28, 0.0, 3),
+    );
+    assert!((weights[0] - 2.0 * ratio).abs() < 1e-6, "{weights:?}");
+    assert_eq!(weights[1], 0.0);
+    assert!((weights[2] - 0.5 * ratio).abs() < 1e-6, "{weights:?}");
+    assert!((stats.clip_fraction - 1.0 / 3.0).abs() < 1e-6);
+}
+
+#[test]
+fn gspo_stats_report_the_sequence_ratio_per_token() {
+    let old = [-1.0_f32, -1.0];
+    let new = [-0.9_f32, -1.0];
+    let ratio = 0.05_f32.exp();
+    let (_, stats) =
+        grpo_token_weights(1.0, &old, &new, &[], &sequence_objective(0.2, 0.28, 0.0, 2));
+    assert!((stats.ratio_mean - ratio).abs() < 1e-6, "{stats:?}");
+    assert!((stats.ratio_max - ratio).abs() < 1e-6, "{stats:?}");
+    assert_eq!(stats.clip_fraction, 0.0);
+    // The surrogate is still reduced by the constant denominator: both tokens
+    // carry `s*A`.
+    assert!((stats.surrogate_loss + ratio).abs() < 1e-6, "{stats:?}");
+}
+
+#[test]
+fn gspo_bounds_an_extreme_mean_log_ratio() {
+    for (new, bound) in [(60.0_f32, 10.0_f32), (-90.0, -10.0)] {
+        for advantage in [1.0_f32, -1.0] {
+            let (weights, stats) = grpo_token_weights(
+                advantage,
+                &[-1.0, -1.0],
+                &[new, new],
+                &[],
+                &sequence_objective(0.2, 0.28, 0.0, 2),
+            );
+            assert!(
+                weights.iter().all(|weight| weight.is_finite()),
+                "{weights:?}"
+            );
+            assert!(
+                (stats.ratio_max - bound.exp()).abs() <= bound.exp() * 1e-6,
+                "{stats:?}"
+            );
+        }
     }
 }

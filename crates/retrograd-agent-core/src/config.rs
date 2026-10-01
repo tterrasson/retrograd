@@ -5,6 +5,7 @@
 //! does not link the training engine. `retrograd-agent` re-exports every name
 //! below, so `retrograd_agent::AgentGrpoConfig` keeps resolving.
 
+use retrograd_core::ImportanceSamplingLevel;
 use serde::{Deserialize, Serialize};
 
 use crate::scenario::{RolloutLimits, TruncationPolicy};
@@ -56,6 +57,10 @@ pub struct AgentGrpoConfig {
     pub epochs: u32,
     pub clip_range_low: f32,
     pub clip_range_high: f32,
+    /// Per-token ratio, or one ratio per trajectory as in GSPO. With
+    /// intermediate returns, each action token keeps its own advantage and
+    /// shares its trajectory's ratio.
+    pub importance_sampling_level: ImportanceSamplingLevel,
     pub kl_coefficient: f32,
     pub seed: u64,
     pub limits: RolloutLimits,
@@ -87,6 +92,7 @@ impl Default for AgentGrpoConfig {
             epochs: 4,
             clip_range_low: 0.2,
             clip_range_high: 0.28,
+            importance_sampling_level: ImportanceSamplingLevel::Token,
             kl_coefficient: 0.0,
             seed: 42,
             limits: RolloutLimits::default(),

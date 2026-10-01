@@ -13,6 +13,10 @@
 //! taking KL-only steps, and - optionally, via `mask_truncated` - completions
 //! truncated at the generation budget are excluded from both the baseline and
 //! the epochs, since their reward judges an incomplete response.
+//!
+//! With `importance_sampling_level = "sequence"`, the per-token policy ratio
+//! is replaced by GSPO's sequence ratio: one length-normalized ratio per
+//! completion, clipped as a whole.
 
 use std::time::Instant;
 
@@ -26,7 +30,7 @@ use super::rollout::{
 };
 use super::{Boundary, Progress};
 use retrograd_config::GrpoConfig;
-use retrograd_core::{Error, Result, TrainConfig, TrainMetrics};
+use retrograd_core::{Error, ImportanceSamplingLevel, Result, TrainConfig, TrainMetrics};
 use retrograd_engine::{ScoringStats, Trainer};
 use retrograd_judge::RewardProcess;
 use retrograd_metrics::MetricValue;
@@ -57,6 +61,33 @@ pub(crate) fn ratio_or_zero(numerator: u64, denominator: u64) -> f32 {
         return 0.0;
     }
     numerator as f32 / denominator as f32
+}
+
+/// Above this upper clip range, a sequence-level ratio is effectively never
+/// clipped: it is a geometric mean over the completion's tokens, so it stays
+/// within a fraction of a percent of 1 where a token ratio routinely moves by
+/// tens of percent.
+const SEQUENCE_CLIP_RANGE_HINT: f32 = 0.01;
+
+/// The start-of-run warning for a sequence-level ratio under a token-sized
+/// clip band, or `None` when the band suits the level. A warning and not a
+/// refusal: a wide band is a legitimate (if nearly unclipped) objective.
+/// `section` is the TOML table the two keys are read from.
+pub fn importance_sampling_warning(
+    section: &str,
+    level: ImportanceSamplingLevel,
+    clip_range_high: f32,
+) -> Option<String> {
+    (level == ImportanceSamplingLevel::Sequence && clip_range_high > SEQUENCE_CLIP_RANGE_HINT).then(
+        || {
+            format!(
+                "{section}.importance_sampling_level = \"sequence\" with \
+                 {section}.clip_range_high = {clip_range_high}: sequence-level ratios stay close \
+                 to 1, so a clip range this wide almost never binds - the GSPO paper uses \
+                 3e-4 / 4e-4"
+            )
+        },
+    )
 }
 
 /// Device-memory series for one update, measured by the runtime *inside* its
@@ -583,7 +614,13 @@ fn resume_state(
         },
         prompt_draws,
         stalled_updates: 0,
-        pending_notes: Vec::new(),
+        pending_notes: importance_sampling_warning(
+            "grpo",
+            config.importance_sampling_level,
+            config.clip_range_high,
+        )
+        .into_iter()
+        .collect(),
     })
 }
 
@@ -660,6 +697,26 @@ pub fn run_resumed(
 mod tests {
     use super::*;
     use retrograd_config::AdvantageBaseline;
+
+    #[test]
+    fn a_sequence_ratio_under_a_token_sized_band_is_warned_about() {
+        let warning =
+            importance_sampling_warning("agent", ImportanceSamplingLevel::Sequence, 0.28).unwrap();
+        assert!(
+            warning.starts_with("agent.importance_sampling_level"),
+            "{warning}"
+        );
+        assert!(
+            warning.contains("agent.clip_range_high = 0.28"),
+            "{warning}"
+        );
+        assert!(
+            importance_sampling_warning("grpo", ImportanceSamplingLevel::Sequence, 4e-4).is_none()
+        );
+        assert!(
+            importance_sampling_warning("grpo", ImportanceSamplingLevel::Token, 0.28).is_none()
+        );
+    }
 
     #[test]
     fn adaptive_kl_continues_from_the_restored_multiplier() {

@@ -2,7 +2,7 @@
 //! clipped surrogate, its dual bound, the k3 KL terms, and the trust-region
 //! guard that stops a diverged run.
 
-use retrograd_core::{Error, Result};
+use retrograd_core::{Error, ImportanceSamplingLevel, Result};
 use retrograd_engine::Trainer;
 
 use super::sampling::first_train_index;
@@ -237,6 +237,25 @@ pub(super) fn ppo_token_weights_into(
 /// direction while keeping the usual lower bound on demotion. The direction
 /// neither band bounds - a negative advantage whose ratio grew - is bounded by
 /// [`DUAL_CLIP_C`].
+///
+/// With [`ImportanceSamplingLevel::Sequence`], the ratio is GSPO's (Zheng et
+/// al., "Group Sequence Policy Optimization", 2025): one ratio per completion,
+/// the geometric mean of its token ratios,
+/// `s = exp(mean_t(log p_t - log p_old_t))`, clipped as a whole. Every token
+/// of the completion then shares `s` in place of its own `r_t`, so the clip
+/// band, the dual clip and the coefficient `A*s` are decided once for the
+/// sequence; the k3 term stays per token. The paper's objective averages
+/// `min(s*A, clip(s)*A)` over sequences, whose derivative puts `A*s/|y|` on
+/// each token - a per-completion length normalization, which is exactly what
+/// Dr. GRPO removed. Spread over the completion's tokens and divided by the
+/// constant `loss_denominator` instead, the coefficient is `A*s`, as with
+/// TRL's `importance_sampling_level = "sequence"` under its `dr_grpo` loss.
+///
+/// Per-token advantages (intermediate returns) use the paper's GSPO-token
+/// variant, `s_t = sg[s] * p_t / sg[p_t]`: its value is `s` and its gradient
+/// `s * grad log p_t`, so each token keeps its own advantage and its own clip
+/// decision against the shared ratio. With a constant advantage it is the
+/// sequence objective above, exactly.
 #[cfg(test)]
 pub(crate) fn grpo_token_weights(
     advantage: f32,
@@ -272,6 +291,7 @@ pub(super) fn grpo_token_weights_into(
         clip_range_high,
         kl_coefficient,
         loss_denominator,
+        importance_sampling,
     } = objective;
     debug_assert_eq!(old_logprobs.len(), new_logprobs.len());
     debug_assert!(token_advantages.is_none_or(|values| values.len() == old_logprobs.len()));
@@ -281,13 +301,22 @@ pub(super) fn grpo_token_weights_into(
     // the GRPO loop). With a live anchor the slice must align token-for-token.
     let use_kl = kl_coefficient != 0.0;
     debug_assert!(!use_kl || reference_logprobs.len() == old_logprobs.len());
+    let sequence_ratio = match importance_sampling {
+        ImportanceSamplingLevel::Token => None,
+        ImportanceSamplingLevel::Sequence => {
+            Some(sequence_policy_ratio(old_logprobs, new_logprobs))
+        }
+    };
     weights.clear();
     weights.reserve(old_logprobs.len());
     let mut stats = TokenStats::default();
     for (index, (&old, &new)) in old_logprobs.iter().zip(new_logprobs).enumerate() {
         let advantage = token_advantages.map_or(advantage, |values| values[index]);
-        let policy_log_ratio = (new - old).clamp(-POLICY_LOG_RATIO_LIMIT, POLICY_LOG_RATIO_LIMIT);
-        let policy_ratio = policy_log_ratio.exp();
+        let policy_ratio = sequence_ratio.unwrap_or_else(|| {
+            (new - old)
+                .clamp(-POLICY_LOG_RATIO_LIMIT, POLICY_LOG_RATIO_LIMIT)
+                .exp()
+        });
         let (surrogate, objective, clipped_out) =
             clipped_surrogate(advantage, policy_ratio, clip_range_low, clip_range_high);
 
@@ -312,6 +341,27 @@ pub(super) fn grpo_token_weights_into(
     }
     stats.normalize(loss_denominator, old_logprobs.len());
     stats
+}
+
+/// GSPO's sequence ratio: the exponential of the mean token log-ratio. The
+/// bound applies to the mean, before `exp`, like the per-token bound does to
+/// each log-ratio.
+fn sequence_policy_ratio(old_logprobs: &[f32], new_logprobs: &[f32]) -> f32 {
+    debug_assert!(
+        !old_logprobs.is_empty(),
+        "a scored rollout has at least one trainable token"
+    );
+    let sum = old_logprobs
+        .iter()
+        .zip(new_logprobs)
+        .map(|(&old, &new)| f64::from(new) - f64::from(old))
+        .sum::<f64>();
+    // Narrowing: a mean of differences of finite f32 log-probabilities lies
+    // within the range of those differences, so it is representable in f32
+    // (and the clamp below bounds it regardless).
+    let mean = (sum / old_logprobs.len() as f64) as f32;
+    mean.clamp(-POLICY_LOG_RATIO_LIMIT, POLICY_LOG_RATIO_LIMIT)
+        .exp()
 }
 
 /// Scores all targets selected by `train_mask`, preserving their increasing

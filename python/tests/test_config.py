@@ -489,3 +489,20 @@ def test_an_optimizer_section_for_another_optimizer_is_refused_in_python() -> No
         TrainingConfig(optimizer="muon", optimizer_options=GefenOptions(block_size=512))
     with pytest.raises(ValueError, match="MuonOptions or a GefenOptions"):
         TrainingConfig(optimizer="muon", optimizer_options="muon")  # type: ignore[arg-type]
+
+
+def test_importance_sampling_level_defaults_to_token_and_reaches_the_binding() -> None:
+    scenario = (Scenario("s1", "solve"),)
+    judge = CommandJudge(("judge",))
+    assert GRPOConfig("p", ("r",)).importance_sampling_level == "token"
+    assert AgenticGRPOConfig(scenario, judge).importance_sampling_level == "token"
+
+    grpo = GRPOConfig("p", ("r",), importance_sampling_level="sequence")
+    assert grpo.native_kwargs()["importance_sampling_level"] == "sequence"
+    agentic = AgenticGRPOConfig(scenario, judge, importance_sampling_level="sequence")
+    assert agentic.native_kwargs(max_trajectory_tokens=8)["importance_sampling_level"] == "sequence"
+
+    with pytest.raises(ValueError, match="importance_sampling_level"):
+        GRPOConfig("p", ("r",), importance_sampling_level="segment")
+    with pytest.raises(ValueError, match="importance_sampling_level"):
+        AgenticGRPOConfig(scenario, judge, importance_sampling_level="segment")

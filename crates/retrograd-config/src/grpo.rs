@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use retrograd_core::{Error, Result, RewardMode, RewardProtocol, SamplingParams};
+use retrograd_core::{
+    Error, ImportanceSamplingLevel, Result, RewardMode, RewardProtocol, SamplingParams,
+};
 
 use crate::PromptOrder;
 use crate::common::{
@@ -112,6 +114,10 @@ pub struct GrpoConfig {
     /// tokens with positive advantage to grow, countering entropy collapse.
     pub clip_range_low: f32,
     pub clip_range_high: f32,
+    /// Per-token ratio (the default), or one length-normalized ratio per
+    /// completion as in GSPO (Zheng et al., "Group Sequence Policy
+    /// Optimization", 2025).
+    pub importance_sampling_level: ImportanceSamplingLevel,
     /// With rule-based / verifiable rewards, `0.0` (no KL anchor) is a good
     /// default; the anchor mostly slows learning there.
     pub kl_coefficient: f32,
@@ -242,6 +248,9 @@ pub struct GrpoToml {
     pub grpo_epochs: u32,
     pub clip_range_low: f32,
     pub clip_range_high: f32,
+    /// `"token"` (default) or `"sequence"` (GSPO).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub importance_sampling_level: Option<ImportanceSamplingLevel>,
     pub kl_coefficient: f32,
     #[serde(default)]
     pub mask_truncated: bool,
@@ -336,6 +345,7 @@ pub(crate) fn build_grpo(value: GrpoToml, root: &Path) -> Result<GrpoConfig> {
         grpo_epochs: value.grpo_epochs,
         clip_range_low: value.clip_range_low,
         clip_range_high: value.clip_range_high,
+        importance_sampling_level: value.importance_sampling_level.unwrap_or_default(),
         kl_coefficient: value.kl_coefficient,
         mask_truncated: value.mask_truncated,
         baseline,

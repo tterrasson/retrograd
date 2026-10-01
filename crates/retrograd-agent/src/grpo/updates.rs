@@ -267,6 +267,13 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
         start_update,
         observer,
     } = loop_;
+    if let Some(warning) = retrograd_training::grpo::importance_sampling_warning(
+        "agent",
+        config.importance_sampling_level,
+        config.clip_range_high,
+    ) {
+        tracing::warn!("{warning}");
+    }
     let mut final_metrics = TrainMetrics::default();
     for update in start_update..config.updates {
         let scenario_at = |offset: usize| {
@@ -631,6 +638,7 @@ async fn train_update(
         clip_range_high: config.clip_range_high,
         kl_coefficient: config.kl_coefficient,
         loss_denominator: config.loss_denominator()?,
+        importance_sampling: config.importance_sampling_level,
         seed: config.seed ^ ((update as u64 + 1) << 32),
         // The learning-rate horizon covers the *run*, not this batch:
         // the runtime's scheduler step accumulates from one update to

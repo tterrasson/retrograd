@@ -2,9 +2,9 @@ use std::fs;
 use std::path::Path;
 
 use retrograd_core::{
-    CheckpointDtype, DEFAULT_REWARD_TIMEOUT_SECONDS, Device, FeatureDtype, KvDtype, LoraDtype,
-    LrScheduler, MasterWeights, RewardMode, RewardProtocol, SamplingParams, SharedPrefixFanout,
-    TargetSet,
+    CheckpointDtype, DEFAULT_REWARD_TIMEOUT_SECONDS, Device, FeatureDtype, ImportanceSamplingLevel,
+    KvDtype, LoraDtype, LrScheduler, MasterWeights, RewardMode, RewardProtocol, SamplingParams,
+    SharedPrefixFanout, TargetSet,
 };
 
 use retrograd_dataset::DataFormat;
@@ -105,6 +105,7 @@ fn valid_grpo() -> GrpoConfig {
         grpo_epochs: 1,
         clip_range_low: 0.2,
         clip_range_high: 0.28,
+        importance_sampling_level: ImportanceSamplingLevel::Token,
         kl_coefficient: 0.0,
         mask_truncated: false,
         baseline: AdvantageBaseline::Mean,
@@ -1901,4 +1902,66 @@ fn the_base_reference_is_refused_beside_base_training_and_the_initial_one_is_not
         panic!("a preference run");
     };
     assert_eq!(preference.reference, Some(ReferenceSource::Initial));
+}
+
+/// `importance_sampling_level` reads the same in `[grpo]` and `[agent]`,
+/// defaults to the per-token ratio, and an unknown level is a document error
+/// that names the key.
+#[test]
+fn importance_sampling_level_parses_in_both_grpo_sections() {
+    let base = concat!(
+        "[model]\npath='model.gguf'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
+    );
+    let grpo = concat!(
+        "[run]\nalgorithm='grpo'\n",
+        "[grpo]\nprompts='p.jsonl'\nreward_command=['r']\n",
+        "updates=1\nprompts_per_update=1\ngroup_size=2\ngrpo_epochs=1\n",
+        "clip_range_low=0.0003\nclip_range_high=0.0004\nkl_coefficient=0.0\n",
+        "LEVEL",
+        "[grpo.sampling]\ntemperature=1.0\ntop_p=1.0\nmax_new_tokens=8\nseed=1\n",
+    );
+    let agent = concat!(
+        "[run]\nalgorithm='agent_grpo'\n",
+        "[training]\nctx=2048\nmicro_batch=64\n",
+        "[agent]\nscenarios='s.jsonl'\ngroup_size=4\n",
+        "LEVEL",
+        "[agent.judge]\ntype='command'\ncommand=['judge']\n",
+    );
+    let level_of = |section: &str, level: &str| {
+        let file = write_config(&format!("{base}{}", section.replace("LEVEL", level)));
+        let loaded = load(&file);
+        remove_config(&file);
+        loaded.map(|config| match config.algorithm {
+            Algorithm::Grpo(config) => config.importance_sampling_level,
+            Algorithm::AgentGrpo(agent) => agent.config.importance_sampling_level,
+            _ => panic!("expected a GRPO algorithm"),
+        })
+    };
+    for (section, name) in [(grpo, "grpo"), (agent, "agent")] {
+        assert_eq!(
+            level_of(section, "").unwrap(),
+            ImportanceSamplingLevel::Token,
+            "{name}"
+        );
+        assert_eq!(
+            level_of(section, "importance_sampling_level='token'\n").unwrap(),
+            ImportanceSamplingLevel::Token,
+            "{name}"
+        );
+        assert_eq!(
+            level_of(section, "importance_sampling_level='sequence'\n").unwrap(),
+            ImportanceSamplingLevel::Sequence,
+            "{name}"
+        );
+        let error = level_of(section, "importance_sampling_level='segment'\n").unwrap_err();
+        assert!(error.is_user_error(), "{name}: {error:?}");
+        assert!(matches!(error, Error::Config(_)), "{name}: {error:?}");
+        let message = error.to_string();
+        assert!(
+            message.contains("importance_sampling_level"),
+            "{name}: {message}"
+        );
+        assert!(message.contains("sequence"), "{name}: {message}");
+    }
 }

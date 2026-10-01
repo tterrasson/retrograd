@@ -230,6 +230,11 @@ metrics = trainer.fit_grpo(
 )
 ```
 
+`GRPOConfig(importance_sampling_level="sequence", clip_range_low=3e-4,
+clip_range_high=4e-4)` takes one ratio per answer instead of one per token, as
+in GSPO; see
+[`../docs/training/grpo.md`](../docs/training/grpo.md#sequence-level-importance-sampling-gspo).
+
 `WeightedBatch` and `train_weighted()` additionally expose the differentiable
 weighted objective for custom reinforcement-learning orchestration, behind a
 validated Python value object.
@@ -240,7 +245,9 @@ validated Python value object.
 scoring and the GRPO update in Rust. `Trainer.train_grpo_batch()` is the
 lower-level convergence point for externally collected `TrainSequence`
 objects; calling it once per update needs `scheduler_total_rollouts`, the number
-of sequences the whole run will train, unless `scheduler="constant"`. See
+of sequences the whole run will train, unless `scheduler="constant"`. Both
+accept `importance_sampling_level="sequence"` (on `AgenticGRPOConfig` and as a
+`train_grpo_batch()` argument), with the same meaning as in `GRPOConfig`. See
 [`../docs/training/agent.md`](../docs/training/agent.md) for the configuration,
 tools and environments.
 

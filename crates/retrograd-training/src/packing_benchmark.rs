@@ -4,7 +4,9 @@
 use std::path::Path;
 use std::time::Instant;
 
-use retrograd_core::{Error, LoraConfig, MemoryReport, Result, TrainConfig};
+use retrograd_core::{
+    Error, ImportanceSamplingLevel, LoraConfig, MemoryReport, Result, TrainConfig,
+};
 use retrograd_engine::Trainer;
 
 use crate::rollout::packing::WeightedStepScratch;
@@ -102,6 +104,7 @@ pub fn benchmark(
             clip_range_high: 0.2,
             kl_coefficient: 0.0,
             loss_denominator: completion,
+            importance_sampling: ImportanceSamplingLevel::Token,
         },
         scheduler_total_steps: training.warmup_steps.max(4),
     };

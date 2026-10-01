@@ -107,6 +107,18 @@
             "minimum": 0,
             "type": "integer"
           },
+          "importance_sampling_level": {
+            "default": null,
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ImportanceSamplingLevel",
+                "description": "`\"token\"` (default) or `\"sequence\"` (GSPO)."
+              }
+            ]
+          },
           "judge": {
             "description": "An addition, not a default. Absent, the environment's own reward is the\nonly one - which is the whole configuration of a verifiable task.",
             "type": [
@@ -2196,6 +2208,17 @@
             "minimum": 0,
             "type": "integer"
           },
+          "importance_sampling_level": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ImportanceSamplingLevel",
+                "description": "`\"token\"` (default) or `\"sequence\"` (GSPO)."
+              }
+            ]
+          },
           "judge": {
             "description": "`[grpo.judge]`, in the same spelling as `[agent.judge]`.",
             "type": [
@@ -2353,6 +2376,14 @@
           "backends"
         ],
         "type": "object"
+      },
+      "ImportanceSamplingLevel": {
+        "description": "Level at which the clipped surrogate's importance ratio is taken.",
+        "enum": [
+          "token",
+          "sequence"
+        ],
+        "type": "string"
       },
       "JudgeEntry": {
         "description": "A judge declared by the operator. `client_settings` is the explicit list of\nwhat a recipe may set on it: choices of method, with no side effect outside\nthe process. Endpoint, model and key are absent by design.",

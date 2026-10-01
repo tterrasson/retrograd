@@ -972,6 +972,23 @@ crate::wire_enum! {
     }
 }
 
+crate::wire_enum! {
+    /// Level at which the clipped surrogate's importance ratio is taken.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+    // For the schema, which reads the container rule and not the per-variant
+    // spelling; the spellings below already follow it.
+    #[serde(rename_all = "snake_case")]
+    #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+    pub enum ImportanceSamplingLevel: serde {
+        /// One ratio per token (PPO / GRPO).
+        #[default]
+        Token = "token",
+        /// One length-normalized ratio per sequence (GSPO: Zheng et al.,
+        /// "Group Sequence Policy Optimization", 2025).
+        Sequence = "sequence",
+    }
+}
+
 /// How the reward command is spoken to, and for how long it may take.
 ///
 /// The timeout bounds one batch: the whole exchange in [`RewardMode::OneShot`],

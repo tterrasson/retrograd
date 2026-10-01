@@ -27,7 +27,7 @@ pub use teacher::{SharedTeacher, Teacher, WITNESS_SENTENCES};
 use std::time::Instant;
 
 use retrograd_config::DistillConfig;
-use retrograd_core::{Error, Result, TrainConfig, TrainMetrics};
+use retrograd_core::{Error, ImportanceSamplingLevel, Result, TrainConfig, TrainMetrics};
 use retrograd_engine::{ScoringStats, Trainer};
 use retrograd_metrics::MetricValue;
 
@@ -648,6 +648,10 @@ fn run_epochs(
             clip_range_high: config.clip_range_high,
             kl_coefficient: config.kl_coefficient,
             loss_denominator: state.loss_denominator,
+            // The distillation advantage is a dense per-token teacher/student
+            // gap, not one judgement of the whole completion: a shared
+            // sequence ratio has nothing to stand on here.
+            importance_sampling: ImportanceSamplingLevel::Token,
         },
         scheduler_total_steps: state.horizon.steps(),
     };

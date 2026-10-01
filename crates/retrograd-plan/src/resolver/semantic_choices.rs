@@ -223,6 +223,7 @@ pub(super) fn draft_document(
                 clip_range_low: 0.2,
                 // DAPO Clip-Higher: a looser upper range fights entropy collapse.
                 clip_range_high: 0.28,
+                importance_sampling_level: None,
                 // Verifiable rewards do not need a KL anchor; it mostly slows
                 // learning there.
                 kl_coefficient: 0.0,

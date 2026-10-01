@@ -29,9 +29,9 @@
 use std::path::Path;
 
 use retrograd_core::{
-    CheckpointDtype, FeatureDtype, GefenLayout, GefenVariant, KvDtype, LayerRange, LoraDtype,
-    LrScheduler, MasterWeights, OptimizerKind, RewardMode, SharedPrefixFanout, TrainablePolicy,
-    TrainableSelector,
+    CheckpointDtype, FeatureDtype, GefenLayout, GefenVariant, ImportanceSamplingLevel, KvDtype,
+    LayerRange, LoraDtype, LrScheduler, MasterWeights, OptimizerKind, RewardMode,
+    SharedPrefixFanout, TrainablePolicy, TrainableSelector,
 };
 use retrograd_dataset::DataFormat;
 
@@ -58,6 +58,7 @@ const KEYS: &[&str] = &[
     "grpo.dynamic_sampling.max_resample_factor",
     "grpo.group_size",
     "grpo.grpo_epochs",
+    "grpo.importance_sampling_level",
     "grpo.judge.command",
     "grpo.judge.timeout_secs",
     "grpo.judge.type",
@@ -374,6 +375,7 @@ fn exhaustive_document() -> ConfigDocument {
             grpo_epochs: 2,
             clip_range_low: 0.2,
             clip_range_high: 0.28,
+            importance_sampling_level: Some(ImportanceSamplingLevel::Sequence),
             kl_coefficient: 0.01,
             mask_truncated: true,
             baseline: Some("leave_one_out".to_string()),

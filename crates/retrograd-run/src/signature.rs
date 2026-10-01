@@ -6,7 +6,7 @@ use std::path::Path;
 
 use retrograd_checkpoint as checkpoint;
 use retrograd_config::{Algorithm, PreferenceLoss, RunConfig};
-use retrograd_core::{Error, LrScheduler, Result};
+use retrograd_core::{Error, ImportanceSamplingLevel, LrScheduler, Result};
 use retrograd_metrics::RunMetadata;
 use retrograd_tools::ToolPlanResolve;
 
@@ -145,6 +145,7 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
                 grpo.sampling.seed,
             )
             .expect("writing to a String never fails");
+            write_importance_sampling(&mut descriptor, grpo.importance_sampling_level);
         }
         // The offline mode resumes against a sidecar, and the sidecar *is* the
         // objective the way the teacher is on the on-policy path. Its path plus
@@ -274,6 +275,7 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
                 tools,
             )
             .expect("writing to a String never fails");
+            write_importance_sampling(&mut descriptor, config.importance_sampling_level);
             // Preserve existing checkpoint signatures when both options use their defaults.
             if !agent.system_suffix.is_empty() {
                 write!(
@@ -309,6 +311,16 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
         descriptor.push_str("|evaluation=none");
     }
     Ok(checkpoint::fingerprint(descriptor.as_bytes()))
+}
+
+/// The sequence-level ratio is a different objective, so a resume must not
+/// cross it; the per-token default writes nothing, which keeps every signature
+/// written before the level existed.
+fn write_importance_sampling(descriptor: &mut String, level: ImportanceSamplingLevel) {
+    if level != ImportanceSamplingLevel::Token {
+        descriptor.push_str("|is=");
+        descriptor.push_str(level.as_str());
+    }
 }
 
 /// Fingerprints an SFT dataset over its prepared rows rather than the source
@@ -482,6 +494,34 @@ mod tests {
         other.training.max_gpu_duty_cycle = Some(0.75);
         assert_eq!(signature, trajectory_signature(&other).unwrap());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_importance_sampling_level_changes_the_trajectory_only_when_sequence() {
+        let root = temp_path("importance-sampling-signature");
+        fs::create_dir_all(&root).unwrap();
+        let config_path = root.join("run.toml");
+        fs::write(
+            &config_path,
+            "[run]\nalgorithm='grpo'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n\
+             [lora]\n[grpo]\nprompts='p.jsonl'\nreward_command=['r']\nupdates=1\n\
+             prompts_per_update=1\ngroup_size=2\ngrpo_epochs=1\nclip_range_low=0.2\n\
+             clip_range_high=0.28\nkl_coefficient=0.0\n[grpo.sampling]\ntemperature=1.0\n\
+             top_p=1.0\nmax_new_tokens=8\nseed=1\n",
+        )
+        .unwrap();
+        let config = config::load(&config_path).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        let token = trajectory_signature(&config).unwrap();
+        // Frozen: a checkpoint written by a per-token run before the level
+        // existed must keep resuming.
+        assert_eq!(token, "296194daf3e30267382c81e66820b053");
+        let mut sequence = config;
+        let config::Algorithm::Grpo(grpo) = &mut sequence.algorithm else {
+            panic!("a GRPO config");
+        };
+        grpo.importance_sampling_level = ImportanceSamplingLevel::Sequence;
+        assert_ne!(token, trajectory_signature(&sequence).unwrap());
     }
 
     #[test]

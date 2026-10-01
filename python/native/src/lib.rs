@@ -20,10 +20,10 @@ use retrograd::training::{self, Progress};
 use retrograd::{
     CheckpointDtype, CheckpointMetadata, CheckpointProgress, DEFAULT_CE_SEQ_CHUNK,
     DEFAULT_CHECKPOINT_STRIDE, DatasetRecord, Device, Error, FeatureDtype, GrpoBatchParams,
-    KvDtype, LayerRange, LoraConfig, LrScheduler, MasterWeights, OptimizerKind, RewardMode,
-    RewardProtocol, SamplingParams, SharedPrefixFanout, TargetSet, TrainConfig, TrainMetrics,
-    TrainSequence, TrainablePolicy, TrainableRunConfig, TrainableSelector, TrainableSet, Trainer,
-    WeightedBatch, backend_list, checkpoint,
+    ImportanceSamplingLevel, KvDtype, LayerRange, LoraConfig, LrScheduler, MasterWeights,
+    OptimizerKind, RewardMode, RewardProtocol, SamplingParams, SharedPrefixFanout, TargetSet,
+    TrainConfig, TrainMetrics, TrainSequence, TrainablePolicy, TrainableRunConfig,
+    TrainableSelector, TrainableSet, Trainer, WeightedBatch, backend_list, checkpoint,
 };
 use retrograd_agent::tools::{McpServerConfig, McpToolProvider, ToolProvider};
 use retrograd_agent::{
@@ -173,6 +173,20 @@ fn parse_reward_protocol(mode: &str, timeout_seconds: u64) -> PyResult<RewardPro
         mode,
         timeout: std::time::Duration::from_secs(timeout_seconds),
     })
+}
+
+/// Same spellings as the TOML `importance_sampling_level`.
+fn parse_importance_sampling_level(value: &str) -> PyResult<ImportanceSamplingLevel> {
+    let value = value.trim().to_ascii_lowercase();
+    ImportanceSamplingLevel::ALL
+        .iter()
+        .copied()
+        .find(|level| level.as_str() == value)
+        .ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "unknown importance_sampling_level '{value}'; use token or sequence"
+            ))
+        })
 }
 
 fn parse_scheduler(value: &str) -> PyResult<LrScheduler> {
@@ -1088,6 +1102,7 @@ impl PyTrainer {
         clip_range_low=0.2,
         clip_range_high=0.28,
         kl_coefficient=0.0,
+        importance_sampling_level="token",
         loss_denominator,
         seed=42,
         scheduler_total_rollouts=None,
@@ -1106,6 +1121,7 @@ impl PyTrainer {
         clip_range_low: f32,
         clip_range_high: f32,
         kl_coefficient: f32,
+        importance_sampling_level: &str,
         loss_denominator: usize,
         seed: u64,
         scheduler_total_rollouts: Option<u64>,
@@ -1156,6 +1172,7 @@ impl PyTrainer {
             clip_range_high,
             kl_coefficient,
             loss_denominator,
+            importance_sampling: parse_importance_sampling_level(importance_sampling_level)?,
             seed,
             scheduler_total_rollouts,
         };
@@ -1294,6 +1311,7 @@ impl PyTrainer {
         grpo_epochs=4,
         clip_range_low=0.2,
         clip_range_high=0.28,
+        importance_sampling_level="token",
         kl_coefficient=0.0,
         mask_truncated=false,
         max_new_tokens=128,
@@ -1313,6 +1331,7 @@ impl PyTrainer {
         grpo_epochs: u32,
         clip_range_low: f32,
         clip_range_high: f32,
+        importance_sampling_level: &str,
         kl_coefficient: f32,
         mask_truncated: bool,
         max_new_tokens: u32,
@@ -1329,6 +1348,7 @@ impl PyTrainer {
             grpo_epochs,
             clip_range_low,
             clip_range_high,
+            importance_sampling_level: parse_importance_sampling_level(importance_sampling_level)?,
             kl_coefficient,
             mask_truncated,
             baseline: AdvantageBaseline::Mean,
@@ -1609,6 +1629,7 @@ impl PyTrainer {
         max_failed_turns=0,
         clip_range_low=0.2,
         clip_range_high=0.28,
+        importance_sampling_level="token",
         kl_coefficient=0.0,
         judge_failure="drop_group",
         max_dropped_fraction=0.5,
@@ -1637,6 +1658,7 @@ impl PyTrainer {
         max_failed_turns: usize,
         clip_range_low: f32,
         clip_range_high: f32,
+        importance_sampling_level: &str,
         kl_coefficient: f32,
         judge_failure: &str,
         max_dropped_fraction: f32,
@@ -1698,6 +1720,7 @@ impl PyTrainer {
             epochs,
             clip_range_low,
             clip_range_high,
+            importance_sampling_level: parse_importance_sampling_level(importance_sampling_level)?,
             kl_coefficient,
             seed,
             limits: RolloutLimits {

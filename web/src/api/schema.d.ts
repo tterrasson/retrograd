@@ -692,6 +692,8 @@ export interface components {
       epochs_per_update?: number
       /** @default 8 */
       group_size?: number
+      /** @default null */
+      importance_sampling_level?: null | components['schemas']['ImportanceSamplingLevel']
       /**
        * @description An addition, not a default. Absent, the environment's own reward is the
        *     only one - which is the whole configuration of a verifiable task.
@@ -1673,6 +1675,7 @@ export interface components {
       group_size: number
       /** Format: int32 */
       grpo_epochs: number
+      importance_sampling_level?: null | components['schemas']['ImportanceSamplingLevel']
       /** @description `[grpo.judge]`, in the same spelling as `[agent.judge]`. */
       judge?: Record<string, never> | null
       judge_failure?: null | components['schemas']['JudgeFailurePolicy']
@@ -1720,6 +1723,11 @@ export interface components {
       status: string
       version: string
     }
+    /**
+     * @description Level at which the clipped surrogate's importance ratio is taken.
+     * @enum {string}
+     */
+    ImportanceSamplingLevel: 'token' | 'sequence'
     /**
      * @description A judge declared by the operator. `client_settings` is the explicit list of
      *     what a recipe may set on it: choices of method, with no side effect outside

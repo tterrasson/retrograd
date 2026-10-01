@@ -117,6 +117,7 @@ fn run(
         clip_range_high: 0.28,
         kl_coefficient: 0.0,
         loss_denominator: 4,
+        importance_sampling: retrograd::ImportanceSamplingLevel::Token,
         seed: 42,
         scheduler_total_rollouts: None,
     };
@@ -219,6 +220,7 @@ fn run_with_checkpoint_dtype(
         clip_range_high: 0.28,
         kl_coefficient: 0.0,
         loss_denominator: 4,
+        importance_sampling: retrograd::ImportanceSamplingLevel::Token,
         seed: 42,
         scheduler_total_rollouts: None,
     };
@@ -347,6 +349,7 @@ fn the_checkpoint_profile_measures_what_is_retained_and_for_how_long() {
             clip_range_high: 0.28,
             kl_coefficient: 0.0,
             loss_denominator: 4,
+            importance_sampling: retrograd::ImportanceSamplingLevel::Token,
             seed: 42,
             scheduler_total_rollouts: None,
         };

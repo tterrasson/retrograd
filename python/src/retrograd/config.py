@@ -578,6 +578,11 @@ class GRPOConfig:
     mask_truncated: bool = False
     max_new_tokens: int = 128
     seed: int = 42
+    #: ``"token"`` takes the clipped ratio per token. ``"sequence"`` takes one
+    #: length-normalized ratio per completion, clipped as a whole (GSPO); pair
+    #: it with much narrower clip ranges, such as the paper's 3e-4 / 4e-4.
+    #: Declared last so the positional order of the fields above is unchanged.
+    importance_sampling_level: Literal["token", "sequence"] = "token"
 
     def native_kwargs(self) -> dict[str, object]:
         """Return keyword arguments accepted by ``_Trainer.fit_grpo``."""
@@ -591,6 +596,7 @@ class GRPOConfig:
             "grpo_epochs": self.epochs,
             "clip_range_low": self.clip_range_low,
             "clip_range_high": self.clip_range_high,
+            "importance_sampling_level": self.importance_sampling_level,
             "kl_coefficient": self.kl_coefficient,
             "mask_truncated": self.mask_truncated,
             "max_new_tokens": self.max_new_tokens,
@@ -613,6 +619,8 @@ class GRPOConfig:
             raise ValueError("group_size must not exceed 256")
         if not 0 < self.clip_range_low <= self.clip_range_high < 1:
             raise ValueError("clip ranges must satisfy 0 < low <= high < 1")
+        if self.importance_sampling_level not in ("token", "sequence"):
+            raise ValueError("importance_sampling_level must be token or sequence")
         if self.kl_coefficient < 0:
             raise ValueError("kl_coefficient must not be negative")
         if self.max_new_tokens <= 0:

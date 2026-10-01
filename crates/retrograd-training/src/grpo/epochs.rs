@@ -73,6 +73,7 @@ pub(super) fn run_epochs(
             clip_range_high: config.clip_range_high,
             kl_coefficient: effective_kl,
             loss_denominator: state.loss_denominator,
+            importance_sampling: config.importance_sampling_level,
         },
         scheduler_total_steps: state.horizon.steps(),
     };

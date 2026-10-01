@@ -181,6 +181,7 @@ fn auto_packing_trains_unequal_passes_in_one_optimizer_update() {
             clip_range_high: 0.28,
             kl_coefficient: 0.0,
             loss_denominator: 50,
+            importance_sampling: retrograd::ImportanceSamplingLevel::Token,
             seed: 42,
             scheduler_total_rollouts: None,
         },
@@ -507,6 +508,7 @@ fn valid_eval_config(
         grpo_epochs: 1,
         clip_range_low: 0.2,
         clip_range_high: 0.28,
+        importance_sampling_level: retrograd::ImportanceSamplingLevel::Token,
         kl_coefficient: 0.0,
         mask_truncated: false,
         baseline: retrograd::config::AdvantageBaseline::Mean,
@@ -589,6 +591,7 @@ fn grpo_runs_end_to_end() {
         grpo_epochs: 2,
         clip_range_low: 0.2,
         clip_range_high: 0.28,
+        importance_sampling_level: retrograd::ImportanceSamplingLevel::Token,
         kl_coefficient: 0.1,
         mask_truncated: false,
         baseline: retrograd::config::AdvantageBaseline::Mean,
@@ -690,6 +693,87 @@ fn grpo_runs_end_to_end() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The GRPO loop with GSPO's sequence-level ratio and the paper's clip
+/// ranges: the second epoch's ratio differs from 1, and the update stays
+/// finite.
+#[test]
+fn gspo_runs_end_to_end() {
+    let _guard = serialize_models();
+    let Some(model) = common::model_path_if_available() else {
+        eprintln!("skipping: no local test model");
+        return;
+    };
+    let mut trainer = Trainer::new(model, config()).expect("load trainer");
+    trainer.create_lora(&lora()).expect("create lora");
+    let dir = std::env::temp_dir().join(format!(
+        "retrograd-gspo-e2e-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let prompts = dir.join("prompts.jsonl");
+    std::fs::write(
+        &prompts,
+        "{\"messages\":[{\"role\":\"user\",\"content\":\"The quick brown fox\"}]}\n",
+    )
+    .unwrap();
+    // [0, 1] within the one group: it carries signal and trains.
+    let reward = dir.join("reward.sh");
+    std::fs::write(
+        &reward,
+        reward_script_with_setup(
+            "",
+            "case $index in 1) reward=1 ;; *) reward=0 ;; esac; reply \"{\\\"reward\\\": $reward}\"",
+        ),
+    )
+    .unwrap();
+    let grpo_config = retrograd::config::GrpoConfig {
+        grpo_epochs: 2,
+        clip_range_low: 3.0e-4,
+        clip_range_high: 4.0e-4,
+        importance_sampling_level: retrograd::ImportanceSamplingLevel::Sequence,
+        kl_coefficient: 0.05,
+        ..valid_eval_config(&prompts, &reward)
+    };
+    let mut clip_fractions = Vec::new();
+    let mut notes = Vec::new();
+    let metrics =
+        retrograd::training::grpo::run(&mut trainer, &grpo_config, &config(), &mut |event| {
+            notes.extend(event.notes.iter().cloned());
+            for name in ["policy/surrogate_loss", "policy/kl", "policy/total_loss"] {
+                let value = event
+                    .values
+                    .iter()
+                    .find(|value| value.name == name)
+                    .unwrap_or_else(|| panic!("missing metric {name}"));
+                assert!(value.value.is_finite(), "{name} is not finite");
+            }
+            let clip_fraction = event
+                .values
+                .iter()
+                .find(|value| value.name == "policy/clip_fraction")
+                .expect("missing metric policy/clip_fraction")
+                .value;
+            assert!((0.0..=1.0).contains(&clip_fraction), "{clip_fraction}");
+            clip_fractions.push(clip_fraction);
+        })
+        .expect("gspo run");
+    std::fs::remove_dir_all(&dir).ok();
+    assert_eq!(clip_fractions.len(), 2, "one progress event per grpo epoch");
+    // The first epoch scores against the behavior policy itself: s = 1.
+    assert_eq!(clip_fractions[0], 0.0);
+    assert!(metrics.train_loss.is_finite());
+    // The paper's band suits the level: no start-of-run warning.
+    assert!(
+        !notes
+            .iter()
+            .any(|note| note.contains("importance_sampling_level")),
+        "{notes:?}"
+    );
+}
+
 #[test]
 fn dynamic_sampling_resamples_zero_signal_groups() {
     let _guard = serialize_models();
@@ -744,6 +828,7 @@ fn dynamic_sampling_resamples_zero_signal_groups() {
         grpo_epochs: 1,
         clip_range_low: 0.2,
         clip_range_high: 0.28,
+        importance_sampling_level: retrograd::ImportanceSamplingLevel::Token,
         kl_coefficient: 0.0,
         mask_truncated: false,
         baseline: retrograd::config::AdvantageBaseline::Mean,
@@ -825,28 +910,45 @@ fn pre_generated_batch_trains_disjoint_policy_segments() {
             intermediate_returns: vec![1.0, 0.0],
         });
     }
-    let mut progress = Vec::new();
-    let metrics = train_grpo_batch(
-        &mut trainer,
-        &sequences,
-        &GrpoBatchParams {
-            epochs: 1,
-            clip_range_low: 0.2,
-            clip_range_high: 0.28,
-            kl_coefficient: 0.0,
-            loss_denominator: 8,
-            seed: 42,
-            scheduler_total_rollouts: None,
-        },
-        &config(),
-        &mut |event| progress.push(event),
-    )
-    .expect("train pre-generated GRPO batch");
-    // Attention-only models share one packed step; recurrent models use two
-    // isolated fixed-width rows.
-    assert_eq!(metrics.global_step, if packed_supported { 1 } else { 2 });
-    assert_eq!(progress.len(), 1);
-    assert!(metrics.train_loss.is_finite());
+    let steps_per_call = if packed_supported { 1 } else { 2 };
+    // Per token, then GSPO's sequence ratio over the same trajectories: with
+    // intermediate returns, each token keeps its own advantage either way.
+    for (call, importance_sampling) in [
+        retrograd::ImportanceSamplingLevel::Token,
+        retrograd::ImportanceSamplingLevel::Sequence,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut progress = Vec::new();
+        let metrics = train_grpo_batch(
+            &mut trainer,
+            &sequences,
+            &GrpoBatchParams {
+                epochs: 1,
+                clip_range_low: 0.2,
+                clip_range_high: 0.28,
+                kl_coefficient: 0.0,
+                loss_denominator: 8,
+                importance_sampling,
+                seed: 42,
+                scheduler_total_rollouts: None,
+            },
+            &config(),
+            &mut |event| progress.push(event),
+        )
+        .expect("train pre-generated GRPO batch");
+        // Attention-only models share one packed step; recurrent models use
+        // two isolated fixed-width rows. The step counter accumulates across
+        // calls.
+        assert_eq!(
+            metrics.global_step,
+            steps_per_call * (call as u64 + 1),
+            "{importance_sampling:?}"
+        );
+        assert_eq!(progress.len(), 1);
+        assert!(metrics.train_loss.is_finite(), "{importance_sampling:?}");
+    }
 }
 
 /// The token-level design rests on one convention: `score_masked_tokens`

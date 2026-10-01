@@ -11,7 +11,7 @@ use super::rollout::{
     WeightedStepScratch, check_policy_divergence, is_truncated, mean_std, run_grpo_epoch,
     score_train_mask,
 };
-use retrograd_core::{Error, Result, TrainConfig, TrainMetrics};
+use retrograd_core::{Error, ImportanceSamplingLevel, Result, TrainConfig, TrainMetrics};
 use retrograd_engine::Trainer;
 use retrograd_metrics::MetricValue;
 use retrograd_observe::{ObserveBatch, SelectionEntry, SkipReason, TrajectoryObserver};
@@ -116,6 +116,8 @@ pub struct GrpoBatchParams {
     pub kl_coefficient: f32,
     /// Constant Dr. GRPO token budget used as the loss denominator.
     pub loss_denominator: usize,
+    /// Per-token ratio, or GSPO's one ratio per sequence.
+    pub importance_sampling: ImportanceSamplingLevel,
     pub seed: u64,
     /// Number of rollout slots the *whole run* will optimize
     /// (`updates × sequences_per_update`), used to size the learning-rate
@@ -292,6 +294,7 @@ pub fn train_grpo_batch_observed(
             clip_range_high: params.clip_range_high,
             kl_coefficient: params.kl_coefficient,
             loss_denominator: params.loss_denominator,
+            importance_sampling: params.importance_sampling,
         },
         scheduler_total_steps,
     };
@@ -658,6 +661,7 @@ mod tests {
             clip_range_high: 0.28,
             kl_coefficient: 0.0,
             loss_denominator: 16,
+            importance_sampling: ImportanceSamplingLevel::Token,
             seed: 42,
             scheduler_total_rollouts: None,
         };

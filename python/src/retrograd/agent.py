@@ -451,6 +451,10 @@ class AgenticGRPOConfig:
     #: group's minimum reward.
     truncation: Literal["drop", "min_reward"] = "drop"
     seed: int = 42
+    #: ``"token"`` takes the clipped ratio per token. ``"sequence"`` takes one
+    #: length-normalized ratio per trajectory over its action tokens (GSPO);
+    #: with intermediate returns each token keeps its own advantage.
+    importance_sampling_level: Literal["token", "sequence"] = "token"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mcp_servers", tuple(self.mcp_servers))
@@ -483,6 +487,8 @@ class AgenticGRPOConfig:
             raise ValueError("max_trajectory_tokens must be at least 2")
         if not 0 < self.clip_range_low < 1 or not 0 < self.clip_range_high < 1:
             raise ValueError("clip ranges must be in (0, 1)")
+        if self.importance_sampling_level not in ("token", "sequence"):
+            raise ValueError("importance_sampling_level must be token or sequence")
         if self.kl_coefficient < 0:
             raise ValueError("kl_coefficient must not be negative")
         if self.judge_failure not in ("drop_group", "fail"):
@@ -547,6 +553,7 @@ class AgenticGRPOConfig:
             "max_failed_turns": self.max_failed_turns,
             "clip_range_low": self.clip_range_low,
             "clip_range_high": self.clip_range_high,
+            "importance_sampling_level": self.importance_sampling_level,
             "kl_coefficient": self.kl_coefficient,
             "judge_failure": self.judge_failure,
             "max_dropped_fraction": self.max_dropped_fraction,

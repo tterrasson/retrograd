@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use retrograd_agent_core::config::{AgentGrpoConfig, JudgeFailurePolicy};
 use retrograd_agent_core::scenario::{RolloutLimits, TruncationPolicy};
-use retrograd_core::{Error, Result};
+use retrograd_core::{Error, ImportanceSamplingLevel, Result};
 use retrograd_spec::env::EnvironmentConfig;
 use retrograd_spec::judge::JudgeConfig;
 use retrograd_spec::tools::{McpServerConfig, ToolPlan};
@@ -258,6 +258,9 @@ pub struct AgentToml {
     pub max_failed_turns: usize,
     pub clip_range_low: f32,
     pub clip_range_high: f32,
+    /// `"token"` (default) or `"sequence"` (GSPO).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub importance_sampling_level: Option<ImportanceSamplingLevel>,
     pub kl_coefficient: f32,
     pub judge_failure: JudgeFailurePolicy,
     pub max_dropped_fraction: f32,
@@ -304,6 +307,7 @@ impl Default for AgentToml {
             max_failed_turns: defaults.limits.max_failed_turns,
             clip_range_low: defaults.clip_range_low,
             clip_range_high: defaults.clip_range_high,
+            importance_sampling_level: None,
             kl_coefficient: defaults.kl_coefficient,
             judge_failure: defaults.judge_failure,
             max_dropped_fraction: defaults.max_dropped_fraction,
@@ -412,6 +416,7 @@ pub(crate) fn build_agent(
         epochs: value.epochs_per_update,
         clip_range_low: value.clip_range_low,
         clip_range_high: value.clip_range_high,
+        importance_sampling_level: value.importance_sampling_level.unwrap_or_default(),
         kl_coefficient: value.kl_coefficient,
         seed: value.seed,
         limits: RolloutLimits {

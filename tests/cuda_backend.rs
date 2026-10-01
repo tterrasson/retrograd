@@ -1717,6 +1717,7 @@ fn chunked_cross_entropy_trains_without_cuda_fallback() {
         clip_range_high: 0.28,
         kl_coefficient: 0.0,
         loss_denominator: 2,
+        importance_sampling: retrograd::ImportanceSamplingLevel::Token,
         seed: 42,
         scheduler_total_rollouts: None,
     };
