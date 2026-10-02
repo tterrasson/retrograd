@@ -184,7 +184,7 @@ mod tests {
             .u32("n_plane", 1)
             .u32("n_batch", 1)
             .strides("x", &[4, 16, 16, 16])
-            .strides("y", &[4, 16, 16, 16]);
+            .strides("dst", &[4, 16, 16, 16]);
         let mut args = [Arg::input(&input), Arg::output(&mut output)];
         let session = pipe.prepare(&args, &values).unwrap();
         // No work is submitted while simulating the timeout state.
