@@ -33,9 +33,12 @@ Two properties make the number usable:
 - `Session::time` records N runs in a **single** command buffer separated by a
   memory barrier. One submission per iteration hits a fixed submit and
   fence-wait quantum on macOS (about 8 ms) that swamps any shorter kernel.
-  Under MoltenVK the barrier itself costs more than most kernels, so
-  `Session::time_stream` repeats the run without one; replaying a run is
-  idempotent, which makes the throughput figure legitimate.
+  The barrier cannot be dropped: the runs share their output buffers, and even
+  idempotent writes need write-after-write ordering. `Session::time_stream`
+  therefore takes the same barriers, and both measure a serialized latency with
+  the submission cost amortized - never an overlapping throughput. Under
+  MoltenVK, where the barrier costs more than most kernels, that latency can
+  hide the difference between two schedules.
 
 Level 1 compares RIR to RIR. It never decides a promotion: it has no native
 kernel to compare against, and it does not take the ggml path.

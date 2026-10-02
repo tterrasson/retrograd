@@ -35,6 +35,12 @@ pub fn render(r: &SweepReport) -> String {
         "# {} - median of the repetitions; a gain counts only above the two spreads added (floor 2%)",
         r.mode.name()
     );
+    if let Some(k) = r.contraction {
+        let _ = writeln!(
+            out,
+            "# OUT_PROD: output [i,j,plane,batch], contraction k={k}"
+        );
+    }
     let _ = writeln!(out);
 
     let _ = writeln!(

@@ -320,6 +320,25 @@ mod tests {
         }
     }
 
+    /// Flattening includes both plane and batch in the parallel output space.
+    /// Odd dimensions and multiple planes/batches still match the serial oracle.
+    #[test]
+    fn flattened_output_space_matches_the_serial_oracle() {
+        for c in cases() {
+            let serial = run_case(Schedule::cpu_serial(), c);
+            for gpu in [
+                rir_lower::GpuBackend::Vulkan,
+                rir_lower::GpuBackend::Metal,
+                rir_lower::GpuBackend::Cuda,
+            ] {
+                for block in [32, 64, 128, 256] {
+                    let flat = run_case(Schedule::gpu_grid_flat(gpu, [block, 1, 1], 1), c);
+                    assert_eq!(serial, flat, "flat outputs changed the reduction result");
+                }
+            }
+        }
+    }
+
     /// Tiling is a **memory** decision, not arithmetic:
     /// `k` increases within a tile and tiles increase, so each output sums the
     /// same terms in the same order as sequential. Required equality is thus

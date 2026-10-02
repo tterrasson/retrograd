@@ -13,7 +13,7 @@ use rir_runtime::any::{AnyGpu, Backend};
 
 use crate::SweepError;
 use crate::bind::{Fixture, push_values};
-use crate::candidates::{Candidate, Origin, Subject, candidates, extents, shapes};
+use crate::candidates::{Candidate, Origin, Subject, candidates, extents_with_contraction, shapes};
 use crate::measure::{Built, Footprint, ITERS, Mode, REPS, Sample, WARMUP, build, time};
 use crate::verdict::{Measured, Verdict, arbitrate};
 
@@ -26,6 +26,8 @@ pub struct Options {
     /// `[col, row, plane, batch]` shapes, or the family's own list.
     pub shapes: Option<Vec<[usize; 4]>>,
     pub mode: Mode,
+    /// OUT_PROD reduction depth, independent of its output shape.
+    pub contraction: usize,
 }
 
 impl Default for Options {
@@ -36,6 +38,7 @@ impl Default for Options {
             iters: ITERS,
             shapes: None,
             mode: Mode::Stream,
+            contraction: 64,
         }
     }
 }
@@ -55,6 +58,7 @@ pub struct SweepReport {
     pub mode: Mode,
     pub kernel: String,
     pub family: &'static str,
+    pub contraction: Option<usize>,
     pub backend: Backend,
     pub device: String,
     pub base_tag: String,
@@ -107,7 +111,7 @@ pub fn sweep(
     let mut base_samples = Vec::new();
     let mut kept = Vec::new();
     for shape in &shape_list {
-        let ext = extents(&base_built.lowered, *shape)?;
+        let ext = extents_with_contraction(&base_built.lowered, *shape, options.contraction)?;
         let fixture = Fixture::build(&base_built.lowered, &ext)?;
         let (sample, values) = run_shape(&base_built, &fixture, &ext, options)?;
         kept.push(*shape);
@@ -136,6 +140,7 @@ pub fn sweep(
     }
 
     Ok(SweepReport {
+        contraction: (subject.family == rir_lower::Family::OutProd).then_some(options.contraction),
         mode: options.mode,
         kernel: subject.name.clone(),
         family: subject.family.name(),
@@ -174,7 +179,35 @@ fn arbitrate_one(
             agrees: agrees(&reference[i], &values, regroup_len(&built.lowered, ext)),
         });
     }
-    let verdict = arbitrate(&rows);
+    let mut verdict = arbitrate(&rows);
+    if subject.family == rir_lower::Family::OutProd {
+        // One measured contraction depth cannot justify a claim on every k.
+        let k = u32::try_from(options.contraction).map_err(|_| SweepError::Unbindable {
+            kernel: subject.name.clone(),
+            why: "contraction exceeds rule counter".into(),
+        })?;
+        if let Verdict::Replaces { best_gain } = verdict {
+            verdict = Verdict::Claims {
+                rules: Vec::new(),
+                best_gain,
+                ties_claimed: Vec::new(),
+            };
+        }
+        if let Verdict::Claims { rules, .. } = &mut verdict {
+            for rule in rules.iter_mut() {
+                rule.axes = match rule.axes {
+                    ["col"] => &["i"],
+                    ["row", "plane", "batch"] => &["j", "plane", "batch"],
+                    _ => rule.axes,
+                };
+            }
+            rules.push(rir_lower::ShapeRule {
+                axes: &["k"],
+                min: k,
+                max: k,
+            });
+        }
+    }
     Ok(Arbitrated {
         tag: candidate.tag.clone(),
         source: candidate.source.clone(),
@@ -215,7 +248,11 @@ fn run_shape(
 fn shape_of(lk: &LoopKernel, ext: &[usize]) -> [usize; 4] {
     let mut shape = [1usize; 4];
     for (i, name) in crate::candidates::AXES.iter().enumerate() {
-        if let Some(a) = lk.axes.iter().position(|a| a.name == *name) {
+        if let Some(a) = lk.axes.iter().position(|a| {
+            a.name == *name
+                || (lk.name.starts_with("out_prod")
+                    && ((*name == "col" && a.name == "i") || (*name == "row" && a.name == "j")))
+        }) {
             shape[i] = ext[a];
         }
     }

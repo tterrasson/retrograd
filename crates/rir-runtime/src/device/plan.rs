@@ -371,7 +371,7 @@ impl PlanSession<'_> {
     /// `n` complete runs of the plan in one submission, always separated: a
     /// repetition writes the same scratch the previous one read, so overlapping
     /// two of them would be a race. A plan has no unbarriered timing for that
-    /// reason, and `Session::time_stream`'s trick does not transfer here.
+    /// reason; single-kernel sessions serialize their repeated writes too.
     fn dispatch_n(&self, n: u32) -> Result<(), RuntimeError> {
         if self.in_flight.get() {
             return Err(RuntimeError::InFlight);
@@ -399,6 +399,9 @@ impl PlanSession<'_> {
     /// Copies the op's outputs back. Scratch is never read back: it does not
     /// exist outside the plan.
     pub fn read_outputs(&self, args: &mut [PlanArg<'_>]) -> Result<(), RuntimeError> {
+        if self.in_flight.get() {
+            return Err(RuntimeError::InFlight);
+        }
         if args.len() != self.bound.len() {
             return Err(RuntimeError::ArgCountMismatch {
                 expected: self.bound.len(),

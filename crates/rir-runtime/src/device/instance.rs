@@ -304,7 +304,11 @@ impl Gpu {
 impl Drop for Gpu {
     fn drop(&mut self) {
         unsafe {
-            let _ = self.device.device_wait_idle();
+            if self.device.device_wait_idle().is_err() {
+                // Completion is unproven: retain handles and the dynamic loader.
+                std::mem::forget(self._entry.clone());
+                return;
+            }
             self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_device(None);
             self.instance.destroy_instance(None);

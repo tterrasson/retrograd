@@ -207,9 +207,8 @@ impl AnySession<'_> {
         }
     }
 
-    /// `iters` runs the device may overlap, where `time` separates them
-    /// (`Session::time_stream`). Both arms exist on both backends; only Vulkan
-    /// has two different numbers to give.
+    /// Compatibility stream timing: repeated dispatches serialize shared writes.
+    /// Vulkan includes a barrier; CUDA serializes launches on the same stream.
     pub fn time_stream(
         &self,
         warmup: u32,

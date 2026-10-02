@@ -110,17 +110,33 @@ impl Subject {
 /// The shape vocabulary of the sweep: the four ggml axes, by the names every
 /// kernel in scope gives them.
 ///
-/// A kernel whose axes are named otherwise is refused rather than bound by
-/// position: `out_prod` has `i`, `j` and `k`, and mapping `col` onto `i`
-/// because both come first would be a shape sweep of something else.
+/// OUT_PROD uses i/j for the two output dimensions and a separate contraction
+/// k. Its reduction depth is supplied separately from [col, row, plane, batch].
 pub const AXES: [&str; 4] = ["col", "row", "plane", "batch"];
 
 /// Axis extents in the kernel's own axis order, from a `[col, row, plane,
 /// batch]` shape.
 pub fn extents(lk: &rir_lower::LoopKernel, shape: [usize; 4]) -> Result<Vec<usize>, SweepError> {
+    extents_with_contraction(lk, shape, 64)
+}
+
+/// Bind OUT_PROD's contraction independently from its four output dimensions.
+pub fn extents_with_contraction(
+    lk: &rir_lower::LoopKernel,
+    shape: [usize; 4],
+    contraction: usize,
+) -> Result<Vec<usize>, SweepError> {
     lk.axes
         .iter()
         .map(|a| {
+            if lk.name.starts_with("out_prod") {
+                match a.name.as_str() {
+                    "i" => return Ok(shape[0]),
+                    "j" => return Ok(shape[1]),
+                    "k" if contraction > 0 => return Ok(contraction),
+                    _ => {}
+                }
+            }
             AXES.iter()
                 .position(|n| *n == a.name)
                 .map(|i| shape[i])
@@ -169,7 +185,14 @@ pub fn shapes(family: Family) -> Vec<[usize; 4]> {
             [2048, 320, 1, 1],
             [20000, 40, 1, 1],
         ],
-        Family::MatMulNaive | Family::OutProd => vec![[512, 512, 1, 1], [64, 64, 16, 1]],
+        Family::MatMulNaive => vec![[512, 512, 1, 1], [64, 64, 16, 1]],
+        // Synthetic coverage; --shape and --contraction reproduce census shapes.
+        Family::OutProd => vec![
+            [8, 3, 2, 3],
+            [33, 17, 2, 2],
+            [512, 512, 1, 1],
+            [64, 64, 16, 2],
+        ],
     }
 }
 
@@ -281,12 +304,18 @@ pub fn candidates(subject: &Subject, gpu: GpuBackend) -> Vec<Candidate> {
                 ));
             }
         }
-        // The search stops here: do not extend to `TiledStage` (double
-        // buffering, depth, and register tiling) unless `OUT_PROD` returns to
-        // the top of the profile. The product is therefore empty
-        // rather than absent - the sweep runs, prints the table's own lowering,
-        // and says why it has nothing to put opposite it.
-        Family::MatMulNaive | Family::OutProd => {}
+        // Experimental parallel plane/batch space. Flat grid also flattens i/j,
+        // so small dimensions can fill a workgroup instead of wasting a tiled grid.
+        Family::OutProd => {
+            for block in [32u32, 64, 128, 256] {
+                v.push(Candidate::new(
+                    format!("flat outputs b{block}"),
+                    format!("Schedule::gpu_grid_flat({gpu_name}, [{block}, 1, 1], 1)"),
+                    Schedule::gpu_grid_flat(gpu, [block, 1, 1], 1),
+                ));
+            }
+        }
+        Family::MatMulNaive => {}
     }
     v
 }

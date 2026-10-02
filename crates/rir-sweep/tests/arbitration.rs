@@ -173,3 +173,24 @@ fn a_faster_candidate_that_disagrees_is_refused_first() {
 fn no_rows_is_not_a_refusal_for_lack_of_gain() {
     assert_eq!(arbitrate(&[]), Verdict::Refused(Refusal::NotMeasured));
 }
+
+#[test]
+fn out_prod_sweep_binds_output_geometry_and_contraction_separately() {
+    use rir_lower::{Schedule, lower};
+    use rir_sweep::candidates::{Subject, extents_with_contraction};
+    let subject = Subject::resolve("out_prod").unwrap();
+    let lowered = lower(&subject.kernel, Schedule::cpu_serial()).unwrap();
+    let extents = extents_with_contraction(&lowered, [33, 17, 2, 3], 65).unwrap();
+    for (axis, extent) in lowered.axes.iter().zip(extents) {
+        let expected = match axis.name.as_str() {
+            "i" => 33,
+            "j" => 17,
+            "k" => 65,
+            "plane" => 2,
+            "batch" => 3,
+            name => panic!("unexpected OUT_PROD axis {name}"),
+        };
+        assert_eq!(extent, expected);
+    }
+    assert!(extents_with_contraction(&lowered, [33, 17, 2, 3], 0).is_err());
+}

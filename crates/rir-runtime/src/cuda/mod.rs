@@ -669,6 +669,9 @@ impl Session<'_> {
     /// Copies output buffers back into bound slices. `args` must be the set used
     /// by `prepare` - same bindings, directions and sizes, **checked**.
     pub fn read_outputs(&self, args: &mut [Arg]) -> Result<(), RuntimeError> {
+        if self.in_flight.get() {
+            return Err(RuntimeError::InFlight);
+        }
         self.pipeline.manifest.check_read_back(&self.bound, args)?;
         for (b, a) in self.buffers.iter().zip(args.iter_mut()) {
             if let Arg::Out(data) = a

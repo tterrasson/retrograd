@@ -47,15 +47,12 @@ impl Session<'_> {
 
     /// `n` executions chained in one submission - see `Pipeline::dispatch`.
     pub(crate) fn dispatch_n(&self, n: u32) -> Result<(), RuntimeError> {
-        self.dispatch_runs(n, true)
-    }
-
-    fn dispatch_runs(&self, n: u32, separated: bool) -> Result<(), RuntimeError> {
+        // Every repeat shares its outputs and must be serialized.
         if self.in_flight.get() {
             return Err(RuntimeError::InFlight);
         }
         self.pipeline
-            .dispatch(&self.buffers, &self.push, self.groups, n, separated)
+            .dispatch(&self.buffers, &self.push, self.groups, n)
             .map_err(|DispatchError { error, in_flight }| {
                 self.in_flight.set(in_flight);
                 error
@@ -67,6 +64,9 @@ impl Session<'_> {
     /// not merely documented. `prepare` sized device buffers; a longer slice
     /// would copy beyond the mapping from a safe API.
     pub fn read_outputs(&self, args: &mut [Arg]) -> Result<(), RuntimeError> {
+        if self.in_flight.get() {
+            return Err(RuntimeError::InFlight);
+        }
         self.pipeline.manifest.check_read_back(&self.bound, args)?;
         for (b, a) in self.buffers.iter().zip(args.iter_mut()) {
             if let Arg::Out(data) = a {
@@ -94,33 +94,16 @@ impl Session<'_> {
         Ok(start.elapsed() / iters)
     }
 
-    /// The same as `time`, with the executions **not** separated by a barrier:
-    /// `iters` independent runs of a kernel whose inputs no run modifies, which
-    /// the device may overlap.
-    ///
-    /// It measures a throughput where `time` measures a latency, and it exists
-    /// because on a device whose barrier costs more than the kernel - MoltenVK
-    /// ends the Metal encoder on one - the latency is the barrier and moves with
-    /// nothing else. Two schedules of one kernel are then separable here and
-    /// indistinguishable there, which is a property of the measurement and not
-    /// of the schedules.
-    ///
-    /// Legitimate **only** where the runs are independent: every kernel this
-    /// runtime binds reads its inputs and writes a distinct output, so replaying
-    /// one is idempotent. A kernel accumulating into one of its inputs would
-    /// need the barrier, and would also be measuring a different thing.
+    /// Compatibility alias for `time`: repeated dispatches share output buffers,
+    /// so write-after-write dependencies require a barrier between executions.
+    /// This measures amortized serialized latency, including synchronization;
+    /// it does not measure overlapping throughput.
     pub fn time_stream(
         &self,
         warmup: u32,
         iters: u32,
     ) -> Result<std::time::Duration, RuntimeError> {
-        if warmup > 0 {
-            self.dispatch_runs(warmup, false)?;
-        }
-        let iters = iters.max(1);
-        let start = std::time::Instant::now();
-        self.dispatch_runs(iters, false)?;
-        Ok(start.elapsed() / iters)
+        self.time(warmup, iters)
     }
 }
 
@@ -155,5 +138,62 @@ impl From<RuntimeError> for DispatchError {
             error,
             in_flight: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Manifest, ManifestReader, Values, compile_glsl, is_unavailable};
+
+    #[test]
+    fn simulated_in_flight_session_refuses_readback_before_binding_or_mapping() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../generated/rir/unary_relu");
+        let manifest = Manifest::load(&dir).unwrap();
+        let spirv = match compile_glsl(&dir.join("kernel.comp")) {
+            Ok(s) => s,
+            Err(e) if is_unavailable(&e) => {
+                eprintln!("skipped: {e}");
+                return;
+            }
+            Err(e) => panic!("{e}"),
+        };
+        let gpu = match Gpu::open() {
+            Ok(g) => g,
+            Err(e) if is_unavailable(&e) => {
+                eprintln!("skipped: {e}");
+                return;
+            }
+            Err(e) => panic!("{e}"),
+        };
+        let pipe = match gpu.build(&manifest, &spirv) {
+            Ok(p) => p,
+            Err(e) if is_unavailable(&e) => {
+                eprintln!("skipped: {e}");
+                return;
+            }
+            Err(e) => panic!("{e}"),
+        };
+        let input = [-1.0f32, 2.0, -3.0, 4.0];
+        let mut output = [0.0f32; 4];
+        let mut values = Values::new();
+        values
+            .u32("n_col", 4)
+            .u32("n_row", 1)
+            .u32("n_plane", 1)
+            .u32("n_batch", 1)
+            .strides("x", &[4, 16, 16, 16])
+            .strides("y", &[4, 16, 16, 16]);
+        let mut args = [Arg::input(&input), Arg::output(&mut output)];
+        let session = pipe.prepare(&args, &values).unwrap();
+        // No work is submitted while simulating the timeout state.
+        session.in_flight.set(true);
+        let result = session.read_outputs(&mut []);
+        session.in_flight.set(false); // avoid the conservative failed-dispatch leak
+        assert!(matches!(result, Err(RuntimeError::InFlight)));
+        session.time_stream(0, 2).unwrap();
+        session.read_outputs(&mut args).unwrap();
+        assert_eq!(output, [0.0, 2.0, 0.0, 4.0]);
     }
 }

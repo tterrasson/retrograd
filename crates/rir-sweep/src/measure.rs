@@ -104,14 +104,9 @@ pub const REPS: u32 = 5;
 /// What a repetition measures.
 ///
 /// Two numbers and not one, because a device can make one of them constant.
-/// `Latency` separates the repeated executions with a barrier, so `n` of them
-/// cost `n` times one; `Stream` does not, so the device may overlap them and
-/// what comes out is a throughput. On CUDA the two coincide - a stream
-/// serializes launches at no cost - and on MoltenVK they differ by an order of
-/// magnitude, because a Vulkan barrier there ends the Metal encoder and costs
-/// more than any kernel this repo generates. A sweep that only knew the first
-/// number would report, on that machine, that no schedule differs from any
-/// other.
+/// Both modes serialize repeated writes to the same output buffers on Vulkan.
+/// `Stream` is retained for command-line compatibility; Vulkan results include
+/// barriers and must not be interpreted as overlapping throughput.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
     Latency,
@@ -122,7 +117,7 @@ impl Mode {
     pub fn name(self) -> &'static str {
         match self {
             Mode::Latency => "latency (barrier between runs)",
-            Mode::Stream => "stream (runs the device may overlap)",
+            Mode::Stream => "stream (Vulkan: serialized latency; CUDA: stream latency)",
         }
     }
 }

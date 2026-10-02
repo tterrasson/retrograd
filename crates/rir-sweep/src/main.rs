@@ -62,6 +62,15 @@ fn run() -> Result<(), SweepError> {
             "--latency" => options.mode = rir_sweep::measure::Mode::Latency,
             "--reps" => options.reps = parse(&value("--reps")?)?,
             "--iters" => options.iters = parse(&value("--iters")?)?,
+            "--contraction" => {
+                options.contraction =
+                    usize::try_from(parse(&value("--contraction")?)?).map_err(|_| {
+                        SweepError::Unbindable {
+                            kernel: "--contraction".into(),
+                            why: "contraction exceeds usize".into(),
+                        }
+                    })?
+            }
             "--warmup" => options.warmup = parse(&value("--warmup")?)?,
             "--shape" => options
                 .shapes
@@ -71,7 +80,7 @@ fn run() -> Result<(), SweepError> {
                 return Err(SweepError::Unbindable {
                     kernel: other.to_string(),
                     why: "unknown argument; --kernel, --backend, --reps, --iters, --warmup, \
-                          --shape, --latency, --list"
+                          --shape, --contraction, --latency, --list"
                         .to_string(),
                 });
             }

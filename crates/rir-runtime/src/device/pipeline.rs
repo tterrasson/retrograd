@@ -126,23 +126,14 @@ impl Pipeline<'_> {
     /// makes measurements irreproducible between runs. Amortizing this cost over
     /// N executions reveals the kernel.
     ///
-    /// `separated` says what the N executions are. With a barrier between them
-    /// they follow rather than overlap, so N cost N times one - a **latency**,
-    /// and the number every caller of `Session::time` has always read. Without
-    /// it the device may overlap them, and what is measured is a
-    /// **throughput**: N independent executions of a kernel that reads and
-    /// writes distinct buffers, which is a legitimate thing to measure and a
-    /// different one (`Session::time_stream`). The distinction is not academic
-    /// on this box - a Vulkan memory barrier on MoltenVK ends the Metal encoder,
-    /// which costs more than any kernel this repo generates, so a latency here
-    /// measures the barrier and nothing else.
+    /// Repeated executions share output buffers. Always serialize their shader
+    /// writes, including callers using the legacy stream timing mode.
     pub(crate) fn dispatch(
         &self,
         buffers: &[Buffer],
         push: &[u8],
         groups: [u32; 3],
         repeats: u32,
-        separated: bool,
     ) -> Result<(), DispatchError> {
         // Queue and command pool are shared by all calls: submission is
         // serialized (see `Gpu::submit`). A poisoned mutex invalidates nothing
@@ -223,7 +214,7 @@ impl Pipeline<'_> {
                     .src_access_mask(vk::AccessFlags::SHADER_WRITE)
                     .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)];
                 for i in 0..repeats.max(1) {
-                    if i > 0 && separated {
+                    if i > 0 {
                         dev.cmd_pipeline_barrier(
                             cmd,
                             vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -292,9 +283,13 @@ impl Pipeline<'_> {
 
 impl Drop for Pipeline<'_> {
     fn drop(&mut self) {
+        let _guard = self.gpu.submit.lock().unwrap_or_else(|e| e.into_inner());
         let dev = &self.gpu.device;
         unsafe {
-            let _ = dev.device_wait_idle();
+            if dev.device_wait_idle().is_err() {
+                // A failed wait cannot establish that dispatch resources are unused.
+                return;
+            }
             dev.destroy_pipeline(self.pipeline, None);
             dev.destroy_shader_module(self.module, None);
             dev.destroy_pipeline_layout(self.layout, None);
