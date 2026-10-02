@@ -126,16 +126,13 @@ struct trainer_state {
     int32_t lora_dtype = RETRO_LORA_DTYPE_F32;
     std::vector<std::string> target_patterns;
     ggml_opt_optimizer_params optimizer_params {};
-    // Fixed-shape PPO/GRPO calls reuse these host-side ggml containers instead
-    // of allocating a dataset and two result objects for every rollout step.
-    dataset_ptr weighted_dataset_cache;
+    // Results persist across calls; datasets are synchronous caller-owned views.
     opt_result_ptr weighted_train_result_cache;
     opt_result_ptr weighted_eval_result_cache;
-    size_t weighted_cache_rows = 0;
-    uint32_t weighted_cache_ctx = 0;
     // Extra variables handed to the chat template on every render, as a JSON object, empty for
     // none.
     std::string chat_template_variables;
+    bool training_failed = false; // backend failure requires a new trainer
     uint64_t scheduler_step = 0;
     uint64_t scheduler_total_steps = 0;
     // Checkpoint resume point. When active, the SFT epoch loop starts at

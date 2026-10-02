@@ -5,6 +5,9 @@
 #include <cmath>
 #include <random>
 #include <sstream>
+#include <exception>
+#include <limits>
+#include <stdexcept>
 
 namespace retro {
 
@@ -39,9 +42,63 @@ struct step_progress {
     // interval mean instead of exposing the running epoch mean.
     double last_weighted_sum = 0.0;
     int64_t last_ndata = 0;
+    uint64_t successful_step = 0;
+    uint64_t executed_tokens = 0;
 };
 
 thread_local step_progress * g_step_progress = nullptr;
+
+// A failed backend compute may have written part of the parameters; nothing
+// else that throws during a step does. Only the former retires the trainer.
+bool backend_failed(trainer_state & state) {
+    ggml_opt_context_t opt = state.ctx ? llama_opt_context(state.ctx.get()) : nullptr;
+    return opt && ggml_opt_backend_failed(opt);
+}
+
+// Restores callback scope on every exit, including preparation/compute exceptions.
+struct progress_scope {
+    step_progress * previous;
+    step_progress & current;
+    int exceptions = std::uncaught_exceptions();
+    explicit progress_scope(step_progress & progress)
+        : previous(g_step_progress), current(progress) {
+        current.successful_step = current.state->scheduler_step;
+        g_step_progress = &current;
+    }
+    ~progress_scope() {
+        g_step_progress = previous;
+        if (std::uncaught_exceptions() > exceptions) {
+            // The native step has already been abandoned at its update
+            // boundary; keep only the scheduler slots of completed steps.
+            current.state->scheduler_step = current.successful_step;
+            current.state->duty_cycle.reset_window();
+            if (backend_failed(*current.state)) {
+                current.state->training_failed = true;
+            }
+        }
+    }
+};
+
+uint64_t checked_product(uint64_t a, uint64_t b) {
+    if (b && a > UINT64_MAX / b) { throw std::overflow_error("training scheduler horizon overflow"); }
+    return a * b;
+}
+uint64_t checked_sum(uint64_t a, uint64_t b) {
+    if (a > UINT64_MAX - b) { throw std::overflow_error("training scheduler horizon overflow"); }
+    return a + b;
+}
+void check_native_horizon(uint64_t horizon) {
+    if (horizon >= INT64_MAX) {
+        throw std::overflow_error("training horizon exceeds signed optimizer counter");
+    }
+}
+void check_dataset_bytes(size_t rows, size_t width, size_t topk = 1) {
+    if (!width || !rows || rows > size_t(INT64_MAX) / width ||
+            rows > SIZE_MAX / width / sizeof(int32_t) ||
+            topk == 0 || rows * width > SIZE_MAX / topk / sizeof(float)) {
+        throw std::overflow_error("training dataset byte size overflow");
+    }
+}
 
 // Both optimizer callbacks below are duty-cycle accounting boundaries, and
 // neither adds a fence, unlike the decode sites of retro_rollout.cpp:
@@ -94,6 +151,8 @@ void on_optimizer_step(
     if (!progress) {
         return;
     }
+    progress->successful_step = progress->state->scheduler_step;
+    if (train) { progress->executed_tokens += progress->state->train_config.n_ubatch; }
     // Above the progress guard, deliberately. This callback fires on every
     // physical micro-batch while the guard below filters down to logical
     // optimizer steps; accounting under it is the silent failure where the
@@ -110,10 +169,7 @@ void on_optimizer_step(
         limiter.account_window();
     }
     if (!progress->continue_training) {
-        // A cancelled run owes nothing. The vendored callback returns void, so
-        // the native epoch keeps going until its own loop ends: sleeping
-        // through every remaining micro-batch would add the whole rest of the
-        // epoch's debt to a cancellation the caller is already waiting on.
+        // A cancelled run owes nothing while the native loop exits.
         if (throttling) {
             limiter.reset_window();
         }
@@ -161,6 +217,9 @@ void on_optimizer_step(
     metrics.learning_rate = progress->state->last_learning_rate;
     progress->continue_training = progress->callback(
             metrics.epoch, &metrics, progress->user_data);
+    if (!progress->continue_training) {
+        llama_opt_request_stop(progress->state->ctx.get());
+    }
     if (throttling) {
         if (!progress->continue_training) {
             // The callback just cancelled. Drop the debt here rather than
@@ -180,43 +239,6 @@ void on_optimizer_step(
     }
 }
 
-dataset_ptr allocate_sft_dataset(
-        llama_context * ctx,
-        size_t n_rows,
-        uint32_t n_ctx) {
-    const int64_t ne_datapoint = llama_n_ctx(ctx);
-    if (n_rows == 0) {
-        set_error("SFT dataset rows are required");
-        return nullptr;
-    }
-    if (n_ctx != static_cast<uint32_t>(ne_datapoint)) {
-        std::ostringstream message;
-        message << "SFT dataset context " << n_ctx
-                << " does not match effective model context " << ne_datapoint;
-        set_error(message.str());
-        return nullptr;
-    }
-    if (n_rows > static_cast<size_t>(INT64_MAX)) {
-        set_error("too many SFT rows for dataset construction");
-        return nullptr;
-    }
-    const int64_t ndata = static_cast<int64_t>(n_rows);
-    dataset_ptr dataset(ggml_opt_dataset_init(
-            GGML_TYPE_I32,
-            GGML_TYPE_I32,
-            ne_datapoint,
-            ne_datapoint,
-            ndata,
-            1));
-
-    if (!dataset) {
-        set_error("failed to allocate training dataset");
-        return nullptr;
-    }
-
-    return dataset;
-}
-
 dataset_ptr view_sft_dataset(llama_context * ctx, const retro_sft_dataset & data) {
     const int64_t ne_datapoint = llama_n_ctx(ctx);
     if (data.n_rows == 0 || data.n_ctx != static_cast<uint32_t>(ne_datapoint)
@@ -224,6 +246,7 @@ dataset_ptr view_sft_dataset(llama_context * ctx, const retro_sft_dataset & data
         set_error("invalid SFT dataset shape for zero-copy view");
         return nullptr;
     }
+    check_dataset_bytes(data.n_rows, data.n_ctx);
     dataset_ptr dataset(ggml_opt_dataset_init_external(
             GGML_TYPE_I32,
             GGML_TYPE_I32,
@@ -252,6 +275,8 @@ dataset_ptr view_split_sft_dataset(
         set_error("invalid split SFT dataset shape for zero-copy view");
         return nullptr;
     }
+    // Both shards share one width; the sum is bounded by INT64_MAX above.
+    check_dataset_bytes(train.n_rows + eval.n_rows, train.n_ctx);
     dataset_ptr dataset(ggml_opt_dataset_init_external_split(
             GGML_TYPE_I32,
             GGML_TYPE_I32,
@@ -390,6 +415,7 @@ ggml_opt_optimizer_layout configured_optimizer_layout(const trainer_state & stat
 ggml_opt_optimizer_params scheduled_optimizer_params(void * userdata) {
     trainer_state * state = static_cast<trainer_state *>(userdata);
     ggml_opt_optimizer_params params = state->optimizer_params;
+    check_native_horizon(state->scheduler_step);
     const uint64_t step = state->scheduler_step++;
     const uint64_t total = std::max<uint64_t>(1, state->scheduler_total_steps);
     float factor = 1.0f;
@@ -518,7 +544,7 @@ bool ensure_opt_context(trainer_state & state) {
     return true;
 }
 
-bool ensure_optimizer_initialized(trainer_state & state) {
+bool ensure_optimizer_initialized(trainer_state & state) try {
     if (state.opt_initialized) {
         return true;
     }
@@ -554,6 +580,12 @@ bool ensure_optimizer_initialized(trainer_state & state) {
     state.opt_initialized = true;
     state.invalidate_report_caches();
     return true;
+} catch (...) {
+    if (backend_failed(state)) {
+        state.training_failed = true;
+    }
+    state.duty_cycle.reset_window();
+    throw;
 }
 
 int train_sft_impl(
@@ -603,6 +635,11 @@ int train_sft_impl(
             return -1;
         }
         // The caller-owned Rust buffers stay alive for this synchronous call.
+        const uint64_t steps_per_row = static_cast<uint64_t>(state->train_config.n_ctx) /
+                state->train_config.n_batch;
+        const uint64_t total_steps = checked_product(
+                checked_product(train->n_rows, steps_per_row), state->train_config.epochs);
+        check_native_horizon(total_steps);
         // A split dataset is represented as a logical concatenation whose
         // shard lookup switches from the train buffers to the eval buffers.
         dataset_ptr dataset = eval
@@ -611,16 +648,9 @@ int train_sft_impl(
         if (!dataset) {
             return -1;
         }
-        const uint64_t steps_per_row = static_cast<uint64_t>(state->train_config.n_ctx) /
-                state->train_config.n_batch;
-        // A resumed run keeps the scheduler step restored from its checkpoint;
-        // the configured horizon is the full run either way, so warm-up
-        // and decay stay on the trajectory the first launch started.
-        if (!state->resume_active) {
-            state->scheduler_step = 0;
-        }
-        state->scheduler_total_steps = static_cast<uint64_t>(train->n_rows) * steps_per_row *
-                state->train_config.epochs;
+        // A resumed run keeps its scheduler slot; horizon was validated before allocation.
+        if (!state->resume_active) { state->scheduler_step = 0; }
+        state->scheduler_total_steps = total_steps;
         if (state->resume_epoch >= state->train_config.epochs) {
             set_error("the resume point is at or past the configured number of epochs");
             return -1;
@@ -651,13 +681,12 @@ int train_sft_impl(
         // progress: without this the limiter would report active and never
         // sleep during a run that asked for no progress rows.
         const bool throttling = state->duty_cycle.enabled();
-        const bool needs_optimizer_callback = progress_callback || throttling;
 
         const int64_t idata_split = static_cast<int64_t>(train->n_rows);
         const auto t0 = std::chrono::steady_clock::now();
         double train_loss = NAN;
         double eval_loss = NAN;
-        uint32_t completed_epochs = state->resume_epoch;
+        uint64_t executed_tokens = 0;
         for (uint32_t epoch = state->resume_epoch; epoch < state->train_config.epochs; ++epoch) {
             if (state->train_config.shuffle_dataset) {
                 ggml_opt_context_t opt = llama_opt_context(state->ctx.get());
@@ -682,7 +711,7 @@ int train_sft_impl(
                 progress_callback,
                 progress_user_data,
             };
-            g_step_progress = &step_events;
+            progress_scope callback_scope(step_events);
             state->duty_cycle.begin_window();
             llama_opt_epoch(
                     state->ctx.get(),
@@ -690,14 +719,23 @@ int train_sft_impl(
                     result_train.get(),
                     result_eval.get(),
                     idata_split,
-                    needs_optimizer_callback ? on_optimizer_step : nullptr,
+                    on_optimizer_step,
                     throttling ? on_optimizer_eval : nullptr);
-            g_step_progress = nullptr;
             if (!step_events.continue_training) {
-                // A stopped run owes nothing: the debt describes compute this
-                // trainer is about to stop taking.
                 state->duty_cycle.reset_window();
-                break;
+                double unc = 0.0;
+                ggml_opt_result_loss(result_train.get(), &train_loss, &unc);
+                out_metrics->epoch = epoch + 1;
+                out_metrics->epoch_complete = false;
+                out_metrics->global_step = state->scheduler_step;
+                out_metrics->train_loss = static_cast<float>(train_loss);
+                out_metrics->eval_loss = NAN;
+                out_metrics->learning_rate = state->last_learning_rate;
+                const double elapsed = std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - epoch_t0).count();
+                out_metrics->tokens_per_second = elapsed > 0.0
+                        ? static_cast<float>(step_events.executed_tokens / elapsed) : 0.0f;
+                return 0;
             }
             double unc = 0.0;
             ggml_opt_result_loss(result_train.get(), &train_loss, &unc);
@@ -714,11 +752,10 @@ int train_sft_impl(
                     std::chrono::duration<double>(std::chrono::steady_clock::now() - epoch_t0)
                             .count();
             out_metrics->tokens_per_second = epoch_seconds > 0.0
-                    ? static_cast<float>((double) train->n_rows * (double) state->train_config.n_ctx
-                            / epoch_seconds)
+                    ? static_cast<float>((double) step_events.executed_tokens / epoch_seconds)
                     : 0.0f;
             out_metrics->learning_rate = state->last_learning_rate;
-            completed_epochs = epoch + 1;
+            executed_tokens = checked_sum(executed_tokens, step_events.executed_tokens);
             if (progress_callback) {
                 if (!progress_callback(epoch + 1, out_metrics, progress_user_data)) {
                     break;
@@ -732,8 +769,7 @@ int train_sft_impl(
         out_metrics->eval_loss = eval ? static_cast<float>(eval_loss) : NAN;
         out_metrics->tokens_per_second = seconds > 0.0
                 ? static_cast<float>(
-                        (double) train->n_rows * (double) state->train_config.n_ctx
-                        * (double) completed_epochs / seconds)
+                        (double) executed_tokens / seconds)
                 : 0.0f;
         out_metrics->global_step = state->scheduler_step;
         out_metrics->learning_rate = state->last_learning_rate;
@@ -777,11 +813,8 @@ int train_weighted_impl(
             set_error("weighted dataset n_topk exceeds RETRO_FUSED_CE_K_MAX");
             return -1;
         }
+        check_dataset_bytes(data->n_rows, row_width, n_topk);
         const size_t n_values = data->n_rows * row_width;
-        if (n_values > SIZE_MAX / n_topk) {
-            set_error("invalid weighted dataset shape");
-            return -1;
-        }
         const size_t n_entries = n_values * n_topk;
         for (size_t i = 0; i < n_entries; ++i) {
             if (!std::isfinite(data->weights[i])) {
@@ -790,41 +823,29 @@ int train_weighted_impl(
             }
         }
 
-        // Re-run the context-width validation of allocate_sft_dataset on every
-        // call, so a cache hit cannot bypass it if the context is ever
-        // recreated with a different width.
-        const uint32_t live_ctx = static_cast<uint32_t>(llama_n_ctx(state->ctx.get()));
-        if (!state->weighted_dataset_cache
-                || state->weighted_cache_rows != data->n_rows
-                || state->weighted_cache_ctx != data->n_ctx
-                || data->n_ctx != live_ctx) {
-            state->weighted_dataset_cache = allocate_sft_dataset(
-                    state->ctx.get(), data->n_rows, data->n_ctx);
-            if (!state->weighted_dataset_cache) {
-                state->weighted_cache_rows = 0;
-                state->weighted_cache_ctx = 0;
-                return -1;
-            }
-            state->weighted_cache_rows = data->n_rows;
-            state->weighted_cache_ctx = data->n_ctx;
+        // Rows are trained only up to their last active label (the weighted
+        // epoch skips trailing padded ubatches), so full-width steps_per_row
+        // is an upper bound used solely as the fallback schedule horizon.
+        const uint64_t steps_per_row = static_cast<uint64_t>(state->train_config.n_ctx) /
+                state->train_config.n_batch;
+        const uint64_t steps_this_call = checked_product(data->n_rows, steps_per_row);
+        const uint64_t total_steps = scheduler_total_steps != 0
+                ? scheduler_total_steps
+                : checked_sum(state->scheduler_step, steps_this_call);
+        check_native_horizon(total_steps);
+        // Synchronous external views borrow the caller's tokens and scalar labels.
+        // Top-k needs only one scalar column for the callback-facing row dataset.
+        std::vector<int32_t> scalar_labels;
+        const int32_t * callback_labels = data->labels;
+        if (n_topk > 1) {
+            scalar_labels.resize(n_values);
+            for (size_t i = 0; i < n_values; ++i) { scalar_labels[i] = data->labels[i*n_topk]; }
+            callback_labels = scalar_labels.data();
         }
-        ggml_opt_dataset * dataset = state->weighted_dataset_cache.get();
-        std::memcpy(ggml_opt_dataset_data(dataset)->data,
-                data->tokens, n_values * sizeof(llama_token));
-        // retro delta (plan DISTILL D6.5): the dataset holds one label per
-        // position by construction, so with k targets it takes the first
-        // column - the producer writes the teacher's argmax there. It is what
-        // the callback-facing dataset shows; the objective reads the k entries
-        // below.
-        if (n_topk == 1) {
-            std::memcpy(ggml_opt_dataset_labels(dataset)->data,
-                    data->labels, n_values * sizeof(llama_token));
-        } else {
-            int32_t * row0 = static_cast<int32_t *>(ggml_opt_dataset_labels(dataset)->data);
-            for (size_t i = 0; i < n_values; ++i) {
-                row0[i] = data->labels[i*n_topk];
-            }
-        }
+        const retro_sft_dataset scalar_data { data->tokens, callback_labels, data->n_rows, data->n_ctx };
+        dataset_ptr dataset_view = view_sft_dataset(state->ctx.get(), scalar_data);
+        if (!dataset_view) { return -1; }
+        ggml_opt_dataset * dataset = dataset_view.get();
         const llama_opt_topk_labels topk_labels = {
             reinterpret_cast<const llama_token *>(data->labels),
             data->weights,
@@ -833,15 +854,7 @@ int train_weighted_impl(
 
         // PPO drives many short weighted epochs through one trainer, so the
         // scheduler step accumulates across calls instead of resetting.
-        // Rows are trained only up to their last active label (the weighted
-        // epoch skips trailing padded ubatches), so full-width steps_per_row
-        // is an upper bound used solely as the fallback schedule horizon.
-        const uint64_t steps_per_row = static_cast<uint64_t>(state->train_config.n_ctx) /
-                state->train_config.n_batch;
-        const uint64_t steps_this_call = static_cast<uint64_t>(data->n_rows) * steps_per_row;
-        state->scheduler_total_steps = scheduler_total_steps != 0
-                ? scheduler_total_steps
-                : state->scheduler_step + steps_this_call;
+        state->scheduler_total_steps = total_steps;
         if (state->train_config.warmup_steps > state->scheduler_total_steps) {
             set_error("warmup_steps exceeds the total number of optimizer steps");
             return -1;
@@ -869,53 +882,11 @@ int train_weighted_impl(
         ggml_opt_result * result_train = state->weighted_train_result_cache.get();
         ggml_opt_result * result_eval = state->weighted_eval_result_cache.get();
 
-        // Mirror the weighted epoch's early exit for the throughput metric:
-        // each row evaluates only up to its last active label, rounded up to
-        // a physical ubatch, and the total is padded back to an accumulation-
-        // period boundary so every optimizer step closes inside the call.
-        uint64_t evaluated_tokens = 0;
-        {
-            const uint32_t n_ctx_train = std::min<uint32_t>(
-                    state->train_config.n_ctx, static_cast<uint32_t>(row_width));
-            const uint32_t n_batch_train = std::min(state->train_config.n_batch, n_ctx_train);
-            const uint32_t n_ubatch_train =
-                    std::min(state->train_config.n_ubatch, n_batch_train);
-            const uint32_t evals_cap  = n_ctx_train / n_ubatch_train;
-            const uint32_t opt_period = n_batch_train / n_ubatch_train;
-            uint64_t total_evals = 0;
-            for (size_t i = 0; i < data->n_rows; ++i) {
-                const int32_t * row_labels  = data->labels  + i*row_width*n_topk;
-                const float   * row_weights = data->weights + i*row_width*n_topk;
-                int64_t last = -1;
-                for (uint32_t j = 0; j < n_ctx_train; ++j) {
-                    // retro delta (plan DISTILL D6.5): a position is active when
-                    // any of its k entries is, mirroring the runtime's own
-                    // predicate; reading only the first column would cut a row
-                    // short wherever the argmax entry happens to be masked.
-                    bool active = false;
-                    for (uint32_t e = 0; e < n_topk && !active; ++e) {
-                        active = row_labels[j*n_topk + e] >= 0
-                                && row_weights[j*n_topk + e] != 0.0f;
-                    }
-                    if (active) {
-                        last = j;
-                    }
-                }
-                const uint32_t evals = last < 0
-                        ? 1
-                        : static_cast<uint32_t>(last)/n_ubatch_train + 1;
-                total_evals += std::min(evals, evals_cap);
-            }
-            total_evals += (opt_period - total_evals % opt_period) % opt_period;
-            evaluated_tokens = total_evals * n_ubatch_train;
-        }
-
         // The internal optimizer callback is what the duty-cycle limiter
         // accounts on, so it is installed for throttling as well as for
         // progress: without this the limiter would report active and never
         // sleep during a run that asked for no progress rows.
         const bool throttling = state->duty_cycle.enabled();
-        const bool needs_optimizer_callback = progress_callback || throttling;
 
         const auto t0 = std::chrono::steady_clock::now();
         step_progress step_events {
@@ -925,7 +896,7 @@ int train_weighted_impl(
             progress_callback,
             progress_user_data,
         };
-        g_step_progress = &step_events;
+        progress_scope callback_scope(step_events);
         state->duty_cycle.begin_window();
         llama_opt_epoch_weighted(
                 state->ctx.get(),
@@ -933,11 +904,10 @@ int train_weighted_impl(
                 result_train,
                 result_eval,
                 static_cast<int64_t>(data->n_rows),
-                needs_optimizer_callback ? on_optimizer_step : nullptr,
+                on_optimizer_step,
                 throttling ? on_optimizer_eval : nullptr,
                 data->weights,
                 &topk_labels);
-        g_step_progress = nullptr;
 
         double train_loss = NAN;
         double unc = 0.0;
@@ -945,12 +915,12 @@ int train_weighted_impl(
         const auto t1 = std::chrono::steady_clock::now();
         const double seconds = std::chrono::duration<double>(t1 - t0).count();
         out_metrics->epoch = 1;
-        out_metrics->epoch_complete = true;
+        out_metrics->epoch_complete = step_events.continue_training;
         out_metrics->global_step = state->scheduler_step;
         out_metrics->train_loss = static_cast<float>(train_loss);
         out_metrics->eval_loss = NAN;
         out_metrics->tokens_per_second = seconds > 0.0
-                ? static_cast<float>((double) evaluated_tokens / seconds)
+                ? static_cast<float>((double) step_events.executed_tokens / seconds)
                 : 0.0f;
         out_metrics->learning_rate = state->last_learning_rate;
 
@@ -999,6 +969,16 @@ int train_packed_sequences_impl(
             set_error("packed-sequence n_topk exceeds RETRO_FUSED_CE_K_MAX");
             return -1;
         }
+        if (accumulation_steps > INT32_MAX || data->n_tokens > INT32_MAX || data->n_sequences > INT32_MAX) {
+            throw std::overflow_error("packed sequence dimensions exceed signed native counters");
+        }
+        check_dataset_bytes(1, data->n_tokens, n_topk);
+        if (data->n_seq_ids > SIZE_MAX / sizeof(llama_seq_id)) {
+            throw std::overflow_error("packed sequence memberships byte size overflow");
+        }
+        const uint64_t total_steps = scheduler_total_steps != 0
+                ? scheduler_total_steps : checked_sum(state->scheduler_step, 1);
+        check_native_horizon(total_steps);
         for (size_t i = 0; i < data->n_tokens; ++i) {
             if (data->positions[i] < 0 ||
                     data->seq_offsets[i] >= data->seq_offsets[i + 1]) {
@@ -1020,24 +1000,6 @@ int train_packed_sequences_impl(
             }
         }
 
-        // The callback API expects a dataset handle. Keep a one-row mirror of
-        // the packed graph; the graph itself consumes the explicit sequence
-        // metadata fields.
-        const uint32_t dataset_ctx = llama_n_ctx(state->ctx.get());
-        if (!state->weighted_dataset_cache
-                || state->weighted_cache_rows != 1
-                || state->weighted_cache_ctx != dataset_ctx) {
-            state->weighted_dataset_cache = allocate_sft_dataset(
-                    state->ctx.get(), 1, dataset_ctx);
-            if (!state->weighted_dataset_cache) {
-                return -1;
-            }
-            state->weighted_cache_rows = 1;
-            state->weighted_cache_ctx = dataset_ctx;
-        }
-        ggml_opt_dataset * dataset = state->weighted_dataset_cache.get();
-        std::memcpy(ggml_opt_dataset_data(dataset)->data,
-                data->tokens, data->n_tokens*sizeof(llama_token));
         // retro delta (plan DISTILL D6.5): first column, same reason as the
         // weighted path - the dataset mirror holds one label per position.
         std::vector<int32_t> labels_first;
@@ -1049,16 +1011,19 @@ int train_packed_sequences_impl(
             }
             labels_scalar = labels_first.data();
         }
-        std::memcpy(ggml_opt_dataset_labels(dataset)->data,
-                labels_scalar, data->n_tokens*sizeof(llama_token));
+        // A packed graph spans n_ubatch rather than n_ctx: build its exact callback view.
+        dataset_ptr dataset_view(ggml_opt_dataset_init_external(
+                GGML_TYPE_I32, GGML_TYPE_I32, data->n_tokens, data->n_tokens, 1, 1,
+                const_cast<int32_t *>(data->tokens), const_cast<int32_t *>(labels_scalar)));
+        if (!dataset_view) { set_error("failed to create packed dataset view"); return -1; }
+        ggml_opt_dataset * dataset = dataset_view.get();
         const llama_opt_topk_labels topk_labels = {
             reinterpret_cast<const llama_token *>(data->labels),
             data->weights,
             n_topk,
         };
 
-        state->scheduler_total_steps = scheduler_total_steps != 0
-                ? scheduler_total_steps : state->scheduler_step + 1;
+        state->scheduler_total_steps = total_steps;
         if (state->train_config.warmup_steps > state->scheduler_total_steps) {
             set_error("warmup_steps exceeds the total number of optimizer steps");
             return -1;
@@ -1085,14 +1050,12 @@ int train_packed_sequences_impl(
         // this callback, so throttling installs it even without progress rows.
         // There is no eval counterpart here - the packed step has a single
         // callback and no evaluation loop.
-        const bool needs_optimizer_callback =
-                progress_callback || state->duty_cycle.enabled();
 
         const auto t0 = std::chrono::steady_clock::now();
         step_progress step_events {
             state, 1, state->scheduler_step, progress_callback, progress_user_data,
         };
-        g_step_progress = &step_events;
+        progress_scope callback_scope(step_events);
         state->duty_cycle.begin_window();
         const bool ok = llama_opt_step_packed_sequences(
                 state->ctx.get(), dataset, result,
@@ -1107,8 +1070,7 @@ int train_packed_sequences_impl(
                 data->n_seq_ids,
                 data->n_sequences,
                 accumulation_steps,
-                needs_optimizer_callback ? on_optimizer_step : nullptr);
-        g_step_progress = nullptr;
+                on_optimizer_step);
         if (!ok) {
             set_error("failed to build the packed-sequence optimizer graph");
             return -1;
@@ -1120,7 +1082,7 @@ int train_packed_sequences_impl(
         const double seconds = std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - t0).count();
         out_metrics->epoch = 1;
-        out_metrics->epoch_complete = true;
+        out_metrics->epoch_complete = step_events.continue_training;
         out_metrics->global_step = state->scheduler_step;
         out_metrics->train_loss = static_cast<float>(train_loss);
         out_metrics->eval_loss = NAN;
@@ -1146,6 +1108,7 @@ int train_tokens_impl(
         }
         const size_t stride = std::max<size_t>(1, n_ctx / 2);
         const size_t rows = 1 + (n_tokens - n_ctx - 1) / stride;
+        check_dataset_bytes(rows, n_ctx);
         std::vector<int32_t> data(rows * n_ctx);
         std::vector<int32_t> labels(rows * n_ctx);
         for (size_t row = 0; row < rows; ++row) {

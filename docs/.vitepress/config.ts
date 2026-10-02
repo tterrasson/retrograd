@@ -87,6 +87,7 @@ export default defineConfig({
             { text: 'Tests and validation', link: '/engineering/tests/notice' },
             { text: 'Test lanes in detail', link: '/engineering/tests/lanes' },
             { text: 'llama.cpp fork workflow', link: '/engineering/LLAMA_CPP_FORK_WORKFLOW' },
+            { text: 'Native training loop', link: '/engineering/TRAINING_LOOP' },
             { text: 'Server errors', link: '/engineering/server/ERRORS' },
           ],
         },

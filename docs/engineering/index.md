@@ -17,6 +17,8 @@ instead.
   pitfalls.
 - [llama.cpp fork](./LLAMA_CPP_FORK_WORKFLOW): syncing and publishing runtime
   changes.
+- [Native training loop](./TRAINING_LOOP): cancellation, failures and what a
+  packed graph cache would need.
 
 ## Backends and RIR
 

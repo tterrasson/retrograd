@@ -155,3 +155,96 @@ fn every_micro_batch_is_finite_and_preserves_the_characterized_difference() {
         );
     }
 }
+
+/// Cancellation must stop before the next micro-batch and the evaluation tail.
+/// A subsequent weighted call must see the same optimizer as a one-step control.
+#[test]
+fn every_micro_batch_cancellation_stops_sft_and_weighted_without_residual_gradients() {
+    use retrograd::WeightedBatch;
+    use retrograd::dataset::PreparedDataset;
+    let _guard = common::serialize_models();
+    let Some(model) = common::tiny_model_path_if_available() else {
+        return;
+    };
+    for fused in [false, true] {
+        for duty in [None, Some(0.5)] {
+            let mut cfg = config(32);
+            cfg.chunked_cross_entropy = fused;
+            cfg.max_gpu_duty_cycle = duty;
+            let mut sft = Trainer::new(&model, cfg.clone()).unwrap();
+            let mut weighted = Trainer::new(&model, cfg.clone()).unwrap();
+            let mut control = Trainer::new(&model, cfg).unwrap();
+            for trainer in [&mut sft, &mut weighted, &mut control] {
+                trainer.create_lora(&lora()).unwrap();
+            }
+            let width = sft.context_size().unwrap();
+            let token = sft.tokenize_text("the").unwrap()[0];
+            let rows = PreparedDataset {
+                n_ctx: width,
+                tokens: vec![token; width * 2],
+                labels: vec![token; width * 2],
+                examples: 2,
+                supervised_tokens: width * 2,
+            };
+            let batch = WeightedBatch {
+                tokens: rows.tokens.clone(),
+                labels: rows.labels.clone(),
+                weights: vec![1.0; width * 2],
+                n_rows: 2,
+                n_ctx: width,
+                n_topk: 1,
+            };
+            let mut calls = 0;
+            let stopped = sft
+                .train_sft_controlled(&rows, Some(&rows), |_, metrics| {
+                    calls += 1;
+                    assert_eq!(metrics.global_step, 1);
+                    Ok(false)
+                })
+                .unwrap();
+            assert_eq!(calls, 1);
+            assert_eq!(stopped.global_step, 1);
+            assert_eq!(stopped.epoch, 1);
+            assert!(!stopped.epoch_complete);
+            assert!(stopped.eval_loss.is_nan());
+            assert!(stopped.train_loss.is_finite());
+            calls = 0;
+            let (stopped, _) = weighted
+                .train_weighted_controlled(&batch, 3, |_, metrics| {
+                    calls += 1;
+                    assert_eq!(metrics.global_step, 1);
+                    Ok(false)
+                })
+                .unwrap();
+            assert_eq!(calls, 1);
+            assert!(!stopped.epoch_complete);
+            assert_eq!(stopped.global_step, 1);
+            let mut one_step = WeightedBatch {
+                tokens: vec![token; width],
+                labels: vec![token; width],
+                weights: vec![0.0; width],
+                n_rows: 1,
+                n_ctx: width,
+                n_topk: 1,
+            };
+            one_step.weights[..64].fill(1.0);
+            control.train_weighted(&one_step, 3).unwrap();
+            // Scoring exercises the graph-lifetime transition before resuming.
+            let probe = sft.tokenize_text(PROBE_TEXT).unwrap();
+            for round in 0..2 {
+                let expected = control.score_tokens(&probe).unwrap();
+                for trainer in [&mut sft, &mut weighted] {
+                    let actual = trainer.score_tokens(&probe).unwrap();
+                    for (a, b) in actual.iter().zip(&expected) {
+                        assert!((a - b).abs() < 1.0e-4, "resume round {round}: {a} vs {b}");
+                    }
+                }
+                if round == 0 {
+                    for trainer in [&mut sft, &mut weighted, &mut control] {
+                        assert_eq!(trainer.train_weighted(&one_step, 3).unwrap().global_step, 2);
+                    }
+                }
+            }
+        }
+    }
+}

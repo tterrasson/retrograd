@@ -155,6 +155,12 @@ const char * device_kind_name(int32_t device) {
 }
 
 bool validate_train_config(const retro_train_config & config) {
+    // Batch/token counters and CE options cross signed native interfaces.
+    if (config.n_ctx > INT32_MAX || config.n_batch > INT32_MAX || config.n_ubatch > INT32_MAX ||
+            config.chunked_ce_tiles > INT32_MAX || config.chunked_ce_seq_chunk > INT32_MAX) {
+        set_error("training dimensions exceed signed native counters");
+        return false;
+    }
     if (config.n_ctx == 0) {
         set_error("n_ctx must be greater than zero");
         return false;
@@ -187,8 +193,8 @@ bool validate_train_config(const retro_train_config & config) {
         set_error("generation_concurrency must not exceed n_batch");
         return false;
     }
-    if (config.n_ctx > UINT32_MAX / config.generation_concurrency) {
-        set_error("n_ctx * generation_concurrency overflows uint32_t");
+    if (config.n_ctx > INT32_MAX / config.generation_concurrency) {
+        set_error("n_ctx * generation_concurrency exceeds signed native counters");
         return false;
     }
     if (config.n_batch % config.n_ubatch != 0) {
@@ -304,7 +310,12 @@ trainer_state * checked(retro_trainer * trainer) {
         set_error("trainer is null");
         return nullptr;
     }
-    return reinterpret_cast<trainer_state *>(trainer);
+    auto * state = reinterpret_cast<trainer_state *>(trainer);
+    if (state->training_failed) {
+        set_error("training backend failed; recreate the trainer (weights may be partially updated)");
+        return nullptr;
+    }
+    return state;
 }
 
 std::string join_patterns(const std::vector<std::string> & patterns) {

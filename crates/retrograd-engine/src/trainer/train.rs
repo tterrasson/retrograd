@@ -94,9 +94,16 @@ impl Trainer {
         if train.n_ctx == 0 {
             return Err(Error::invalid("training dataset context must not be zero"));
         }
-        if train.tokens.len() != train.rows() * train.n_ctx
-            || train.labels.len() != train.tokens.len()
-        {
+        let expected = train
+            .rows()
+            .checked_mul(train.n_ctx)
+            .ok_or_else(|| Error::overflow("training dataset shape overflows usize"))?;
+        expected
+            .checked_mul(std::mem::size_of::<i32>())
+            .ok_or_else(|| Error::overflow("training dataset byte size overflows usize"))?;
+        let n_ctx = u32::try_from(train.n_ctx)
+            .map_err(|_| Error::overflow("dataset context exceeds u32"))?;
+        if train.tokens.len() != expected || train.labels.len() != train.tokens.len() {
             return Err(Error::invalid("invalid prepared training dataset shape"));
         }
         if let Some(eval) = eval {
@@ -105,9 +112,14 @@ impl Trainer {
                     "training and evaluation contexts must match",
                 ));
             }
-            if eval.tokens.len() != eval.rows() * eval.n_ctx
-                || eval.labels.len() != eval.tokens.len()
-            {
+            let expected = eval
+                .rows()
+                .checked_mul(eval.n_ctx)
+                .ok_or_else(|| Error::overflow("evaluation dataset shape overflows usize"))?;
+            expected
+                .checked_mul(std::mem::size_of::<i32>())
+                .ok_or_else(|| Error::overflow("evaluation dataset byte size overflows usize"))?;
+            if eval.tokens.len() != expected || eval.labels.len() != eval.tokens.len() {
                 return Err(Error::invalid("invalid prepared evaluation dataset shape"));
             }
         }
@@ -116,13 +128,13 @@ impl Trainer {
             tokens: train.tokens.as_ptr(),
             labels: train.labels.as_ptr(),
             n_rows: train.rows(),
-            n_ctx: train.n_ctx as u32,
+            n_ctx,
         };
         let eval_ffi = eval.map(|dataset| ffi::RetroSftDataset {
             tokens: dataset.tokens.as_ptr(),
             labels: dataset.labels.as_ptr(),
             n_rows: dataset.rows(),
-            n_ctx: dataset.n_ctx as u32,
+            n_ctx,
         });
         let (metrics, _) = self.run_with_callback(
             on_progress,
@@ -152,6 +164,9 @@ impl Trainer {
             .rows()
             .checked_mul(data.n_ctx)
             .ok_or_else(|| Error::overflow("evaluation dataset shape overflows usize"))?;
+        expected
+            .checked_mul(std::mem::size_of::<i32>())
+            .ok_or_else(|| Error::overflow("evaluation dataset byte size overflows usize"))?;
         if data.tokens.len() != expected || data.labels.len() != expected {
             return Err(Error::invalid("invalid prepared evaluation dataset shape"));
         }
@@ -159,7 +174,8 @@ impl Trainer {
             tokens: data.tokens.as_ptr(),
             labels: data.labels.as_ptr(),
             n_rows: data.rows(),
-            n_ctx: data.n_ctx as u32,
+            n_ctx: u32::try_from(data.n_ctx)
+                .map_err(|_| Error::overflow("dataset context exceeds u32"))?,
         };
         let mut metrics = ffi::RetroEvalMetrics::default();
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
@@ -209,7 +225,9 @@ impl Trainer {
             labels: batch.labels.as_ptr(),
             weights: batch.weights.as_ptr(),
             n_rows: batch.n_rows,
-            n_ctx: batch.n_ctx as u32,
+            n_ctx: u32::try_from(batch.n_ctx)
+                .map_err(|_| Error::overflow("dataset context exceeds u32"))?,
+            // `validate` bounds n_topk by FUSED_CE_K_MAX: no truncation.
             n_topk: batch.n_topk as u32,
         };
         self.run_with_callback(
@@ -258,7 +276,9 @@ impl Trainer {
             seq_ids: batch.seq_ids.as_ptr(),
             n_tokens: batch.tokens.len(),
             n_seq_ids: batch.seq_ids.len(),
+            // `validate` bounds n_sequences by u32::MAX: no truncation.
             n_sequences: batch.n_sequences as u32,
+            // `validate` bounds n_topk by FUSED_CE_K_MAX: no truncation.
             n_topk: batch.n_topk as u32,
         };
         self.run_with_callback(

@@ -471,3 +471,50 @@ fn recompute_matches_differentiable_vulkan_attention() {
         assert_eq!(checkpointed.2, reference.2);
     }
 }
+
+#[test]
+fn recompute_matches_the_row_path_in_dense_and_fused_ce() {
+    use retrograd::dataset::PreparedDataset;
+    let _guard = common::serialize_models();
+    let Some(model) = common::tiny_model_path_if_available() else {
+        return;
+    };
+    for fused in [false, true] {
+        let mut baseline = Trainer::new(&model, config(false, fused, Device::Cpu)).unwrap();
+        let mut checkpointed = Trainer::new(&model, config(true, fused, Device::Cpu)).unwrap();
+        for trainer in [&mut baseline, &mut checkpointed] {
+            trainer.create_lora(&lora(2)).unwrap();
+        }
+        let width = baseline.context_size().unwrap();
+        let token = baseline.tokenize_text("the").unwrap()[0];
+        let rows = PreparedDataset {
+            n_ctx: width,
+            tokens: vec![token; width],
+            labels: vec![token; width],
+            examples: 1,
+            supervised_tokens: width,
+        };
+        let probe = baseline.tokenize_text(PROBE_TEXT).unwrap();
+        for _ in 0..2 {
+            let a = baseline
+                .train_sft_with_progress(&rows, Some(&rows), |_| {})
+                .unwrap();
+            let b = checkpointed
+                .train_sft_controlled(&rows, Some(&rows), |trainer, _| {
+                    assert!(
+                        trainer.memory_report()?.checkpoint_count > 0,
+                        "checkpointing configured but no checkpoints applied to the row graph"
+                    );
+                    Ok(true)
+                })
+                .unwrap();
+            assert!((a.train_loss - b.train_loss).abs() < LOSS_TOLERANCE);
+            assert!((a.eval_loss - b.eval_loss).abs() < LOSS_TOLERANCE);
+            let a = baseline.score_tokens(&probe).unwrap();
+            let b = checkpointed.score_tokens(&probe).unwrap();
+            for (a, b) in a.iter().zip(b) {
+                assert!((a - b).abs() < LOGPROB_TOLERANCE);
+            }
+        }
+    }
+}

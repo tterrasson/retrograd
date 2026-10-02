@@ -1057,7 +1057,8 @@ pub struct WeightedBatch {
     /// `weights` hold `n_rows * n_ctx * n_topk` values, entry `j` of position
     /// `p` of row `r` at `(r * n_ctx + p) * n_topk + j`, and the weights are the
     /// teacher's renormalized probabilities: the objective is then the sparse
-    /// cross-entropy against that distribution.
+    /// cross-entropy against that distribution. Duplicate IDs at a position
+    /// contribute the sum of their weights on both dense and fused paths.
     pub n_topk: usize,
 }
 
@@ -1079,6 +1080,12 @@ impl WeightedBatch {
         let entries = expected
             .checked_mul(self.n_topk)
             .ok_or_else(|| Error::overflow("weighted batch shape overflows usize"))?;
+        expected
+            .checked_mul(std::mem::size_of::<i32>())
+            .and_then(|_| entries.checked_mul(std::mem::size_of::<f32>()))
+            .ok_or_else(|| Error::overflow("weighted batch byte size overflows usize"))?;
+        u32::try_from(self.n_ctx)
+            .map_err(|_| Error::overflow("weighted batch context exceeds u32"))?;
         if self.tokens.len() != expected
             || self.labels.len() != entries
             || self.weights.len() != entries
@@ -1683,5 +1690,42 @@ mod tests {
         assert_eq!(cfg.seed, 42);
         assert_eq!(cfg.dtype, LoraDtype::F16);
         assert!(matches!(cfg.targets, TargetSet::QV));
+    }
+
+    fn descriptor(rows: usize, width: usize, topk: usize) -> WeightedBatch {
+        WeightedBatch {
+            tokens: Vec::new(),
+            labels: Vec::new(),
+            weights: Vec::new(),
+            n_rows: rows,
+            n_ctx: width,
+            n_topk: topk,
+        }
+    }
+
+    #[test]
+    fn synthetic_weighted_shapes_reject_element_and_byte_overflow_before_length_checks() {
+        for batch in [
+            descriptor(usize::MAX, 2, 1),
+            descriptor(usize::MAX / 4 + 1, 1, 1),
+        ] {
+            assert!(matches!(batch.validate(), Err(Error::Overflow(_))));
+        }
+        if usize::BITS > 32 {
+            let width = usize::try_from(u64::from(u32::MAX) + 1).unwrap();
+            assert!(matches!(
+                descriptor(1, width, 1).validate(),
+                Err(Error::Overflow(_))
+            ));
+        }
+        let valid = WeightedBatch {
+            tokens: vec![1; 4],
+            labels: vec![1; 8],
+            weights: vec![0.5; 8],
+            n_rows: 2,
+            n_ctx: 2,
+            n_topk: 2,
+        };
+        assert!(valid.validate().is_ok());
     }
 }
