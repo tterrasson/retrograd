@@ -432,7 +432,7 @@ mod tests {
                          Json(_body): Json<serde_json::Value>| async move {
                             if state
                                 .failing_resets
-                                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                                .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                                     left.checked_sub(1)
                                 })
                                 .is_ok()
@@ -528,7 +528,7 @@ mod tests {
                          Json(body): Json<serde_json::Value>| async move {
                             if state
                                 .failing_closes
-                                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                                .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                                     left.checked_sub(1)
                                 })
                                 .is_ok()
