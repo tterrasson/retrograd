@@ -154,6 +154,7 @@ fn main() {
         "parsers/kimi-k3.cpp",
         "parsers/ling3.cpp",
         "parsers/lfm2.cpp",
+        "parsers/llm-jp-harmony.cpp",
         "parsers/minicpm5.cpp",
         "parsers/minimax-m3.cpp",
         "parsers/ministral3.cpp",
