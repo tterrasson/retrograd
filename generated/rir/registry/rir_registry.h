@@ -4,6 +4,10 @@
 #pragma once
 #include <stdint.h>
 
+// GGML_API: ggml-base exports the registry to the backends and to its users,
+// and builds hidden by default as a shared library.
+#include "ggml.h"
+
 #define RIR_REGISTRY_SCHEMA 18
 #define RIR_MAX_BINDINGS 4
 #define RIR_MAX_PARAMS 2
@@ -246,10 +250,10 @@ typedef struct rir_op_policy {
 #ifdef __cplusplus
 extern "C" {
 #endif
-extern const rir_variant_desc rir_variants[];
-extern const uint32_t rir_variant_count;
-extern const rir_op_policy rir_op_policies[];
-extern const uint32_t rir_op_policy_count;
+GGML_API const rir_variant_desc rir_variants[];
+GGML_API const uint32_t rir_variant_count;
+GGML_API const rir_op_policy rir_op_policies[];
+GGML_API const uint32_t rir_op_policy_count;
 #ifdef __cplusplus
 }
 #endif

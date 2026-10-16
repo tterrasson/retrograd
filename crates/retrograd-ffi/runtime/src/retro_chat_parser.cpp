@@ -1,11 +1,16 @@
 // Reads an assistant turn with a parser derived from the model's chat template.
 // llama.cpp supports specialized and differential derivation; both produce a
-// serialized PEG parser that `common_chat_parse` can run without a model or
-// context. The model-backed and model-free entry points therefore share the
-// same parser format.
+// PEG parser that `common_chat_parse` can run without a model or context.
+// llama.cpp keeps no serialized form of that parser, so what crosses the FFI is
+// the recipe it is derived from, and the model-free entry point derives it
+// again (once per recipe, see `cached_parser`). The model-backed and
+// model-free entry points therefore share the same blob format.
 #include "retro_runtime.hpp"
 
 #include "chat.h"
+
+#include <mutex>
+#include <unordered_map>
 
 namespace retro {
 
@@ -13,20 +18,27 @@ namespace {
 
 using json = common_json;
 
-// The envelope carries what `common_chat_parse` needs beside the arena itself:
-// the format selects the AST mapper, and `generation_prompt` is prepended to
-// the input before parsing because generated parsers anchor on it (LFM2's, for
-// one, opens on `p.literal("<|im_start|>assistant\n")`). Serializing the arena
-// alone would produce a parser that rejects every input.
-std::string encode_parser_blob(const common_chat_params & params) {
+// Everything the derivation reads: the template source the tool catalog
+// selects, the bos/eos text it renders, and the catalog itself, since the
+// generated grammar may name its functions. The derivation is deterministic,
+// so the same recipe always yields the parser it was validated with.
+struct parser_recipe {
+    std::string template_src;
+    std::string bos_token;
+    std::string eos_token;
+    std::string tools_json;
+};
+
+std::string encode_parser_blob(const parser_recipe & recipe) {
     json envelope = json::object();
-    envelope["format"] = static_cast<int>(params.format);
-    envelope["generation_prompt"] = params.generation_prompt;
-    envelope["parser"] = params.parser;
+    envelope["template"] = recipe.template_src;
+    envelope["bos_token"] = recipe.bos_token;
+    envelope["eos_token"] = recipe.eos_token;
+    envelope["tools"] = recipe.tools_json;
     return envelope.dump();
 }
 
-bool decode_parser_blob(const std::string & blob, common_chat_parser_params & out) {
+bool decode_parser_blob(const std::string & blob, parser_recipe & out) {
     json envelope;
     try {
         envelope = json::parse(blob);
@@ -34,24 +46,20 @@ bool decode_parser_blob(const std::string & blob, common_chat_parser_params & ou
         set_error(std::string("failed to parse tool-call parser blob: ") + err.what());
         return false;
     }
-    if (!envelope.is_object() || !envelope.contains("parser")
-            || !envelope.at("parser").is_string()) {
-        set_error("tool-call parser blob must be an object carrying a `parser` string");
+    if (!envelope.is_object()) {
+        set_error("tool-call parser blob must be a JSON object");
         return false;
     }
-    if (envelope.contains("format") && envelope.at("format").is_number_integer()) {
-        out.format = static_cast<common_chat_format>(envelope.at("format").get<int>());
-    }
-    if (envelope.contains("generation_prompt") && envelope.at("generation_prompt").is_string()) {
-        out.generation_prompt = envelope.at("generation_prompt").get<std::string>();
-    }
-    try {
-        out.parser.load(envelope.at("parser").get<std::string>());
-    } catch (const std::exception & err) {
-        set_error(std::string("failed to load tool-call PEG parser: ") + err.what());
-        return false;
-    }
-    return true;
+    const auto read = [&](const char * key, std::string & field) {
+        if (!envelope.contains(key) || !envelope.at(key).is_string()) {
+            set_error(std::string("tool-call parser blob must carry a `") + key + "` string");
+            return false;
+        }
+        field = envelope.at(key).get<std::string>();
+        return true;
+    };
+    return read("template", out.template_src) && read("bos_token", out.bos_token)
+        && read("eos_token", out.eos_token) && read("tools", out.tools_json);
 }
 
 // These parser entry points return JSON through the same two-call buffer
@@ -70,17 +78,19 @@ int copy_json_out(const std::string & text, const char * error, char * buffer, s
 }
 
 // Derives a parser from an initialized template. The template may come from a
-// loaded model or from `.jinja` source supplied by a test.
+// loaded model or from `.jinja` source supplied by a test. `template_src` is
+// set to the variant the catalog selects, the one a recipe has to carry.
 enum class parser_derivation {
     ok,
     unavailable,
     error,
 };
 
-parser_derivation derive_parser_blob(
+parser_derivation derive_parser(
         const common_chat_templates * templates,
-        const char * tools_json,
-        std::string & blob) {
+        const std::string & tools_json,
+        common_chat_params & params,
+        std::string & template_src) {
     common_chat_templates_inputs inputs;
     inputs.use_jinja = true;
     inputs.add_generation_prompt = true;
@@ -97,7 +107,7 @@ parser_derivation derive_parser_blob(
     user.content = "probe";
     inputs.messages.push_back(user);
 
-    if (tools_json && tools_json[0] != '\0') {
+    if (!tools_json.empty()) {
         json tools;
         try {
             tools = json::parse(tools_json);
@@ -114,7 +124,6 @@ parser_derivation derive_parser_blob(
         }
     }
 
-    common_chat_params params;
     try {
         params = common_chat_templates_apply(templates, inputs);
     } catch (const std::bad_alloc &) {
@@ -130,8 +139,65 @@ parser_derivation derive_parser_blob(
         set_error("chat template yielded no tool-call parser");
         return parser_derivation::unavailable;
     }
-    blob = encode_parser_blob(params);
+    // The selection common_chat_templates_apply makes: the tool-use variant
+    // when there is one and the catalog is not empty.
+    template_src = inputs.tools.empty() ? std::string() : common_chat_templates_source(templates, "tool_use");
+    if (template_src.empty()) {
+        template_src = common_chat_templates_source(templates);
+    }
     return parser_derivation::ok;
+}
+
+// Derives the parser of a recipe once per process. Rollouts parse every turn
+// with the same few recipes; deriving renders the template several times. The
+// derivation runs outside the lock: two threads missing the same recipe both
+// derive it and the second insert is a no-op. The bound only guards against a
+// caller minting recipes without end.
+constexpr size_t parser_cache_capacity = 64;
+
+std::shared_ptr<const common_chat_parser_params> cached_parser(const std::string & blob) {
+    static std::mutex mutex;
+    static std::unordered_map<std::string, std::shared_ptr<const common_chat_parser_params>> cache;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto it = cache.find(blob);
+        if (it != cache.end()) {
+            return it->second;
+        }
+    }
+
+    parser_recipe recipe;
+    if (!decode_parser_blob(blob, recipe)) {
+        return nullptr;
+    }
+    common_chat_templates_ptr templates;
+    try {
+        templates = common_chat_templates_init(nullptr, recipe.template_src, recipe.bos_token, recipe.eos_token);
+    } catch (const std::bad_alloc &) {
+        throw;
+    } catch (const std::exception & err) {
+        set_error(std::string("failed to initialize the chat template of a tool-call parser: ") + err.what());
+        return nullptr;
+    }
+    if (!templates) {
+        set_error("failed to initialize the chat template of a tool-call parser");
+        return nullptr;
+    }
+    common_chat_params params;
+    std::string template_src;
+    if (derive_parser(templates.get(), recipe.tools_json, params, template_src) != parser_derivation::ok) {
+        return nullptr;
+    }
+    auto parser = std::make_shared<common_chat_parser_params>(params);
+    // The converting constructor copies the format and the generation prompt,
+    // not the arena.
+    parser->parser = std::move(params.parser);
+
+    std::lock_guard<std::mutex> lock(mutex);
+    if (cache.size() >= parser_cache_capacity) {
+        cache.clear();
+    }
+    return cache.emplace(blob, std::move(parser)).first->second;
 }
 
 }  // namespace
@@ -164,8 +230,9 @@ int build_tool_call_parser(
         set_error("model does not define a chat template usable for tool-call parsing");
         return RETRO_CHAT_PARSER_UNAVAILABLE;
     }
-    std::string blob;
-    switch (derive_parser_blob(templates.get(), tools_json, blob)) {
+    parser_recipe recipe;
+    common_chat_params params;
+    switch (derive_parser(templates.get(), tools_key, params, recipe.template_src)) {
         case parser_derivation::ok:
             break;
         case parser_derivation::unavailable:
@@ -174,7 +241,17 @@ int build_tool_call_parser(
             return -1;
     }
 
-    state.tool_call_parser_cache = std::move(blob);
+    // The same bos/eos text common_chat_templates_init gives the template when
+    // it reads them from the vocabulary.
+    const llama_vocab * vocab = llama_model_get_vocab(state.model.get());
+    const auto piece = [&](llama_token token) {
+        return token == LLAMA_TOKEN_NULL ? std::string() : common_token_to_piece(vocab, token, true);
+    };
+    recipe.bos_token = piece(llama_vocab_bos(vocab));
+    recipe.eos_token = piece(llama_vocab_eos(vocab));
+    recipe.tools_json = tools_key;
+
+    state.tool_call_parser_cache = encode_parser_blob(recipe);
     state.tool_call_parser_tools = tools_key;
     return copy_json_out(
             state.tool_call_parser_cache, "failed to build tool-call parser",
@@ -202,8 +279,10 @@ int build_tool_call_parser_from_source(
         set_error("failed to initialize the chat template");
         return -1;
     }
-    std::string blob;
-    switch (derive_parser_blob(templates.get(), tools_json, blob)) {
+    const std::string tools = tools_json ? std::string(tools_json) : std::string();
+    parser_recipe recipe;
+    common_chat_params params;
+    switch (derive_parser(templates.get(), tools, params, recipe.template_src)) {
         case parser_derivation::ok:
             break;
         case parser_derivation::unavailable:
@@ -211,7 +290,9 @@ int build_tool_call_parser_from_source(
         case parser_derivation::error:
             return -1;
     }
-    return copy_json_out(blob, "failed to build tool-call parser", buffer, n_buffer, out_n_bytes);
+    recipe.tools_json = tools;
+    return copy_json_out(
+            encode_parser_blob(recipe), "failed to build tool-call parser", buffer, n_buffer, out_n_bytes);
 }
 
 int parse_assistant_output(
@@ -221,15 +302,14 @@ int parse_assistant_output(
         char * buffer,
         size_t n_buffer,
         size_t * out_n_bytes) {
-    common_chat_parser_params params;
-    if (!decode_parser_blob(std::string(parser_blob, n_parser_blob), params)) {
+    const auto params = cached_parser(std::string(parser_blob, n_parser_blob));
+    if (!params) {
         return -1;
     }
-    params.reasoning_format = COMMON_REASONING_FORMAT_NONE;
 
     common_chat_msg message;
     try {
-        message = common_chat_parse(text, /*is_partial=*/false, params);
+        message = common_chat_parse(common_chat_input(text), /*is_partial=*/false, *params);
     } catch (const std::exception & err) {
         set_error(std::string("failed to parse assistant output: ") + err.what());
         return -1;
