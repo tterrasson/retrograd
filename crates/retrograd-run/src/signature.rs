@@ -1,12 +1,16 @@
 //! Identity of a run: what a resume must find unchanged, and what a metrics
 //! backend needs to label it.
 
+use std::fmt;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
 use retrograd_checkpoint as checkpoint;
 use retrograd_config::{Algorithm, PreferenceLoss, RunConfig};
-use retrograd_core::{Error, GenerationKvDtype, ImportanceSamplingLevel, LrScheduler, Result};
+use retrograd_core::{
+    Error, GenerationKvDtype, ImportanceSamplingLevel, LrScheduler, Result, SamplingParams,
+};
 use retrograd_metrics::RunMetadata;
 use retrograd_tools::ToolPlanResolve;
 
@@ -30,117 +34,171 @@ pub fn checked_total_steps(label: &str, factors: &[u64]) -> Result<u64> {
     })
 }
 
+/// Accumulates the `|key=value` fields of a trajectory signature. The byte
+/// format is frozen: field names, order and encodings are the checkpoint
+/// contract, and existing signatures must not change.
+struct Descriptor(String);
+
+impl Descriptor {
+    fn new(header: &str) -> Self {
+        Self(header.to_owned())
+    }
+
+    /// A bare `|tag` with no `=`, e.g. the algorithm name.
+    fn tag(&mut self, tag: &str) {
+        self.0.push('|');
+        self.0.push_str(tag);
+    }
+
+    fn field(&mut self, name: &str, value: impl fmt::Display) {
+        self.0.push('|');
+        self.0.push_str(name);
+        self.0.push('=');
+        write!(self.0, "{value}").expect("writing to a String never fails");
+    }
+
+    fn debug(&mut self, name: &str, value: impl fmt::Debug) {
+        self.field(name, format!("{value:?}"));
+    }
+
+    /// f32 as its bits in eight hex digits, the encoding every float uses.
+    fn float(&mut self, name: &str, value: f32) {
+        self.field(name, format!("{:08x}", value.to_bits()));
+    }
+
+    /// The four rollout sampling parameters, shared verbatim by PPO, GRPO and
+    /// distillation: `temperature,top_p,max_new_tokens,seed`.
+    fn sampling(&mut self, sampling: &SamplingParams) {
+        self.field(
+            "sampling",
+            format!(
+                "{:08x},{:08x},{},{}",
+                sampling.temperature.to_bits(),
+                sampling.top_p.to_bits(),
+                sampling.max_new_tokens,
+                sampling.seed,
+            ),
+        );
+    }
+
+    /// The sequence-level ratio is a different objective, so a resume must not
+    /// cross it; the per-token default writes nothing, which keeps every
+    /// signature written before the level existed.
+    fn importance_sampling(&mut self, level: ImportanceSamplingLevel) {
+        if level != ImportanceSamplingLevel::Token {
+            self.field("is", level.as_str());
+        }
+    }
+
+    fn finish(self) -> String {
+        self.0
+    }
+}
+
 /// Stable fingerprint of every setting that can alter the continued training
 /// trajectory. Output paths and logging-only options are deliberately absent.
 pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
-    use std::fmt::Write as _;
-
     let training = &config.training;
-    let mut descriptor = format!(
-        "trajectory-v1|n_ctx={}|n_batch={}|n_ubatch={}|n_seq_max={}|generation_concurrency={}|fast_generation={}|kv_dtype={:?}|gradient_checkpointing={}|checkpoint_every_n_layers={}|checkpoint_dtype={:?}|master_weights={}|threads={}|epochs={}|lr={:08x}|wd={:08x}|max_grad_norm={:08x}|scheduler={}|warmup={}|device={:?}",
-        training.n_ctx,
-        training.n_batch,
-        training.n_ubatch,
-        training.n_seq_max,
-        training.generation_concurrency,
-        training.fast_generation_context,
-        training.kv_dtype,
-        training.gradient_checkpointing,
+    let mut descriptor = Descriptor::new("trajectory-v1");
+    descriptor.field("n_ctx", training.n_ctx);
+    descriptor.field("n_batch", training.n_batch);
+    descriptor.field("n_ubatch", training.n_ubatch);
+    descriptor.field("n_seq_max", training.n_seq_max);
+    descriptor.field("generation_concurrency", training.generation_concurrency);
+    descriptor.field("fast_generation", training.fast_generation_context);
+    descriptor.debug("kv_dtype", training.kv_dtype);
+    descriptor.field("gradient_checkpointing", training.gradient_checkpointing);
+    descriptor.field(
+        "checkpoint_every_n_layers",
         training.checkpoint_every_n_layers,
-        // Part of the trajectory identity, not a tuning knob: F16 checkpoints
-        // change the recomputed activations, so a resume must not silently cross
-        // that boundary.
-        training.checkpoint_dtype,
-        // The rounding path of each update, so a resume must not cross it.
-        training.master_weights,
-        training.threads,
-        training.epochs,
-        training.learning_rate.to_bits(),
-        training.weight_decay.to_bits(),
-        training.max_grad_norm.to_bits(),
-        scheduler_name(training.lr_scheduler),
-        training.warmup_steps,
-        training.device,
     );
+    // Part of the trajectory identity, not a tuning knob: F16 checkpoints
+    // change the recomputed activations, so a resume must not silently cross
+    // that boundary.
+    descriptor.debug("checkpoint_dtype", training.checkpoint_dtype);
+    // The rounding path of each update, so a resume must not cross it.
+    descriptor.field("master_weights", training.master_weights);
+    descriptor.field("threads", training.threads);
+    descriptor.field("epochs", training.epochs);
+    descriptor.float("lr", training.learning_rate);
+    descriptor.float("wd", training.weight_decay);
+    descriptor.float("max_grad_norm", training.max_grad_norm);
+    descriptor.field("scheduler", scheduler_name(training.lr_scheduler));
+    descriptor.field("warmup", training.warmup_steps);
+    descriptor.debug("device", training.device);
     // The distribution the rollouts are drawn from, like `fast_generation`.
     // Absent at the default, so existing signatures stay put.
     if training.generation_kv_dtype != GenerationKvDtype::F16 {
-        write!(
-            &mut descriptor,
-            "|generation_kv_dtype={}",
-            training.generation_kv_dtype.as_str()
-        )
-        .expect("writing to a String never fails");
+        descriptor.field("generation_kv_dtype", training.generation_kv_dtype.as_str());
     }
     if let Some(reference) = &config.reference {
         // The context can change RoPE scaling and therefore the anchor's scores.
         // Its file identity is checked separately by the checkpoint manifest.
-        write!(
-            &mut descriptor,
-            "|reference_ctx={}",
-            reference.n_ctx.unwrap_or(training.n_ctx)
-        )
-        .expect("writing to a String never fails");
+        descriptor.field("reference_ctx", reference.n_ctx.unwrap_or(training.n_ctx));
     }
     match &config.algorithm {
         Algorithm::Sft(sft) => {
-            write!(&mut descriptor, "|sft|format={:?}", sft.data_format)
-                .expect("writing to a String never fails");
+            descriptor.tag("sft");
+            descriptor.debug("format", sft.data_format);
             // The prepared tokens are fingerprinted already, but a resume is
             // refused on the variables themselves, as an agentic run's is.
             // Absent when empty, so existing signatures stay put.
             if !sft.template_variables.is_empty() {
-                write!(
-                    &mut descriptor,
-                    "|template_variables={}",
+                descriptor.field(
+                    "template_variables",
                     checkpoint::fingerprint(sft.template_variables_json().as_bytes()),
-                )
-                .expect("writing to a String never fails");
+                );
             }
         }
         Algorithm::Ppo(ppo) => {
-            write!(
-                &mut descriptor,
-                "|ppo|reward={:?}|updates={}|batch={}|epochs={}|clip={:08x}|kl={:08x}|critic={},{:08x},{:08x},{:08x},{}|sampling={:08x},{:08x},{},{}",
-                ppo.reward_command,
-                ppo.updates,
-                ppo.rollout_batch_size,
-                ppo.ppo_epochs,
-                ppo.clip_range.to_bits(),
-                ppo.kl_coefficient.to_bits(),
-                ppo.critic.enabled,
-                ppo.critic.gamma.to_bits(),
-                ppo.critic.gae_lambda.to_bits(),
-                ppo.critic.value_lr.to_bits(),
-                ppo.critic.value_epochs,
-                ppo.sampling.temperature.to_bits(),
-                ppo.sampling.top_p.to_bits(),
-                ppo.sampling.max_new_tokens,
-                ppo.sampling.seed,
-            )
-            .expect("writing to a String never fails");
+            descriptor.tag("ppo");
+            descriptor.debug("reward", &ppo.reward_command);
+            descriptor.field("updates", ppo.updates);
+            descriptor.field("batch", ppo.rollout_batch_size);
+            descriptor.field("epochs", ppo.ppo_epochs);
+            descriptor.float("clip", ppo.clip_range);
+            descriptor.float("kl", ppo.kl_coefficient);
+            // One `critic=` field carrying five sub-values.
+            descriptor.field(
+                "critic",
+                format!(
+                    "{},{:08x},{:08x},{:08x},{}",
+                    ppo.critic.enabled,
+                    ppo.critic.gamma.to_bits(),
+                    ppo.critic.gae_lambda.to_bits(),
+                    ppo.critic.value_lr.to_bits(),
+                    ppo.critic.value_epochs,
+                ),
+            );
+            descriptor.sampling(&ppo.sampling);
         }
         Algorithm::Grpo(grpo) => {
-            write!(
-                &mut descriptor,
-                "|grpo|reward={:?}|updates={}|prompts={}|group={}|epochs={}|clip={:08x},{:08x}|kl={:08x}|mask={}|baseline={:?}|order={:?}|overlong={:?}|kl_schedule={:?}|dynamic={:?}|judge={:?}|sampling={:08x},{:08x},{},{}",
-                grpo.reward_command,
-                grpo.updates,
-                grpo.prompts_per_update,
-                grpo.group_size,
-                grpo.grpo_epochs,
-                grpo.clip_range_low.to_bits(),
-                grpo.clip_range_high.to_bits(),
-                grpo.kl_coefficient.to_bits(),
-                grpo.mask_truncated,
-                grpo.baseline,
-                grpo.prompt_order,
-                grpo.overlong_penalty,
-                grpo.kl_schedule,
-                grpo.dynamic_sampling,
-                // The judge is part of the reward, so it is part of what a
-                // resume must find unchanged: swapping the model behind it, or
-                // the weight its verdict carries, is a different objective.
+            descriptor.tag("grpo");
+            descriptor.debug("reward", &grpo.reward_command);
+            descriptor.field("updates", grpo.updates);
+            descriptor.field("prompts", grpo.prompts_per_update);
+            descriptor.field("group", grpo.group_size);
+            descriptor.field("epochs", grpo.grpo_epochs);
+            descriptor.field(
+                "clip",
+                format!(
+                    "{:08x},{:08x}",
+                    grpo.clip_range_low.to_bits(),
+                    grpo.clip_range_high.to_bits(),
+                ),
+            );
+            descriptor.float("kl", grpo.kl_coefficient);
+            descriptor.field("mask", grpo.mask_truncated);
+            descriptor.debug("baseline", grpo.baseline);
+            descriptor.debug("order", grpo.prompt_order);
+            descriptor.debug("overlong", grpo.overlong_penalty);
+            descriptor.debug("kl_schedule", grpo.kl_schedule);
+            descriptor.debug("dynamic", grpo.dynamic_sampling);
+            // The judge is part of the reward, so it is part of what a
+            // resume must find unchanged: swapping the model behind it, or
+            // the weight its verdict carries, is a different objective.
+            descriptor.debug(
+                "judge",
                 grpo.judge.as_ref().map(|judge| {
                     (
                         &judge.config,
@@ -149,13 +207,9 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
                         judge.max_dropped_fraction.to_bits(),
                     )
                 }),
-                grpo.sampling.temperature.to_bits(),
-                grpo.sampling.top_p.to_bits(),
-                grpo.sampling.max_new_tokens,
-                grpo.sampling.seed,
-            )
-            .expect("writing to a String never fails");
-            write_importance_sampling(&mut descriptor, grpo.importance_sampling_level);
+            );
+            descriptor.sampling(&grpo.sampling);
+            descriptor.importance_sampling(grpo.importance_sampling_level);
         }
         // The offline mode resumes against a sidecar, and the sidecar *is* the
         // objective the way the teacher is on the on-policy path. Its path plus
@@ -168,46 +222,41 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
                 .offline()
                 .expect("a non-rollout distill mode is the offline one");
             let header = retrograd_dataset::topk::TopKSidecar::read(&offline.sidecar)?.header();
-            write!(
-                &mut descriptor,
-                "|distill_offline|teacher={}|data={}|sidecar={}|epochs={}|k={}|corpus={:016x}|tokenizer={:016x}|weight_clip={:08x}",
-                distill.teacher_path.display(),
-                offline.data.display(),
-                offline.sidecar.display(),
-                offline.epochs,
-                header.k,
-                header.source_hash,
-                header.tokenizer_hash,
-                distill.weight_clip.to_bits(),
-            )
-            .expect("writing to a String never fails");
+            descriptor.tag("distill_offline");
+            descriptor.field("teacher", distill.teacher_path.display());
+            descriptor.field("data", offline.data.display());
+            descriptor.field("sidecar", offline.sidecar.display());
+            descriptor.field("epochs", offline.epochs);
+            descriptor.field("k", header.k);
+            descriptor.field("corpus", format!("{:016x}", header.source_hash));
+            descriptor.field("tokenizer", format!("{:016x}", header.tokenizer_hash));
+            descriptor.float("weight_clip", distill.weight_clip);
         }
         Algorithm::Distill(distill) => {
-            write!(
-                &mut descriptor,
-                "|distill|teacher={}|updates={}|prompts={}|samples={}|epochs={}|clip={:08x},{:08x}|weight_clip={:08x}|kl={:08x}|mask={}|order={:?}|sampling={:08x},{:08x},{},{}",
-                // The teacher *is* the objective here, the way the reward
-                // command is GRPO's: resuming against another model would keep
-                // the optimizer state and change what it is being pulled
-                // toward. Its path, not its bytes - the same treatment
-                // `config.model` gets, since a GGUF is not read to be hashed.
-                distill.teacher_path.display(),
-                distill.updates,
-                distill.prompts_per_update,
-                distill.samples_per_prompt,
-                distill.distill_epochs,
-                distill.clip_range_low.to_bits(),
-                distill.clip_range_high.to_bits(),
-                distill.weight_clip.to_bits(),
-                distill.kl_coefficient.to_bits(),
-                distill.mask_truncated,
-                distill.prompt_order,
-                distill.sampling.temperature.to_bits(),
-                distill.sampling.top_p.to_bits(),
-                distill.sampling.max_new_tokens,
-                distill.sampling.seed,
-            )
-            .expect("writing to a String never fails");
+            descriptor.tag("distill");
+            // The teacher *is* the objective here, the way the reward
+            // command is GRPO's: resuming against another model would keep
+            // the optimizer state and change what it is being pulled
+            // toward. Its path, not its bytes - the same treatment
+            // `config.model` gets, since a GGUF is not read to be hashed.
+            descriptor.field("teacher", distill.teacher_path.display());
+            descriptor.field("updates", distill.updates);
+            descriptor.field("prompts", distill.prompts_per_update);
+            descriptor.field("samples", distill.samples_per_prompt);
+            descriptor.field("epochs", distill.distill_epochs);
+            descriptor.field(
+                "clip",
+                format!(
+                    "{:08x},{:08x}",
+                    distill.clip_range_low.to_bits(),
+                    distill.clip_range_high.to_bits(),
+                ),
+            );
+            descriptor.float("weight_clip", distill.weight_clip);
+            descriptor.float("kl", distill.kl_coefficient);
+            descriptor.field("mask", distill.mask_truncated);
+            descriptor.debug("order", distill.prompt_order);
+            descriptor.sampling(&distill.sampling);
         }
         // The prepared pairs are fingerprinted with the dataset, together with
         // the reference's identity; what is here is the objective.
@@ -221,21 +270,20 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
                 } => (0.0, gamma_beta_ratio),
                 PreferenceLoss::Ipo { .. } | PreferenceLoss::Orpo { .. } => (0.0, 0.0),
             };
-            write!(
-                &mut descriptor,
-                "|preference|data={}|loss={}|beta={:08x}|ref={}|ls={:08x}|gamma={:08x}|shuffle={}|pps={:?}",
-                preference.data.display(),
-                preference.loss.name(),
-                preference.loss.beta().to_bits(),
+            descriptor.tag("preference");
+            descriptor.field("data", preference.data.display());
+            descriptor.field("loss", preference.loss.name());
+            descriptor.float("beta", preference.loss.beta());
+            descriptor.field(
+                "ref",
                 preference
                     .reference
                     .map_or("none", |reference| reference.as_str()),
-                label_smoothing.to_bits(),
-                gamma_beta_ratio.to_bits(),
-                preference.shuffle,
-                preference.pairs_per_step,
-            )
-            .expect("writing to a String never fails");
+            );
+            descriptor.float("ls", label_smoothing);
+            descriptor.float("gamma", gamma_beta_ratio);
+            descriptor.field("shuffle", preference.shuffle);
+            descriptor.debug("pps", preference.pairs_per_step);
         }
         Algorithm::AgentGrpo(agent) => {
             let config = &agent.config;
@@ -255,87 +303,82 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
                 .map_err(Error::from)?
                 .catalog
                 .sha256;
-            write!(
-                &mut descriptor,
-                "|agent_grpo|scenarios={}|corpus={}|updates={}|scenarios_per_update={}|group={}|epochs={}|clip={:08x},{:08x}|kl={:08x}|limits={},{},{},{},{},{}|judge_failure={:?}|dropped={:08x}|degenerate={}|skip_empty={}|truncation={:?}|seed={}|judge={:?}|environment={:?}|mcp={:?}|tools={}",
-                agent.scenarios.display(),
-                checkpoint::fingerprint(&corpus),
-                config.updates,
-                config.scenarios_per_update,
-                config.group_size,
-                config.epochs,
-                config.clip_range_low.to_bits(),
-                config.clip_range_high.to_bits(),
-                config.kl_coefficient.to_bits(),
-                config.limits.max_turns,
-                config.limits.max_new_tokens_per_turn,
-                config.limits.max_trajectory_tokens,
-                config.limits.max_rollout_secs,
-                config.limits.end_on_no_tool_call,
-                config.limits.max_failed_turns,
-                config.judge_failure,
-                config.max_dropped_fraction.to_bits(),
-                config.drop_degenerate_groups,
-                config.skip_empty_updates,
-                config.truncation,
-                config.seed,
-                agent.judge,
-                agent.environment,
-                mcp_servers,
-                tools,
-            )
-            .expect("writing to a String never fails");
-            write_importance_sampling(&mut descriptor, config.importance_sampling_level);
+            descriptor.tag("agent_grpo");
+            descriptor.field("scenarios", agent.scenarios.display());
+            descriptor.field("corpus", checkpoint::fingerprint(&corpus));
+            descriptor.field("updates", config.updates);
+            descriptor.field("scenarios_per_update", config.scenarios_per_update);
+            descriptor.field("group", config.group_size);
+            descriptor.field("epochs", config.epochs);
+            descriptor.field(
+                "clip",
+                format!(
+                    "{:08x},{:08x}",
+                    config.clip_range_low.to_bits(),
+                    config.clip_range_high.to_bits(),
+                ),
+            );
+            descriptor.float("kl", config.kl_coefficient);
+            // One `limits=` field carrying the six rollout bounds.
+            descriptor.field(
+                "limits",
+                format!(
+                    "{},{},{},{},{},{}",
+                    config.limits.max_turns,
+                    config.limits.max_new_tokens_per_turn,
+                    config.limits.max_trajectory_tokens,
+                    config.limits.max_rollout_secs,
+                    config.limits.end_on_no_tool_call,
+                    config.limits.max_failed_turns,
+                ),
+            );
+            descriptor.debug("judge_failure", config.judge_failure);
+            descriptor.float("dropped", config.max_dropped_fraction);
+            descriptor.field("degenerate", config.drop_degenerate_groups);
+            descriptor.field("skip_empty", config.skip_empty_updates);
+            descriptor.debug("truncation", config.truncation);
+            descriptor.field("seed", config.seed);
+            descriptor.debug("judge", &agent.judge);
+            descriptor.debug("environment", &agent.environment);
+            descriptor.debug("mcp", mcp_servers);
+            descriptor.field("tools", tools);
+            descriptor.importance_sampling(config.importance_sampling_level);
             // Preserve existing checkpoint signatures when both options use their defaults.
             if !agent.system_suffix.is_empty() {
-                write!(
-                    &mut descriptor,
-                    "|system_suffix={}",
+                descriptor.field(
+                    "system_suffix",
                     checkpoint::fingerprint(agent.system_suffix.as_bytes()),
-                )
-                .expect("writing to a String never fails");
+                );
             }
             if !agent.template_variables.is_empty() {
-                write!(
-                    &mut descriptor,
-                    "|template_variables={}",
+                descriptor.field(
+                    "template_variables",
                     checkpoint::fingerprint(agent.template_variables_json().as_bytes()),
-                )
-                .expect("writing to a String never fails");
+                );
             }
             // It decides which tokens a trajectory holds and which it trains.
             if let Some(budget) = agent.reasoning_budget {
-                write!(&mut descriptor, "|reasoning_budget={budget}")
-                    .expect("writing to a String never fails");
+                descriptor.field("reasoning_budget", budget);
             }
         }
     }
     if let Some(evaluation) = &config.evaluation {
         let content = fs::read(&evaluation.data)?;
-        write!(
-            &mut descriptor,
-            "|evaluation={},{:?},{:016x},{:?},{}",
-            evaluation.every_iterations,
-            evaluation.patience,
-            evaluation.min_delta.to_bits(),
-            evaluation.max_examples,
-            checkpoint::fingerprint(&content),
-        )
-        .expect("writing to a String never fails");
+        descriptor.field(
+            "evaluation",
+            format!(
+                "{},{:?},{:016x},{:?},{}",
+                evaluation.every_iterations,
+                evaluation.patience,
+                evaluation.min_delta.to_bits(),
+                evaluation.max_examples,
+                checkpoint::fingerprint(&content),
+            ),
+        );
     } else {
-        descriptor.push_str("|evaluation=none");
+        descriptor.field("evaluation", "none");
     }
-    Ok(checkpoint::fingerprint(descriptor.as_bytes()))
-}
-
-/// The sequence-level ratio is a different objective, so a resume must not
-/// cross it; the per-token default writes nothing, which keeps every signature
-/// written before the level existed.
-fn write_importance_sampling(descriptor: &mut String, level: ImportanceSamplingLevel) {
-    if level != ImportanceSamplingLevel::Token {
-        descriptor.push_str("|is=");
-        descriptor.push_str(level.as_str());
-    }
+    Ok(checkpoint::fingerprint(descriptor.finish().as_bytes()))
 }
 
 /// Fingerprints an SFT dataset over its prepared rows rather than the source
