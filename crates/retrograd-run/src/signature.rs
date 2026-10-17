@@ -6,7 +6,7 @@ use std::path::Path;
 
 use retrograd_checkpoint as checkpoint;
 use retrograd_config::{Algorithm, PreferenceLoss, RunConfig};
-use retrograd_core::{Error, ImportanceSamplingLevel, LrScheduler, Result};
+use retrograd_core::{Error, GenerationKvDtype, ImportanceSamplingLevel, LrScheduler, Result};
 use retrograd_metrics::RunMetadata;
 use retrograd_tools::ToolPlanResolve;
 
@@ -62,6 +62,16 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
         training.warmup_steps,
         training.device,
     );
+    // The distribution the rollouts are drawn from, like `fast_generation`.
+    // Absent at the default, so existing signatures stay put.
+    if training.generation_kv_dtype != GenerationKvDtype::F16 {
+        write!(
+            &mut descriptor,
+            "|generation_kv_dtype={}",
+            training.generation_kv_dtype.as_str()
+        )
+        .expect("writing to a String never fails");
+    }
     if let Some(reference) = &config.reference {
         // The context can change RoPE scaling and therefore the anchor's scores.
         // Its file identity is checked separately by the checkpoint manifest.
@@ -522,6 +532,14 @@ mod tests {
         };
         grpo.importance_sampling_level = ImportanceSamplingLevel::Sequence;
         assert_ne!(token, trajectory_signature(&sequence).unwrap());
+        // A quantized sampling cache draws from another distribution: a resume
+        // must not cross it either way.
+        let mut quantized = sequence.clone();
+        quantized.training.generation_kv_dtype = GenerationKvDtype::Q8_0;
+        assert_ne!(
+            trajectory_signature(&sequence).unwrap(),
+            trajectory_signature(&quantized).unwrap()
+        );
     }
 
     #[test]

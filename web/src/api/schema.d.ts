@@ -1619,6 +1619,21 @@ export interface components {
       /** Format: float */
       top_p?: number | null
     }
+    /**
+     * @description Storage of the dedicated generation context's KV cache.
+     *
+     *     Read only when the fast sampling context is on: the quantized types store V
+     *     in blocks that only Flash Attention reads, and that context is the one that
+     *     requests it. Sampling has no backward graph, so nothing here touches the
+     *     gradient - only the distribution the rollouts are drawn from, which drifts
+     *     further from the trained policy the coarser the cache. The cache grows as
+     *     `ctx × generation_concurrency`, and for a small model on a long agentic
+     *     context it is most of the device: `q8_0` halves it at a perturbation of the
+     *     order of the weights' own quantization, `q4_0` quarters it and is visible
+     *     in the samples.
+     * @enum {string}
+     */
+    GenerationKvDtype: 'f16' | 'q8_0' | 'q4_0'
     GenerationResult: {
       /** @description Present only when `include_base` asked for it. */
       base_text?: string | null
@@ -2949,6 +2964,7 @@ export interface components {
       generation_batch?: number | null
       /** Format: int32 */
       generation_concurrency?: number | null
+      generation_kv_dtype?: null | components['schemas']['GenerationKvDtype']
       /**
        * Format: int32
        * @description Micro-batches accumulated before one optimizer step - TRL's

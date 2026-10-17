@@ -79,6 +79,9 @@ pub struct RetroTrainConfig {
     /// One of `RETRO_MASTER_WEIGHTS_*`: whether a half-precision parameter is
     /// trained through an F32 master copy.
     pub master_weights: c_int,
+    /// One of `RETRO_GENERATION_KV_DTYPE_*`: the dedicated generation context's
+    /// KV-cache storage.
+    pub generation_kv_dtype: c_int,
 }
 
 /// Which fixed-block state a Gefen run keeps, mirroring `retro_gefen_variant`.
@@ -1658,7 +1661,7 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroLoraConfig, target_patterns), 16);
         assert_eq!(offset_of!(RetroLoraConfig, dtype), 32);
 
-        assert_eq!(size_of::<RetroTrainConfig>(), 168);
+        assert_eq!(size_of::<RetroTrainConfig>(), 176);
         assert_eq!(align_of::<RetroTrainConfig>(), 8);
         assert_eq!(offset_of!(RetroTrainConfig, generation_concurrency), 16);
         assert_eq!(offset_of!(RetroTrainConfig, kv_dtype), 24);
@@ -1703,6 +1706,10 @@ mod contract_tests {
         // master_weights lands in the tail padding after gefen_eps, so the
         // struct size is unchanged.
         assert_eq!(offset_of!(RetroTrainConfig, master_weights), 164);
+        // master_weights filled the slot ending at 168, so generation_kv_dtype
+        // opens a new one: the struct goes from 168 to 176, four bytes of it
+        // tail padding.
+        assert_eq!(offset_of!(RetroTrainConfig, generation_kv_dtype), 168);
 
         assert_eq!(size_of::<RetroScoringStats>(), 48);
         assert_eq!(align_of::<RetroScoringStats>(), 8);
@@ -2353,6 +2360,7 @@ mod contract_tests {
             gefen_beta2: 0.0,
             gefen_eps: 0.0,
             master_weights: 0,
+            generation_kv_dtype: 0,
         };
         unsafe {
             assert!(retro_trainer_new(path.as_ptr(), &invalid).is_null());

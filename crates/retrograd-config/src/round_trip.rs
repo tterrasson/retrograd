@@ -29,9 +29,9 @@
 use std::path::Path;
 
 use retrograd_core::{
-    CheckpointDtype, FeatureDtype, GefenLayout, GefenVariant, ImportanceSamplingLevel, KvDtype,
-    LayerRange, LoraDtype, LrScheduler, MasterWeights, OptimizerKind, RewardMode,
-    SharedPrefixFanout, TrainablePolicy, TrainableSelector,
+    CheckpointDtype, FeatureDtype, GefenLayout, GefenVariant, GenerationKvDtype,
+    ImportanceSamplingLevel, KvDtype, LayerRange, LoraDtype, LrScheduler, MasterWeights,
+    OptimizerKind, RewardMode, SharedPrefixFanout, TrainablePolicy, TrainableSelector,
 };
 use retrograd_dataset::DataFormat;
 
@@ -130,6 +130,7 @@ const KEYS: &[&str] = &[
     "training.fast_sampling_context",
     "training.generation_batch",
     "training.generation_concurrency",
+    "training.generation_kv_dtype",
     "training.gradient_accumulation",
     "training.gradient_checkpointing",
     "training.kv_dtype",
@@ -330,6 +331,9 @@ fn exhaustive_document() -> ConfigDocument {
             lr_scheduler: Some("cosine".to_string()),
             warmup_steps: Some(11),
             fast_sampling_context: Some(false),
+            // The one value a context without the fast form accepts; the
+            // quantized ones reach the run in `tests::generation_kv_dtype_*`.
+            generation_kv_dtype: Some(GenerationKvDtype::F16),
             kv_dtype: Some(KvDtype::F32),
             generation_concurrency: Some(6),
             generation_batch: Some(128),
@@ -1059,6 +1063,7 @@ fn every_toml_field_reaches_the_run_config() {
     assert_eq!(training.lr_scheduler, LrScheduler::Cosine);
     assert_eq!(training.warmup_steps, 11);
     assert!(!training.fast_generation_context);
+    assert_eq!(training.generation_kv_dtype, GenerationKvDtype::F16);
     assert_eq!(training.kv_dtype, KvDtype::F32);
     assert_eq!(training.generation_concurrency, 6);
     assert_eq!(training.generation_batch, 128);

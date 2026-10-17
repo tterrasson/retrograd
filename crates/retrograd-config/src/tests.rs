@@ -2,9 +2,9 @@ use std::fs;
 use std::path::Path;
 
 use retrograd_core::{
-    CheckpointDtype, DEFAULT_REWARD_TIMEOUT_SECONDS, Device, FeatureDtype, ImportanceSamplingLevel,
-    KvDtype, LoraDtype, LrScheduler, MasterWeights, RewardMode, RewardProtocol, SamplingParams,
-    SharedPrefixFanout, TargetSet,
+    CheckpointDtype, DEFAULT_REWARD_TIMEOUT_SECONDS, Device, FeatureDtype, GenerationKvDtype,
+    ImportanceSamplingLevel, KvDtype, LoraDtype, LrScheduler, MasterWeights, RewardMode,
+    RewardProtocol, SamplingParams, SharedPrefixFanout, TargetSet,
 };
 
 use retrograd_dataset::DataFormat;
@@ -742,6 +742,55 @@ fn training_checkpoint_dtype_defaults_to_f32_and_rejects_unknown_precisions() {
             .to_string()
             .contains("checkpoint_dtype")
     );
+    remove_config(&invalid);
+}
+
+/// The sampling cache stays F16 unless asked, and a quantized one is refused
+/// where the generation context would inherit the optimizer's cache instead.
+#[test]
+fn generation_kv_dtype_defaults_to_f16_and_needs_the_fast_context_to_quantize() {
+    let source = |training: &str| {
+        format!(
+            "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[training]\n{training}[sft]\ndata='data.txt'\n"
+        )
+    };
+
+    let defaults = write_config(&source(""));
+    assert_eq!(
+        load(&defaults).unwrap().training.generation_kv_dtype,
+        GenerationKvDtype::F16
+    );
+    remove_config(&defaults);
+
+    for (spelling, expected) in [
+        ("q8_0", GenerationKvDtype::Q8_0),
+        ("q4_0", GenerationKvDtype::Q4_0),
+    ] {
+        let file = write_config(&source(&format!("generation_kv_dtype='{spelling}'\n")));
+        assert_eq!(load(&file).unwrap().training.generation_kv_dtype, expected);
+        remove_config(&file);
+
+        let inherited = write_config(&source(&format!(
+            "fast_sampling_context=false\ngeneration_kv_dtype='{spelling}'\n"
+        )));
+        let error = load(&inherited).unwrap_err().to_string();
+        assert!(error.contains("fast_sampling_context"), "{error}");
+        remove_config(&inherited);
+    }
+
+    // F16 is what the fast context already used, so naming it asks for nothing.
+    let explicit = write_config(&source(
+        "fast_sampling_context=false\ngeneration_kv_dtype='f16'\n",
+    ));
+    assert_eq!(
+        load(&explicit).unwrap().training.generation_kv_dtype,
+        GenerationKvDtype::F16
+    );
+    remove_config(&explicit);
+
+    let invalid = write_config(&source("generation_kv_dtype='q5_1'\n"));
+    let error = load(&invalid).unwrap_err().to_string();
+    assert!(error.contains("generation_kv_dtype"), "{error}");
     remove_config(&invalid);
 }
 

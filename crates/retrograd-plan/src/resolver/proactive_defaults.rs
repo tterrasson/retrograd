@@ -35,14 +35,6 @@ pub(super) fn apply_defaults(
             workload,
             calibration_for(input, algorithm, training),
         );
-        let element_bytes = if training.fast_generation_context {
-            2
-        } else {
-            match training.kv_dtype {
-                retrograd_core::KvDtype::F16 => 2,
-                retrograd_core::KvDtype::F32 => 4,
-            }
-        };
         let context = defaults::Context {
             n_layer: input.model.n_layer,
             n_ctx: training.n_ctx,
@@ -56,7 +48,7 @@ pub(super) fn apply_defaults(
                 input.model,
                 training.n_ctx,
                 budgets.vram.effective_bytes,
-                element_bytes,
+                crate::cost::generation_kv_block(training),
             ),
         };
         match entry.verdict(&context) {

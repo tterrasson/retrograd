@@ -8,7 +8,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use retrograd_core::{CheckpointDtype, Device, KvDtype, LoraDtype, MasterWeights};
+use retrograd_core::{
+    CheckpointDtype, Device, GenerationKvDtype, KvDtype, LoraDtype, MasterWeights,
+};
 
 use crate::agent::AgentToml;
 use crate::distill::DistillToml;
@@ -251,6 +253,10 @@ pub struct TrainingToml {
     pub warmup_steps: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fast_sampling_context: Option<bool>,
+    /// KV-cache storage of the fast sampling context: `"f16"` (default),
+    /// `"q8_0"` or `"q4_0"`. The quantized types require it on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_kv_dtype: Option<GenerationKvDtype>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kv_dtype: Option<KvDtype>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

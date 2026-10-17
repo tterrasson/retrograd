@@ -19,10 +19,10 @@ use retrograd::dataset::{self, DataFormat, PreparedDataset};
 use retrograd::training::{self, Progress};
 use retrograd::{
     CheckpointDtype, CheckpointMetadata, CheckpointProgress, DEFAULT_CE_SEQ_CHUNK,
-    DEFAULT_CHECKPOINT_STRIDE, DatasetRecord, Device, Error, FeatureDtype, GrpoBatchParams,
-    ImportanceSamplingLevel, KvDtype, LayerRange, LoraConfig, LrScheduler, MasterWeights,
-    OptimizerKind, RewardMode, RewardProtocol, SamplingParams, SharedPrefixFanout, TargetSet,
-    TrainConfig, TrainMetrics, TrainSequence, TrainablePolicy, TrainableRunConfig,
+    DEFAULT_CHECKPOINT_STRIDE, DatasetRecord, Device, Error, FeatureDtype, GenerationKvDtype,
+    GrpoBatchParams, ImportanceSamplingLevel, KvDtype, LayerRange, LoraConfig, LrScheduler,
+    MasterWeights, OptimizerKind, RewardMode, RewardProtocol, SamplingParams, SharedPrefixFanout,
+    TargetSet, TrainConfig, TrainMetrics, TrainSequence, TrainablePolicy, TrainableRunConfig,
     TrainableSelector, TrainableSet, Trainer, WeightedBatch, backend_list, checkpoint,
 };
 use retrograd_agent::tools::{McpServerConfig, McpToolProvider, ToolProvider};
@@ -105,6 +105,21 @@ fn parse_kv_dtype(value: &str) -> PyResult<KvDtype> {
         "f16" => Ok(KvDtype::F16),
         _ => Err(PyValueError::new_err(format!(
             "unknown kv_dtype '{value}'; use f32 or f16"
+        ))),
+    }
+}
+
+/// Storage of the fast sampling context's KV cache. The quantized types halve
+/// (`q8_0`) or quarter (`q4_0`) the cache that grows with `context_size *
+/// generation_concurrency`, at the cost of sampling further from the trained
+/// policy (see `GenerationKvDtype`).
+fn parse_generation_kv_dtype(value: &str) -> PyResult<GenerationKvDtype> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "f16" => Ok(GenerationKvDtype::F16),
+        "q8_0" => Ok(GenerationKvDtype::Q8_0),
+        "q4_0" => Ok(GenerationKvDtype::Q4_0),
+        _ => Err(PyValueError::new_err(format!(
+            "unknown generation_kv_dtype '{value}'; use f16, q8_0, or q4_0"
         ))),
     }
 }
@@ -372,9 +387,15 @@ fn resolve_optimizer(
 /// has no Python equivalent), and the caller's own algorithm settings are
 /// appended as an opaque string.
 fn python_trajectory_signature(config: &TrainConfig, algorithm: &str, extra: &str) -> String {
+    // The distribution the rollouts are drawn from, like `fast_generation`.
+    // Empty at the default, so existing signatures stay put.
+    let generation_kv = match config.generation_kv_dtype {
+        GenerationKvDtype::F16 => String::new(),
+        dtype => format!("|generation_kv_dtype={}", dtype.as_str()),
+    };
     let descriptor = format!(
         "trajectory-py-v1|n_ctx={}|n_batch={}|n_ubatch={}|n_seq_max={}|\
-         generation_concurrency={}|fast_generation={}|kv_dtype={:?}|\
+         generation_concurrency={}|fast_generation={}{generation_kv}|kv_dtype={:?}|\
          gradient_checkpointing={}|checkpoint_every_n_layers={}|checkpoint_dtype={:?}|\
          master_weights={}|threads={}|epochs={}|lr={:08x}|wd={:08x}|max_grad_norm={:08x}|scheduler={}|\
          warmup={}|device={:?}|algorithm={algorithm}|extra={extra}",
@@ -570,6 +591,7 @@ impl PyTrainer {
         generation_concurrency=0,
         generation_batch=0,
         fast_generation_context=true,
+        generation_kv_dtype="f16",
         kv_dtype="f16",
         threads=0,
         epochs=1,
@@ -611,6 +633,7 @@ impl PyTrainer {
         generation_concurrency: u32,
         generation_batch: u32,
         fast_generation_context: bool,
+        generation_kv_dtype: &str,
         kv_dtype: &str,
         threads: u32,
         epochs: u32,
@@ -659,6 +682,16 @@ impl PyTrainer {
                  pass gradient_checkpointing=True or leave it at 'f32'",
             ));
         }
+        let generation_kv_dtype = parse_generation_kv_dtype(generation_kv_dtype)?;
+        // Without the fast context the sampling cache inherits `kv_dtype`, and a
+        // quantized V cache needs the Flash Attention path that context requests.
+        if generation_kv_dtype.is_quantized() && !fast_generation_context {
+            return Err(PyValueError::new_err(format!(
+                "generation_kv_dtype='{}' stores the sampling cache in blocks only Flash \
+                 Attention reads; pass fast_generation_context=True or leave it at 'f16'",
+                generation_kv_dtype.as_str()
+            )));
+        }
         if !max_gpu_duty_cycle.is_finite() || max_gpu_duty_cycle <= 0.0 || max_gpu_duty_cycle > 1.0
         {
             return Err(PyValueError::new_err(
@@ -690,6 +723,7 @@ impl PyTrainer {
             generation_concurrency,
             generation_batch,
             fast_generation_context,
+            generation_kv_dtype,
             kv_dtype: parse_kv_dtype(kv_dtype)?,
             threads,
             epochs,

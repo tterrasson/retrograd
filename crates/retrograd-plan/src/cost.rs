@@ -59,6 +59,30 @@ fn kv_element_bytes(dtype: KvDtype) -> u64 {
     }
 }
 
+/// `(bytes, elements)` of one storage block of the dedicated generation
+/// context's KV cache, resolved the way `retro_backend` builds it: its own type
+/// when the fast sampling context is on, the optimizer's requested one
+/// otherwise.
+pub fn generation_kv_block(training: &TrainConfig) -> (u64, u64) {
+    if training.fast_generation_context {
+        training.generation_kv_dtype.block()
+    } else {
+        (kv_element_bytes(training.kv_dtype), 1)
+    }
+}
+
+/// [`ModelInfo::kv_cache_bytes`] for a cache stored in blocks of
+/// `(bytes, elements)`. The division comes last so a Q8_0 block's 34/32 is not
+/// truncated to one byte; it can only shrink a saturated figure to
+/// `u64::MAX / 32`, which no device budget approaches either.
+pub fn blocked_kv_cache_bytes(
+    model: &ModelInfo,
+    tokens: u64,
+    (bytes, elements): (u64, u64),
+) -> u64 {
+    model.kv_cache_bytes(tokens, bytes) / elements.max(1)
+}
+
 fn checkpoint_element_bytes(dtype: CheckpointDtype) -> u64 {
     match dtype {
         CheckpointDtype::F32 => 4,
@@ -634,13 +658,12 @@ pub fn estimate(
                 // the rollouts still sit on the host.
                 (0, 0, rollout_host_bytes(rollouts_per_update, n_ctx))
             } else {
-                let element = if training.fast_generation_context {
-                    2
-                } else {
-                    kv_element_bytes(training.kv_dtype)
-                };
                 let kv = total([
-                    model.kv_cache_bytes(product([n_ctx, concurrency]), element),
+                    blocked_kv_cache_bytes(
+                        model,
+                        product([n_ctx, concurrency]),
+                        generation_kv_block(training),
+                    ),
                     recurrent_state_bytes(model, concurrency),
                 ]);
                 let batch = generation_batch(training, model, concurrency);
@@ -992,6 +1015,7 @@ pub fn trainable_parameters(model: &ModelInfo, lora: Option<&LoraConfig>) -> u64
 mod tests {
     use super::*;
     use crate::testing::{sft_workload, tiny_model};
+    use retrograd_core::GenerationKvDtype;
 
     fn rollout_training(n_ctx: u32) -> TrainConfig {
         TrainConfig {
@@ -1559,6 +1583,50 @@ mod tests {
             Calibration::default(),
         );
         assert_eq!(fast.generation_kv_bytes, plain.generation_kv_bytes / 2);
+    }
+
+    #[test]
+    fn a_quantized_generation_cache_is_budgeted_by_its_blocks() {
+        let model = tiny_model();
+        let lora = LoraConfig::auto(8, 16.0);
+        let workload = rollout_workload();
+        let with = |generation_kv_dtype| {
+            estimate(
+                &model,
+                &TrainConfig {
+                    generation_kv_dtype,
+                    ..rollout_training(1024)
+                },
+                Trainable::adapter(&lora),
+                &workload,
+                Calibration::default(),
+            )
+            .generation_kv_bytes
+        };
+        let f16 = with(GenerationKvDtype::F16);
+        // Exact: the tiny model carries no recurrent state, and its rows divide
+        // into whole blocks.
+        assert_eq!(with(GenerationKvDtype::Q8_0), f16 / 64 * 34);
+        assert_eq!(with(GenerationKvDtype::Q4_0), f16 / 64 * 18);
+        // Ignored without the fast context, whose type it is.
+        let inherited = |generation_kv_dtype| {
+            estimate(
+                &model,
+                &TrainConfig {
+                    fast_generation_context: false,
+                    generation_kv_dtype,
+                    ..rollout_training(1024)
+                },
+                Trainable::adapter(&lora),
+                &workload,
+                Calibration::default(),
+            )
+            .generation_kv_bytes
+        };
+        assert_eq!(
+            inherited(GenerationKvDtype::Q8_0),
+            inherited(GenerationKvDtype::F16)
+        );
     }
 
     #[test]

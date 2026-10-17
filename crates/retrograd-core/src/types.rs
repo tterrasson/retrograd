@@ -39,6 +39,65 @@ impl KvDtype {
     }
 }
 
+/// Storage of the dedicated generation context's KV cache.
+///
+/// Read only when the fast sampling context is on: the quantized types store V
+/// in blocks that only Flash Attention reads, and that context is the one that
+/// requests it. Sampling has no backward graph, so nothing here touches the
+/// gradient - only the distribution the rollouts are drawn from, which drifts
+/// further from the trained policy the coarser the cache. The cache grows as
+/// `ctx × generation_concurrency`, and for a small model on a long agentic
+/// context it is most of the device: `q8_0` halves it at a perturbation of the
+/// order of the weights' own quantization, `q4_0` quarters it and is visible
+/// in the samples.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum GenerationKvDtype {
+    /// Two bytes per element.
+    #[default]
+    F16,
+    /// ggml's Q8_0: 34 bytes per block of 32 elements.
+    Q8_0,
+    /// ggml's Q4_0: 18 bytes per block of 32 elements.
+    Q4_0,
+}
+
+impl GenerationKvDtype {
+    pub fn as_ffi(self) -> i32 {
+        match self {
+            Self::F16 => 0,
+            Self::Q8_0 => 1,
+            Self::Q4_0 => 2,
+        }
+    }
+
+    /// The spelling a document writes and a report prints.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::F16 => "f16",
+            Self::Q8_0 => "q8_0",
+            Self::Q4_0 => "q4_0",
+        }
+    }
+
+    /// `(bytes, elements)` of one storage block, the ratio a cache budget
+    /// multiplies by. ggml blocks a row along the head dimension, which every
+    /// supported attention geometry divides into whole blocks.
+    pub fn block(self) -> (u64, u64) {
+        match self {
+            Self::F16 => (2, 1),
+            Self::Q8_0 => (34, 32),
+            Self::Q4_0 => (18, 32),
+        }
+    }
+
+    /// Whether the type needs the Flash Attention path to be read at all.
+    pub fn is_quantized(self) -> bool {
+        !matches!(self, Self::F16)
+    }
+}
+
 /// Storage precision for the layer outputs retained by gradient checkpointing.
 ///
 /// A 16-bit checkpoint halves that term, and would halve the host-transfer traffic
@@ -270,6 +329,9 @@ pub struct TrainConfig {
     /// rounding. Enabled by default and explicitly disableable for bit-exact
     /// sampling.
     pub fast_generation_context: bool,
+    /// KV-cache storage of the dedicated generation context. Requires
+    /// `fast_generation_context` unless it is F16; see [`GenerationKvDtype`].
+    pub generation_kv_dtype: GenerationKvDtype,
     /// KV-cache storage requested for the differentiable optimizer context.
     ///
     /// F16 is the default: it halves the term that grows with the context, and
@@ -438,6 +500,7 @@ impl Default for TrainConfig {
             shared_prefix_fanout: SharedPrefixFanout::Auto,
             generation_concurrency: 0,
             fast_generation_context: true,
+            generation_kv_dtype: GenerationKvDtype::F16,
             kv_dtype: KvDtype::F16,
             threads: 0,
             epochs: 1,

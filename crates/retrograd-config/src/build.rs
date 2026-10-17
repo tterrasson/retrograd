@@ -309,6 +309,20 @@ fn build_training(
     if let Some(value) = file.kv_dtype {
         training.kv_dtype = value;
     }
+    if let Some(value) = file.generation_kv_dtype {
+        // Same reasoning as `checkpoint_dtype`: without the fast context the
+        // generation cache inherits `kv_dtype`, and a quantized V cache cannot
+        // be read without the Flash Attention path that context requests.
+        if value.is_quantized() && !training.fast_generation_context {
+            return Err(Error::config(format!(
+                "training.generation_kv_dtype = '{}' stores the sampling cache in blocks only \
+                 Flash Attention reads; set training.fast_sampling_context = true or leave \
+                 it at 'f16'",
+                value.as_str()
+            )));
+        }
+        training.generation_kv_dtype = value;
+    }
     if let Some(value) = file.chunked_cross_entropy {
         training.chunked_cross_entropy = value;
     }

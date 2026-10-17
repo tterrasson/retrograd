@@ -73,6 +73,14 @@ typedef enum retro_master_weights {
     RETRO_MASTER_WEIGHTS_OFF  = 2,
 } retro_master_weights;
 
+// Storage of the dedicated generation context's KV cache. The quantized types
+// need the Flash Attention path, so they require fast_generation_context.
+typedef enum retro_generation_kv_dtype {
+    RETRO_GENERATION_KV_DTYPE_F16  = 0,
+    RETRO_GENERATION_KV_DTYPE_Q8_0 = 1,
+    RETRO_GENERATION_KV_DTYPE_Q4_0 = 2,
+} retro_generation_kv_dtype;
+
 // Identifies a single training-backward op for the correctness probe API.
 typedef enum retro_probe_op {
     RETRO_PROBE_OP_SILU_BACK = 1,
@@ -925,6 +933,9 @@ typedef struct retro_train_config {
     // One of retro_master_weights. Structural: it changes the optimizer
     // layout, so it is fixed when the optimizer context is created.
     int32_t master_weights;
+    // One of retro_generation_kv_dtype. Read only by the dedicated generation
+    // context; never affects the optimizer context.
+    int32_t generation_kv_dtype;
 } retro_train_config;
 
 typedef struct retro_train_metrics {

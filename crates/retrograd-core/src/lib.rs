@@ -62,7 +62,7 @@ pub use trainable::{
 pub use types::{
     ArtifactPolicy, CheckpointDtype, CheckpointMetadata, DEFAULT_CE_SEQ_CHUNK,
     DEFAULT_CHECKPOINT_STRIDE, DEFAULT_REWARD_TIMEOUT_SECONDS, Dataset, Device, EvalMetrics,
-    FUSED_CE_K_MAX, FeatureDtype, FusedCeProbe, FusedCeWeightType, Generation,
+    FUSED_CE_K_MAX, FeatureDtype, FusedCeProbe, FusedCeWeightType, Generation, GenerationKvDtype,
     ImportanceSamplingLevel, KernelImpl, KernelReject, KernelRunInfo, KvDtype, LoraConfig,
     LoraDtype, LrScheduler, MasterWeights, MemoryReport, ModelInfo, ProbeOp, Progress, ResumeInfo,
     RewardMode, RewardProtocol, RirCounters, RirMode, SamplingParams, SharedPrefixFanout,
