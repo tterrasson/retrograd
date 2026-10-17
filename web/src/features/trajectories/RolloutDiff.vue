@@ -75,7 +75,7 @@ const loading = computed(() => leftQuery.isFetching.value || rightQuery.isFetchi
     </v-row>
 
     <h3 class="text-subtitle-2 mb-1">Final answers, word by word</h3>
-    <pre class="text-pre rg-code diff mb-3"><span
+    <pre class="rg-pre rg-code diff mb-3"><span
       v-for="(part, index) in answerDiff"
       :key="index"
       :class="{ added: part.added, removed: part.removed }"
@@ -83,7 +83,7 @@ const loading = computed(() => leftQuery.isFetching.value || rightQuery.isFetchi
 
     <template v-if="summaryDiff">
       <h3 class="text-subtitle-2 mb-1">summary</h3>
-      <pre class="text-pre rg-code diff mb-3"><span
+      <pre class="rg-pre rg-code diff mb-3"><span
         v-for="(part, index) in summaryDiff"
         :key="index"
         :class="{ added: part.added, removed: part.removed }"
@@ -99,10 +99,10 @@ const loading = computed(() => leftQuery.isFetching.value || rightQuery.isFetchi
     </template>
     <v-row v-else-if="leftMember && rightMember" dense>
       <v-col cols="6">
-        <pre class="text-pre rg-code">{{ leftMember.completion }}</pre>
+        <pre class="rg-pre rg-code">{{ leftMember.completion }}</pre>
       </v-col>
       <v-col cols="6">
-        <pre class="text-pre rg-code">{{ rightMember.completion }}</pre>
+        <pre class="rg-pre rg-code">{{ rightMember.completion }}</pre>
       </v-col>
     </v-row>
   </div>

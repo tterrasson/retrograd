@@ -58,7 +58,7 @@ const toml = computed(() => (tomlOpen.value ? toToml(effective.value) : ''))
           <CopyButton :text="toml" label="Copy the TOML" />
         </v-card-title>
         <v-card-text>
-          <pre class="text-pre rg-code">{{ toml }}</pre>
+          <pre class="rg-pre rg-code">{{ toml }}</pre>
         </v-card-text>
         <v-card-actions>
           <span class="text-caption rg-muted px-2"

@@ -63,24 +63,24 @@ const examples = computed<Example[]>(() => (preview.data.value?.examples ?? []) 
           <div v-if="messagesOf(example)">
             <div v-for="(message, m) in messagesOf(example)" :key="m" class="mb-2">
               <div class="text-caption text-uppercase rg-muted">{{ message.role }}</div>
-              <pre class="text-pre rg-code">{{ text(message.content) }}</pre>
+              <pre class="rg-pre rg-code">{{ text(message.content) }}</pre>
             </div>
           </div>
           <v-row v-else-if="pairOf(example)" dense>
             <v-col cols="12"
               ><div class="text-caption rg-muted">prompt</div>
-              <pre class="text-pre rg-code">{{ text(pairOf(example)?.prompt) }}</pre>
+              <pre class="rg-pre rg-code">{{ text(pairOf(example)?.prompt) }}</pre>
             </v-col>
             <v-col cols="12" md="6"
               ><div class="text-caption text-success">chosen</div>
-              <pre class="text-pre rg-code">{{ text(pairOf(example)?.chosen) }}</pre>
+              <pre class="rg-pre rg-code">{{ text(pairOf(example)?.chosen) }}</pre>
             </v-col>
             <v-col cols="12" md="6"
               ><div class="text-caption text-error">rejected</div>
-              <pre class="text-pre rg-code">{{ text(pairOf(example)?.rejected) }}</pre>
+              <pre class="rg-pre rg-code">{{ text(pairOf(example)?.rejected) }}</pre>
             </v-col>
           </v-row>
-          <pre v-else-if="typeof example === 'string'" class="text-pre rg-code">{{ example }}</pre>
+          <pre v-else-if="typeof example === 'string'" class="rg-pre rg-code">{{ example }}</pre>
           <JsonTree v-else :value="example" :open-depth="2" />
         </v-expansion-panel-text>
       </v-expansion-panel>

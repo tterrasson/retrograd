@@ -25,7 +25,7 @@ defineProps<{
       <div v-for="(turn, index) in turns" :key="index" class="mb-3">
         <div class="text-caption text-uppercase rg-muted">{{ turn.role }}</div>
         <MarkdownText v-if="markdown && turn.role === 'assistant'" :text="turn.content" />
-        <pre v-else class="text-pre">{{ turn.content }}</pre>
+        <pre v-else class="rg-pre">{{ turn.content }}</pre>
       </div>
       <v-alert v-if="state === 'error' && error" type="error" variant="tonal" density="compact">
         {{ toProblem(error).detail || toProblem(error).title }}

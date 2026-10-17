@@ -10,5 +10,5 @@ const html = computed(() => (props.markdown ? renderMarkdown(props.text) : ''))
 <template>
   <!-- eslint-disable-next-line vue/no-v-html -->
   <div v-if="markdown" class="rg-markdown" v-html="html" />
-  <pre v-else class="text-pre">{{ text }}</pre>
+  <pre v-else class="rg-pre">{{ text }}</pre>
 </template>

@@ -57,11 +57,11 @@ const color = computed(() => {
       <summary class="text-caption rg-clickable">
         {{ content.split('\n').slice(0, 2).join(' ⏎ ') }} … ({{ content.split('\n').length }} lines)
       </summary>
-      <pre class="text-pre">{{ content }}</pre>
+      <pre class="rg-pre">{{ content }}</pre>
     </details>
     <template v-else-if="content">
       <MarkdownText v-if="markdown && message.role !== 'tool'" :text="content" />
-      <pre v-else class="text-pre" :class="{ 'text-error': message.is_error }">{{ content }}</pre>
+      <pre v-else class="rg-pre" :class="{ 'text-error': message.is_error }">{{ content }}</pre>
     </template>
     <ToolCallBlock
       v-for="call in message.tool_calls ?? []"

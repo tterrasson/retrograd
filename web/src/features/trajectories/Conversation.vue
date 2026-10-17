@@ -72,7 +72,7 @@ const hasMetadata = computed(() => !!metadata.value && Object.keys(metadata.valu
 
     <template v-if="member.completion !== undefined && member.completion !== null">
       <MarkdownText v-if="markdown" :text="member.completion" />
-      <pre v-else class="text-pre rg-code">{{ member.completion }}</pre>
+      <pre v-else class="rg-pre rg-code">{{ member.completion }}</pre>
     </template>
     <template v-for="(message, index) in messages" :key="index">
       <MessageBubble
@@ -99,7 +99,7 @@ const hasMetadata = computed(() => !!metadata.value && Object.keys(metadata.valu
     </div>
     <div v-if="member.judge_explanation" class="mt-2">
       <div class="text-caption rg-muted">judge</div>
-      <pre class="text-pre rg-code">{{ member.judge_explanation }}</pre>
+      <pre class="rg-pre rg-code">{{ member.judge_explanation }}</pre>
     </div>
     <details v-if="hasMetadata" class="mt-2">
       <summary class="text-body-2 rg-clickable">trajectory metadata</summary>
