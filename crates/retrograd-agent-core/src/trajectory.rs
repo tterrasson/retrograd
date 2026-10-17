@@ -159,15 +159,14 @@ impl Trajectory {
                 ));
             }
             // A policy action trains what the policy sampled, which is every
-            // token of it but those a reasoning budget forced in its place.
-            let span = &self.train_mask[start..end];
-            let consistent = match step.kind == StepKind::PolicyAction {
-                true => span.contains(&true),
-                false => !span.contains(&true),
-            };
-            if !consistent {
+            // token of it but those a reasoning budget forced in its place. It
+            // may train none: a turn cut by a token limit while the budget was
+            // forcing the end tag holds only forced tokens, and the trajectory
+            // is kept as truncated. That the whole trajectory trains something
+            // is checked above.
+            if step.kind != StepKind::PolicyAction && self.train_mask[start..end].contains(&true) {
                 return Err(Error::invalid(
-                    "only PolicyAction steps may contain trainable tokens, and each must contain one",
+                    "only PolicyAction steps may contain trainable tokens",
                 ));
             }
             if step.reward.is_some_and(|reward| !reward.is_finite()) {
@@ -272,6 +271,50 @@ mod tests {
         let mut invalid = trajectory;
         invalid.train_mask[3] = true;
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn a_policy_action_of_forced_tokens_only_is_valid_but_a_trajectory_trains_something() {
+        let mut trajectory = Trajectory {
+            scenario_id: "s".into(),
+            messages: vec![],
+            tokens: vec![1, 2, 3, 4, 5],
+            old_logprobs: vec![-0.1],
+            train_mask: vec![false, true, false, false, false],
+            steps: vec![
+                Step {
+                    kind: StepKind::Context,
+                    token_range: (0, 1),
+                    reward: None,
+                },
+                Step {
+                    kind: StepKind::PolicyAction,
+                    token_range: (1, 2),
+                    reward: None,
+                },
+                Step {
+                    kind: StepKind::ToolResult,
+                    token_range: (2, 3),
+                    reward: None,
+                },
+                // The last turn: a budget forcing its end tag, cut by the
+                // turn's token limit before the policy sampled anything.
+                Step {
+                    kind: StepKind::PolicyAction,
+                    token_range: (3, 5),
+                    reward: None,
+                },
+            ],
+            reward: Some(0.0),
+            truncated: true,
+            metadata: Default::default(),
+            provenance: None,
+        };
+        trajectory.validate().unwrap();
+
+        trajectory.train_mask[1] = false;
+        trajectory.old_logprobs.clear();
+        assert!(trajectory.validate().is_err());
     }
 
     #[test]

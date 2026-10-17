@@ -357,9 +357,16 @@ impl<'b, B: DatasetBackend + ?Sized> ToolConversationRenderer<'b, B> {
         for (turn, &index) in assistants.iter().enumerate() {
             let message = &example.messages[index];
             let declared = &calls[index];
+            // A turn that reasons is what the template writes for it, calls or
+            // not: its content alone would drop the reasoning from the stream.
+            let reasons = message
+                .reasoning_content
+                .as_deref()
+                .is_some_and(|reasoning| !reasoning.is_empty());
             let text = match (message.raw, declared.is_empty(), rendering.kind) {
-                (true, _, _) | (false, true, _) => message.content.clone(),
-                (false, false, ToolRenderingKind::Native) => {
+                (true, _, _) => message.content.clone(),
+                (false, true, _) if !reasons => message.content.clone(),
+                (false, false, ToolRenderingKind::Native) | (false, true, _) => {
                     let revealed = template_messages_revealing(&messages, turn)
                         .map_err(ToolRenderError::from)?;
                     let whole = self

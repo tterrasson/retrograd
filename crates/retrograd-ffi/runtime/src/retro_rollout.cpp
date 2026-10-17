@@ -1054,13 +1054,34 @@ public:
     // Replays the end of the prompt, as long as the template's generation
     // prompt, so a prompt that already opened the reasoning block starts the
     // row counting and one that closed it starts it done.
+    //
+    // A machine that starts forcing on a prompt token - a budget of zero on an
+    // opening tag, or one spent inside the prompt - stops the replay there: the
+    // machine reads every token it accepts while forcing as the next forced
+    // one, so the prompt's `\n` after `<think>` would stand for the end tag and
+    // the tag would never be emitted. The rest of the prompt belongs to the
+    // prompt, unless it closes the block itself (an empty block written by the
+    // template): then the forced sequence is accepted in its place, which
+    // leaves the machine done, and the replay resumes after the tag.
     void prime(size_t row, const int32_t * prompt, size_t n_prompt) {
         if (!plan_) {
             return;
         }
-        const size_t tail = std::min(plan_->n_prompt_tail, n_prompt);
-        for (size_t i = n_prompt - tail; i < n_prompt; ++i) {
-            accept(row, prompt[i]);
+        const int32_t * end = prompt + n_prompt;
+        const int32_t * at = prompt + (n_prompt - std::min(plan_->n_prompt_tail, n_prompt));
+        while (at != end) {
+            accept(row, *at++);
+            if (common_reasoning_budget_get_state(rows_[row].sampler) != REASONING_BUDGET_FORCING) {
+                continue;
+            }
+            const int32_t * closed = closing_tag_end(at, end);
+            if (!closed) {
+                return;
+            }
+            for (const int32_t token : plan_->forced) {
+                accept(row, token);
+            }
+            at = closed;
         }
     }
 
@@ -1073,12 +1094,21 @@ public:
         }
         row_state & state = rows_[row];
         int32_t token = sampled;
-        if (common_reasoning_budget_get_state(state.sampler) == REASONING_BUDGET_FORCING
-                && state.force_pos < plan_->forced.size()) {
+        if (common_reasoning_budget_get_state(state.sampler) == REASONING_BUDGET_FORCING) {
+            // The machine forces exactly `forced`, one token per accept, so a
+            // forcing machine whose local position ran past it is out of step.
+            GGML_ASSERT(state.force_pos < plan_->forced.size());
             token = plan_->forced[state.force_pos++];
             forced = true;
         }
         accept(row, token);
+        // The forced sequence is emitted whole: the machine is done exactly
+        // when the last forced token went out, and still forcing before.
+        if (forced) {
+            const bool done = state.force_pos == plan_->forced.size();
+            const auto after = common_reasoning_budget_get_state(state.sampler);
+            GGML_ASSERT(done ? after == REASONING_BUDGET_DONE : after == REASONING_BUDGET_FORCING);
+        }
         return token;
     }
 
@@ -1088,6 +1118,20 @@ private:
         // Position in `forced`, which the machine keeps to itself.
         size_t force_pos = 0;
     };
+
+    // One past the earliest end tag in [from, to), or null if none closes there.
+    const int32_t * closing_tag_end(const int32_t * from, const int32_t * to) const {
+        const int32_t * closed = nullptr;
+        const int32_t * earliest = to;
+        for (const auto & tag : plan_->ends) {
+            const int32_t * found = std::search(from, to, tag.begin(), tag.end());
+            if (found != to && found < earliest) {
+                earliest = found;
+                closed = found + tag.size();
+            }
+        }
+        return closed;
+    }
 
     void accept(size_t row, int32_t token) {
         row_state & state = rows_[row];

@@ -356,6 +356,30 @@ fn a_turn_s_reasoning_is_written_by_the_template_and_trained() {
     );
 }
 
+/// A turn whose template writes reasoning framing outside the turn itself - an
+/// empty block before a turn it is not shown (Qwen3.5, and Qwen3 for the last
+/// turn), the reasoning in its place once it is - is not local to its
+/// sentinel. The record is refused, with a way out, rather than trained
+/// without its reasoning: an answer without calls included, whose content
+/// alone would drop the reasoning from the stream.
+#[test]
+fn a_template_that_frames_reasoning_outside_the_turn_refuses_it_explicitly() {
+    for (template, turn) in [("qwen3-0.6b", 5), ("qwen3.5-0.8b", 2), ("qwen3.5-0.8b", 5)] {
+        let backend = FixtureBackend::new(template);
+        let mut example = record();
+        example.messages[turn].reasoning_content = Some("left looks open".into());
+        let error = ToolConversationRenderer::new(&backend)
+            .stream(&example)
+            .expect_err("the turn is not local to its sentinel");
+        let message = error.to_string();
+        assert!(
+            message.contains("non-locally"),
+            "{template} {turn}: {message}"
+        );
+        assert!(message.contains("raw"), "{template} {turn}: {message}");
+    }
+}
+
 #[test]
 fn reasoning_belongs_to_a_structured_assistant_turn_only() {
     let mut on_user = record();

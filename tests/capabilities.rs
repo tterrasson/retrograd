@@ -673,11 +673,9 @@ fn a_reasoning_budget_forces_the_template_s_end_tag_and_says_so() {
     let _guard = common::serialize_models();
     let mut trainer = Trainer::new(&model, cpu_config()).expect("load model");
 
-    let opened = trainer
+    let rendered = trainer
         .format_chat_messages(r#"[{"role":"user","content":"Hi."}]"#, None, true)
-        .expect("render the prompt")
-        + "<think>";
-    let prompt = trainer.tokenize_text(&opened).expect("tokenize the prompt");
+        .expect("render the prompt");
     let end = trainer
         .tokenize_fragment("</think>")
         .expect("tokenize the end tag");
@@ -691,16 +689,44 @@ fn a_reasoning_budget_forces_the_template_s_end_tag_and_says_so() {
     trainer
         .set_reasoning_budget(Some(0))
         .expect("the template declares a reasoning block");
+    // The opening tag alone, and followed by the newline a template writes
+    // after it (Qwen3.5 under `enable_thinking`): the prompt's own tokens after
+    // the tag are not the forced sequence, which is emitted whole either way.
+    for opening in ["<think>", "<think>\n"] {
+        let prompt = trainer
+            .tokenize_text(&format!("{rendered}{opening}"))
+            .expect("tokenize the prompt");
+        let rows = trainer
+            .generate_sampled_continuous(&[(prompt.as_slice(), sampling)])
+            .expect("generate under the budget");
+        let row = &rows[0];
+        assert_eq!(
+            &row.tokens[..end.len()],
+            end.as_slice(),
+            "{opening:?}: {row:?}"
+        );
+        assert!(
+            row.forced[..end.len()].iter().all(|&forced| forced),
+            "{opening:?}: {row:?}"
+        );
+        assert!(
+            !row.forced[end.len()..].contains(&true),
+            "{opening:?}: {row:?}"
+        );
+    }
+
+    // A prompt that opens and closes the block itself leaves nothing to force.
+    let closed = trainer
+        .tokenize_text(&format!("{rendered}<think>\n\n</think>\n\n"))
+        .expect("tokenize the prompt");
     let rows = trainer
-        .generate_sampled_continuous(&[(prompt.as_slice(), sampling)])
-        .expect("generate under the budget");
-    let row = &rows[0];
-    assert_eq!(&row.tokens[..end.len()], end.as_slice(), "{row:?}");
-    assert!(
-        row.forced[..end.len()].iter().all(|&forced| forced),
-        "{row:?}"
-    );
-    assert!(!row.forced[end.len()..].contains(&true), "{row:?}");
+        .generate_sampled_continuous(&[(closed.as_slice(), sampling)])
+        .expect("generate after a closed block");
+    assert!(!rows[0].forced.contains(&true), "{:?}", rows[0]);
+
+    let prompt = trainer
+        .tokenize_text(&format!("{rendered}<think>"))
+        .expect("tokenize the prompt");
 
     let error = trainer
         .generate_tokens_continuous(&[(prompt.as_slice(), sampling)])
