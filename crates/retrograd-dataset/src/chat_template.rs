@@ -78,6 +78,8 @@ pub struct TemplateMessage<'a> {
     /// Only ever rendered for the assistant turn [`template_messages_revealing`]
     /// reveals; a sentinelled turn never shows its calls.
     pub tool_calls: &'a [TemplateCall],
+    /// Handed over as `reasoning_content` under the same rule as `tool_calls`.
+    pub reasoning: Option<&'a str>,
 }
 
 impl<'a> TemplateMessage<'a> {
@@ -87,6 +89,7 @@ impl<'a> TemplateMessage<'a> {
             content: content.into(),
             tool_call_id: None,
             tool_calls: &[],
+            reasoning: None,
         }
     }
 }
@@ -180,6 +183,9 @@ fn serialize_messages(
                 if reveal.reveals(index) {
                     if !message.tool_calls.is_empty() {
                         object.insert("tool_calls".into(), openai_calls(message.tool_calls));
+                    }
+                    if let Some(reasoning) = message.reasoning {
+                        object.insert("reasoning_content".into(), Value::String(reasoning.into()));
                     }
                     message.content.to_string()
                 } else {
@@ -493,11 +499,16 @@ pub fn observation_payload(
     Some(text.to_owned())
 }
 
-/// What a parser read out of an assistant turn: the prose, the calls, and each
-/// call it could not read with its position among the turn's calls.
+/// What a parser read out of an assistant turn: the prose, the reasoning block
+/// the template's own parser split from it, the calls, and each call it could
+/// not read with its position among the turn's calls.
 #[derive(Debug, Default)]
 pub struct ParsedCalls {
     pub content: String,
+    /// The text of the template's reasoning block, without its tags. Empty for
+    /// a turn that did not reason, and for a parser - Hermes - that knows no
+    /// such block.
+    pub reasoning: String,
     pub calls: Vec<TemplateCall>,
     pub errors: Vec<(usize, ToolCallParseError)>,
 }
@@ -738,14 +749,19 @@ pub enum DocumentError {
 pub fn decode_parsed_assistant(document: &str) -> std::result::Result<ParsedCalls, DocumentError> {
     let value: Value = serde_json::from_str(document).map_err(DocumentError::InvalidJson)?;
     let object = value.as_object().ok_or(DocumentError::NotAnObject)?;
-    let field = |name: &str| object.get(name).and_then(Value::as_str).unwrap_or_default();
-    // Reasoning is left in the content by the parser the runtime builds, but a
-    // template whose parser splits it anyway must not lose the text.
-    let mut content = field("reasoning_content").to_owned();
-    content.push_str(field("content"));
-
+    let field = |name: &str| {
+        object
+            .get(name)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_owned()
+    };
+    // The runtime splits the reasoning block out with the tags llama.cpp
+    // derived from the template; nothing here knows what they are.
     let mut parsed = ParsedCalls {
-        content: content.trim().to_owned(),
+        content: field("content"),
+        reasoning: field("reasoning_content"),
         ..Default::default()
     };
     let calls = object

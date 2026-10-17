@@ -303,6 +303,11 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
                 )
                 .expect("writing to a String never fails");
             }
+            // It decides which tokens a trajectory holds and which it trains.
+            if let Some(budget) = agent.reasoning_budget {
+                write!(&mut descriptor, "|reasoning_budget={budget}")
+                    .expect("writing to a String never fails");
+            }
         }
     }
     if let Some(evaluation) = &config.evaluation {

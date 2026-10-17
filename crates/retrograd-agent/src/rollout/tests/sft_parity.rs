@@ -174,6 +174,7 @@ impl TemplatePolicy {
             tokens,
             text,
             stopped_at_eog: true,
+            forced: Vec::new(),
         }
     }
 }

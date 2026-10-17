@@ -381,3 +381,55 @@ async fn a_valid_call_resets_the_failed_turn_count() {
     );
     assert!(trajectory.truncated);
 }
+
+/// Answers with three tokens, the middle one forced by the reasoning budget.
+struct ForcedPolicy;
+
+#[async_trait]
+impl Policy for ForcedPolicy {
+    async fn render_chat_framing(
+        &self,
+        messages: &[Message],
+        _tools: &[ToolSpec],
+        _add: bool,
+    ) -> Result<Vec<Vec<i32>>> {
+        Ok(framing(messages, &[1, 2], &[20]))
+    }
+
+    async fn generate_shared(
+        &self,
+        _prompt: Vec<i32>,
+        sampling: Vec<SamplingParams>,
+    ) -> Result<Vec<PolicyGeneration>> {
+        Ok(sampling
+            .iter()
+            .map(|_| PolicyGeneration {
+                tokens: vec![11, 12, 13],
+                text: "answer".into(),
+                stopped_at_eog: true,
+                forced: vec![false, true, false],
+            })
+            .collect())
+    }
+
+    async fn score_masked(&self, _tokens: Vec<i32>, train_mask: Vec<bool>) -> Result<Vec<f32>> {
+        Ok(logprobs(&train_mask, -0.5))
+    }
+}
+
+#[tokio::test]
+async fn a_token_the_reasoning_budget_forced_is_kept_but_not_trained() {
+    let engine = RolloutEngine::new(
+        Arc::new(ForcedPolicy),
+        RolloutLimits {
+            max_new_tokens_per_turn: 4,
+            max_trajectory_tokens: 8,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let trajectory = engine.rollout(&scenario(), 7).await.unwrap();
+    assert_eq!(trajectory.tokens, [1, 2, 11, 12, 13]);
+    assert_eq!(trajectory.train_mask, [false, false, true, false, true]);
+    assert_eq!(trajectory.old_logprobs, [-0.5, -0.5]);
+}

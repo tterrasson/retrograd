@@ -149,24 +149,21 @@ int copy_rendered_out(const std::string & rendered, char * buffer, size_t n_buff
 
 }  // namespace
 
-int set_chat_template_variables(trainer_state & state, const char * variables_json) {
+bool validate_template_variables(const char * variables_json, std::string & out_validated) {
+    out_validated.clear();
     if (!variables_json || *variables_json == '\0') {
-        state.chat_template_variables.clear();
-        if (state.chat_template_cache) {
-            state.chat_template_cache->supports_tools = -1;
-        }
-        return 0;
+        return true;
     }
     json variables;
     try {
         variables = json::parse(variables_json);
     } catch (const std::exception & err) {
         set_error(std::string("failed to parse chat template variables: ") + err.what());
-        return -1;
+        return false;
     }
     if (!variables.is_object()) {
         set_error("chat template variables must be a JSON object");
-        return -1;
+        return false;
     }
     // Refused, not overwritten.
     static const char * const reserved[] = {
@@ -176,14 +173,107 @@ int set_chat_template_variables(trainer_state & state, const char * variables_js
         if (variables.contains(name)) {
             set_error(std::string("chat template variable '") + name
                       + "' is built from the conversation and cannot be set");
-            return -1;
+            return false;
         }
     }
-    state.chat_template_variables = variables.empty() ? std::string() : variables.dump();
-    // Template variables may change whether the tool-support probe succeeds.
+    // llama.cpp reads it as a flag when it derives the parser; a string would
+    // be truthy in the template and ignored by the derivation.
+    if (variables.contains("enable_thinking") && !variables.at("enable_thinking").is_boolean()) {
+        set_error("chat template variable 'enable_thinking' must be a boolean");
+        return false;
+    }
+    out_validated = variables.empty() ? std::string() : variables.dump();
+    return true;
+}
+
+namespace {
+
+// What the template appends for an assistant to start: one user turn rendered
+// with and without the generation prompt, and the difference.
+bool generation_prompt(const chat_template_state & tmpl, const json & variables, std::string & out) {
+    const json messages = json::array({ json{ { "role", "user" }, { "content", "probe" } } });
+    const std::string dumped = variables.empty() ? std::string() : variables.dump();
+    std::string without;
+    std::string with;
+    if (!apply_template(tmpl, messages, nullptr, false, dumped, without)
+            || !apply_template(tmpl, messages, nullptr, true, dumped, with)) {
+        return false;
+    }
+    size_t common = 0;
+    while (common < without.size() && common < with.size() && without[common] == with[common]) {
+        ++common;
+    }
+    out = with.substr(common);
+    return true;
+}
+
+bool derivation_variables(const chat_template_state & tmpl, const std::string & validated, std::string & out) {
+    json variables = validated.empty() ? json::object() : json::parse(validated);
+    if (!variables.contains("enable_thinking")) {
+        std::string unset;
+        if (!generation_prompt(tmpl, variables, unset)) {
+            return false;
+        }
+        bool found = false;
+        // True first: it is llama.cpp's default, and the answer for a template
+        // that never reads the variable.
+        for (const bool candidate : { true, false }) {
+            json candidate_variables = variables;
+            candidate_variables["enable_thinking"] = candidate;
+            std::string rendered;
+            if (!generation_prompt(tmpl, candidate_variables, rendered)) {
+                return false;
+            }
+            if (rendered == unset) {
+                variables["enable_thinking"] = candidate;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            set_error("with `enable_thinking` unset the chat template renders a generation prompt "
+                      "that neither true nor false reproduces; set it in the template variables");
+            return false;
+        }
+    }
+    out = variables.dump();
+    return true;
+}
+
+}  // namespace
+
+bool resolve_derivation_variables(trainer_state & state, std::string & out_variables) {
+    const chat_template_state * tmpl = ensure_chat_template(state);
+    return tmpl && derivation_variables(*tmpl, state.chat_template_variables, out_variables);
+}
+
+bool resolve_derivation_variables_source(
+        const char * template_src,
+        const char * variables_json,
+        std::string & out_variables) {
+    std::string validated;
+    if (!validate_template_variables(variables_json, validated)) {
+        return false;
+    }
+    const auto tmpl = parse_chat_template(template_src);
+    return tmpl && derivation_variables(*tmpl, validated, out_variables);
+}
+
+int set_chat_template_variables(trainer_state & state, const char * variables_json) {
+    std::string validated;
+    if (!validate_template_variables(variables_json, validated)) {
+        return -1;
+    }
+    state.chat_template_variables = std::move(validated);
+    // Everything derived from the variables: the tool-support probe, the
+    // parser (whose generation prompt they decide) and the reasoning budget's
+    // tags.
     if (state.chat_template_cache) {
         state.chat_template_cache->supports_tools = -1;
     }
+    state.tool_call_parser_cache.clear();
+    state.tool_call_parser_tools.clear();
+    state.reasoning_plan = reasoning_budget_plan{};
     return 0;
 }
 
@@ -261,10 +351,15 @@ int render_chat_template_source(
         const char * template_src,
         const char * messages_json,
         const char * tools_json,
+        const char * variables_json,
         bool add_assistant,
         char * buffer,
         size_t n_buffer,
         size_t * out_n_bytes) {
+    std::string variables;
+    if (!validate_template_variables(variables_json, variables)) {
+        return -1;
+    }
     auto tmpl = parse_chat_template(template_src);
     if (!tmpl) {
         return -1;
@@ -293,9 +388,8 @@ int render_chat_template_source(
     }
 
     std::string rendered;
-    // No trainer here, so no configured variables: this entry point exists to
-    // render a `.jinja` fixture, and a fixture states its own inputs.
-    if (!apply_template(*tmpl, messages, tools_json ? &tools : nullptr, add_assistant, {}, rendered)) {
+    // No trainer here: a fixture states its own variables.
+    if (!apply_template(*tmpl, messages, tools_json ? &tools : nullptr, add_assistant, variables, rendered)) {
         return -1;
     }
     return copy_rendered_out(rendered, buffer, n_buffer, out_n_bytes);

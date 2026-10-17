@@ -86,6 +86,8 @@ fn prepare(
     append_system_suffix(&mut scenarios, &agent.system_suffix);
     // Configure variables before the cached tool-support probe renders the template.
     trainer.set_chat_template_variables(Some(&agent.template_variables_json()))?;
+    // After the variables: the budget's tags are derived under them.
+    trainer.set_reasoning_budget(agent.reasoning_budget)?;
     let context_size = trainer.context_size()?;
     let trajectory_limit = agent.trajectory_limit(context_size)?;
     let evaluation = match &ctx.config.evaluation {

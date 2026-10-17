@@ -293,6 +293,7 @@ mod tokenize;
 /// Chat-template and tool-call-parsing helpers that take a template or parser
 /// directly instead of a loaded model; see [`Trainer::format_chat_messages`]
 /// and [`Trainer::tool_call_parser`] for the model-backed equivalents.
+pub use generate::SampledRow;
 pub use reference::{VOCABULARY_WITNESSES, VocabularyMismatch};
 pub use tokenize::{
     parse_assistant_output, render_chat_template_source, tool_call_parser_from_source,

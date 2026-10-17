@@ -1298,12 +1298,29 @@ int retro_trainer_format_chat_messages(
     size_t n_buffer,
     size_t * out_n_bytes);
 
-// Sets JSON chat-template variables and invalidates the tool-support probe.
-// NULL, an empty string or "{}" clears them. Rejects non-objects and reserved
-// keys: messages, tools, bos_token, eos_token, add_generation_prompt.
+// Sets JSON chat-template variables and invalidates everything derived from
+// them: the tool-support probe, the tool-call parser and the reasoning
+// budget's tags. NULL, an empty string or "{}" clears them. Rejects
+// non-objects, reserved keys (messages, tools, bos_token, eos_token,
+// add_generation_prompt) and an `enable_thinking` that is not a boolean.
+// Rendering and parser derivation read the same variables. An unset
+// `enable_thinking` renders the template's own default; llama.cpp always
+// defines it, so the derivation hands it whichever of true and false renders
+// that same generation prompt, and the parser starts from the prompt a
+// rollout ends with.
 int retro_trainer_set_chat_template_variables(
     retro_trainer * trainer,
     const char * variables_json);
+
+// Caps the tokens of a reasoning block. -1 (the default) lets the model
+// decide; N >= 0 forces the template's end tag after N reasoning tokens, as
+// llama-server's `--reasoning-budget` does. The tags are those llama.cpp's chat
+// parser derives for this template under the current variables, so the call
+// fails for a template that declares no reasoning block rather than budgeting
+// nothing. Forced tokens are reported through the generators' `out_forced`.
+int retro_trainer_set_reasoning_budget(
+    retro_trainer * trainer,
+    int32_t budget);
 
 // Whether this model's chat template renders a tool catalog of its own. Probed
 // once by rendering with a sentinel tool: a template that mentions `tools` and
@@ -1339,10 +1356,13 @@ int retro_trainer_tool_call_parser(
 // is what lets the agreement between what a template renders and what its
 // derived parser reads be tested on template fixtures alone. `{{ bos_token }}`
 // and `{{ eos_token }}` render empty, there being no vocabulary.
+// `variables_json` is read as by retro_trainer_set_chat_template_variables, and
+// may be NULL for none.
 int retro_chat_template_render(
     const char * template_src,
     const char * messages_json,
     const char * tools_json,
+    const char * variables_json,
     bool add_assistant,
     char * buffer,
     size_t n_buffer,
@@ -1351,6 +1371,7 @@ int retro_chat_template_render(
 int retro_chat_template_tool_call_parser(
     const char * template_src,
     const char * tools_json,
+    const char * variables_json,
     char * buffer,
     size_t n_buffer,
     size_t * out_n_bytes);
@@ -1361,8 +1382,11 @@ int retro_chat_template_tool_call_parser(
 // Writes a JSON object shaped like:
 //   {"content": "...", "reasoning_content": "...",
 //    "tool_calls": [{"id": "...", "name": "...", "arguments": "{...}"}]}
-// `arguments` is the raw string llama.cpp produced, left for the caller to
-// deserialize so a malformed one stays reportable rather than fatal.
+// `reasoning_content` is the template's reasoning block, split out by llama.cpp
+// with the tags it derived from the template, and `content` the rest of the
+// answer around the calls. `arguments` is the raw string llama.cpp produced,
+// left for the caller to deserialize so a malformed one stays reportable
+// rather than fatal.
 int retro_chat_parse_assistant(
     const char * parser_blob,
     size_t n_parser_blob,
@@ -1460,7 +1484,9 @@ int retro_trainer_eval_sft(
 // max_new_tokens, at an end-of-generation token (included in the output), or
 // when the per-sequence context fills. `out_logprobs` may be NULL; otherwise it
 // receives temperature-1 policy logprobs with the same layout. `out_n_tokens`
-// must hold n_sequences counts.
+// must hold n_sequences counts. `out_forced` may be NULL; otherwise it
+// receives, with the same layout, 1 for a token the reasoning budget forced
+// (see retro_trainer_set_reasoning_budget) and 0 for a sampled one.
 int retro_trainer_generate_batch(
     retro_trainer * trainer,
     const int32_t * prompt_tokens,
@@ -1470,12 +1496,13 @@ int retro_trainer_generate_batch(
     int32_t * out_tokens,
     float * out_logprobs,
     size_t n_out_max,
-    size_t * out_n_tokens);
+    size_t * out_n_tokens,
+    uint8_t * out_forced);
 
 // Continuous counterpart of retro_trainer_generate_batch() for heterogeneous
 // prompts. Every input produces one completion; output is row-major with the
 // supplied stride and is deterministically split by the caller when capacity
-// is exceeded.
+// is exceeded. `out_forced` as for retro_trainer_generate_batch().
 int retro_trainer_generate_continuous_batch(
     retro_trainer * trainer,
     const retro_generation_sequence * sequences,
@@ -1483,7 +1510,8 @@ int retro_trainer_generate_continuous_batch(
     int32_t * out_tokens,
     float * out_logprobs,
     size_t n_out_max,
-    size_t * out_n_tokens);
+    size_t * out_n_tokens,
+    uint8_t * out_forced);
 
 // Teacher-forced scoring with the current model + LoRA weights: writes
 // log p(tokens[i+1] | tokens[0..=i]) into out_logprobs[i] for i in

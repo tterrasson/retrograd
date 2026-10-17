@@ -131,7 +131,13 @@ impl DatasetBackend for FixtureBackend {
         tools_json: Option<&str>,
         add_assistant: bool,
     ) -> retrograd_core::Result<String> {
-        render_chat_template_source(&self.template, messages_json, tools_json, add_assistant)
+        render_chat_template_source(
+            &self.template,
+            messages_json,
+            tools_json,
+            None,
+            add_assistant,
+        )
     }
 
     /// Probed the way the runtime probes it: a catalog whose tool name must
@@ -143,13 +149,14 @@ impl DatasetBackend for FixtureBackend {
             &self.template,
             r#"[{"role":"user","content":"x"}]"#,
             Some(probe),
+            None,
             true,
         )?;
         Ok(rendered.contains("retro_probe_tool_7f3a"))
     }
 
     fn tool_call_parser(&self, tools_json: &str) -> retrograd_core::Result<Option<String>> {
-        tool_call_parser_from_source(&self.template, Some(tools_json)).map(Some)
+        tool_call_parser_from_source(&self.template, Some(tools_json), None).map(Some)
     }
 
     fn parse_assistant(&self, parser: &str, text: &str) -> retrograd_core::Result<String> {
@@ -320,4 +327,45 @@ fn a_template_blind_to_tools_takes_the_prompt_path() {
         context.contains("You explore a maze.\n\nAvailable tools (JSON): "),
         "the catalog goes into the system turn: {context}"
     );
+}
+
+/// A turn's reasoning, given apart from its content, is written by the
+/// template in its own block and trained like the rest of the turn: the record
+/// names no tag, the template knows them.
+#[test]
+fn a_turn_s_reasoning_is_written_by_the_template_and_trained() {
+    let mut example = record();
+    example.messages[2].reasoning_content = Some("left looks open".into());
+    example.validate().expect("reasoning on an assistant turn");
+
+    let backend = FixtureBackend::new("qwen3-0.6b");
+    let stream = ToolConversationRenderer::new(&backend)
+        .stream(&example)
+        .unwrap_or_else(|error| panic!("{error}"));
+    let trained = stream
+        .tokens
+        .iter()
+        .zip(&stream.train_mask)
+        .filter(|(_, trained)| **trained)
+        .map(|(&token, _)| token)
+        .collect::<Vec<_>>();
+    let needle = FixtureBackend::tokenize("<think>\nleft looks open\n</think>");
+    assert!(
+        trained.windows(needle.len()).any(|window| window == needle),
+        "the reasoning block is not among the trained tokens"
+    );
+}
+
+#[test]
+fn reasoning_belongs_to_a_structured_assistant_turn_only() {
+    let mut on_user = record();
+    on_user.messages[1].reasoning_content = Some("x".into());
+    let error = on_user.validate().expect_err("reasoning on a user turn");
+    assert!(error.to_string().contains("reasoning_content"), "{error}");
+
+    let mut on_raw = record();
+    on_raw.messages[5].raw = true;
+    on_raw.messages[5].reasoning_content = Some("x".into());
+    let error = on_raw.validate().expect_err("reasoning beside a raw turn");
+    assert!(error.to_string().contains("reasoning_content"), "{error}");
 }

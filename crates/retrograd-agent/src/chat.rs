@@ -24,6 +24,9 @@ fn template_message(message: &Message) -> TemplateMessage<'_> {
         content: message.content.as_str().into(),
         tool_call_id: message.tool_call_id.as_deref(),
         tool_calls: &[],
+        // The content is the text as sampled, its reasoning block included:
+        // the template reads that out of the content itself when it cares.
+        reasoning: None,
     }
 }
 
@@ -233,6 +236,7 @@ mod tests {
                 &template,
                 &template_messages_verbatim(&user).unwrap(),
                 Some(&tools),
+                None,
                 true,
             )
             .unwrap();
@@ -240,6 +244,7 @@ mod tests {
                 &template,
                 &template_messages_verbatim(&with_call).unwrap(),
                 Some(&tools),
+                None,
                 false,
             )
             .unwrap();
@@ -254,6 +259,7 @@ mod tests {
                 ])
                 .unwrap(),
                 Some(&tools),
+                None,
                 false,
             )
             .unwrap();
@@ -263,7 +269,8 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name}: the turn does not extend the prompt"));
             let body = body.strip_suffix(closer).unwrap_or(body);
             let parser =
-                retrograd_engine::tool_call_parser_from_source(&template, Some(&tools)).unwrap();
+                retrograd_engine::tool_call_parser_from_source(&template, Some(&tools), None)
+                    .unwrap();
             let parsed = crate::TemplateToolCallParser::new(parser);
             let parsed = crate::tools::ToolCallParser::parse(&parsed, body);
             assert_eq!(parsed.tool_calls.len(), 1, "{name}: {body:?} -> {parsed:?}");

@@ -30,7 +30,8 @@ use retrograd_core::{CheckpointDtype, GenerationKvDtype, KvDtype, LrScheduler};
 
 type TokenRows = Vec<Vec<i32>>;
 type LogprobRows = Vec<Vec<f32>>;
-type GenerationBatch = (TokenRows, Option<LogprobRows>);
+type ForcedRows = Vec<Vec<bool>>;
+type GenerationBatch = (TokenRows, Option<LogprobRows>, ForcedRows);
 
 /// Phase timings for a human reading a test lane (`RETRO_TEST_TIMING`): tests
 /// install no `tracing` subscriber, so this writes to stderr directly.
@@ -448,8 +449,8 @@ pub use quant::*;
 pub use rir::*;
 pub use stats::{DutyCycleStats, GenerationStats, OptimizerMemory, OptimizerTiming, ScoringStats};
 pub use trainer::{
-    VOCABULARY_WITNESSES, VocabularyMismatch, parse_assistant_output, render_chat_template_source,
-    tool_call_parser_from_source,
+    SampledRow, VOCABULARY_WITNESSES, VocabularyMismatch, parse_assistant_output,
+    render_chat_template_source, tool_call_parser_from_source,
 };
 
 // The "uninitialized buffer filled through FFI" helpers below each mark a

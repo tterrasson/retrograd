@@ -92,8 +92,14 @@ pub struct Provenance {
     /// How that catalog reached the model.
     pub rendering: ToolRenderingKind,
     /// For each assistant turn, in order, the prose the parser read out of it:
-    /// the turn without its call markup.
+    /// the turn without its call markup and without its reasoning block.
     pub assistant_prose: Vec<String>,
+    /// For each assistant turn, in order, the reasoning block the parser split
+    /// out of it, tags removed; empty for a turn that did not reason.
+    pub assistant_reasoning: Vec<String>,
+    /// The trajectory was truncated by a turn that ran out of tokens while
+    /// still reasoning - no answer and no call, only the reasoning block.
+    pub cut_while_reasoning: bool,
     /// Assistant turns that named no valid call: a parse error, or a turn that
     /// called nothing where a call was expected.
     pub invalid_turns: usize,
@@ -152,13 +158,16 @@ impl Trajectory {
                     "trajectory steps must partition the token sequence",
                 ));
             }
-            let expected = step.kind == StepKind::PolicyAction;
-            if self.train_mask[start..end]
-                .iter()
-                .any(|&train| train != expected)
-            {
+            // A policy action trains what the policy sampled, which is every
+            // token of it but those a reasoning budget forced in its place.
+            let span = &self.train_mask[start..end];
+            let consistent = match step.kind == StepKind::PolicyAction {
+                true => span.contains(&true),
+                false => !span.contains(&true),
+            };
+            if !consistent {
                 return Err(Error::invalid(
-                    "only PolicyAction steps may contain trainable tokens",
+                    "only PolicyAction steps may contain trainable tokens, and each must contain one",
                 ));
             }
             if step.reward.is_some_and(|reward| !reward.is_finite()) {

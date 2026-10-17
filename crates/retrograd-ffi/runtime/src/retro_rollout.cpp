@@ -3,6 +3,8 @@
 // forward-only; the differentiable objective lives in retro_training.cpp.
 #include "retro_runtime.hpp"
 
+#include "reasoning-budget.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -1018,6 +1020,96 @@ bool prefill_continuous_prompts(
     return true;
 }
 
+// One llama.cpp reasoning-budget state machine per row of a call. Retrograd
+// samples on its own - the CPU oracle or a device chain - so the machine is
+// used for its state and not as a sampler: once it is forcing, its token
+// replaces the sampled one, which is the only token its masked distribution
+// could have drawn. Rows report which of their tokens were forced, since those
+// are the runtime's choice and not the policy's.
+class reasoning_budget_rows {
+public:
+    reasoning_budget_rows(const llama_vocab * vocab, const reasoning_budget_plan * plan, size_t n_rows) {
+        if (!plan || !plan->active) {
+            return;
+        }
+        plan_ = plan;
+        rows_.resize(n_rows);
+        for (row_state & row : rows_) {
+            row.sampler = common_reasoning_budget_init(
+                    vocab, { plan->start }, plan->ends, plan->forced, plan->budget);
+        }
+    }
+
+    ~reasoning_budget_rows() {
+        for (row_state & row : rows_) {
+            if (row.sampler) {
+                llama_sampler_free(row.sampler);
+            }
+        }
+    }
+
+    reasoning_budget_rows(const reasoning_budget_rows &) = delete;
+    reasoning_budget_rows & operator=(const reasoning_budget_rows &) = delete;
+
+    // Replays the end of the prompt, as long as the template's generation
+    // prompt, so a prompt that already opened the reasoning block starts the
+    // row counting and one that closed it starts it done.
+    void prime(size_t row, const int32_t * prompt, size_t n_prompt) {
+        if (!plan_) {
+            return;
+        }
+        const size_t tail = std::min(plan_->n_prompt_tail, n_prompt);
+        for (size_t i = n_prompt - tail; i < n_prompt; ++i) {
+            accept(row, prompt[i]);
+        }
+    }
+
+    // The token the row emits in place of `sampled`, and whether the budget
+    // forced it.
+    int32_t next(size_t row, int32_t sampled, bool & forced) {
+        forced = false;
+        if (!plan_) {
+            return sampled;
+        }
+        row_state & state = rows_[row];
+        int32_t token = sampled;
+        if (common_reasoning_budget_get_state(state.sampler) == REASONING_BUDGET_FORCING
+                && state.force_pos < plan_->forced.size()) {
+            token = plan_->forced[state.force_pos++];
+            forced = true;
+        }
+        accept(row, token);
+        return token;
+    }
+
+private:
+    struct row_state {
+        llama_sampler * sampler = nullptr;
+        // Position in `forced`, which the machine keeps to itself.
+        size_t force_pos = 0;
+    };
+
+    void accept(size_t row, int32_t token) {
+        row_state & state = rows_[row];
+        const auto before = common_reasoning_budget_get_state(state.sampler);
+        llama_sampler_accept(state.sampler, token);
+        if (common_reasoning_budget_get_state(state.sampler) == REASONING_BUDGET_FORCING
+                && before != REASONING_BUDGET_FORCING) {
+            state.force_pos = 0;
+        }
+    }
+
+    const reasoning_budget_plan * plan_ = nullptr;
+    std::vector<row_state> rows_;
+};
+
+// Writes one emitted token's forced flag when the caller asked for them.
+void record_forced(uint8_t * out_forced, size_t at, bool forced) {
+    if (out_forced) {
+        out_forced[at] = forced ? 1 : 0;
+    }
+}
+
 int sample_backend_token(
         llama_context * ctx,
         int32_t batch_index,
@@ -1048,13 +1140,19 @@ int generate_batch_device(
         size_t n_sequences,
         int32_t * out_tokens,
         size_t n_out_max,
-        size_t * out_n_tokens) {
+        size_t * out_n_tokens,
+        uint8_t * out_forced,
+        const reasoning_budget_plan * plan) {
     backend_sampler_scope samplers(ctx, sampling, identity_slots(n_sequences));
     if (!samplers.available()) {
         return 0;
     }
 
     const llama_vocab * vocab = llama_model_get_vocab(state.model.get());
+    reasoning_budget_rows budget(vocab, plan, n_sequences);
+    for (size_t sequence = 0; sequence < n_sequences; ++sequence) {
+        budget.prime(sequence, prompt_tokens, n_prompt);
+    }
     const size_t n_vocab = static_cast<size_t>(llama_vocab_n_tokens(vocab));
     const size_t n_ctx = llama_n_ctx_seq(ctx);
     clear_generation_memory(state, ctx);
@@ -1108,15 +1206,18 @@ int generate_batch_device(
         active.clear();
         for (size_t sequence = 0; sequence < n_sequences; ++sequence) {
             if (!live[sequence]) continue;
-            int32_t token = LLAMA_TOKEN_NULL;
+            int32_t sampled = LLAMA_TOKEN_NULL;
             const int sample_result = sample_backend_token(
-                    ctx, sample_indices[sequence], n_vocab, token);
+                    ctx, sample_indices[sequence], n_vocab, sampled);
             if (sample_result <= 0) {
                 clear_generation_memory(state, ctx);
                 return sample_result;
             }
+            bool forced = false;
+            const int32_t token = budget.next(sequence, sampled, forced);
             const size_t count = out_n_tokens[sequence];
             out_tokens[sequence*n_out_max + count] = token;
+            record_forced(out_forced, sequence*n_out_max + count, forced);
             out_n_tokens[sequence] = count + 1;
             if (llama_vocab_is_eog(vocab, token) || out_n_tokens[sequence] == limits[sequence]) {
                 live[sequence] = false;
@@ -1157,12 +1258,18 @@ int generate_continuous_batch_device(
         size_t n_sequences,
         int32_t * out_tokens,
         size_t n_out_max,
-        size_t * out_n_tokens) {
+        size_t * out_n_tokens,
+        uint8_t * out_forced,
+        const reasoning_budget_plan * plan) {
     const llama_vocab * vocab = llama_model_get_vocab(state.model.get());
     const size_t n_vocab = static_cast<size_t>(llama_vocab_n_tokens(vocab));
     const size_t n_ctx = llama_n_ctx_seq(ctx);
     for (size_t sequence = 0; sequence < n_sequences; ++sequence) {
         out_n_tokens[sequence] = 0;
+    }
+    reasoning_budget_rows budget(vocab, plan, n_sequences);
+    for (size_t sequence = 0; sequence < n_sequences; ++sequence) {
+        budget.prime(sequence, sequences[sequence].prompt_tokens, sequences[sequence].n_prompt);
     }
     const bool cache = generation_prefix_cache_enabled();
     if (!cache) {
@@ -1225,14 +1332,17 @@ int generate_continuous_batch_device(
         // into the physical batch. See canonical_prefill_order.
         for (const size_t sequence : order) {
             if (!live[sequence]) continue;
-            const int32_t token = pending_tokens[sequence];
-            if (token == LLAMA_TOKEN_NULL) {
+            const int32_t sampled = pending_tokens[sequence];
+            if (sampled == LLAMA_TOKEN_NULL) {
                 set_error("device sampler has no pending token");
                 clear_generation_memory(state, ctx);
                 return -1;
             }
+            bool forced = false;
+            const int32_t token = budget.next(sequence, sampled, forced);
             const size_t count = out_n_tokens[sequence];
             out_tokens[sequence*n_out_max + count] = token;
+            record_forced(out_forced, sequence*n_out_max + count, forced);
             out_n_tokens[sequence] = count + 1;
             if (llama_vocab_is_eog(vocab, token) || out_n_tokens[sequence] == limits[sequence]) {
                 live[sequence] = false;
@@ -1289,7 +1399,8 @@ int generate_batch_impl(
         int32_t * out_tokens,
         float * out_logprobs,
         size_t n_out_max,
-        size_t * out_n_tokens) {
+        size_t * out_n_tokens,
+        uint8_t * out_forced) {
     return boundary([&]() -> int {
         trainer_state * state = checked(trainer);
         if (!state) {
@@ -1343,11 +1454,15 @@ int generate_batch_impl(
             return -1;
         }
 
+        const reasoning_budget_plan * plan = resolve_reasoning_budget(*state);
+        if (!plan) {
+            return -1;
+        }
         const llama_vocab * vocab = llama_model_get_vocab(state->model.get());
         const size_t n_vocab = static_cast<size_t>(llama_vocab_n_tokens(vocab));
         if (device_sampling_requested(*state, out_logprobs)) {
             const int result = generate_batch_device(*state, ctx, prompt_tokens, n_prompt,
-                    sampling, n_sequences, out_tokens, n_out_max, out_n_tokens);
+                    sampling, n_sequences, out_tokens, n_out_max, out_n_tokens, out_forced, plan);
             if (result != 0) {
                 return result > 0 ? 0 : -1;
             }
@@ -1391,6 +1506,10 @@ int generate_batch_impl(
             out_n_tokens[sequence] = 0;
         }
 
+        reasoning_budget_rows budget(vocab, plan, n_sequences);
+        for (size_t sequence = 0; sequence < n_sequences; ++sequence) {
+            budget.prime(sequence, prompt_tokens, n_prompt);
+        }
         batch_guard member_batch(static_cast<int32_t>(n_sequences));
         std::vector<size_t> decoded_sequences;
         decoded_sequences.reserve(n_sequences);
@@ -1403,11 +1522,15 @@ int generate_batch_impl(
                 }
                 sampler_scratch & scratch = scratches[sequence];
                 const retro_sampling_params & params = sampling[sequence];
-                const int32_t token = sample_token(sequence_logits[sequence], n_vocab,
-                        params.temperature, params.top_p, rngs[sequence], scratch);
+                bool forced = false;
+                const int32_t token = budget.next(sequence,
+                        sample_token(sequence_logits[sequence], n_vocab,
+                                params.temperature, params.top_p, rngs[sequence], scratch),
+                        forced);
                 const size_t count = out_n_tokens[sequence];
                 const size_t output = sequence * n_out_max + count;
                 out_tokens[output] = token;
+                record_forced(out_forced, output, forced);
                 if (out_logprobs) {
                     out_logprobs[output] = params.temperature == 1.0f
                             ? static_cast<float>(
@@ -1468,7 +1591,8 @@ int generate_continuous_batch_impl(
         int32_t * out_tokens,
         float * out_logprobs,
         size_t n_out_max,
-        size_t * out_n_tokens) {
+        size_t * out_n_tokens,
+        uint8_t * out_forced) {
     return boundary([&]() -> int {
         trainer_state * state = checked(trainer);
         if (!state) return -1;
@@ -1492,6 +1616,10 @@ int generate_continuous_batch_impl(
             }
             out_n_tokens[sequence] = 0;
         }
+        const reasoning_budget_plan * plan = resolve_reasoning_budget(*state);
+        if (!plan) {
+            return -1;
+        }
         const llama_vocab * vocab = llama_model_get_vocab(state->model.get());
         const size_t n_vocab = static_cast<size_t>(llama_vocab_n_tokens(vocab));
         // out_logprobs, not nullptr: this path cannot produce generation
@@ -1502,7 +1630,7 @@ int generate_continuous_batch_impl(
         if (device_sampling_requested(*state, out_logprobs)) {
             const retro_generation_stats before_device = state->generation_stats;
             const int result = generate_continuous_batch_device(*state, ctx, sequences,
-                    n_sequences, out_tokens, n_out_max, out_n_tokens);
+                    n_sequences, out_tokens, n_out_max, out_n_tokens, out_forced, plan);
             if (result != 0) {
                 return result > 0 ? 0 : -1;
             }
@@ -1556,6 +1684,10 @@ int generate_continuous_batch_impl(
                     std::min<size_t>(n_out_max, sequences[sequence].sampling.max_new_tokens),
                     n_ctx - sequences[sequence].n_prompt);
         }
+        reasoning_budget_rows budget(vocab, plan, n_sequences);
+        for (size_t sequence = 0; sequence < n_sequences; ++sequence) {
+            budget.prime(sequence, sequences[sequence].prompt_tokens, sequences[sequence].n_prompt);
+        }
         batch_guard decode_batch(static_cast<int32_t>(n_sequences));
         std::vector<size_t> active;
         active.reserve(n_sequences);
@@ -1568,10 +1700,14 @@ int generate_continuous_batch_impl(
                 if (!live[sequence]) continue;
                 sampler_scratch & scratch = scratches[sequence];
                 const retro_sampling_params & params = sequences[sequence].sampling;
-                const int32_t token = sample_token(sequence_logits[sequence].data(), n_vocab,
-                        params.temperature, params.top_p, rngs[sequence], scratch);
+                bool forced = false;
+                const int32_t token = budget.next(sequence,
+                        sample_token(sequence_logits[sequence].data(), n_vocab,
+                                params.temperature, params.top_p, rngs[sequence], scratch),
+                        forced);
                 const size_t count = out_n_tokens[sequence];
                 out_tokens[sequence*n_out_max + count] = token;
+                record_forced(out_forced, sequence*n_out_max + count, forced);
                 if (out_logprobs) {
                     out_logprobs[sequence*n_out_max + count] = params.temperature == 1.0f
                             ? static_cast<float>(static_cast<double>(sequence_logits[sequence][token])

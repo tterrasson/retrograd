@@ -93,8 +93,15 @@ pub fn to_chat_example(
                         "trajectory has no recorded prose for assistant turn {assistant}"
                     ))
                 })?;
+                // Absent from a trajectory collected before reasoning was split
+                // out: its prose still holds it.
+                let reasoning = provenance
+                    .assistant_reasoning
+                    .get(assistant)
+                    .map(String::as_str)
+                    .unwrap_or_default();
                 assistant += 1;
-                assistant_message(message, prose, form)
+                assistant_message(message, prose, reasoning, form)
             }
             Role::Tool => tool_message(message, provenance.rendering)?,
         });
@@ -141,10 +148,17 @@ fn check_system_turn(
     }
 }
 
-fn assistant_message(message: &Message, prose: &str, form: AssistantForm) -> ChatMessage {
-    let (content, raw) = match form {
-        AssistantForm::Structured => (prose, false),
-        AssistantForm::Raw => (message.content.as_str(), true),
+fn assistant_message(
+    message: &Message,
+    prose: &str,
+    reasoning: &str,
+    form: AssistantForm,
+) -> ChatMessage {
+    // The structured form hands the reasoning back to the template, which
+    // writes it in its own block; the raw form already has it in its text.
+    let (content, raw, reasoning) = match form {
+        AssistantForm::Structured => (prose, false, Some(reasoning).filter(|r| !r.is_empty())),
+        AssistantForm::Raw => (message.content.as_str(), true, None),
     };
     ChatMessage {
         // Kept in the raw form too, so the record can be checked without a
@@ -159,6 +173,7 @@ fn assistant_message(message: &Message, prose: &str, form: AssistantForm) -> Cha
             })
             .collect(),
         raw,
+        reasoning_content: reasoning.map(str::to_owned),
         ..ChatMessage::text("assistant", content)
     }
 }

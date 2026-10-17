@@ -88,6 +88,25 @@ using opt_result_ptr = std::unique_ptr<ggml_opt_result, ggml_opt_result_deleter>
 using gguf_context_ptr = std::unique_ptr<gguf_context, gguf_context_deleter>;
 using chat_template_state_ptr = std::unique_ptr<chat_template_state, chat_template_state_deleter>;
 
+
+// A reasoning budget as token sequences, derived from the template the way
+// llama-server derives it: the tags its chat parser declares, tokenized with
+// special tokens parsed. `active` is false while the budget is unlimited.
+struct reasoning_budget_plan {
+    bool resolved = false;
+    bool active = false;
+    int32_t budget = -1;
+    std::vector<int32_t> start;
+    std::vector<std::vector<int32_t>> ends;
+    // Forced in place of the model's tokens once the budget is spent: the
+    // first end tag.
+    std::vector<int32_t> forced;
+    // Length of the generation prompt in tokens. That many prompt tokens are
+    // replayed into the budget before sampling, so a prompt that already opened
+    // the reasoning block (Qwen3.5 under `enable_thinking`) starts counting.
+    size_t n_prompt_tail = 0;
+};
+
 struct trainer_state {
     std::string model_path;
     retro_train_config train_config {};
@@ -129,9 +148,16 @@ struct trainer_state {
     // Results persist across calls; datasets are synchronous caller-owned views.
     opt_result_ptr weighted_train_result_cache;
     opt_result_ptr weighted_eval_result_cache;
-    // Extra variables handed to the chat template on every render, as a JSON object, empty for
-    // none.
+    // Extra variables handed to the chat template on every render, as a JSON
+    // object, empty for none. Parser derivation reads the same ones (see
+    // resolve_derivation_variables).
     std::string chat_template_variables;
+    // Tokens a reasoning block may run before the runtime forces its end tag;
+    // -1 lets the model decide, which is llama.cpp's default too.
+    int32_t reasoning_budget = -1;
+    // What the budget needs from the template, derived on first use and
+    // dropped whenever the variables or the budget change.
+    reasoning_budget_plan reasoning_plan;
     bool training_failed = false; // backend failure requires a new trainer
     uint64_t scheduler_step = 0;
     uint64_t scheduler_total_steps = 0;
@@ -264,6 +290,8 @@ struct trainer_state {
     // Serialized PEG tool-call parser and the catalog it was derived from. The
     // generated grammar may name the tools, so the catalog is the cache key and
     // not merely a detail: a parser built for one catalog does not read another.
+    // Cleared by set_chat_template_variables: the variables are part of the
+    // derivation as much as the catalog is.
     std::string tool_call_parser_cache;
     std::string tool_call_parser_tools;
 
@@ -358,6 +386,31 @@ int render_string_out(
 // Replaces chat-template variables; null or `{}` clears them. Reserved keys are rejected.
 int set_chat_template_variables(trainer_state & state, const char * variables_json);
 
+// Validates configured variables: null or empty for none, which leaves
+// `out_validated` empty. False, with the error set, on a non-object, a reserved
+// key, or an `enable_thinking` that is not a boolean.
+bool validate_template_variables(const char * variables_json, std::string & out_validated);
+
+// The variables a parser derivation hands llama.cpp: the configured ones, with
+// `enable_thinking` always set. llama.cpp always defines that variable, while
+// retrograd renders the template's own default when it is unset; so when it is
+// unset, it is set to whichever of true and false renders the generation
+// prompt the unset variable renders. The parser then starts from the prompt a
+// rollout actually ends with. False, with the error set, when neither does.
+bool resolve_derivation_variables(trainer_state & state, std::string & out_variables);
+bool resolve_derivation_variables_source(
+        const char * template_src,
+        const char * variables_json,
+        std::string & out_variables);
+
+// Sets the reasoning budget (-1 for none) and derives its plan eagerly, so a
+// template with no reasoning block is refused here rather than ignored later.
+int set_reasoning_budget(trainer_state & state, int32_t budget);
+
+// The plan of the current budget, derived on first use (defined in
+// retro_chat_parser.cpp). Null, with the error set, when it cannot be derived.
+const reasoning_budget_plan * resolve_reasoning_budget(trainer_state & state);
+
 // Renders `messages` through the model's own tokenizer.chat_template by
 // actually executing its Jinja program (defined in retro_chat_template.cpp),
 // rather than matching it against a fixed list of known template families.
@@ -392,6 +445,7 @@ int render_chat_template_source(
         const char * template_src,
         const char * messages_json,
         const char * tools_json,
+        const char * variables_json,
         bool add_assistant,
         char * buffer,
         size_t n_buffer,
@@ -419,6 +473,7 @@ int build_tool_call_parser(
 int build_tool_call_parser_from_source(
         const char * template_src,
         const char * tools_json,
+        const char * variables_json,
         char * buffer,
         size_t n_buffer,
         size_t * out_n_bytes);
@@ -637,7 +692,8 @@ int generate_batch_impl(
         int32_t * out_tokens,
         float * out_logprobs,
         size_t n_out_max,
-        size_t * out_n_tokens);
+        size_t * out_n_tokens,
+        uint8_t * out_forced);
 int generate_continuous_batch_impl(
         retro_trainer * trainer,
         const retro_generation_sequence * sequences,
@@ -645,7 +701,8 @@ int generate_continuous_batch_impl(
         int32_t * out_tokens,
         float * out_logprobs,
         size_t n_out_max,
-        size_t * out_n_tokens);
+        size_t * out_n_tokens,
+        uint8_t * out_forced);
 int score_tokens_impl(
         retro_trainer * trainer,
         const int32_t * tokens,

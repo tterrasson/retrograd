@@ -12,7 +12,7 @@ use crate::tools::{ToolCallParser, ToolSpec};
 use crate::trajectory::Message;
 use crate::{Error, Result};
 use retrograd_core::{SamplingParams, TrainConfig, TrainMetrics};
-use retrograd_engine::{GenerationStats, Trainer};
+use retrograd_engine::{GenerationStats, SampledRow, Trainer};
 use retrograd_training::Progress;
 use retrograd_training::batch::{
     BatchObservation, GrpoBatchParams, TrainSequence, train_grpo_batch_observed,
@@ -26,6 +26,11 @@ pub struct PolicyGeneration {
     /// its own rather than against `max_new_tokens`. Without this a response
     /// whose stop token lands exactly on the budget looks truncated.
     pub stopped_at_eog: bool,
+    /// Token for token, whether the reasoning budget forced it rather than the
+    /// policy sampling it. Forced tokens stay in the trajectory, which is what
+    /// the model saw, but out of its train mask: the policy did not choose
+    /// them. Empty when nothing was forced.
+    pub forced: Vec<bool>,
 }
 
 #[async_trait]
@@ -467,7 +472,12 @@ fn tool_call_parse_end(tokens_len: usize, stopped_at_eog: bool) -> usize {
 }
 
 /// Detokenizes a sampled row and decides whether it stopped on its own.
-fn finish_generation(trainer: &mut Trainer, tokens: Vec<i32>) -> Result<PolicyGeneration> {
+fn finish_generation(trainer: &mut Trainer, row: SampledRow) -> Result<PolicyGeneration> {
+    let SampledRow { tokens, forced } = row;
+    let forced = match forced.contains(&true) {
+        true => forced,
+        false => Vec::new(),
+    };
     let stopped_at_eog = match tokens.last() {
         Some(&last) => trainer.is_eog_token(last)?,
         None => false,
@@ -483,6 +493,7 @@ fn finish_generation(trainer: &mut Trainer, tokens: Vec<i32>) -> Result<PolicyGe
         tokens,
         text,
         stopped_at_eog,
+        forced,
     })
 }
 
@@ -518,7 +529,7 @@ mod tool_call_parse_end_tests {
 /// queue before anything downstream can fail: a short-circuiting `collect` over
 /// `pop_front` would leave this request's tail behind, and the next request of
 /// the wave would then answer with another group's tokens instead of an error.
-fn take_rows(count: usize, rows: &mut VecDeque<Vec<i32>>) -> Result<Vec<Vec<i32>>> {
+fn take_rows<T>(count: usize, rows: &mut VecDeque<T>) -> Result<Vec<T>> {
     if rows.len() < count {
         rows.clear();
         return Err(Error::PolicyGeneration(
@@ -604,11 +615,11 @@ impl QueuedGeneration {
         }
     }
 
-    fn send_rows(self, trainer: &mut Trainer, rows: &mut VecDeque<Vec<i32>>) {
+    fn send_rows(self, trainer: &mut Trainer, rows: &mut VecDeque<SampledRow>) {
         let result = take_rows(self.len(), rows).and_then(|taken| {
             taken
                 .into_iter()
-                .map(|tokens| finish_generation(trainer, tokens))
+                .map(|row| finish_generation(trainer, row))
                 .collect()
         });
         match self {
@@ -709,7 +720,7 @@ fn run_generation_wave(trainer: &mut Trainer, queued: Vec<QueuedGeneration>) {
                 .collect::<Vec<_>>(),
         })
         .collect::<Vec<_>>();
-    let generated = trainer.generate_tokens_continuous(&sequences);
+    let generated = trainer.generate_sampled_continuous(&sequences);
     let mut rows = match generated {
         Ok(rows) if rows.len() == expected => VecDeque::from(rows),
         Ok(rows) => {

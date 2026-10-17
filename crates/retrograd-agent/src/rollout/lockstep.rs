@@ -389,7 +389,12 @@ impl RolloutEngine {
         }
         let action_start = state.tokens.len();
         state.tokens.extend_from_slice(&generation.tokens);
-        state.train_mask.resize(state.tokens.len(), true);
+        // A token the reasoning budget forced is in the context the policy saw
+        // next, and out of what it is trained on: it never chose it.
+        state.train_mask.extend(
+            (0..generation.tokens.len())
+                .map(|at| !generation.forced.get(at).copied().unwrap_or(false)),
+        );
         let assistant = state.messages.len();
         state.push_step(
             Step {
@@ -414,6 +419,7 @@ impl RolloutEngine {
             },
         };
         state.assistant_prose.push(parsed.content.clone());
+        state.assistant_reasoning.push(parsed.reasoning.clone());
         state.messages.push(Message {
             role: Role::Assistant,
             // The fallback chat renderer only sees content, so preserve
@@ -429,6 +435,9 @@ impl RolloutEngine {
         if (generation.tokens.len() == max_new_tokens as usize && !generation.stopped_at_eog)
             || state.tokens.len() >= self.limits.max_trajectory_tokens
         {
+            state.cut_while_reasoning = !parsed.reasoning.is_empty()
+                && parsed.content.is_empty()
+                && parsed.tool_calls.is_empty();
             state.stop(true);
             return None;
         }
@@ -608,6 +617,8 @@ impl RolloutEngine {
                 tools: rendering.specs(),
                 rendering: rendering.kind(),
                 assistant_prose: state.assistant_prose,
+                assistant_reasoning: state.assistant_reasoning,
+                cut_while_reasoning: state.cut_while_reasoning,
                 invalid_turns: state.invalid_turns,
             }),
         };

@@ -102,6 +102,7 @@ fn generation(prompt: &[i32]) -> PolicyGeneration {
         tokens: vec![token],
         text: text.into(),
         stopped_at_eog: true,
+        forced: Vec::new(),
     }
 }
 

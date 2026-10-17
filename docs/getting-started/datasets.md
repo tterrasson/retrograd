@@ -67,6 +67,9 @@ An assistant turn takes one of two forms:
 - **Structured** (the default): `content` is the prose, without call markup,
   and `tool_calls` holds the calls. The model's own chat template writes the
   turn, so a record written by hand or by another model trains any student.
+  An optional `reasoning_content` holds the turn's reasoning, without tags:
+  the template writes it in its own reasoning block, or drops it if that is
+  what the template does with it.
 - **Raw** (`"raw": true`): `content` is the turn exactly as generated, call
   markup included, and is trained as is. `tool_calls` still lists the calls,
   and the student's parser must read back exactly those from `content` - which

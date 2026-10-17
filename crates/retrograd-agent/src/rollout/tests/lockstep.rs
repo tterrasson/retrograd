@@ -32,6 +32,7 @@ impl Policy for BatchedScoringPolicy {
                 tokens: vec![11],
                 text: "answer".into(),
                 stopped_at_eog: true,
+                forced: Vec::new(),
             })
             .collect())
     }

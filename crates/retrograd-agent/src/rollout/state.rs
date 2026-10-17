@@ -33,6 +33,11 @@ pub(super) struct RolloutState {
     pub(super) failed_turns: usize,
     /// For each assistant turn, the prose its parser read out of it.
     pub(super) assistant_prose: Vec<String>,
+    /// For each assistant turn, the reasoning block its parser split out.
+    pub(super) assistant_reasoning: Vec<String>,
+    /// The turn that ran out of tokens was still reasoning: no answer, no
+    /// call, only the reasoning block.
+    pub(super) cut_while_reasoning: bool,
     /// Assistant turns with a parse error or no call where one was expected,
     /// over the whole trajectory - unlike `failed_turns`, never reset.
     pub(super) invalid_turns: usize,
@@ -61,6 +66,8 @@ impl RolloutState {
             environment_done: false,
             failed_turns: 0,
             assistant_prose: Vec::new(),
+            assistant_reasoning: Vec::new(),
+            cut_while_reasoning: false,
             invalid_turns: 0,
             failure: None,
         }

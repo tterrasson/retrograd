@@ -2014,3 +2014,37 @@ fn importance_sampling_level_parses_in_both_grpo_sections() {
         assert!(message.contains("sequence"), "{name}: {message}");
     }
 }
+
+/// `-1` is llama.cpp's "the model decides"; a count caps the block; any other
+/// negative is a typo the document has to own.
+#[test]
+fn agent_reasoning_budget_reads_minus_one_as_no_budget() {
+    let document = |budget: Option<&str>| {
+        format!(
+            "[run]\nalgorithm='agent_grpo'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n\
+             [lora]\n[agent]\nscenarios='s.jsonl'\n{}\
+             [agent.judge]\ntype='command'\ncommand=['python','judge.py']\n",
+            budget
+                .map(|budget| format!("reasoning_budget={budget}\n"))
+                .unwrap_or_default()
+        )
+    };
+    let budget = |budget: Option<&str>| {
+        let file = write_config(&document(budget));
+        let loaded = load(&file);
+        remove_config(&file);
+        loaded.map(|config| match config.algorithm {
+            Algorithm::AgentGrpo(agent) => agent.reasoning_budget,
+            _ => panic!("expected an agentic algorithm"),
+        })
+    };
+    assert_eq!(budget(None).expect("default"), None);
+    assert_eq!(budget(Some("-1")).expect("explicit default"), None);
+    assert_eq!(budget(Some("0")).expect("zero"), Some(0));
+    assert_eq!(budget(Some("512")).expect("a count"), Some(512));
+    let error = budget(Some("-2")).expect_err("a negative other than -1");
+    assert!(
+        error.to_string().contains("agent.reasoning_budget"),
+        "{error}"
+    );
+}

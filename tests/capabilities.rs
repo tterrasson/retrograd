@@ -657,3 +657,72 @@ fn the_duty_cycle_setter_validates_and_clears_between_operations() {
         1.0
     );
 }
+
+/// A budget of zero on a prompt that already opened the reasoning block: the
+/// next tokens are the end tag the template's parser declares, forced and
+/// reported as such, and a generator that cannot report them refuses the row.
+#[test]
+fn a_reasoning_budget_forces_the_template_s_end_tag_and_says_so() {
+    let Some(model) = common::model_path_if_available() else {
+        eprintln!(
+            "skipping: no local model at {}",
+            common::model_path().display()
+        );
+        return;
+    };
+    let _guard = common::serialize_models();
+    let mut trainer = Trainer::new(&model, cpu_config()).expect("load model");
+
+    let opened = trainer
+        .format_chat_messages(r#"[{"role":"user","content":"Hi."}]"#, None, true)
+        .expect("render the prompt")
+        + "<think>";
+    let prompt = trainer.tokenize_text(&opened).expect("tokenize the prompt");
+    let end = trainer
+        .tokenize_fragment("</think>")
+        .expect("tokenize the end tag");
+    let sampling = retrograd::SamplingParams {
+        temperature: 1.0,
+        top_p: 1.0,
+        max_new_tokens: u32::try_from(end.len() + 4).expect("a few tokens"),
+        seed: 7,
+    };
+
+    trainer
+        .set_reasoning_budget(Some(0))
+        .expect("the template declares a reasoning block");
+    let rows = trainer
+        .generate_sampled_continuous(&[(prompt.as_slice(), sampling)])
+        .expect("generate under the budget");
+    let row = &rows[0];
+    assert_eq!(&row.tokens[..end.len()], end.as_slice(), "{row:?}");
+    assert!(
+        row.forced[..end.len()].iter().all(|&forced| forced),
+        "{row:?}"
+    );
+    assert!(!row.forced[end.len()..].contains(&true), "{row:?}");
+
+    let error = trainer
+        .generate_tokens_continuous(&[(prompt.as_slice(), sampling)])
+        .expect_err("a generator without a forced mask refuses forced tokens");
+    assert!(error.to_string().contains("reasoning budget"), "{error}");
+
+    trainer.set_reasoning_budget(None).expect("lift the budget");
+    let rows = trainer
+        .generate_sampled_continuous(&[(prompt.as_slice(), sampling)])
+        .expect("generate without a budget");
+    assert!(!rows[0].forced.contains(&true), "{:?}", rows[0]);
+}
+
+#[test]
+fn a_reasoning_budget_needs_a_template_that_declares_a_reasoning_block() {
+    let model = common::tiny_model_path();
+    let _guard = common::serialize_models();
+    let mut trainer = Trainer::new(&model, cpu_config()).expect("load the tiny model");
+    trainer
+        .set_reasoning_budget(Some(64))
+        .expect_err("no reasoning block to budget");
+    trainer
+        .set_reasoning_budget(None)
+        .expect("no budget needs no block");
+}

@@ -743,6 +743,17 @@ export interface components {
        * @default []
        */
       mcp_servers?: Record<string, never>[]
+      /**
+       * Format: int32
+       * @description Tokens one reasoning block may run before the end tag the template
+       *     declares is forced, as llama-server's `--reasoning-budget`: -1 (the
+       *     default) lets the model decide, 0 closes the block as soon as it opens.
+       *     The tags come from the model's chat template, so a budget on a template
+       *     with no reasoning block is refused when the run starts. Forced tokens
+       *     stay in the trajectory but are not trained on.
+       * @default -1
+       */
+      reasoning_budget?: number
       /** @default null */
       scenario_generation?: null | components['schemas']['ScenarioGenerationConfig']
       /**

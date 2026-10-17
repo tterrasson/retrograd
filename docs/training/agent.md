@@ -192,6 +192,30 @@ A `reward` returned by `/step` is a step reward; `done: true` ends the episode.
 | `max_dropped_fraction` | `0.5` | Stop if more than this share of an update's trajectories is lost. |
 | `importance_sampling_level` | `"token"` | `"sequence"` takes one ratio per trajectory over its action tokens, as in [GSPO](./grpo#sequence-level-importance-sampling-gspo). With intermediate returns, each token keeps its own advantage and shares its trajectory's ratio. |
 
+### Reasoning models
+
+A model whose template has a reasoning block - Qwen3's `<think>…</think>`, for
+example - spends part of each turn's `max_new_tokens_per_turn` reasoning before
+it answers. Nothing in the run names the tags: the tool-call parser is derived
+from the model's chat template by llama.cpp, which also splits the reasoning
+out of each turn.
+
+- `template_variables = { enable_thinking = false }` turns reasoning off, for a
+  template that reads that variable. Left unset, the template's own default
+  applies: Qwen3 reasons, Qwen3.5 does not.
+- `reasoning_budget = N` caps each reasoning block at `N` tokens and then forces
+  the end tag the template declares, as llama-server's `--reasoning-budget`
+  does. `-1` (the default) lets the model decide. The forced tokens stay in the
+  trajectory but are not trained on, since the policy did not choose them. A
+  budget on a template with no reasoning block is refused when the run starts.
+
+When most rollouts of the first update are truncated while the model is still
+reasoning, the run warns about that rather than about the tool-call format:
+raise `max_new_tokens_per_turn`, set a `reasoning_budget`, or turn reasoning
+off. Exported trajectories keep each turn's reasoning as `reasoning_content`,
+which the template writes back in its own block when the record is used for
+SFT.
+
 The loss is divided by the token budget (`max_turns × max_new_tokens_per_turn`,
 capped at `max_trajectory_tokens`), so changing these limits scales the gradient: re-tune `lr` when you change
 them. Every key is listed in the

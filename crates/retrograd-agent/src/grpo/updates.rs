@@ -17,8 +17,9 @@ use super::evaluate::evaluate_scenarios;
 use super::metrics::{AgentMetricTotals, ratio_or_zero};
 use super::observe::{UpdateExport, draft};
 use super::selection::{
-    DropBreakdown, UpdateFate, check_dropped_fraction, restore_truncated_members,
-    split_environment_scored, tool_call_parse_warning, withhold_truncated_members,
+    DropBreakdown, UpdateFate, check_dropped_fraction, reasoning_truncation_warning,
+    restore_truncated_members, split_environment_scored, tool_call_parse_warning,
+    withhold_truncated_members,
 };
 use super::{AgentFlow, UpdateBoundary, UpdateHook};
 use crate::env::EnvironmentFactory;
@@ -40,6 +41,8 @@ struct CollectedGroup {
     /// turns "no tool call was parsed" from a guess into a reading.
     first_assistant_text: Option<String>,
     truncated: usize,
+    /// Of `truncated`, the trajectories cut by a turn that was still reasoning.
+    cut_while_reasoning: usize,
     withheld: Vec<(u64, Vec<Trajectory>)>,
     judged: Option<(TrajectoryGroup, Result<Vec<Score>>)>,
     environment_scored: Option<TrajectoryGroup>,
@@ -88,6 +91,18 @@ async fn collect_and_start_judge(
         .flat_map(|group| group.trajectories.iter())
         .filter(|trajectory| trajectory.truncated)
         .count();
+    let cut_while_reasoning = outcome
+        .group
+        .iter()
+        .flat_map(|group| group.trajectories.iter())
+        .filter(|trajectory| {
+            trajectory.truncated
+                && trajectory
+                    .provenance
+                    .as_ref()
+                    .is_some_and(|provenance| provenance.cut_while_reasoning)
+        })
+        .count();
     let GroupScoring {
         withheld,
         judged,
@@ -102,6 +117,7 @@ async fn collect_and_start_judge(
         metrics,
         first_assistant_text,
         truncated,
+        cut_while_reasoning,
         withheld,
         judged,
         environment_scored,
@@ -320,6 +336,7 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
             last_error,
             metric_totals,
             first_assistant_text,
+            cut_while_reasoning,
             mut breakdown,
             withheld,
             mut groups,
@@ -332,15 +349,27 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
         // Only the first update needs the compatibility diagnostic. It is a
         // warning, not a refusal: answering directly is valid, and calls from a
         // group that lost its baseline are no longer present in these metrics.
-        if update == start_update
-            && let Some(warning) = tool_call_parse_warning(
-                engine.declared_tools(),
+        if update == start_update {
+            let reasoning = reasoning_truncation_warning(
                 attempted,
-                metric_totals.tool_calls(),
-                first_assistant_text.as_deref(),
-            )
-        {
-            tracing::warn!("{warning}");
+                cut_while_reasoning,
+                config.limits.max_new_tokens_per_turn,
+            );
+            // A turn cut before its reasoning ended never reached its call,
+            // so with every rollout cut that way the call format is not in
+            // question, and saying it is would point at the wrong fix.
+            let parse = match cut_while_reasoning < attempted {
+                true => tool_call_parse_warning(
+                    engine.declared_tools(),
+                    attempted,
+                    metric_totals.tool_calls(),
+                    first_assistant_text.as_deref(),
+                ),
+                false => None,
+            };
+            for warning in reasoning.into_iter().chain(parse) {
+                tracing::warn!("{warning}");
+            }
         }
         let agent_metrics = metric_totals.values(attempted, failures);
         breakdown.failed = failures.total();
@@ -558,6 +587,7 @@ struct Collected {
     last_error: Option<String>,
     metric_totals: AgentMetricTotals,
     first_assistant_text: Option<String>,
+    cut_while_reasoning: usize,
     breakdown: DropBreakdown,
     withheld: Vec<(u64, Vec<Trajectory>)>,
     /// Judged groups, paired index for index with `judge_results`.
@@ -578,6 +608,7 @@ fn collect(outcomes: Vec<CollectedGroup>, mut export: Option<&mut UpdateExport>)
         last_error: None,
         metric_totals: AgentMetricTotals::default(),
         first_assistant_text: None,
+        cut_while_reasoning: 0,
         breakdown: DropBreakdown::default(),
         withheld: Vec::new(),
         groups: Vec::with_capacity(outcomes.len()),
@@ -597,6 +628,7 @@ fn collect(outcomes: Vec<CollectedGroup>, mut export: Option<&mut UpdateExport>)
         c.metric_totals.merge(outcome.metrics);
         c.first_assistant_text = c.first_assistant_text.or(outcome.first_assistant_text);
         c.breakdown.truncated += outcome.truncated;
+        c.cut_while_reasoning += outcome.cut_while_reasoning;
         c.withheld.extend(outcome.withheld);
         c.rollout_seconds = c.rollout_seconds.max(outcome.rollout_done_at);
         if let Some((start, end)) = outcome.judge_window {

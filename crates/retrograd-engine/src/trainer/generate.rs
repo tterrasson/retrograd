@@ -1,5 +1,28 @@
 use super::*;
 
+/// One sampled row and, token for token, whether the reasoning budget forced
+/// it (see [`Trainer::set_reasoning_budget`]). A forced token was the
+/// runtime's choice, not the policy's, so a caller that trains on the row
+/// masks it out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SampledRow {
+    pub tokens: Vec<i32>,
+    pub forced: Vec<bool>,
+}
+
+/// The generators that hand back bare tokens have nowhere to say which ones
+/// the budget forced, and a caller training on them would credit the policy
+/// with an end tag it never chose.
+fn refuse_forced(forced: &[Vec<bool>]) -> Result<()> {
+    match forced.iter().any(|row| row.contains(&true)) {
+        true => Err(Error::invalid(
+            "the reasoning budget forced tokens into a generation whose caller cannot mask them; \
+             use generate_sampled_continuous",
+        )),
+        false => Ok(()),
+    }
+}
+
 impl Trainer {
     /// Samples a completion for the prompt with the current model + LoRA
     /// weights, returning the sampled tokens and their temperature-1 policy
@@ -19,7 +42,8 @@ impl Trainer {
         prompt: &[i32],
         sampling: &[SamplingParams],
     ) -> Result<Vec<Generation>> {
-        let (tokens, logprobs) = self.generate_batch_raw(prompt, sampling, true)?;
+        let (tokens, logprobs, forced) = self.generate_batch_raw(prompt, sampling, true)?;
+        refuse_forced(&forced)?;
         Ok(tokens
             .into_iter()
             .zip(logprobs.expect("logprobs requested for generation batch"))
@@ -46,7 +70,9 @@ impl Trainer {
         prompt: &[i32],
         sampling: &[SamplingParams],
     ) -> Result<Vec<Vec<i32>>> {
-        Ok(self.generate_batch_raw(prompt, sampling, false)?.0)
+        let (tokens, _, forced) = self.generate_batch_raw(prompt, sampling, false)?;
+        refuse_forced(&forced)?;
+        Ok(tokens)
     }
 
     /// Samples heterogeneous prompts together. The runtime keeps one KV
@@ -57,6 +83,21 @@ impl Trainer {
         &mut self,
         sequences: &[(&[i32], SamplingParams)],
     ) -> Result<Vec<Vec<i32>>> {
+        let rows = self.generate_sampled_continuous(sequences)?;
+        let forced = rows
+            .iter()
+            .map(|row| row.forced.clone())
+            .collect::<Vec<_>>();
+        refuse_forced(&forced)?;
+        Ok(rows.into_iter().map(|row| row.tokens).collect())
+    }
+
+    /// [`Trainer::generate_tokens_continuous`], with each row's forced-token
+    /// mask: the generator for a caller that runs under a reasoning budget.
+    pub fn generate_sampled_continuous(
+        &mut self,
+        sequences: &[(&[i32], SamplingParams)],
+    ) -> Result<Vec<SampledRow>> {
         if sequences.is_empty() {
             return Err(Error::invalid("continuous generation requires sequences"));
         }
@@ -82,6 +123,7 @@ impl Trainer {
             })
             .collect::<Vec<_>>();
         let mut tokens = vec![0_i32; sequences.len() * stride];
+        let mut forced = vec![0_u8; sequences.len() * stride];
         let mut lengths = vec![0_usize; sequences.len()];
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
         self.check(unsafe {
@@ -93,6 +135,7 @@ impl Trainer {
                 std::ptr::null_mut(),
                 stride,
                 lengths.as_mut_ptr(),
+                forced.as_mut_ptr(),
             )
         })?;
         lengths
@@ -104,7 +147,11 @@ impl Trainer {
                         "continuous generation runtime returned an invalid sequence length",
                     ));
                 }
-                Ok(tokens[row * stride..row * stride + len].to_vec())
+                let span = row * stride..row * stride + len;
+                Ok(SampledRow {
+                    tokens: tokens[span.clone()].to_vec(),
+                    forced: forced[span].iter().map(|&flag| flag != 0).collect(),
+                })
             })
             .collect()
     }
@@ -138,6 +185,7 @@ impl Trainer {
             .map(sampling_params_to_ffi)
             .collect::<Vec<_>>();
         let mut flat_tokens = vec![0_i32; capacity];
+        let mut flat_forced = vec![0_u8; capacity];
         let mut flat_logprobs = include_logprobs.then(|| vec![0.0_f32; capacity]);
         let mut lengths = vec![0_usize; sampling.len()];
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
@@ -154,6 +202,7 @@ impl Trainer {
                     .map_or(std::ptr::null_mut(), |values| values.as_mut_ptr()),
                 stride,
                 lengths.as_mut_ptr(),
+                flat_forced.as_mut_ptr(),
             )
         })?;
         // An empty row is rejected here, like in `generate_tokens_continuous`:
@@ -176,6 +225,16 @@ impl Trainer {
                 .map(|(row, &len)| values[row * stride..row * stride + len].to_vec())
                 .collect()
         });
-        Ok((rows, logprobs))
+        let forced = lengths
+            .iter()
+            .enumerate()
+            .map(|(row, &len)| {
+                flat_forced[row * stride..row * stride + len]
+                    .iter()
+                    .map(|&flag| flag != 0)
+                    .collect()
+            })
+            .collect();
+        Ok((rows, logprobs, forced))
     }
 }

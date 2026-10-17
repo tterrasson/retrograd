@@ -189,6 +189,12 @@ pub struct ChatMessage {
     /// template from `content` and `tool_calls`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub raw: bool,
+    /// Assistant only, and not on a `raw` turn, whose content already holds
+    /// it: the turn's reasoning, without tags. Handed to the template as
+    /// `reasoning_content`, which writes it in its own reasoning block - or
+    /// drops it, if that is what the template does with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 impl ChatMessage {
@@ -201,6 +207,7 @@ impl ChatMessage {
             name: None,
             is_error: false,
             raw: false,
+            reasoning_content: None,
         }
     }
 }
@@ -345,6 +352,10 @@ pub enum ChatExampleError {
     ArgumentsNotAnObject { name: String },
     #[error("'{field}' is not allowed on a '{role}' message")]
     ToolFieldOnWrongRole { field: &'static str, role: String },
+    /// A raw turn is tokenized as written: its reasoning is in its content
+    /// already, and a second copy would be rendered nowhere.
+    #[error("a raw assistant turn carries its reasoning in its content; drop 'reasoning_content'")]
+    ReasoningOnRawTurn,
 }
 
 /// Said as the facade says it, at the one place a record is validated without a
@@ -372,6 +383,9 @@ impl ChatExample {
                 });
             }
             misplaced_tool_field(message)?;
+            if message.raw && message.reasoning_content.is_some() {
+                return Err(ChatExampleError::ReasoningOnRawTurn);
+            }
             let may_be_empty = match message.role.as_str() {
                 "assistant" => !message.tool_calls.is_empty(),
                 "tool" => true,
@@ -385,13 +399,16 @@ impl ChatExample {
     }
 
     /// Whether this record goes through the tool path: it declares tools, makes
-    /// or answers a call, or carries a turn to be tokenized verbatim - which
-    /// only the framing path can honour, since the plain path hands every turn
-    /// to the template.
+    /// or answers a call, or carries a turn to be tokenized verbatim or a
+    /// reasoning block - which only the framing path can honour, since the
+    /// plain path hands every turn to the template as role and content alone.
     pub fn is_tool_record(&self) -> bool {
         !self.tools.is_empty()
             || self.messages.iter().any(|message| {
-                message.role == "tool" || !message.tool_calls.is_empty() || message.raw
+                message.role == "tool"
+                    || !message.tool_calls.is_empty()
+                    || message.raw
+                    || message.reasoning_content.is_some()
             })
     }
 
@@ -411,6 +428,10 @@ fn misplaced_tool_field(message: &ChatMessage) -> std::result::Result<(), ChatEx
     let misplaced = [
         ("tool_calls", !message.tool_calls.is_empty() && !assistant),
         ("raw", message.raw && !assistant),
+        (
+            "reasoning_content",
+            message.reasoning_content.is_some() && !assistant,
+        ),
         ("tool_call_id", message.tool_call_id.is_some() && !tool),
         ("name", message.name.is_some() && !tool),
         ("is_error", message.is_error && !tool),

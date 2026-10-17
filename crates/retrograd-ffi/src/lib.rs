@@ -773,6 +773,8 @@ unsafe extern "C" {
         variables_json: *const c_char,
     ) -> c_int;
 
+    pub fn retro_trainer_set_reasoning_budget(trainer: *mut RetroTrainer, budget: i32) -> c_int;
+
     pub fn retro_trainer_chat_template_supports_tools(
         trainer: *mut RetroTrainer,
         out_supports: *mut bool,
@@ -792,6 +794,7 @@ unsafe extern "C" {
         template_src: *const c_char,
         messages_json: *const c_char,
         tools_json: *const c_char,
+        variables_json: *const c_char,
         add_assistant: bool,
         buffer: *mut c_char,
         n_buffer: usize,
@@ -801,6 +804,7 @@ unsafe extern "C" {
     pub fn retro_chat_template_tool_call_parser(
         template_src: *const c_char,
         tools_json: *const c_char,
+        variables_json: *const c_char,
         buffer: *mut c_char,
         n_buffer: usize,
         out_n_bytes: *mut usize,
@@ -1040,6 +1044,7 @@ unsafe extern "C" {
         out_logprobs: *mut c_float,
         n_out_max: usize,
         out_n_tokens: *mut usize,
+        out_forced: *mut u8,
     ) -> c_int;
 
     pub fn retro_trainer_generate_continuous_batch(
@@ -1050,6 +1055,7 @@ unsafe extern "C" {
         out_logprobs: *mut c_float,
         n_out_max: usize,
         out_n_tokens: *mut usize,
+        out_forced: *mut u8,
     ) -> c_int;
 
     pub fn retro_trainer_score_tokens(
@@ -2037,7 +2043,9 @@ mod contract_tests {
                 ptr::null_mut(),
                 0,
                 &mut count,
+                ptr::null_mut(),
             ));
+            assert_null_trainer(retro_trainer_set_reasoning_budget(ptr::null_mut(), -1));
             assert_null_trainer(retro_trainer_tokenize_text(
                 ptr::null_mut(),
                 text.as_ptr(),
@@ -2116,6 +2124,7 @@ mod contract_tests {
                 ptr::null_mut(),
                 0,
                 &mut count,
+                ptr::null_mut(),
             ));
             assert_null_trainer(retro_trainer_score_tokens(
                 ptr::null_mut(),

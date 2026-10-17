@@ -346,7 +346,8 @@ passes over the pairs; `training.gradient_accumulation` is pinned to
 | `importance_sampling_level` | `token` | `token` or `sequence` ([GSPO](../training/grpo#sequence-level-importance-sampling-gspo)). |
 | `kl_coefficient` | `0.0` | KL penalty toward the reference. |
 | `system_suffix` | `""` | Text appended to every system message. |
-| `template_variables` | `{}` | Chat template variables, e.g. `{ enable_thinking = false }`. |
+| `template_variables` | `{}` | Chat template variables, e.g. `{ enable_thinking = false }`. Unset variables keep the template's own default. |
+| `reasoning_budget` | `-1` | Tokens a reasoning block may run before the template's end tag is forced; `-1` lets the model decide. Forced tokens are not trained on. Refused for a template with no reasoning block. |
 | `seed` | `42` | Seed. |
 | `mcp_config` | none | Path, or list of paths, to `mcp.json` files. |
 

@@ -192,6 +192,12 @@
             "type": "array",
             "x-retrograd-server-declared": true
           },
+          "reasoning_budget": {
+            "default": -1,
+            "description": "Tokens one reasoning block may run before the end tag the template\ndeclares is forced, as llama-server's `--reasoning-budget`: -1 (the\ndefault) lets the model decide, 0 closes the block as soon as it opens.\nThe tags come from the model's chat template, so a budget on a template\nwith no reasoning block is refused when the run starts. Forced tokens\nstay in the trajectory but are not trained on.",
+            "format": "int32",
+            "type": "integer"
+          },
           "scenario_generation": {
             "default": null,
             "oneOf": [

@@ -121,6 +121,52 @@ pub(super) fn tool_call_parse_warning(
     ))
 }
 
+/// Builds the warning for a first update where at least half the rollouts were
+/// truncated by a turn still reasoning: the model's reasoning block outgrew the
+/// turn's token budget, so it never reached an answer or a call.
+///
+/// Told apart from a call-format mismatch by the parser itself, which splits
+/// the reasoning block out with the template's own tags: a cut turn reads as
+/// reasoning and nothing else.
+pub(super) fn reasoning_truncation_warning(
+    attempted: usize,
+    cut_while_reasoning: usize,
+    max_new_tokens_per_turn: u32,
+) -> Option<String> {
+    if cut_while_reasoning == 0 || cut_while_reasoning * 2 < attempted {
+        return None;
+    }
+    Some(format!(
+        "{cut_while_reasoning} of {attempted} rollouts were truncated while the model was still \
+         reasoning, before any answer or tool call: its reasoning outgrew \
+         agent.max_new_tokens_per_turn ({max_new_tokens_per_turn}). Raise it, cap the reasoning \
+         with agent.reasoning_budget, or turn it off with \
+         template_variables = {{ enable_thinking = false }} if the template reads that variable"
+    ))
+}
+
+#[cfg(test)]
+mod reasoning_truncation_tests {
+    use super::*;
+
+    #[test]
+    fn a_minority_cut_while_reasoning_is_not_the_story() {
+        assert!(reasoning_truncation_warning(16, 0, 512).is_none());
+        assert!(reasoning_truncation_warning(16, 7, 512).is_none());
+    }
+
+    #[test]
+    fn a_majority_cut_while_reasoning_names_the_budget_and_the_way_out() {
+        let warning = reasoning_truncation_warning(16, 16, 512).expect("warned");
+        assert!(warning.starts_with("16 of 16 rollouts"), "{warning}");
+        assert!(
+            warning.contains("max_new_tokens_per_turn (512)"),
+            "{warning}"
+        );
+        assert!(warning.contains("reasoning_budget"), "{warning}");
+    }
+}
+
 #[cfg(test)]
 mod tool_call_guard_tests {
     use super::*;

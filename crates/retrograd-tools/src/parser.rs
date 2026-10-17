@@ -6,6 +6,9 @@ pub use retrograd_dataset::chat_template::ToolCallParseError;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ParsedAssistant {
     pub content: String,
+    /// The turn's reasoning block, without its tags, as the template-derived
+    /// parser split it out; empty when the turn did not reason.
+    pub reasoning: String,
     pub tool_calls: Vec<ToolCall>,
     /// Invalid calls become observations so the policy can repair them on the
     /// next turn rather than aborting the whole trajectory.
@@ -18,6 +21,7 @@ impl From<ParsedCalls> for ParsedAssistant {
     fn from(parsed: ParsedCalls) -> Self {
         Self {
             content: parsed.content,
+            reasoning: parsed.reasoning,
             tool_calls: parsed.calls.into_iter().map(ToolCall::from).collect(),
             parse_errors: parsed
                 .errors

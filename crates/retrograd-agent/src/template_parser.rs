@@ -58,15 +58,15 @@ impl ToolCallParser for TemplateToolCallParser {
             Err(error) => {
                 return ParsedAssistant {
                     content: output.to_owned(),
-                    tool_calls: Vec::new(),
                     parse_errors: vec![parse_error(0, error)],
+                    ..Default::default()
                 };
             }
         };
         decode(&document).unwrap_or_else(|error| ParsedAssistant {
             content: output.to_owned(),
-            tool_calls: Vec::new(),
             parse_errors: vec![parse_error(0, error)],
+            ..Default::default()
         })
     }
 }
@@ -106,11 +106,12 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_stays_in_the_content_rather_than_being_dropped() {
+    fn reasoning_is_kept_apart_from_the_answer() {
         let parsed =
-            decode(r#"{"content":"answer","reasoning_content":"thinking ","tool_calls":[]}"#)
+            decode(r#"{"content":"answer","reasoning_content":" thinking\n","tool_calls":[]}"#)
                 .expect("well-formed document");
-        assert_eq!(parsed.content, "thinking answer");
+        assert_eq!(parsed.content, "answer");
+        assert_eq!(parsed.reasoning, "thinking");
     }
 
     #[test]

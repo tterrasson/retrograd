@@ -84,6 +84,7 @@ impl Policy for FakePolicy {
                     tokens: vec![11],
                     text: "answer".into(),
                     stopped_at_eog: true,
+                    forced: Vec::new(),
                 }
             })
             .collect())
@@ -143,12 +144,14 @@ fn multi_turn_generation(prompt_len: usize) -> PolicyGeneration {
             tokens: vec![11],
             text: "done".into(),
             stopped_at_eog: true,
+            forced: Vec::new(),
         }
     } else {
         PolicyGeneration {
             tokens: vec![10],
             text: TOOL_CALL.into(),
             stopped_at_eog: true,
+            forced: Vec::new(),
         }
     }
 }
@@ -170,18 +173,21 @@ impl DivergentPolicy {
                 tokens: vec![12],
                 text: "done".into(),
                 stopped_at_eog: true,
+                forced: Vec::new(),
             }
         } else if seed.is_multiple_of(2) {
             PolicyGeneration {
                 tokens: vec![10],
                 text: TOOL_CALL.into(),
                 stopped_at_eog: true,
+                forced: Vec::new(),
             }
         } else {
             PolicyGeneration {
                 tokens: vec![11],
                 text: "answer".into(),
                 stopped_at_eog: true,
+                forced: Vec::new(),
             }
         }
     }
@@ -266,6 +272,7 @@ impl Policy for FlakyPolicy {
                 },
                 text: "answer".into(),
                 stopped_at_eog: true,
+                forced: Vec::new(),
             })
             .collect())
     }
@@ -303,6 +310,7 @@ impl Policy for BudgetPolicy {
                 tokens: vec![7; params.max_new_tokens as usize],
                 text: "partial".into(),
                 stopped_at_eog: self.eog,
+                forced: Vec::new(),
             })
             .collect())
     }
@@ -342,11 +350,13 @@ impl Policy for SharedTerminatorPolicy {
                     tokens: vec![11, TERMINATOR],
                     text: "done".into(),
                     stopped_at_eog: true,
+                    forced: Vec::new(),
                 },
                 false => PolicyGeneration {
                     tokens: vec![10, TERMINATOR],
                     text: TOOL_CALL.into(),
                     stopped_at_eog: true,
+                    forced: Vec::new(),
                 },
             })
             .collect())
@@ -393,6 +403,7 @@ impl Policy for UnstablePrefixPolicy {
                 tokens: vec![10],
                 text: TOOL_CALL.into(),
                 stopped_at_eog: true,
+                forced: Vec::new(),
             })
             .collect())
     }
@@ -431,6 +442,7 @@ impl Policy for SlowPolicy {
                 tokens: vec![10],
                 text: TOOL_CALL.into(),
                 stopped_at_eog: true,
+                forced: Vec::new(),
             })
             .collect())
     }
@@ -446,6 +458,7 @@ impl Policy for SlowPolicy {
                 tokens: vec![10],
                 text: TOOL_CALL.into(),
                 stopped_at_eog: true,
+                forced: Vec::new(),
             })
             .collect())
     }

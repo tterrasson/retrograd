@@ -318,10 +318,12 @@ impl<'b, B: DatasetBackend + ?Sized> ToolConversationRenderer<'b, B> {
                         .into(),
                         tool_call_id: Some(id),
                         tool_calls: &[],
+                        reasoning: None,
                     }
                 }
                 role => TemplateMessage {
                     tool_calls: &calls[index],
+                    reasoning: message.reasoning_content.as_deref(),
                     ..TemplateMessage::text(role, message.content.as_str())
                 },
             })
