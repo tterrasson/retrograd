@@ -7,9 +7,9 @@ use crate::support::*;
 #[tokio::test]
 async fn the_files_under_the_roots_are_listed_with_the_path_a_recipe_takes() {
     let fixture = Fixture::new("model-files");
-    std::fs::create_dir_all(fixture.dir.join("vision")).expect("dir");
-    std::fs::write(fixture.dir.join("vision/mmproj-f16.gguf"), b"x").expect("file");
-    let root = fixture.dir.canonicalize().expect("canonical root");
+    std::fs::create_dir_all(fixture.dir.path().join("vision")).expect("dir");
+    std::fs::write(fixture.dir.path().join("vision/mmproj-f16.gguf"), b"x").expect("file");
+    let root = fixture.dir.path().canonicalize().expect("canonical root");
     let router = build_router(state_with(
         &fixture,
         FakeEngine::succeeding(),
@@ -38,7 +38,7 @@ async fn the_files_under_the_roots_are_listed_with_the_path_a_recipe_takes() {
     assert_eq!(projector["role"], "projector");
 
     // Cached: a file added now is not seen until the listing is refreshed.
-    std::fs::write(fixture.dir.join("late.gguf"), b"x").expect("file");
+    std::fs::write(fixture.dir.path().join("late.gguf"), b"x").expect("file");
     let (_, body) = get(&router, "/v1/model-files").await;
     assert!(!body.to_string().contains("late.gguf"), "{body}");
     let (_, body) = get(&router, "/v1/model-files?refresh=true").await;

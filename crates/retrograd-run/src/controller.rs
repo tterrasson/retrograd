@@ -514,8 +514,8 @@ mod tests {
         name: &str,
         evaluation: bool,
         checkpoint: Option<(CheckpointMode, Option<u64>)>,
-    ) -> (RunController, PathBuf) {
-        let root = temp_path(name);
+    ) -> (RunController, tempfile::TempDir) {
+        let (tmp, root) = temp_path(name);
         let mut config = retrograd_config::load(write_sft_config(&root)).expect("load");
         config.evaluation = evaluation.then(|| {
             let data = root.join("eval.txt");
@@ -534,12 +534,12 @@ mod tests {
             every_steps,
             resume_from: None,
         });
-        (RunController::new(&config).expect("controller"), root)
+        (RunController::new(&config).expect("controller"), tmp)
     }
 
     #[test]
     fn the_disk_budget_counts_every_checkpoint_the_schedule_writes() {
-        let root = temp_path("retained");
+        let (_tmp, root) = temp_path("retained");
         let directory = root.join("checkpoints");
         let config = CheckpointConfig {
             directory: directory.clone(),
@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn checkpoints_already_written_are_not_budgeted_twice() {
-        let root = temp_path("retained-resume");
+        let (_tmp, root) = temp_path("retained-resume");
         let directory = root.join("checkpoints");
         fs::create_dir_all(&directory).expect("create the checkpoint directory");
         for step in [10_u64, 20, 30] {
@@ -596,12 +596,11 @@ mod tests {
         };
         // Ten scheduled, three already out of the free figure.
         assert_eq!(retained_checkpoints(&config, 100), 7);
-        fs::remove_dir_all(root).expect("clean up");
     }
 
     #[test]
     fn a_new_step_cadence_is_rearmed_from_where_the_run_is() {
-        let (mut controller, root) =
+        let (mut controller, _tmp) =
             controller("rearm", false, Some((CheckpointMode::Steps, Some(10))));
         controller.note_step(25);
         assert!(controller.checkpoint_due);
@@ -613,12 +612,11 @@ mod tests {
             .set_checkpoint_every_steps(0)
             .expect_err("a zero cadence");
         assert!(error.to_string().contains("greater than zero"), "{error}");
-        fs::remove_dir_all(root).expect("clean up");
     }
 
     #[test]
     fn dropping_the_step_schedule_disarms_a_due_checkpoint() {
-        let (mut controller, root) = controller(
+        let (mut controller, _tmp) = controller(
             "disarm",
             true,
             Some((CheckpointMode::StepsAndBestEval, Some(10))),
@@ -630,12 +628,11 @@ mod tests {
             .expect("the run has an evaluation");
         assert!(!controller.checkpoint_due);
         assert_eq!(controller.next_checkpoint_step, None);
-        fs::remove_dir_all(root).expect("clean up");
     }
 
     #[test]
     fn a_best_eval_checkpoint_needs_an_evaluation() {
-        let (mut controller, root) =
+        let (mut controller, _tmp) =
             controller("best-eval", false, Some((CheckpointMode::Steps, Some(10))));
         let error = controller
             .set_checkpoint_mode(CheckpointMode::BestEval)
@@ -644,12 +641,11 @@ mod tests {
             error.to_string().contains("has no evaluation dataset"),
             "{error}"
         );
-        fs::remove_dir_all(root).expect("clean up");
     }
 
     #[test]
     fn an_adjustment_without_its_section_is_refused() {
-        let (mut controller, root) = controller("absent", false, None);
+        let (mut controller, _tmp) = controller("absent", false, None);
         assert!(
             controller
                 .set_evaluation_every(0)
@@ -666,12 +662,11 @@ mod tests {
                 .to_string()
                 .contains("writes no checkpoints")
         );
-        fs::remove_dir_all(root).expect("clean up");
     }
 
     #[test]
     fn a_changed_evaluation_cadence_takes_over_the_schedule() {
-        let (mut controller, root) = controller("cadence", true, None);
+        let (mut controller, _tmp) = controller("cadence", true, None);
         assert!(controller.should_evaluate(2, 10));
         controller
             .set_evaluation_every(3)
@@ -680,6 +675,5 @@ mod tests {
         assert!(controller.should_evaluate(3, 10));
         // The last iteration is always evaluated, whatever the cadence.
         assert!(controller.should_evaluate(10, 10));
-        fs::remove_dir_all(root).expect("clean up");
     }
 }

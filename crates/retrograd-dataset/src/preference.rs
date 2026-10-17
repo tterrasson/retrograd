@@ -725,10 +725,8 @@ mod tests {
             &[("assistant", "a")],
         ))
         .unwrap();
-        let path = std::env::temp_dir().join(format!(
-            "retrograd-preference-{}-validate.jsonl",
-            std::process::id()
-        ));
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let path = tmp.path().join("retrograd-preference-validate.jsonl");
         std::fs::write(&path, format!("{good}\n{bad}\n\n")).unwrap();
         let validation = validate_preference_jsonl(&path).unwrap();
         assert_eq!(validation.total, 2);
@@ -743,7 +741,6 @@ mod tests {
         let expected = text("<system>S<user>Q<assistant>yes").len()
             + text("<system>S<user>Q<assistant>no").len();
         assert_eq!(lengths, vec![expected as u32]);
-        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

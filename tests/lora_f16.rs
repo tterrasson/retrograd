@@ -197,10 +197,10 @@ fn create_train_save_reload(device: Device, rank: u32, label: &str) {
     assert!(metrics.train_loss.is_finite());
     assert!(metrics.eval_loss.is_finite());
 
-    let output = std::env::temp_dir().join(format!(
-        "retrograd-lora-f16-{}-{label}-{rank}.gguf",
-        std::process::id()
-    ));
+    let tmp = common::scratch("lora-f16");
+    let output = tmp
+        .path()
+        .join(format!("retrograd-lora-f16-{label}-{rank}.gguf"));
     trainer.save_lora(&output).expect("save F16 LoRA");
     drop(trainer);
 
@@ -214,7 +214,6 @@ fn create_train_save_reload(device: Device, rank: u32, label: &str) {
     reloaded
         .train_preflight()
         .expect("promote reloaded F16 LoRA");
-    let _ = std::fs::remove_file(output);
 }
 
 #[test]

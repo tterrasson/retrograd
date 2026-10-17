@@ -407,14 +407,14 @@ async fn what_is_written_reads_back_as_a_valid_dataset() {
     )
     .await;
     stats.unwrap();
-    let path = std::env::temp_dir().join(format!("retrograd-collect-{}.jsonl", std::process::id()));
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let path = tmp.path().join("collect.jsonl");
     let lines = records
         .iter()
         .map(|record| serde_json::to_string(record).unwrap() + "\n")
         .collect::<String>();
     std::fs::write(&path, lines).unwrap();
     let read = retrograd_dataset::read_chat_jsonl(&path).unwrap();
-    std::fs::remove_file(&path).unwrap();
     assert_eq!(read.len(), 2);
     for record in read {
         record.example.validate().unwrap();

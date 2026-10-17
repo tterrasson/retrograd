@@ -388,9 +388,10 @@ mod tests {
 
     #[test]
     fn a_checkpoint_id_cannot_be_a_path() {
-        let dir = std::env::temp_dir();
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let dir = tmp.path();
         for bad in ["../escape", "a/b", "..", ".hidden", ""] {
-            let error = pick(&dir, Some(bad)).expect_err(bad);
+            let error = pick(dir, Some(bad)).expect_err(bad);
             assert_eq!(error.kind, ProblemKind::InvalidRequest, "{bad}");
         }
     }

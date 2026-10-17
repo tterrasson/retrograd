@@ -40,14 +40,6 @@ macro_rules! tiny_fixture {
     };
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let path =
-        std::env::temp_dir().join(format!("retrograd-reference-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&path);
-    std::fs::create_dir_all(&path).expect("create scratch directory");
-    path
-}
-
 fn config(policy: TrainablePolicy) -> TrainConfig {
     TrainConfig {
         n_ctx: 32,
@@ -104,7 +96,8 @@ fn declare_norms(trainer: &mut Trainer, model: &Path) {
 fn an_anchor_that_copies_the_model_reproduces_the_frozen_scores_exactly() {
     let model = tiny_fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("exact-anchor");
+    let tmp = common::scratch("exact-anchor");
+    let root = tmp.path();
 
     let mut trainer =
         Trainer::new(&model, config(TrainablePolicy::Lora)).expect("load the trained model");
@@ -126,7 +119,7 @@ fn an_anchor_that_copies_the_model_reproduces_the_frozen_scores_exactly() {
         .score_reference_tokens(&sequence)
         .expect("a lora run scores against its own frozen weights");
 
-    let anchor = copy_of(&model, &root);
+    let anchor = copy_of(&model, root);
     trainer
         .attach_reference(&anchor, &config(TrainablePolicy::Lora), None)
         .expect("a copy of the model is a valid anchor");
@@ -146,8 +139,9 @@ fn an_anchor_that_copies_the_model_reproduces_the_frozen_scores_exactly() {
 fn a_base_run_gains_a_reference_that_does_not_move_with_it() {
     let model = tiny_fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("base-anchor");
-    let anchor = copy_of(&model, &root);
+    let tmp = common::scratch("base-anchor");
+    let root = tmp.path();
+    let anchor = copy_of(&model, root);
 
     let mut trainer =
         Trainer::new(&model, config(TrainablePolicy::Partial)).expect("load the trained model");
@@ -196,8 +190,9 @@ fn a_base_run_gains_a_reference_that_does_not_move_with_it() {
 fn reference_generation_routes_to_the_anchor_or_refuses() {
     let model = tiny_fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("anchor-generation");
-    let anchor = copy_of(&model, &root);
+    let tmp = common::scratch("anchor-generation");
+    let root = tmp.path();
+    let anchor = copy_of(&model, root);
 
     let mut trainer =
         Trainer::new(&model, config(TrainablePolicy::Partial)).expect("load the trained model");
@@ -269,8 +264,9 @@ fn an_anchor_with_another_tokenizer_is_refused() {
 fn a_checkpoint_records_the_anchor_it_was_taken_against() {
     let model = tiny_fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("anchor-checkpoint");
-    let anchor = copy_of(&model, &root);
+    let tmp = common::scratch("anchor-checkpoint");
+    let root = tmp.path();
+    let anchor = copy_of(&model, root);
 
     let mut trainer =
         Trainer::new(&model, config(TrainablePolicy::Lora)).expect("load the trained model");
@@ -298,7 +294,8 @@ fn distillation_with_a_kl_term_scores_the_attached_reference() {
         return;
     };
     let _guard = common::serialize_models();
-    let root = scratch("distill-anchor");
+    let tmp = common::scratch("distill-anchor");
+    let root = tmp.path();
     let prompts = root.join("prompts.txt");
     std::fs::write(
         &prompts,
@@ -374,7 +371,8 @@ fn a_quantized_anchor_scores_within_a_measured_distance_of_its_f32_twin() {
         return;
     };
     let _guard = common::serialize_models();
-    let root = scratch("quantized-anchor");
+    let tmp = common::scratch("quantized-anchor");
+    let root = tmp.path();
 
     let mut trainer = Trainer::new(&model, config(TrainablePolicy::Partial)).expect("load trainer");
     declare_norms(&mut trainer, &model);
@@ -385,7 +383,7 @@ fn a_quantized_anchor_scores_within_a_measured_distance_of_its_f32_twin() {
     // the quantization.
     trainer
         .attach_reference(
-            copy_of(&model, &root),
+            copy_of(&model, root),
             &config(TrainablePolicy::Partial),
             None,
         )
@@ -469,6 +467,4 @@ fn a_quantized_anchor_scores_within_a_measured_distance_of_its_f32_twin() {
             .any(|(left, right)| left != right),
         "the two anchors produced identical scores, so the quantized one was never read"
     );
-
-    let _ = std::fs::remove_dir_all(&root);
 }

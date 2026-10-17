@@ -541,9 +541,8 @@ fn an_anchor_on_a_device_is_a_second_model_on_the_device() {
 
     // A copy of the file rather than the file: an anchor that shares the
     // loaded weights would measure nothing at all.
-    let root = std::env::temp_dir().join(format!("retrograd-anchor-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).expect("create scratch directory");
+    let tmp = common::scratch("anchor");
+    let root = tmp.path();
     let copy = root.join("anchor.gguf");
     std::fs::copy(&model, &copy).expect("copy the model");
 
@@ -617,6 +616,4 @@ fn an_anchor_on_a_device_is_a_second_model_on_the_device() {
         with_anchor.model_weight_bytes, alone.model_weight_bytes,
         "the run's report describes the model it trains, not the model it scores against"
     );
-
-    let _ = std::fs::remove_dir_all(&root);
 }

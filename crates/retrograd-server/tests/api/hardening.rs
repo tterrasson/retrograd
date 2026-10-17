@@ -228,7 +228,7 @@ async fn an_error_that_leaves_the_machine_does_not_describe_its_filesystem() {
     // does not, so it says nothing about the server.
     assert!(rendered.contains("no-such-model.gguf"), "{rendered}");
     assert!(
-        !rendered.contains(fixture.dir.to_string_lossy().as_ref()),
+        !rendered.contains(fixture.dir.path().to_string_lossy().as_ref()),
         "the server's own path leaked: {rendered}"
     );
     assert!(rendered.contains("<path>/"), "{rendered}");
@@ -249,7 +249,7 @@ async fn an_error_that_leaves_the_machine_does_not_describe_its_filesystem() {
     .await;
     assert!(
         body.to_string()
-            .contains(fixture.dir.to_string_lossy().as_ref()),
+            .contains(fixture.dir.path().to_string_lossy().as_ref()),
         "{body}"
     );
 }
@@ -259,7 +259,7 @@ async fn a_client_path_outside_every_root_is_refused() {
     let fixture = Fixture::new("hardening-roots");
     // One root: the fixture's own directory. Everything the recipe names is under
     // it, and nothing else is reachable.
-    let allowed = fixture.dir.clone();
+    let allowed = fixture.dir.path().to_path_buf();
     let router = hardened(&fixture, move |config| {
         config.path_roots = vec![allowed];
     });
@@ -271,12 +271,22 @@ async fn a_client_path_outside_every_root_is_refused() {
     // the temp directory, so `..` from inside it lands on a path that exists and is
     // not allowed - which is the case worth testing. A `..` that resolves to
     // nothing would only prove that canonicalization fails on missing files.
-    let outside = std::env::temp_dir().join("retrograd-outside-the-root.gguf");
-    std::fs::write(&outside, b"not a real GGUF").expect("a file outside the root");
+    let outside = tempfile::Builder::new()
+        .prefix("retrograd-outside-the-root-")
+        .tempfile()
+        .expect("a file outside the root");
+    std::fs::write(outside.path(), b"not a real GGUF").expect("a file outside the root");
 
     for model in [
-        outside.to_string_lossy().into_owned(),
-        fixture.path("../retrograd-outside-the-root.gguf"),
+        outside.path().to_string_lossy().into_owned(),
+        fixture.path(&format!(
+            "../{}",
+            outside
+                .path()
+                .file_name()
+                .expect("a named file")
+                .to_string_lossy()
+        )),
     ] {
         let (status, answer) = post(
             &router,
@@ -297,16 +307,19 @@ async fn a_client_path_outside_every_root_is_refused() {
             "the refusal echoed the path back: {answer}"
         );
     }
-    let _ = std::fs::remove_file(&outside);
 }
 
 #[tokio::test]
 async fn complete_configs_apply_roots_to_every_input_and_output() {
     let fixture = Fixture::new("hardening-complete-config");
-    let allowed = fixture.dir.clone();
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let allowed = fixture.dir.path().to_path_buf();
     let router = hardened(&fixture, move |config| config.path_roots = vec![allowed]);
-    let outside = std::env::temp_dir().join("retrograd-config-outside.jsonl");
-    std::fs::write(&outside, b"outside\n").unwrap();
+    let outside = tempfile::Builder::new()
+        .prefix("retrograd-config-outside-")
+        .tempfile()
+        .expect("a file outside the root");
+    std::fs::write(outside.path(), b"outside\n").unwrap();
 
     let config = |data: String, output: String| {
         json!({
@@ -324,7 +337,7 @@ async fn complete_configs_apply_roots_to_every_input_and_output() {
         &router,
         "/v1/plan",
         config(
-            outside.to_string_lossy().into_owned(),
+            outside.path().to_string_lossy().into_owned(),
             fixture.path("adapter.gguf"),
         ),
     )
@@ -336,7 +349,7 @@ async fn complete_configs_apply_roots_to_every_input_and_output() {
         "/v1/plan",
         config(
             fixture.path("data.jsonl"),
-            std::env::temp_dir()
+            tmp.path()
                 .join("retrograd-outside-adapter.gguf")
                 .to_string_lossy()
                 .into_owned(),
@@ -344,8 +357,6 @@ async fn complete_configs_apply_roots_to_every_input_and_output() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-
-    let _ = std::fs::remove_file(outside);
 }
 
 #[test]
@@ -353,7 +364,7 @@ fn the_reference_model_is_held_to_the_path_roots() {
     let fixture = Fixture::new("hardening-reference");
     let mut state = state_of(&fixture, FakeEngine::succeeding(), false);
     let mut server = (*state.config).clone();
-    server.path_roots = vec![fixture.dir.clone()];
+    server.path_roots = vec![fixture.dir.path().to_path_buf()];
     state.config = Arc::new(server);
     let source = format!(
         "[run]\nalgorithm='grpo'\n[model]\npath='{}'\n[output]\npath='{}'\n[lora]\n\
@@ -375,7 +386,7 @@ fn the_reference_model_is_held_to_the_path_roots() {
         .validate_run_paths(&config, retrograd_server::state::Managed::default())
         .expect("inside the root");
     let outside = Fixture::new("hardening-reference-outside");
-    config.reference.as_mut().expect("reference").model = outside.dir.join("model.gguf");
+    config.reference.as_mut().expect("reference").model = outside.dir.path().join("model.gguf");
     let error = state
         .validate_run_paths(&config, retrograd_server::state::Managed::default())
         .expect_err("outside the root");
@@ -386,9 +397,10 @@ fn the_reference_model_is_held_to_the_path_roots() {
 #[test]
 fn the_observe_directory_is_held_to_the_path_roots() {
     let fixture = Fixture::new("hardening-observe");
+    let tmp = tempfile::tempdir().expect("create temp dir");
     let mut state = state_of(&fixture, FakeEngine::succeeding(), false);
     let mut config = (*state.config).clone();
-    config.path_roots = vec![fixture.dir.clone()];
+    config.path_roots = vec![fixture.dir.path().to_path_buf()];
     state.config = Arc::new(config);
     let document = |observe: &std::path::Path| {
         format!(
@@ -412,15 +424,13 @@ fn the_observe_directory_is_held_to_the_path_roots() {
     };
     state
         .validate_run_paths(
-            &build(document(&fixture.dir.join("observe"))),
+            &build(document(&fixture.dir.path().join("observe"))),
             retrograd_server::state::Managed::default(),
         )
         .expect("inside the root");
     let error = state
         .validate_run_paths(
-            &build(document(
-                &std::env::temp_dir().join("retrograd-outside-observe"),
-            )),
+            &build(document(&tmp.path().join("retrograd-outside-observe"))),
             retrograd_server::state::Managed::default(),
         )
         .expect_err("outside every root");
@@ -431,8 +441,8 @@ fn the_observe_directory_is_held_to_the_path_roots() {
 #[tokio::test]
 async fn path_roots_use_component_boundaries() {
     let fixture = Fixture::new("hardening-component-boundary");
-    let allowed = fixture.dir.join("models");
-    let sibling = fixture.dir.join("models-evil");
+    let allowed = fixture.dir.path().join("models");
+    let sibling = fixture.dir.path().join("models-evil");
     std::fs::create_dir_all(&allowed).unwrap();
     std::fs::create_dir_all(&sibling).unwrap();
     std::fs::write(allowed.join("data.jsonl"), b"row\n").unwrap();
@@ -444,7 +454,7 @@ async fn path_roots_use_component_boundaries() {
         json!({"recipe": {
             "objective": "instruction-tuning",
             "model": sibling.join("model.gguf"),
-            "data": {"path": fixture.dir.join("models/data.jsonl")},
+            "data": {"path": fixture.dir.path().join("models/data.jsonl")},
             "budget": {"epochs": 1}
         }}),
     )

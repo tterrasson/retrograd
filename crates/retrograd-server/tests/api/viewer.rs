@@ -29,7 +29,7 @@ fn export(directory: &std::path::Path) {
 #[tokio::test]
 async fn the_viewer_serves_one_run_and_says_what_it_is() {
     let fixture = Fixture::new("viewer-serves");
-    let directory = fixture.dir.join("observe");
+    let directory = fixture.dir.path().join("observe");
     export(&directory);
     let router = build_viewer_router(directory);
 
@@ -56,7 +56,7 @@ async fn the_viewer_serves_one_run_and_says_what_it_is() {
 #[tokio::test]
 async fn nothing_can_be_written_through_the_viewer() {
     let fixture = Fixture::new("viewer-read-only");
-    let directory = fixture.dir.join("observe");
+    let directory = fixture.dir.path().join("observe");
     export(&directory);
     let router = build_viewer_router(directory);
 
@@ -81,7 +81,7 @@ async fn nothing_can_be_written_through_the_viewer() {
 #[tokio::test]
 async fn a_directory_without_a_log_is_not_an_export() {
     let fixture = Fixture::new("viewer-empty");
-    let router = build_viewer_router(fixture.dir.clone());
+    let router = build_viewer_router(fixture.dir.path().to_path_buf());
     let (status, body) = get(&router, "/v1/runs/local/trajectories").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["observed"], false);

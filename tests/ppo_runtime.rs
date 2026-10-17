@@ -410,14 +410,8 @@ fn ppo_runs_end_to_end() {
     };
     trainer.create_lora(&lora()).expect("create lora");
 
-    let dir = std::env::temp_dir().join(format!(
-        "retrograd-ppo-e2e-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = common::scratch("ppo-e2e");
+    let dir = tmp.path();
     let prompts = dir.join("prompts.jsonl");
     std::fs::write(
         &prompts,
@@ -493,7 +487,6 @@ done
 
     assert_eq!(progress_events, 1, "one progress event per ppo epoch");
     assert!(metrics.train_loss.is_finite());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]

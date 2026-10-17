@@ -206,8 +206,8 @@ mod tests {
 
     #[test]
     fn the_script_is_part_of_the_argv_and_of_the_fingerprint() {
-        let directory = std::env::temp_dir().join(format!("retrograd-exec-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let directory = tmp.path();
         let script = directory.join("t.py");
         let source = |body: &str| {
             std::fs::write(&script, body).unwrap();
@@ -221,6 +221,5 @@ mod tests {
         assert_eq!(first.argv, ["python3", "-c", "print(1)"]);
         let second = source("print(2)");
         assert_ne!(first.fingerprint(), second.fingerprint());
-        std::fs::remove_dir_all(&directory).unwrap();
     }
 }

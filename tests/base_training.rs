@@ -21,7 +21,7 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use retrograd::checkpoint::{self, Checkpoint};
 use retrograd::{
@@ -98,13 +98,6 @@ fn f32_lora() -> LoraConfig {
     lora.dtype = LoraDtype::F32;
     lora.targets = TargetSet::Patterns(vec!["blk.2.attn_q.weight".to_string()]);
     lora
-}
-
-fn scratch(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("retrograd-base-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&path);
-    std::fs::create_dir_all(&path).expect("create scratch directory");
-    path
 }
 
 fn scores(trainer: &mut Trainer) -> Vec<f32> {
@@ -374,7 +367,8 @@ fn a_lora_run_takes_no_base_set() {
 fn sgd_is_the_optimizer_the_graph_builds_and_the_checkpoint_records() {
     let model = fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("sgd");
+    let tmp = common::scratch("sgd");
+    let root = tmp.path();
 
     let mut config = base_config(TrainablePolicy::Lora, OptimizerKind::Sgd);
     config.trainable.selector = TrainableSelector::default();
@@ -449,7 +443,8 @@ fn sgd_is_the_optimizer_the_graph_builds_and_the_checkpoint_records() {
 fn an_sgd_checkpoint_restores_its_schedule_into_a_fresh_trainer() {
     let model = fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("sgd-resume");
+    let tmp = common::scratch("sgd-resume");
+    let root = tmp.path();
 
     let mut config = base_config(TrainablePolicy::Lora, OptimizerKind::Sgd);
     config.trainable.selector = TrainableSelector::default();
@@ -669,7 +664,8 @@ fn the_policy_checks_whether_an_adapter_belongs_to_the_trainable_set() {
 fn a_partial_run_checkpoints_its_base_weights_and_resumes_where_it_stopped() {
     let model = fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("partial-resume");
+    let tmp = common::scratch("partial-resume");
+    let root = tmp.path();
     let set = resolved_norm_set(&model, TrainablePolicy::Partial);
     let selected = names(&set.entries);
 
@@ -763,7 +759,8 @@ fn a_partial_run_checkpoints_its_base_weights_and_resumes_where_it_stopped() {
 fn a_hybrid_checkpoint_carries_the_adapter_and_the_base_bundle() {
     let model = fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("hybrid-checkpoint");
+    let tmp = common::scratch("hybrid-checkpoint");
+    let root = tmp.path();
     let set = resolved_norm_set(&model, TrainablePolicy::Hybrid);
     let selected = names(&set.entries);
 
@@ -832,7 +829,8 @@ fn a_hybrid_checkpoint_carries_the_adapter_and_the_base_bundle() {
 fn a_hybrid_composite_export_reloads_into_the_run_it_came_from() {
     let model = fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("hybrid-export");
+    let tmp = common::scratch("hybrid-export");
+    let root = tmp.path();
     let set = resolved_norm_set(&model, TrainablePolicy::Hybrid);
 
     let mut trainer = Trainer::new(
@@ -899,7 +897,8 @@ fn a_hybrid_composite_export_reloads_into_the_run_it_came_from() {
 fn a_trainable_bundle_must_match_the_run_it_is_restored_into() {
     let model = fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("bundle-mismatch");
+    let tmp = common::scratch("bundle-mismatch");
+    let root = tmp.path();
     let selected = names(&resolved_norms(&model));
     assert!(selected.len() > 1, "the fixture carries several norms");
 
@@ -1196,7 +1195,8 @@ fn an_sgd_step_is_the_arithmetic_it_claims_to_be() {
 fn a_model_export_is_the_run_and_needs_nothing_beside_it() {
     let model = fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("model-export");
+    let tmp = common::scratch("model-export");
+    let root = tmp.path();
     let config = base_config(TrainablePolicy::Partial, OptimizerKind::AdamW);
     let set = resolved_norm_set(&model, TrainablePolicy::Partial);
 
@@ -1247,7 +1247,8 @@ fn a_model_export_is_the_run_and_needs_nothing_beside_it() {
 fn a_model_export_refuses_what_it_would_have_to_leave_out() {
     let model = fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("model-export-refusals");
+    let tmp = common::scratch("model-export-refusals");
+    let root = tmp.path();
 
     let mut lora_only = Trainer::new(
         &model,
@@ -1285,7 +1286,8 @@ fn a_model_export_refuses_what_it_would_have_to_leave_out() {
 fn an_adamw_step_is_the_arithmetic_it_claims_to_be() {
     let model = fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("adamw-arithmetic");
+    let tmp = common::scratch("adamw-arithmetic");
+    let root = tmp.path();
 
     let mut config = base_config(TrainablePolicy::Partial, OptimizerKind::AdamW);
     config.weight_decay = 0.1;
@@ -1594,7 +1596,8 @@ fn the_planner_prices_the_dense_logits_buffer_for_a_head_training_document() {
 fn a_published_base_bundle_reloads_into_a_trainer_that_never_saw_the_run() {
     let model = fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("partial-export");
+    let tmp = common::scratch("partial-export");
+    let root = tmp.path();
     let set = resolved_norm_set(&model, TrainablePolicy::Partial);
     let config = base_config(TrainablePolicy::Partial, OptimizerKind::AdamW);
 
@@ -1639,7 +1642,8 @@ fn a_published_base_bundle_reloads_into_a_trainer_that_never_saw_the_run() {
 fn a_model_export_of_the_generated_fixture_is_the_run_it_came_from() {
     let model = tiny_fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("tiny-model-export");
+    let tmp = common::scratch("tiny-model-export");
+    let root = tmp.path();
     let set = resolved_norm_set(&model, TrainablePolicy::Partial);
     let config = base_config(TrainablePolicy::Partial, OptimizerKind::AdamW);
 
@@ -1719,7 +1723,8 @@ fn hybrid_model_export(device: Device) {
         return;
     };
     let _guard = common::serialize_models();
-    let root = scratch(&format!("hybrid-model-export-{device:?}"));
+    let tmp = common::scratch(&format!("hybrid-model-export-{device:?}"));
+    let root = tmp.path();
 
     let inventory = tensor_inventory(&model, device).expect("inventory");
     assert_eq!(inventory.architecture, "qwen35");
@@ -1732,7 +1737,7 @@ fn hybrid_model_export(device: Device) {
     // A model export is the size of the model, and this one is a real file:
     // skipping beats filling the scratch filesystem.
     let required = std::fs::metadata(&model).expect("stat the model").len();
-    let free = retrograd::checkpoint::free_space(&root).expect("free space");
+    let free = retrograd::checkpoint::free_space(root).expect("free space");
     if free < required {
         eprintln!(
             "skipping the qwen35 model export: {} needs {required} bytes and has {free}",
@@ -1844,7 +1849,8 @@ fn a_model_export_of_a_device_resident_run_is_the_run_it_came_from() {
         return;
     }
     let _guard = common::serialize_models();
-    let root = scratch("tiny-model-export-gpu");
+    let tmp = common::scratch("tiny-model-export-gpu");
+    let root = tmp.path();
     let set = resolved_norm_set(&model, TrainablePolicy::Partial);
     let config = base_config_on(Device::Gpu, TrainablePolicy::Partial, OptimizerKind::AdamW);
 
@@ -1910,7 +1916,8 @@ fn a_trainable_bundle_of_a_device_resident_run_is_the_run_it_came_from() {
         return;
     }
     let _guard = common::serialize_models();
-    let root = scratch("tiny-bundle-gpu");
+    let tmp = common::scratch("tiny-bundle-gpu");
+    let root = tmp.path();
     let set = resolved_norm_set(&model, TrainablePolicy::Partial);
     let config = base_config_on(Device::Gpu, TrainablePolicy::Partial, OptimizerKind::AdamW);
 
@@ -2141,7 +2148,8 @@ fn mixed_adapter_memory_follows_assignment_before_and_after_preparation() {
 fn a_mixed_run_checkpoints_both_owners_and_resumes_under_the_same_assignment() {
     let model = tiny_fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("mixed-optimizers");
+    let tmp = common::scratch("mixed-optimizers");
+    let root = tmp.path();
     let set = resolved_norm_set(&model, TrainablePolicy::Partial);
     let config = base_config(TrainablePolicy::Partial, OptimizerKind::AdamW);
 

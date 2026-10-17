@@ -20,7 +20,7 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use retrograd::config::{self, PreferenceConfig, PreferenceLoss, ReferenceSource};
 use retrograd::run::{self, ControlPoint, Flow, RunControl, RunControls, SilentObserver};
@@ -39,16 +39,6 @@ macro_rules! cpu_fixture {
             }
         }
     };
-}
-
-fn scratch(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "retrograd-preference-{}-{name}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&path);
-    std::fs::create_dir_all(&path).expect("create scratch directory");
-    path
 }
 
 const WORDS: [&str; 16] = [
@@ -169,7 +159,8 @@ fn one_step_losses(model: &Path, data: &Path, fanout: SharedPrefixFanout) -> (f6
 fn one_step_lowers_its_loss_in_either_layout() {
     let model = cpu_fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("one-step");
+    let tmp = common::scratch("one-step");
+    let root = tmp.path();
     let data = root.join("pair.jsonl");
     write_pairs(&data, &WORDS[..1]);
 
@@ -186,7 +177,8 @@ fn one_step_lowers_its_loss_in_either_layout() {
 fn the_initial_policy_is_the_reference_of_the_first_step() {
     let model = cpu_fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("initial");
+    let tmp = common::scratch("initial");
+    let root = tmp.path();
     let data = root.join("pairs.jsonl");
     write_pairs(&data, &WORDS[..4]);
     let training = training(1.0e-3, SharedPrefixFanout::Auto);
@@ -228,7 +220,8 @@ fn the_initial_policy_is_the_reference_of_the_first_step() {
 fn a_small_set_of_pairs_is_learned() {
     let model = cpu_fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("learning");
+    let tmp = common::scratch("learning");
+    let root = tmp.path();
     let data = root.join("train.jsonl");
     let eval = root.join("eval.jsonl");
     write_pairs(&data, &WORDS[..12]);
@@ -346,18 +339,20 @@ fn adapter_scores(model: &Path, adapter: &Path, tokens: &[i32]) -> Vec<f32> {
 fn a_resumed_run_ends_where_the_uninterrupted_one_does() {
     let model = cpu_fixture!();
     let _guard = common::serialize_models();
-    let continuous_root = scratch("continuous");
-    let resumed_root = scratch("resumed");
+    let tmp = common::scratch("continuous");
+    let continuous_root = tmp.path();
+    let tmp = common::scratch("resumed");
+    let resumed_root = tmp.path();
     for root in [&continuous_root, &resumed_root] {
         write_pairs(&root.join("pairs.jsonl"), &WORDS[..6]);
     }
 
-    let continuous = run_document(&model, &continuous_root, "out.gguf");
+    let continuous = run_document(&model, continuous_root, "out.gguf");
     let outcome = run::execute(&continuous, &mut SilentObserver).expect("the continuous run");
     let total = outcome.metrics.global_step;
     assert!(total >= 4, "two epochs of three steps: {total}");
 
-    let interrupted = run_document(&model, &resumed_root, "interrupted.gguf");
+    let interrupted = run_document(&model, resumed_root, "interrupted.gguf");
     let stopped = run::execute_controlled(
         &interrupted,
         &mut SilentObserver,
@@ -374,7 +369,7 @@ fn a_resumed_run_ends_where_the_uninterrupted_one_does() {
         "the initial policy's scores are kept with the checkpoints"
     );
 
-    let mut resumed = run_document(&model, &resumed_root, "out.gguf");
+    let mut resumed = run_document(&model, resumed_root, "out.gguf");
     run::apply_resume_override(&mut resumed, None).expect("resume from the latest checkpoint");
     let outcome = run::execute(&resumed, &mut SilentObserver).expect("the resumed run");
     assert_eq!(outcome.metrics.global_step, total);

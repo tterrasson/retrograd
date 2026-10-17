@@ -78,14 +78,14 @@ fn cpu_end_to_end() {
         );
         return;
     }
-    let out = std::env::temp_dir().join("retrograd-parity-cpu.gguf");
+    let tmp = common::scratch("parity-cpu");
+    let out = tmp.path().join("retrograd-parity-cpu.gguf");
     let cpu = run_once(Device::Cpu, &out);
     eprintln!(
         "CPU: train_loss={} eval_loss={}",
         cpu.train_loss, cpu.eval_loss
     );
     assert!(cpu.train_loss.is_finite() && cpu.eval_loss.is_finite());
-    let _ = std::fs::remove_file(&out);
 }
 
 #[cfg(retro_metal)]
@@ -103,8 +103,9 @@ fn metal_matches_cpu_end_to_end() {
         return;
     }
 
-    let cpu_out = std::env::temp_dir().join("retrograd-parity-cpu2.gguf");
-    let gpu_out = std::env::temp_dir().join("retrograd-parity-metal.gguf");
+    let tmp = common::scratch("parity-metal");
+    let cpu_out = tmp.path().join("retrograd-parity-cpu2.gguf");
+    let gpu_out = tmp.path().join("retrograd-parity-metal.gguf");
     let cpu = run_once(Device::Cpu, &cpu_out);
     let gpu = run_once(Device::Gpu, &gpu_out);
 
@@ -124,9 +125,6 @@ fn metal_matches_cpu_end_to_end() {
         cpu.train_loss,
         gpu.train_loss
     );
-
-    let _ = std::fs::remove_file(&cpu_out);
-    let _ = std::fs::remove_file(&gpu_out);
 }
 
 #[cfg(retro_cuda)]
@@ -140,8 +138,9 @@ fn cuda_matches_cpu_end_to_end() {
         eprintln!("skipping: CUDA device or local model unavailable");
         return;
     }
-    let cpu_out = std::env::temp_dir().join("retrograd-parity-cpu-cuda.gguf");
-    let gpu_out = std::env::temp_dir().join("retrograd-parity-cuda.gguf");
+    let tmp = common::scratch("parity-cuda");
+    let cpu_out = tmp.path().join("retrograd-parity-cpu-cuda.gguf");
+    let gpu_out = tmp.path().join("retrograd-parity-cuda.gguf");
     let cpu = run_once(Device::Cpu, &cpu_out);
     let cuda = run_once(Device::Gpu, &gpu_out);
     assert!(cuda.train_loss.is_finite() && cuda.eval_loss.is_finite());
@@ -152,6 +151,4 @@ fn cuda_matches_cpu_end_to_end() {
         cpu.train_loss,
         cuda.train_loss
     );
-    let _ = std::fs::remove_file(&cpu_out);
-    let _ = std::fs::remove_file(&gpu_out);
 }

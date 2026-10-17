@@ -26,8 +26,6 @@
 //! in their own crates. The types here are the ones `build` and its
 //! `build_*` helpers copy by hand.
 
-use std::path::Path;
-
 use retrograd_core::{
     CheckpointDtype, FeatureDtype, GefenLayout, GefenVariant, GenerationKvDtype,
     ImportanceSamplingLevel, KvDtype, LayerRange, LoraDtype, LrScheduler, MasterWeights,
@@ -476,7 +474,8 @@ fn base_normalized(mut document: ConfigDocument) -> ConfigDocument {
 /// and then refused.
 #[test]
 fn a_partial_document_reaches_the_run_config_with_its_selector() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
     let mut document = base_normalized(exhaustive_document());
     // No KL term, so no anchor.
     document.grpo.as_mut().expect("section").kl_coefficient = 0.0;
@@ -506,7 +505,8 @@ fn a_partial_document_reaches_the_run_config_with_its_selector() {
 /// produce", and every pairing that would lose half of it is refused.
 #[test]
 fn the_adapter_section_and_the_output_kind_follow_the_policy() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
     // A section describing an adapter the run never creates.
     let mut with_adapter = base_normalized(exhaustive_document());
     with_adapter.grpo.as_mut().expect("section").kl_coefficient = 0.0;
@@ -568,7 +568,8 @@ fn the_adapter_section_and_the_output_kind_follow_the_policy() {
 /// covered here.
 #[test]
 fn a_model_export_belongs_to_the_policies_that_carry_no_adapter() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
     let mut document = base_normalized(exhaustive_document());
     document.grpo.as_mut().expect("section").kl_coefficient = 0.0;
     document.grpo.as_mut().expect("section").kl_schedule = None;
@@ -627,7 +628,8 @@ fn a_model_export_belongs_to_the_policies_that_carry_no_adapter() {
 /// reporting a divergence from a moving target.
 #[test]
 fn a_fixed_reference_consumer_is_refused_beside_base_training() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
     let mut document = base_normalized(exhaustive_document());
     document.reference = None;
     assert!(
@@ -659,7 +661,8 @@ fn a_fixed_reference_consumer_is_refused_beside_base_training() {
 /// be loaded and never read.
 #[test]
 fn ppo_uses_its_rollout_policy_without_a_fixed_reference() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
     let mut document = base_normalized(exhaustive_document());
     document.run.algorithm = "ppo".to_string();
     document.grpo = None;
@@ -679,7 +682,8 @@ fn ppo_uses_its_rollout_policy_without_a_fixed_reference() {
 
 #[test]
 fn an_anchor_no_term_scores_against_is_refused() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
     let mut document = lora_normalized(exhaustive_document());
     document.grpo.as_mut().expect("section").kl_coefficient = 0.0;
     document.grpo.as_mut().expect("section").kl_schedule = None;
@@ -692,7 +696,8 @@ fn an_anchor_no_term_scores_against_is_refused() {
 /// both reach the configuration.
 #[test]
 fn a_declared_anchor_admits_a_kl_penalty_beside_base_training() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
     let document = base_normalized(exhaustive_document());
     assert!(document.grpo.as_ref().expect("section").kl_coefficient > 0.0);
     let config = build(document, root).expect("a declared anchor is a fixed reference");
@@ -728,7 +733,8 @@ fn a_declared_anchor_admits_a_kl_penalty_beside_base_training() {
 /// A selector a policy ignores is a selector the user believes is in effect.
 #[test]
 fn a_lora_run_refuses_a_base_selector_instead_of_ignoring_it() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
     let mut document = lora_normalized(exhaustive_document());
     document.trainable = Some(TrainableToml {
         norms: Some(true),
@@ -742,7 +748,8 @@ fn a_lora_run_refuses_a_base_selector_instead_of_ignoring_it() {
 /// replaced by AdamW.
 #[test]
 fn an_unknown_optimizer_name_is_refused_rather_than_substituted() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
     let mut document = lora_normalized(exhaustive_document());
     document.training.optimizer = Some("lion".to_string());
     let error = build(document, root).expect_err("an unknown name is refused");
@@ -754,7 +761,8 @@ fn an_unknown_optimizer_name_is_refused_rather_than_substituted() {
 /// as AdamW would be indistinguishable from a run nobody configured.
 #[test]
 fn a_selectable_optimizer_reaches_the_training_configuration() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
     for (name, expected) in [
         ("adamw", OptimizerKind::AdamW),
         ("sgd", OptimizerKind::Sgd),
@@ -788,7 +796,8 @@ fn a_selectable_optimizer_reaches_the_training_configuration() {
 /// optimizer the run did not choose is refused rather than ignored.
 #[test]
 fn an_optimizer_section_is_validated_against_the_optimizer_that_reads_it() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
     let gefen = |section: GefenToml| {
         let mut document = lora_normalized(exhaustive_document());
         document.training.optimizer = Some("gefen".to_string());
@@ -896,7 +905,8 @@ fn an_optimizer_section_is_validated_against_the_optimizer_that_reads_it() {
 /// value rather than the run's.
 #[test]
 fn muons_section_reaches_its_declared_rows() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
     let mut document = lora_normalized(exhaustive_document());
     document.training.optimizer = Some("muon".to_string());
     document.lora.as_mut().expect("section").dtype = Some(LoraDtype::F32);
@@ -938,7 +948,8 @@ fn muons_section_reaches_its_declared_rows() {
 /// `GGML_ABORT` in the middle of the first step.
 #[test]
 fn an_f32_only_optimizer_is_refused_against_the_default_f16_adapter() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
     let mut document = lora_normalized(exhaustive_document());
     document.checkpoint.as_mut().unwrap().resume_from = None;
     document.training.optimizer = Some("muon".to_string());
@@ -954,7 +965,8 @@ fn an_f32_only_optimizer_is_refused_against_the_default_f16_adapter() {
 /// The counterpart: SGD writes F16, so the default adapter needs no override.
 #[test]
 fn sgd_accepts_the_default_f16_adapter() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
     let mut document = lora_normalized(exhaustive_document());
     document.checkpoint.as_mut().unwrap().resume_from = None;
     document.training.optimizer = Some("sgd".to_string());
@@ -964,7 +976,8 @@ fn sgd_accepts_the_default_f16_adapter() {
 
 #[test]
 fn sgd_resume_uses_the_checkpoint_adapter_dtype() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
     let mut document = lora_normalized(exhaustive_document());
     document.training.optimizer = Some("sgd".to_string());
     document.lora.as_mut().expect("section").dtype = Some(LoraDtype::F16);
@@ -1022,7 +1035,8 @@ fn every_toml_field_survives_a_document_round_trip() {
 /// the default it silently used.
 #[test]
 fn every_toml_field_reaches_the_run_config() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
     let config = build(lora_normalized(exhaustive_document()), root)
         .expect("the exhaustive document builds");
     // The two keys this normalization clears have their value coverage in
@@ -1160,7 +1174,8 @@ fn every_toml_field_reaches_the_run_config() {
 /// same treatment on their own.
 #[test]
 fn the_other_algorithm_sections_reach_the_run_config() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
 
     let mut document = lora_normalized(exhaustive_document());
     document.run.algorithm = "ppo".to_string();
@@ -1369,7 +1384,8 @@ fn the_other_algorithm_sections_reach_the_run_config() {
 /// the rest and are frozen where they live.
 #[test]
 fn the_defaults_behind_an_absent_field_are_frozen() {
-    let root = Path::new("/tmp/retrograd-round-trip");
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
     let document = parse_toml(
         r#"
 [run]
@@ -1449,6 +1465,7 @@ seed = 0
 /// type.
 #[test]
 fn an_empty_kl_schedule_warms_up_over_zero_updates() {
+    let tmp = tempfile::tempdir().expect("create temp dir");
     let schedule = build_grpo(
         GrpoToml {
             kl_schedule: Some(KlScheduleToml {
@@ -1457,7 +1474,7 @@ fn an_empty_kl_schedule_warms_up_over_zero_updates() {
             }),
             ..exhaustive_document().grpo.expect("the GRPO section")
         },
-        Path::new("/tmp/retrograd-round-trip"),
+        tmp.path(),
     )
     .expect("the GRPO section builds")
     .kl_schedule

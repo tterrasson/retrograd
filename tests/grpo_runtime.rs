@@ -414,8 +414,8 @@ fn reward_evaluation_covers_every_prompt_across_partial_waves() {
     let mut trainer = Trainer::new(model, training.clone()).expect("load trainer");
     trainer.create_lora(&lora()).expect("create lora");
 
-    let dir = std::env::temp_dir().join(format!("retrograd-grpo-eval-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = common::scratch("grpo-eval");
+    let dir = tmp.path();
     // Five prompts against a four-sequence wave: one full wave, one holding a
     // single prompt.
     let data = dir.join("eval.jsonl");
@@ -489,8 +489,6 @@ fn reward_evaluation_covers_every_prompt_across_partial_waves() {
             .expect("evaluate without batching");
     assert_eq!(one_at_a_time.examples, prompts.len());
     assert_eq!(one_at_a_time.mean_reward, metrics.mean_reward);
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A GRPO config whose only exercised part is the reward command and the
@@ -553,14 +551,8 @@ fn grpo_runs_end_to_end() {
     let packed_supported = trainer
         .supports_shared_prefix_packed_training()
         .expect("packed-training capability");
-    let dir = std::env::temp_dir().join(format!(
-        "retrograd-grpo-e2e-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = common::scratch("grpo-e2e");
+    let dir = tmp.path();
     let prompts = dir.join("prompts.jsonl");
     std::fs::write(
         &prompts,
@@ -693,7 +685,6 @@ fn grpo_runs_end_to_end() {
         "trained and filtered scheduler steps must match the selected layout"
     );
     assert!(metrics.train_loss.is_finite());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The GRPO loop with GSPO's sequence-level ratio and the paper's clip
@@ -708,14 +699,8 @@ fn gspo_runs_end_to_end() {
     };
     let mut trainer = Trainer::new(model, config()).expect("load trainer");
     trainer.create_lora(&lora()).expect("create lora");
-    let dir = std::env::temp_dir().join(format!(
-        "retrograd-gspo-e2e-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = common::scratch("gspo-e2e");
+    let dir = tmp.path();
     let prompts = dir.join("prompts.jsonl");
     std::fs::write(
         &prompts,
@@ -763,7 +748,6 @@ fn gspo_runs_end_to_end() {
             clip_fractions.push(clip_fraction);
         })
         .expect("gspo run");
-    std::fs::remove_dir_all(&dir).ok();
     assert_eq!(clip_fractions.len(), 2, "one progress event per grpo epoch");
     // The first epoch scores against the behavior policy itself: s = 1.
     assert_eq!(clip_fractions[0], 0.0);
@@ -786,14 +770,8 @@ fn dynamic_sampling_resamples_zero_signal_groups() {
     };
     let mut trainer = Trainer::new(model, config()).expect("load trainer");
     trainer.create_lora(&lora()).expect("create lora");
-    let dir = std::env::temp_dir().join(format!(
-        "retrograd-grpo-dyn-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = common::scratch("grpo-dyn");
+    let dir = tmp.path();
     let prompts = dir.join("prompts.jsonl");
     std::fs::write(
         &prompts,
@@ -870,7 +848,6 @@ fn dynamic_sampling_resamples_zero_signal_groups() {
     assert_eq!(trained_fraction, Some(0.5));
     // Four candidate groups drawn for two update slots: the cap was reached.
     assert_eq!(groups_sampled_fraction, Some(2.0));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]

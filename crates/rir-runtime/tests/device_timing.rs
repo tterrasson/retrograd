@@ -57,12 +57,14 @@ fn build<'g>(
 
     // `compile_glsl` takes a path (as the AOT pipeline calls it); the parent
     // directory names the temporary file and therefore carries the tag.
-    let dir = std::env::temp_dir().join(format!("rir-time-{tag}-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temporary directory");
-    let comp = dir.join("kernel.comp");
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("rir-time-{tag}-"))
+        .tempdir()
+        .expect("temporary directory");
+    let comp = dir.path().join("kernel.comp");
     std::fs::write(&comp, glsl).expect("writing shader");
     let spirv = compile_glsl(&comp);
-    let _ = std::fs::remove_dir_all(&dir);
+    drop(dir);
 
     let spirv = match spirv {
         Ok(s) => s,

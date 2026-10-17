@@ -496,13 +496,13 @@ mod tests {
             vec![-0.1, -2.0, -0.5, f32::NEG_INFINITY, -0.2, -1.5],
         )
         .expect("shape");
-        let path = std::env::temp_dir().join("retrograd-topk-round-trip.bin");
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let path = tmp.path().join("retrograd-topk-round-trip.bin");
         sidecar.write(&path).expect("write");
         let read = TopKSidecar::read(&path).expect("read");
         assert_eq!(read.header(), sidecar.header());
         assert_eq!(read.ids(), sidecar.ids());
         assert_eq!(read.logprobs(), sidecar.logprobs());
-        std::fs::remove_file(&path).ok();
     }
 
     /// The length check is the whole point of carrying `n_rows` in the header:
@@ -511,26 +511,26 @@ mod tests {
     fn a_truncated_sidecar_is_refused_rather_than_read_short() {
         let sidecar =
             TopKSidecar::new(header(2, 2), vec![1, 2, 3, 4], vec![-0.1; 4]).expect("shape");
-        let path = std::env::temp_dir().join("retrograd-topk-truncated.bin");
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let path = tmp.path().join("retrograd-topk-truncated.bin");
         sidecar.write(&path).expect("write");
         let bytes = std::fs::read(&path).expect("read back");
         std::fs::write(&path, &bytes[..bytes.len() - ENTRY_BYTES]).expect("truncate");
         let error = TopKSidecar::read(&path).unwrap_err().to_string();
         assert!(error.contains("ends at entry"), "{error}");
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn a_longer_sidecar_is_refused_too() {
         let sidecar = TopKSidecar::new(header(1, 1), vec![1], vec![-0.1]).expect("shape");
-        let path = std::env::temp_dir().join("retrograd-topk-long.bin");
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let path = tmp.path().join("retrograd-topk-long.bin");
         sidecar.write(&path).expect("write");
         let mut bytes = std::fs::read(&path).expect("read back");
         bytes.extend_from_slice(&[0_u8; ENTRY_BYTES]);
         std::fs::write(&path, &bytes).expect("extend");
         let error = TopKSidecar::read(&path).unwrap_err().to_string();
         assert!(error.contains("longer than"), "{error}");
-        std::fs::remove_file(&path).ok();
     }
 
     /// The renormalization is what makes the entries a distribution: the mass
@@ -582,7 +582,8 @@ mod tests {
             vec![-0.2, f32::NEG_INFINITY],
         )
         .expect("shape");
-        let path = std::env::temp_dir().join("retrograd-topk-absent.bin");
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let path = tmp.path().join("retrograd-topk-absent.bin");
         sidecar.write(&path).expect("write");
         let read = TopKSidecar::read(&path).expect("read");
         assert_eq!(read.ids(), &[3, IGNORE_LABEL]);
@@ -590,7 +591,6 @@ mod tests {
         let (labels, weights) = read.weighted_targets(&dataset(vec![3])).expect("targets");
         assert_eq!(labels, vec![3, IGNORE_LABEL]);
         assert_eq!(weights, vec![1.0, 0.0]);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]

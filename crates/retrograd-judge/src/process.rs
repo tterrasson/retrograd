@@ -872,18 +872,18 @@ done"#
     /// A scratch path unique to this test binary and this test name, passed to
     /// the worker by interpolation rather than by environment: a test that sets
     /// a variable sets it for every other test running beside it.
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "retrograd-reward-{name}-{}.txt",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
-        path
+    fn scratch(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("retrograd-reward-{name}-"))
+            .tempdir()
+            .expect("create the scratch directory");
+        let path = dir.path().join("marks.txt");
+        (dir, path)
     }
 
     #[test]
     fn a_persistent_worker_answers_several_batches_from_one_process() {
-        let marks = scratch("marks");
+        let (_tmp, marks) = scratch("marks");
         let command = worker_with_setup(
             &format!("printf 'started\\n' >> '{}'", marks.display()),
             r#"reply '{"reward":1.5}'"#,
@@ -901,7 +901,6 @@ done"#
         drop(process);
         let started = std::fs::read_to_string(&marks).unwrap();
         assert_eq!(started.lines().count(), 1, "three batches, one process");
-        let _ = std::fs::remove_file(&marks);
     }
 
     #[test]
@@ -932,7 +931,7 @@ done"#
 
     #[test]
     fn a_worker_that_dies_reports_its_stderr_and_the_next_call_restarts_it() {
-        let once = scratch("once");
+        let (_tmp, once) = scratch("once");
         let command = worker(&format!(
             "if [ -f '{path}' ]; then reply '{{\"reward\":2}}'; \
              else : > '{path}'; printf 'reward exploded\\n' >&2; exit 3; fi",
@@ -951,7 +950,6 @@ done"#
         // which takes the branch the marker file now selects.
         let responses: Vec<Response> = process.call([Request { prompt: "p" }]).unwrap();
         assert_eq!(responses[0].reward, 2.0);
-        let _ = std::fs::remove_file(&once);
     }
 
     #[test]

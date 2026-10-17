@@ -1533,10 +1533,8 @@ pub(crate) mod tests {
         let tool_line = serde_json::to_string(&one_call("")).unwrap();
         let plain_line =
             r#"{"messages":[{"role":"user","content":"Q"},{"role":"assistant","content":"A"}]}"#;
-        let path = std::env::temp_dir().join(format!(
-            "retrograd-dataset-mixed-{}.jsonl",
-            std::process::id()
-        ));
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let path = tmp.path().join("retrograd-dataset-mixed.jsonl");
         std::fs::write(&path, format!("{plain_line}\n{tool_line}\n")).unwrap();
 
         let n_ctx = 512;
@@ -1563,7 +1561,6 @@ pub(crate) mod tests {
         let lengths =
             crate::measured_lengths(&backend, &path, crate::DataFormat::ChatJsonl).unwrap();
         assert_eq!(lengths[1] as usize, stream.tokens.len());
-        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

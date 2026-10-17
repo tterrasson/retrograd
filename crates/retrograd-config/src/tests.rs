@@ -15,29 +15,11 @@ use crate::grpo::build_grpo;
 use crate::ppo::{build_ppo, critic};
 use crate::*;
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn write_config(source: &str) -> PathBuf {
-    // A timestamp alone is not unique among parallel tests; the pid and
-    // counter make the directory unique across processes and tests.
-    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let path = std::env::temp_dir().join(format!(
-        "retrograd-config-{}-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-        NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    fs::create_dir_all(&path).unwrap();
-    let file = path.join("run.toml");
+fn write_config(source: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("create the config directory");
+    let file = dir.path().join("run.toml");
     fs::write(&file, source).unwrap();
-    file
-}
-
-fn remove_config(file: &Path) {
-    fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    (dir, file)
 }
 
 /// The shipped examples are the documentation a reader copies first, so a
@@ -171,7 +153,7 @@ fn targets_expand_aliases() {
 fn omitted_targets_default_to_every_projection() {
     let base =
         "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n";
-    let default_file = write_config(&format!("{base}[sft]\ndata='data.txt'\n"));
+    let (_tmp, default_file) = write_config(&format!("{base}[sft]\ndata='data.txt'\n"));
     assert_eq!(
         load(&default_file).unwrap().lora.unwrap().config.targets,
         TargetSet::Patterns(vec![
@@ -184,14 +166,13 @@ fn omitted_targets_default_to_every_projection() {
             "blk.*.ffn_gate.weight".into(),
         ])
     );
-    remove_config(&default_file);
 
-    let auto_file = write_config(&format!("{base}targets=['auto']\n[sft]\ndata='data.txt'\n"));
+    let (_tmp, auto_file) =
+        write_config(&format!("{base}targets=['auto']\n[sft]\ndata='data.txt'\n"));
     assert_eq!(
         load(&auto_file).unwrap().lora.unwrap().config.targets,
         TargetSet::Auto
     );
-    remove_config(&auto_file);
 }
 #[test]
 fn sampling_validates_every_numeric_boundary() {
@@ -217,7 +198,7 @@ fn sampling_validates_every_numeric_boundary() {
 }
 #[test]
 fn resolves_paths_from_the_config_directory() {
-    let file = write_config(
+    let (_tmp, file) = write_config(
         "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\n",
     );
     let loaded = load(&file).unwrap();
@@ -226,7 +207,6 @@ fn resolves_paths_from_the_config_directory() {
     assert!(
         matches!(loaded.algorithm, Algorithm::Sft(SftConfig { data, .. }) if data == file.parent().unwrap().join("data.txt"))
     );
-    remove_config(&file);
 }
 
 /// A document may leave `[model]` out entirely when the frontend supplies
@@ -236,7 +216,7 @@ fn resolves_paths_from_the_config_directory() {
 /// directory the way a written one is.
 #[test]
 fn the_model_override_stands_in_for_a_missing_model_section() {
-    let file = write_config(
+    let (_tmp, file) = write_config(
         "[run]\nalgorithm='sft'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\n",
     );
     let error = load(&file).unwrap_err().to_string();
@@ -252,7 +232,6 @@ fn the_model_override_stands_in_for_a_missing_model_section() {
     .unwrap();
     assert_eq!(loaded.model, PathBuf::from("elsewhere/model.gguf"));
     assert_eq!(loaded.training.device, Device::Cpu);
-    remove_config(&file);
 }
 
 /// `--model` wins over a written `[model].path`, and `--device` over
@@ -260,7 +239,7 @@ fn the_model_override_stands_in_for_a_missing_model_section() {
 /// TOML, which it would not do if the document had the last word.
 #[test]
 fn the_model_override_outranks_a_written_model_section() {
-    let file = write_config(
+    let (_tmp, file) = write_config(
         "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\ndevice='gpu'\n\
          [output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\n",
     );
@@ -274,7 +253,6 @@ fn the_model_override_outranks_a_written_model_section() {
     .unwrap();
     assert_eq!(loaded.model, PathBuf::from("/other/model.gguf"));
     assert_eq!(loaded.training.device, Device::Cpu);
-    remove_config(&file);
 }
 
 #[test]
@@ -285,12 +263,11 @@ fn the_collection_endpoint_is_read_and_its_required_keys_are_checked() {
         "[agent]\nscenarios='s.jsonl'\n",
         "[agent.environment]\ntype='http'\nbase_url='http://127.0.0.1:1'\n",
     );
-    let file = write_config(&format!(
+    let (_tmp, file) = write_config(&format!(
         "{base}[agent.collect_api]\nbase_url='https://api.example/v1'\nmodel='teacher'\n\
          api_key_env='TEACHER_KEY'\ntemperature=0.7\n"
     ));
     let config = load(&file).expect("a document with a collection endpoint");
-    remove_config(&file);
     let Algorithm::AgentGrpo(agent) = &config.algorithm else {
         panic!("expected an agentic algorithm");
     };
@@ -300,17 +277,16 @@ fn the_collection_endpoint_is_read_and_its_required_keys_are_checked() {
     assert_eq!(api.timeout_secs, 120);
     assert_eq!(api.temperature, Some(0.7));
 
-    let file = write_config(&format!(
+    let (_tmp, file) = write_config(&format!(
         "{base}[agent.collect_api]\nbase_url='https://api.example/v1'\nmodel='teacher'\n"
     ));
     let error = load(&file).unwrap_err().to_string();
-    remove_config(&file);
     assert!(error.contains("api_key_env"), "{error}");
 }
 
 #[test]
 fn sft_template_variables_reach_the_run_as_a_json_object() {
-    let file = write_config(
+    let (_tmp, file) = write_config(
         "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\ntemplate_variables={ enable_thinking = false }\n",
     );
     let loaded = load(&file).unwrap();
@@ -322,12 +298,11 @@ fn sft_template_variables_reach_the_run_as_a_json_object() {
         sft.template_variables_json(),
         r#"{"enable_thinking":false}"#
     );
-    remove_config(&file);
 }
 
 #[test]
 fn sft_shuffles_by_default_seeded_from_the_lora_seed() {
-    let default_file = write_config(
+    let (_tmp, default_file) = write_config(
         "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\nseed=7\n[sft]\ndata='data.txt'\n",
     );
     let loaded = load(&default_file).unwrap();
@@ -337,39 +312,35 @@ fn sft_shuffles_by_default_seeded_from_the_lora_seed() {
     // shuffle silently running on 42 while the config names 7 is exactly
     // the class of bug this pair exists to prevent.
     assert_eq!(loaded.training.shuffle_seed, 7);
-    remove_config(&default_file);
 
-    let off_file = write_config(
+    let (_tmp, off_file) = write_config(
         "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\nshuffle=false\n",
     );
     let loaded = load(&off_file).unwrap();
     assert!(matches!(loaded.algorithm, Algorithm::Sft(SftConfig { shuffle, .. }) if !shuffle));
     assert!(!loaded.training.shuffle_dataset);
     assert_eq!(loaded.training.shuffle_seed, 42, "the lora.seed default");
-    remove_config(&off_file);
 }
 
 #[test]
 fn lora_dtype_defaults_to_f16_and_accepts_only_f16_or_f32() {
-    let default_file = write_config(
+    let (_tmp, default_file) = write_config(
         "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\n",
     );
     assert_eq!(
         load(&default_file).unwrap().lora.unwrap().config.dtype,
         LoraDtype::F16
     );
-    remove_config(&default_file);
 
-    let f32_file = write_config(
+    let (_tmp, f32_file) = write_config(
         "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\ndtype='f32'\n[sft]\ndata='data.txt'\n",
     );
     assert_eq!(
         load(&f32_file).unwrap().lora.unwrap().config.dtype,
         LoraDtype::F32
     );
-    remove_config(&f32_file);
 
-    let invalid_file = write_config(
+    let (_tmp, invalid_file) = write_config(
         "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\ndtype='bf16'\n[sft]\ndata='data.txt'\n",
     );
     assert!(
@@ -378,12 +349,11 @@ fn lora_dtype_defaults_to_f16_and_accepts_only_f16_or_f32() {
             .to_string()
             .contains("dtype")
     );
-    remove_config(&invalid_file);
 }
 
 #[test]
 fn evaluation_and_checkpoint_policy_are_shared_and_resolve_paths() {
-    let file = write_config(concat!(
+    let (_tmp, file) = write_config(concat!(
         "[run]\nalgorithm='sft'\n",
         "[model]\npath='model.gguf'\n",
         "[output]\npath='out.gguf'\n[lora]\n",
@@ -405,7 +375,6 @@ fn evaluation_and_checkpoint_policy_are_shared_and_resolve_paths() {
     );
     assert_eq!(checkpoint.mode, CheckpointMode::StepsAndBestEval);
     assert_eq!(checkpoint.every_steps, Some(10));
-    remove_config(&file);
 }
 
 #[test]
@@ -413,7 +382,7 @@ fn resume_from_resolves_and_excludes_a_cold_adapter_load() {
     let base = "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[sft]\ndata='train.txt'\n";
     let checkpoint = "[checkpoint]\ndirectory='ckpt'\nmode='steps'\nevery_steps=2\nresume_from='ckpt/step-000000000010.state'\n";
 
-    let file = write_config(&format!(
+    let (_tmp, file) = write_config(&format!(
         "{base}[output]\npath='out.gguf'\n[lora]\n{checkpoint}"
     ));
     let loaded = load(&file).unwrap();
@@ -421,29 +390,26 @@ fn resume_from_resolves_and_excludes_a_cold_adapter_load() {
         loaded.checkpoint.unwrap().resume_from,
         Some(file.parent().unwrap().join("ckpt/step-000000000010.state"))
     );
-    remove_config(&file);
 
     // A resume restores its own adapter, so pairing it with a cold adapter
     // load would leave which weights actually train ambiguous.
-    let file = write_config(&format!(
+    let (_tmp, file) = write_config(&format!(
         "{base}[output]\npath='out.gguf'\n[lora]\ninit_adapter='adapter.gguf'\n{checkpoint}"
     ));
     let error = load(&file).unwrap_err().to_string();
     assert!(error.contains("mutually exclusive"), "{error}");
-    remove_config(&file);
 }
 
 #[test]
 fn evaluation_and_checkpoint_defaults_and_dependencies_are_validated() {
     let base = "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='train.txt'\n";
 
-    let file = write_config(&format!("{base}[evaluation]\ndata='eval.txt'\n"));
+    let (_tmp, file) = write_config(&format!("{base}[evaluation]\ndata='eval.txt'\n"));
     let evaluation = load(&file).unwrap().evaluation.unwrap();
     assert_eq!(evaluation.every_iterations, 1);
     assert_eq!(evaluation.patience, None);
     assert_eq!(evaluation.min_delta, 0.0);
     assert_eq!(evaluation.max_examples, None);
-    remove_config(&file);
 
     for section in [
         "[evaluation]\ndata='eval.txt'\nevery_iterations=0\n",
@@ -455,18 +421,17 @@ fn evaluation_and_checkpoint_defaults_and_dependencies_are_validated() {
         "[checkpoint]\ndirectory='ckpt'\nmode='best_eval'\nevery_steps=2\n[evaluation]\ndata='eval.txt'\n",
         "[checkpoint]\ndirectory='ckpt'\nmode='sometimes'\n",
     ] {
-        let file = write_config(&format!("{base}{section}"));
+        let (_tmp, file) = write_config(&format!("{base}{section}"));
         assert!(
             load(&file).is_err(),
             "section should be rejected: {section}"
         );
-        remove_config(&file);
     }
 }
 
 #[test]
 fn algorithm_sections_no_longer_accept_evaluation_data() {
-    let file = write_config(concat!(
+    let (_tmp, file) = write_config(concat!(
         "[run]\nalgorithm='sft'\n",
         "[model]\npath='model.gguf'\n",
         "[output]\npath='out.gguf'\n[lora]\n",
@@ -478,7 +443,6 @@ fn algorithm_sections_no_longer_accept_evaluation_data() {
             .to_string()
             .contains("invalid TOML")
     );
-    remove_config(&file);
 }
 
 #[test]
@@ -487,16 +451,15 @@ fn an_omitted_or_unit_duty_cycle_normalizes_to_the_unthrottled_path() {
     // what keeps a single disabled path in the runtime rather than one that
     // installs a limiter and then never sleeps.
     for training in ["", "[training]\nmax_gpu_duty_cycle=1.0\n"] {
-        let file = write_config(&format!(
+        let (_tmp, file) = write_config(&format!(
             "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n\
              [output]\npath='out.gguf'\n[lora]\n{training}[sft]\ndata='data.txt'\n"
         ));
         let loaded = load(&file).unwrap();
         assert_eq!(loaded.training.max_gpu_duty_cycle, None, "{training:?}");
-        remove_config(&file);
     }
 
-    let file = write_config(concat!(
+    let (_tmp, file) = write_config(concat!(
         "[run]\nalgorithm='sft'\n",
         "[model]\npath='model.gguf'\n",
         "[output]\npath='out.gguf'\n[lora]\n",
@@ -504,7 +467,6 @@ fn an_omitted_or_unit_duty_cycle_normalizes_to_the_unthrottled_path() {
         "[sft]\ndata='data.txt'\n",
     ));
     assert_eq!(load(&file).unwrap().training.max_gpu_duty_cycle, Some(0.5));
-    remove_config(&file);
 }
 
 #[test]
@@ -512,7 +474,7 @@ fn a_cpu_device_accepts_a_duty_cycle_it_cannot_honour() {
     // `auto` can resolve to CPU too, so rejecting the document at parse
     // time would be wrong. The runtime keeps the requested value and its
     // report says `active: false, reason: cpu_backend` instead.
-    let file = write_config(concat!(
+    let (_tmp, file) = write_config(concat!(
         "[run]\nalgorithm='sft'\n",
         "[model]\npath='model.gguf'\ndevice='cpu'\n",
         "[output]\npath='out.gguf'\n[lora]\n",
@@ -522,12 +484,11 @@ fn a_cpu_device_accepts_a_duty_cycle_it_cannot_honour() {
     let loaded = load(&file).unwrap();
     assert_eq!(loaded.training.max_gpu_duty_cycle, Some(0.25));
     assert_eq!(loaded.training.device, Device::Cpu);
-    remove_config(&file);
 }
 
 #[test]
 fn training_gradient_clip_is_configurable() {
-    let file = write_config(concat!(
+    let (_tmp, file) = write_config(concat!(
         "[run]\nalgorithm='sft'\n",
         "[model]\npath='model.gguf'\n",
         "[output]\npath='out.gguf'\n[lora]\n",
@@ -537,7 +498,6 @@ fn training_gradient_clip_is_configurable() {
     let loaded = load(&file).unwrap();
     assert_eq!(loaded.training.max_grad_norm, 0.5);
     assert_eq!(loaded.training.threads, 6);
-    remove_config(&file);
 }
 
 /// The fused cross-entropy is on with a bounded token chunk unless the file
@@ -552,16 +512,15 @@ fn chunked_ce_is_on_by_default_and_round_trips() {
         )
     };
 
-    let defaults = write_config(&source(""));
+    let (_tmp, defaults) = write_config(&source(""));
     let loaded = load(&defaults).unwrap();
     assert!(loaded.training.chunked_cross_entropy);
     assert_eq!(
         loaded.training.chunked_ce_seq_chunk,
         retrograd_core::DEFAULT_CE_SEQ_CHUNK
     );
-    remove_config(&defaults);
 
-    let tuned = write_config(&source(concat!(
+    let (_tmp, tuned) = write_config(&source(concat!(
         "chunked_cross_entropy=false\nchunked_ce_tiles=4\n",
         "chunked_ce_seq_chunk=256\n",
     )));
@@ -569,20 +528,18 @@ fn chunked_ce_is_on_by_default_and_round_trips() {
     assert!(!loaded.training.chunked_cross_entropy);
     assert_eq!(loaded.training.chunked_ce_tiles, 4);
     assert_eq!(loaded.training.chunked_ce_seq_chunk, 256);
-    remove_config(&tuned);
 }
 
 /// The in-place `grad_h` write follows `chunked_ce_seq_chunk` now, so the
 /// key is rejected rather than accepted and ignored.
 #[test]
 fn the_offload_logsoftmax_key_is_rejected() {
-    let file = write_config(
+    let (_tmp, file) = write_config(
         "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n\
          [training]\nchunked_ce_offload_logsoftmax=true\n[sft]\ndata='data.txt'\n",
     );
     let error = load(&file).unwrap_err().to_string();
     assert!(error.contains("chunked_ce_offload_logsoftmax"), "{error}");
-    remove_config(&file);
 }
 
 /// A 16-bit checkpoint in a run that retains no checkpoints is a request for
@@ -596,28 +553,25 @@ fn a_16bit_checkpoint_dtype_needs_checkpointing() {
         )
     };
 
-    let orphan = write_config(&source("checkpoint_dtype='f16'\n"));
+    let (_tmp, orphan) = write_config(&source("checkpoint_dtype='f16'\n"));
     let error = load(&orphan).unwrap_err().to_string();
     assert!(error.contains("checkpoint_dtype"), "{error}");
-    remove_config(&orphan);
 
-    let paired = write_config(&source(
+    let (_tmp, paired) = write_config(&source(
         "gradient_checkpointing=true\ncheckpoint_dtype='f16'\n",
     ));
     assert_eq!(
         load(&paired).unwrap().training.checkpoint_dtype,
         CheckpointDtype::F16
     );
-    remove_config(&paired);
 
     // F32 is the default, so naming it explicitly is not a request for
     // anything and must not depend on checkpointing.
-    let explicit = write_config(&source("checkpoint_dtype='f32'\n"));
+    let (_tmp, explicit) = write_config(&source("checkpoint_dtype='f32'\n"));
     assert_eq!(
         load(&explicit).unwrap().training.checkpoint_dtype,
         CheckpointDtype::F32
     );
-    remove_config(&explicit);
 }
 
 #[test]
@@ -628,7 +582,7 @@ fn gradient_checkpointing_is_opt_in_and_validates_its_interval() {
         )
     };
 
-    let defaults = write_config(&source(""));
+    let (_tmp, defaults) = write_config(&source(""));
     let loaded = load(&defaults).unwrap();
     assert!(!loaded.training.gradient_checkpointing);
     // Not 1: a checkpoint on every layer is the largest retained term
@@ -637,24 +591,21 @@ fn gradient_checkpointing_is_opt_in_and_validates_its_interval() {
         loaded.training.checkpoint_every_n_layers,
         retrograd_core::DEFAULT_CHECKPOINT_STRIDE
     );
-    remove_config(&defaults);
 
-    let enabled = write_config(&source(
+    let (_tmp, enabled) = write_config(&source(
         "gradient_checkpointing=true\ncheckpoint_every_n_layers=3\n",
     ));
     let loaded = load(&enabled).unwrap();
     assert!(loaded.training.gradient_checkpointing);
     assert_eq!(loaded.training.checkpoint_every_n_layers, 3);
-    remove_config(&enabled);
 
-    let invalid = write_config(&source("checkpoint_every_n_layers=0\n"));
+    let (_tmp, invalid) = write_config(&source("checkpoint_every_n_layers=0\n"));
     assert!(
         load(&invalid)
             .unwrap_err()
             .to_string()
             .contains("checkpoint_every_n_layers")
     );
-    remove_config(&invalid);
 }
 
 #[test]
@@ -669,13 +620,12 @@ fn fast_sampling_context_defaults_to_fast_and_can_be_disabled() {
         ("[training]\nfast_sampling_context=false\n", false),
         ("[training]\nfast_sampling_context=true\n", true),
     ] {
-        let file = write_config(&source(training));
+        let (_tmp, file) = write_config(&source(training));
         let loaded = load(&file).unwrap();
         assert_eq!(
             loaded.training.fast_generation_context, expected,
             "{training:?}"
         );
-        remove_config(&file);
     }
 }
 
@@ -690,17 +640,14 @@ fn training_kv_dtype_is_f16_by_default_and_accepts_f32() {
     // The half-precision cache is the default: it halves the one term that
     // grows with the context, and the runtime probes the device before
     // applying it rather than assuming.
-    let defaults = write_config(&source(""));
+    let (_tmp, defaults) = write_config(&source(""));
     assert_eq!(load(&defaults).unwrap().training.kv_dtype, KvDtype::F16);
-    remove_config(&defaults);
 
-    let f32 = write_config(&source("kv_dtype='f32'\n"));
+    let (_tmp, f32) = write_config(&source("kv_dtype='f32'\n"));
     assert_eq!(load(&f32).unwrap().training.kv_dtype, KvDtype::F32);
-    remove_config(&f32);
 
-    let invalid = write_config(&source("kv_dtype='bf16'\n"));
+    let (_tmp, invalid) = write_config(&source("kv_dtype='bf16'\n"));
     assert!(load(&invalid).unwrap_err().to_string().contains("kv_dtype"));
-    remove_config(&invalid);
 }
 
 #[test]
@@ -713,27 +660,25 @@ fn training_checkpoint_dtype_defaults_to_f32_and_rejects_unknown_precisions() {
 
     // The bit-exact recompute stays the default: narrowing costs real gradient
     // fidelity, so it must be asked for.
-    let defaults = write_config(&source(""));
+    let (_tmp, defaults) = write_config(&source(""));
     assert_eq!(
         load(&defaults).unwrap().training.checkpoint_dtype,
         CheckpointDtype::F32
     );
-    remove_config(&defaults);
 
     for (spelling, expected) in [
         ("f16", CheckpointDtype::F16),
         ("bf16", CheckpointDtype::Bf16),
     ] {
-        let file = write_config(&source(&format!(
+        let (_tmp, file) = write_config(&source(&format!(
             "gradient_checkpointing=true\ncheckpoint_dtype='{spelling}'\n"
         )));
         assert_eq!(load(&file).unwrap().training.checkpoint_dtype, expected);
-        remove_config(&file);
     }
 
     // A silently ignored precision would read as a memory win that never
     // happened, so an unknown spelling has to fail loudly.
-    let invalid = write_config(&source(
+    let (_tmp, invalid) = write_config(&source(
         "gradient_checkpointing=true\ncheckpoint_dtype='q8_0'\n",
     ));
     assert!(
@@ -742,7 +687,6 @@ fn training_checkpoint_dtype_defaults_to_f32_and_rejects_unknown_precisions() {
             .to_string()
             .contains("checkpoint_dtype")
     );
-    remove_config(&invalid);
 }
 
 /// The sampling cache stays F16 unless asked, and a quantized one is refused
@@ -755,43 +699,38 @@ fn generation_kv_dtype_defaults_to_f16_and_needs_the_fast_context_to_quantize() 
         )
     };
 
-    let defaults = write_config(&source(""));
+    let (_tmp, defaults) = write_config(&source(""));
     assert_eq!(
         load(&defaults).unwrap().training.generation_kv_dtype,
         GenerationKvDtype::F16
     );
-    remove_config(&defaults);
 
     for (spelling, expected) in [
         ("q8_0", GenerationKvDtype::Q8_0),
         ("q4_0", GenerationKvDtype::Q4_0),
     ] {
-        let file = write_config(&source(&format!("generation_kv_dtype='{spelling}'\n")));
+        let (_tmp, file) = write_config(&source(&format!("generation_kv_dtype='{spelling}'\n")));
         assert_eq!(load(&file).unwrap().training.generation_kv_dtype, expected);
-        remove_config(&file);
 
-        let inherited = write_config(&source(&format!(
+        let (_tmp, inherited) = write_config(&source(&format!(
             "fast_sampling_context=false\ngeneration_kv_dtype='{spelling}'\n"
         )));
         let error = load(&inherited).unwrap_err().to_string();
         assert!(error.contains("fast_sampling_context"), "{error}");
-        remove_config(&inherited);
     }
 
     // F16 is what the fast context already used, so naming it asks for nothing.
-    let explicit = write_config(&source(
+    let (_tmp, explicit) = write_config(&source(
         "fast_sampling_context=false\ngeneration_kv_dtype='f16'\n",
     ));
     assert_eq!(
         load(&explicit).unwrap().training.generation_kv_dtype,
         GenerationKvDtype::F16
     );
-    remove_config(&explicit);
 
-    let invalid = write_config(&source("generation_kv_dtype='q5_1'\n"));
+    let (_tmp, invalid) = write_config(&source("generation_kv_dtype='q5_1'\n"));
     let error = load(&invalid).unwrap_err().to_string();
     assert!(error.contains("generation_kv_dtype"), "{error}");
-    remove_config(&invalid);
 }
 
 /// `master_weights` defaults to `auto` and rejects unknown spellings.
@@ -803,36 +742,33 @@ fn training_master_weights_defaults_to_auto_and_rejects_unknown_spellings() {
         )
     };
 
-    let defaults = write_config(&source(""));
+    let (_tmp, defaults) = write_config(&source(""));
     assert_eq!(
         load(&defaults).unwrap().training.master_weights,
         MasterWeights::Auto
     );
-    remove_config(&defaults);
 
     for (spelling, expected) in [
         ("f32", MasterWeights::F32),
         ("off", MasterWeights::Off),
         ("auto", MasterWeights::Auto),
     ] {
-        let file = write_config(&source(&format!("master_weights='{spelling}'\n")));
+        let (_tmp, file) = write_config(&source(&format!("master_weights='{spelling}'\n")));
         assert_eq!(load(&file).unwrap().training.master_weights, expected);
-        remove_config(&file);
     }
 
-    let invalid = write_config(&source("master_weights='bf16'\n"));
+    let (_tmp, invalid) = write_config(&source("master_weights='bf16'\n"));
     assert!(
         load(&invalid)
             .unwrap_err()
             .to_string()
             .contains("master_weights")
     );
-    remove_config(&invalid);
 }
 
 #[test]
 fn scientific_notation_is_accepted_for_float_settings() {
-    let file = write_config(concat!(
+    let (_tmp, file) = write_config(concat!(
         "[run]\nalgorithm='sft'\n",
         "[model]\npath='model.gguf'\n",
         "[output]\npath='out.gguf'\n[lora]\nalpha=1.6e1\n",
@@ -844,12 +780,11 @@ fn scientific_notation_is_accepted_for_float_settings() {
     assert_eq!(loaded.training.weight_decay, 1e-2);
     assert_eq!(loaded.training.max_grad_norm, 1.5);
     assert_eq!(loaded.lora.unwrap().config.alpha, 16.0);
-    remove_config(&file);
 }
 
 #[test]
 fn init_adapter_resolves_and_rejects_creation_keys() {
-    let file = write_config(
+    let (_tmp, file) = write_config(
         "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\ninit_adapter='adapter.gguf'\n[sft]\ndata='data.txt'\n",
     );
     let loaded = load(&file).unwrap();
@@ -857,7 +792,6 @@ fn init_adapter_resolves_and_rejects_creation_keys() {
         loaded.lora.unwrap().init_adapter,
         Some(file.parent().unwrap().join("adapter.gguf"))
     );
-    remove_config(&file);
 
     for conflicting in [
         "rank=4",
@@ -869,19 +803,18 @@ fn init_adapter_resolves_and_rejects_creation_keys() {
         let source = format!(
             "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\ninit_adapter='adapter.gguf'\n{conflicting}\n[sft]\ndata='data.txt'\n"
         );
-        let file = write_config(&source);
+        let (_tmp, file) = write_config(&source);
         let error = load(&file).unwrap_err();
         assert!(
             error.to_string().contains("init_adapter"),
             "{conflicting}: {error}"
         );
-        remove_config(&file);
     }
 }
 
 #[test]
 fn rejects_unknown_keys_before_model_loading() {
-    let file = write_config(
+    let (_tmp, file) = write_config(
         "[run]\nalgorithm='sft'\nunknown=true\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\n",
     );
     assert!(
@@ -890,7 +823,6 @@ fn rejects_unknown_keys_before_model_loading() {
             .to_string()
             .contains("invalid TOML")
     );
-    remove_config(&file);
 }
 
 #[test]
@@ -930,19 +862,17 @@ fn training_and_lora_values_are_rejected_before_model_loading() {
         let source = format!(
             "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[training]\n{training}\n[sft]\ndata='data.txt'\n"
         );
-        let file = write_config(&source);
+        let (_tmp, file) = write_config(&source);
         let error = load(&file).unwrap_err();
         assert!(error.to_string().contains(expected), "{training}: {error}");
-        remove_config(&file);
     }
 
     for alpha in ["0.0", "-1.0", "nan"] {
         let source = format!(
             "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\nalpha={alpha}\n[sft]\ndata='data.txt'\n"
         );
-        let file = write_config(&source);
+        let (_tmp, file) = write_config(&source);
         assert!(load(&file).unwrap_err().to_string().contains("lora.alpha"));
-        remove_config(&file);
     }
 }
 
@@ -1149,10 +1079,9 @@ fn selected_algorithm_requires_exactly_its_own_section() {
         let source = format!(
             "[run]\nalgorithm='{algorithm}'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n{section}"
         );
-        let file = write_config(&source);
+        let (_tmp, file) = write_config(&source);
         let error = load(&file).unwrap_err();
         assert!(error.to_string().contains(expected), "{algorithm}: {error}");
-        remove_config(&file);
     }
 }
 
@@ -1173,9 +1102,8 @@ fn an_agentic_document_shares_every_section_it_can_and_refuses_the_rest() {
         "template_variables={ enable_thinking = false }\n",
         "[agent.judge]\ntype='command'\ncommand=['python','judge.py']\n",
     );
-    let file = write_config(base);
+    let (_tmp, file) = write_config(base);
     let config = load(&file).expect("the agentic document must load");
-    remove_config(&file);
     let Algorithm::AgentGrpo(agent) = &config.algorithm else {
         panic!("expected an agentic algorithm");
     };
@@ -1222,9 +1150,8 @@ fn an_agentic_document_shares_every_section_it_can_and_refuses_the_rest() {
             "invalid TOML",
         ),
     ] {
-        let file = write_config(&format!("{base}{extra}"));
+        let (_tmp, file) = write_config(&format!("{base}{extra}"));
         let error = load(&file).unwrap_err().to_string();
-        remove_config(&file);
         assert!(error.contains(expected), "expected {expected}, got {error}");
     }
 }
@@ -1248,9 +1175,8 @@ fn an_agentic_run_evaluates_and_checkpoints_like_any_other() {
         "[evaluation]\ndata='eval.jsonl'\nevery_iterations=2\npatience=3\n",
         "[checkpoint]\ndirectory='ckpt'\nmode='steps_and_best_eval'\nevery_steps=10\n",
     );
-    let file = write_config(source);
+    let (_tmp, file) = write_config(source);
     let config = load(&file).expect("an environment-graded agentic run may be evaluated");
-    remove_config(&file);
     let evaluation = config.evaluation.expect("[evaluation] is kept");
     assert_eq!(evaluation.every_iterations, 2);
     assert_eq!(evaluation.patience, Some(3));
@@ -1288,9 +1214,8 @@ fn an_explicit_trajectory_budget_is_checked_against_the_model_context() {
         "[agent]\nscenarios='s.jsonl'\nmax_trajectory_tokens=4096\n",
         "[agent.judge]\ntype='command'\ncommand=['judge']\n",
     );
-    let file = write_config(source);
+    let (_tmp, file) = write_config(source);
     let config = load(&file).expect("the document itself is valid");
-    remove_config(&file);
     let Algorithm::AgentGrpo(agent) = &config.algorithm else {
         panic!("expected an agentic algorithm");
     };
@@ -1326,9 +1251,8 @@ fn an_agentic_run_without_scenarios_or_any_reward_is_refused() {
         let source = format!(
             "[run]\nalgorithm='agent_grpo'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n{section}"
         );
-        let file = write_config(&source);
+        let (_tmp, file) = write_config(&source);
         let error = load(&file).unwrap_err().to_string();
-        remove_config(&file);
         assert!(error.contains(expected), "expected {expected}, got {error}");
     }
 }
@@ -1345,9 +1269,8 @@ fn an_environment_graded_agentic_run_needs_no_judge() {
         "[agent]\nscenarios='s.jsonl'\ngroup_size=4\n",
         "[agent.environment]\ntype='http'\nbase_url='http://127.0.0.1:8099'\n",
     );
-    let file = write_config(source);
+    let (_tmp, file) = write_config(source);
     let config = load(&file).expect("an environment grades this run on its own");
-    remove_config(&file);
     let Algorithm::AgentGrpo(agent) = &config.algorithm else {
         panic!("expected an agentic algorithm");
     };
@@ -1371,7 +1294,7 @@ fn grpo_optional_features_parse_and_validate() {
         "dynamic_sampling={max_resample_factor=3}\n",
         "[grpo.sampling]\ntemperature=1.0\ntop_p=1.0\nmax_new_tokens=16\nseed=1\n",
     );
-    let file = write_config(&format!("{base}{grpo}"));
+    let (_tmp, file) = write_config(&format!("{base}{grpo}"));
     let loaded = load(&file).unwrap();
     assert_eq!(loaded.training.n_seq_max, 4);
     assert_eq!(loaded.training.generation_concurrency, 8);
@@ -1387,7 +1310,6 @@ fn grpo_optional_features_parse_and_validate() {
     assert_eq!(schedule.warmup_updates, 2);
     assert_eq!(schedule.target, Some(0.05));
     assert_eq!(config.dynamic_sampling.unwrap().max_resample_factor, 3);
-    remove_config(&file);
 }
 
 #[test]
@@ -1402,17 +1324,15 @@ fn observe_resolves_its_directory_and_defaults() {
         "[grpo.sampling]\ntemperature=1.0\ntop_p=1.0\nmax_new_tokens=16\nseed=1\n",
         "[observe]\ndirectory='observe'\n",
     );
-    let file = write_config(source);
+    let (_tmp, file) = write_config(source);
     let config = load(&file).unwrap();
     let observe = config.observe.expect("[observe] was declared");
     assert_eq!(observe.directory, file.parent().unwrap().join("observe"));
     assert_eq!(observe.every, 1);
     assert_eq!(observe.max_text_chars, 0);
-    remove_config(&file);
 
-    let file = write_config(&source.replace("'observe'\n", "'observe'\nevery=0\n"));
+    let (_tmp, file) = write_config(&source.replace("'observe'\n", "'observe'\nevery=0\n"));
     let error = load(&file).unwrap_err().to_string();
-    remove_config(&file);
     assert!(error.contains("observe.every"), "{error}");
 }
 
@@ -1425,9 +1345,8 @@ fn observe_is_refused_where_there_is_no_rollout() {
         "[sft]\ndata='data.txt'\n",
         "[observe]\ndirectory='observe'\n",
     );
-    let file = write_config(source);
+    let (_tmp, file) = write_config(source);
     let error = load(&file).unwrap_err().to_string();
-    remove_config(&file);
     assert!(error.contains("[observe]"), "{error}");
 }
 
@@ -1468,7 +1387,7 @@ fn grpo_judge_parses_next_to_the_reward_command() {
         "cache_path='judge.cache'\n",
         "[grpo.sampling]\ntemperature=1.0\ntop_p=1.0\nmax_new_tokens=8\nseed=1\n",
     );
-    let file = write_config(&format!("{base}{grpo}"));
+    let (_tmp, file) = write_config(&format!("{base}{grpo}"));
     let loaded = load(&file).unwrap();
     let Algorithm::Grpo(config) = loaded.algorithm else {
         panic!("expected a grpo config")
@@ -1487,7 +1406,6 @@ fn grpo_judge_parses_next_to_the_reward_command() {
         config.cache_path.as_deref(),
         Some(file.parent().unwrap().join("judge.cache").as_path())
     );
-    remove_config(&file);
 
     // The weight is what the verdict is worth, and there is no honest
     // default for it; and none of the three keys means anything without the
@@ -1514,9 +1432,8 @@ fn grpo_judge_parses_next_to_the_reward_command() {
             "need a [grpo.judge] section",
         ),
     ] {
-        let file = write_config(&format!("{base}{source}"));
+        let (_tmp, file) = write_config(&format!("{base}{source}"));
         let error = load(&file).unwrap_err().to_string();
-        remove_config(&file);
         assert!(error.contains(expected), "expected {expected}, got {error}");
     }
 }
@@ -1543,10 +1460,9 @@ fn grpo_shared_prefix_fanout_parses_and_respects_group_size() {
         ("'max'", SharedPrefixFanout::Max),
         ("3", SharedPrefixFanout::Exact(3)),
     ] {
-        let file = write_config(&source(value));
+        let (_tmp, file) = write_config(&source(value));
         let loaded = load(&file).unwrap();
         assert_eq!(loaded.training.shared_prefix_fanout, expected);
-        remove_config(&file);
     }
 
     for (value, expected) in [
@@ -1554,10 +1470,9 @@ fn grpo_shared_prefix_fanout_parses_and_respects_group_size() {
         ("5", "exceeds grpo.group_size"),
         ("'fast'", "must be 'auto', 'off', 'max'"),
     ] {
-        let file = write_config(&source(value));
+        let (_tmp, file) = write_config(&source(value));
         let error = load(&file).unwrap_err().to_string();
         assert!(error.contains(expected), "expected {expected}, got {error}");
-        remove_config(&file);
     }
 }
 
@@ -1577,11 +1492,10 @@ fn grpo_generation_concurrency_is_independent_and_validated() {
         )
     };
 
-    let file = write_config(&source(1, 256));
+    let (_tmp, file) = write_config(&source(1, 256));
     let loaded = load(&file).unwrap();
     assert_eq!(loaded.training.n_seq_max, 4);
     assert_eq!(loaded.training.generation_concurrency, 1);
-    remove_config(&file);
 
     for (concurrency, batch, expected) in [
         (0, 256, "must be greater than zero"),
@@ -1589,10 +1503,9 @@ fn grpo_generation_concurrency_is_independent_and_validated() {
         (8, 4, "must not exceed the optimizer window"),
         (257, 512, "must not exceed 256"),
     ] {
-        let file = write_config(&source(concurrency, batch));
+        let (_tmp, file) = write_config(&source(concurrency, batch));
         let error = load(&file).unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
-        remove_config(&file);
     }
 }
 
@@ -1625,32 +1538,29 @@ fn a_rollout_algorithm_pins_the_optimizer_step_to_the_trained_window() {
     };
 
     for (algorithm, section) in [("grpo", grpo), ("ppo", ppo)] {
-        let file = write_config(&source(algorithm, section, "gradient_accumulation=16\n"));
+        let (_tmp, file) = write_config(&source(algorithm, section, "gradient_accumulation=16\n"));
         let error = load(&file).unwrap_err().to_string();
         assert!(error.contains("one optimizer step per rollout"), "{error}");
         assert!(
             error.contains("pinned to ctx / micro_batch = 64"),
             "{error}"
         );
-        remove_config(&file);
 
         // Omitted, it resolves to the only admissible value.
-        let file = write_config(&source(algorithm, section, ""));
+        let (_tmp, file) = write_config(&source(algorithm, section, ""));
         let loaded = load(&file).unwrap_or_else(|error| panic!("{algorithm}: {error}"));
         assert_eq!(loaded.training.n_batch, 256);
         assert_eq!(loaded.training.gradient_accumulation(), 64);
-        remove_config(&file);
     }
 
     // SFT keeps its accumulation window as a free parameter.
-    let file = write_config(
+    let (_tmp, file) = write_config(
         "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n\
          [training]\nctx=256\nmicro_batch=4\ngradient_accumulation=16\n\
          [sft]\ndata='data.txt'\n",
     );
     let loaded = load(&file).unwrap();
     assert_eq!(loaded.training.n_batch, 64);
-    remove_config(&file);
 }
 
 #[test]
@@ -1792,10 +1702,8 @@ fn preference_document(training: &str, section: &str, extra: &str) -> String {
 }
 
 fn load_preference(training: &str, section: &str, extra: &str) -> Result<RunConfig> {
-    let file = write_config(&preference_document(training, section, extra));
-    let result = load(&file);
-    remove_config(&file);
-    result
+    let (_tmp, file) = write_config(&preference_document(training, section, extra));
+    load(&file)
 }
 
 #[test]
@@ -1939,14 +1847,12 @@ fn the_base_reference_is_refused_beside_base_training_and_the_initial_one_is_not
     let base = "[run]\nalgorithm='preference'\n[model]\npath='model.gguf'\n\
                 [output]\npath='out.gguf'\n[training]\nctx=256\nmicro_batch=64\n\
                 trainable='full'\n[preference]\ndata='pairs.jsonl'\n";
-    let file = write_config(&format!("{base}reference='base'\n"));
+    let (_tmp, file) = write_config(&format!("{base}reference='base'\n"));
     let error = load(&file).unwrap_err().to_string();
-    remove_config(&file);
     assert!(error.contains("preference.reference = 'base'"), "{error}");
 
-    let file = write_config(base);
+    let (_tmp, file) = write_config(base);
     let config = load(&file).unwrap();
-    remove_config(&file);
     let Algorithm::Preference(preference) = &config.algorithm else {
         panic!("a preference run");
     };
@@ -1978,9 +1884,8 @@ fn importance_sampling_level_parses_in_both_grpo_sections() {
         "[agent.judge]\ntype='command'\ncommand=['judge']\n",
     );
     let level_of = |section: &str, level: &str| {
-        let file = write_config(&format!("{base}{}", section.replace("LEVEL", level)));
+        let (_tmp, file) = write_config(&format!("{base}{}", section.replace("LEVEL", level)));
         let loaded = load(&file);
-        remove_config(&file);
         loaded.map(|config| match config.algorithm {
             Algorithm::Grpo(config) => config.importance_sampling_level,
             Algorithm::AgentGrpo(agent) => agent.config.importance_sampling_level,
@@ -2030,9 +1935,8 @@ fn agent_reasoning_budget_reads_minus_one_as_no_budget() {
         )
     };
     let budget = |budget: Option<&str>| {
-        let file = write_config(&document(budget));
+        let (_tmp, file) = write_config(&document(budget));
         let loaded = load(&file);
-        remove_config(&file);
         loaded.map(|config| match config.algorithm {
             Algorithm::AgentGrpo(agent) => agent.reasoning_budget,
             _ => panic!("expected an agentic algorithm"),

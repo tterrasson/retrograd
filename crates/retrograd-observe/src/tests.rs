@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
@@ -10,15 +9,13 @@ use crate::reader::{ObserveIndex, RolloutText};
 use crate::sink::{ObserveSink, SinkConfig};
 use crate::writer::LOG_FILE;
 
-fn temp_dir(label: &str) -> PathBuf {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let path = std::env::temp_dir().join(format!(
-        "retrograd-observe-{label}-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = fs::remove_dir_all(&path);
-    path
+fn temp_dir(label: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("retrograd-observe-{label}-"))
+        .tempdir()
+        .expect("create the observe directory");
+    let directory = dir.path().to_path_buf();
+    (dir, directory)
 }
 
 fn config(directory: &Path) -> SinkConfig {
@@ -124,7 +121,7 @@ fn wait_until(mut condition: impl FnMut() -> bool) {
 
 #[test]
 fn records_are_complete_ordered_and_read_back() {
-    let directory = temp_dir("ordered");
+    let (_tmp, directory) = temp_dir("ordered");
     let mut sink = ObserveSink::open(&config(&directory), run_info(None)).unwrap();
     let observer = sink.observer();
     observer.observe(rollouts(2, "p:0"));
@@ -210,7 +207,6 @@ fn records_are_complete_ordered_and_read_back() {
         [".observe.lock", LOG_FILE],
         "the log is the whole export"
     );
-    let _ = fs::remove_dir_all(directory);
 }
 
 /// Fills the channel behind a stalled writer until a batch is dropped, and
@@ -227,7 +223,7 @@ fn saturate(sink: &ObserveSink) -> u64 {
 
 #[test]
 fn a_full_channel_drops_the_batch_and_warns_once() {
-    let directory = temp_dir("full");
+    let (_tmp, directory) = temp_dir("full");
     let mut sink = ObserveSink::open_with_capacity(&config(&directory), run_info(None), 1).unwrap();
     let shared = sink.shared();
     {
@@ -242,12 +238,11 @@ fn a_full_channel_drops_the_batch_and_warns_once() {
     wait_until(|| batches(&directory) >= 2);
     sink.update_summary(2, []);
     sink.finish();
-    let _ = fs::remove_dir_all(directory);
 }
 
 #[test]
 fn a_disk_error_warns_once_and_turns_the_export_off() {
-    let directory = temp_dir("io");
+    let (_tmp, directory) = temp_dir("io");
     let mut sink = ObserveSink::open(&config(&directory), run_info(None)).unwrap();
     wait_until(|| batches(&directory) >= 1);
     sink.shared().fail_next_write();
@@ -260,12 +255,11 @@ fn a_disk_error_warns_once_and_turns_the_export_off() {
     let warnings = sink.take_warnings();
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("export stops here"), "{warnings:?}");
-    let _ = fs::remove_dir_all(directory);
 }
 
 #[test]
 fn wants_follows_every_and_the_sink_state() {
-    let directory = temp_dir("every");
+    let (_tmp, directory) = temp_dir("every");
     let mut sink = ObserveSink::open(&config(&directory), run_info(None)).unwrap();
     let observer = sink.observer();
     assert!(!observer.wants(1));
@@ -274,12 +268,11 @@ fn wants_follows_every_and_the_sink_state() {
     assert!(observer.wants(4));
     sink.finish();
     assert!(!observer.wants(2), "a closed sink wants nothing");
-    let _ = fs::remove_dir_all(directory);
 }
 
 #[test]
 fn a_resume_opens_a_new_segment_that_supersedes_the_replayed_updates() {
-    let directory = temp_dir("resume");
+    let (_tmp, directory) = temp_dir("resume");
     let mut first = ObserveSink::open(&config(&directory), run_info(None)).unwrap();
     first.observer().observe(rollouts(2, "p:0"));
     first.update_summary(2, []);
@@ -307,12 +300,11 @@ fn a_resume_opens_a_new_segment_that_supersedes_the_replayed_updates() {
     assert_eq!(updates[0].status, None);
     let (_, groups) = index.update(2).unwrap();
     assert_eq!(groups[0].members.len(), 2);
-    let _ = fs::remove_dir_all(directory);
 }
 
 #[test]
 fn an_incomplete_tail_is_dropped_and_internal_damage_is_left_alone() {
-    let directory = temp_dir("tail");
+    let (_tmp, directory) = temp_dir("tail");
     let mut sink = ObserveSink::open(&config(&directory), run_info(None)).unwrap();
     sink.observer().observe(rollouts(2, "p:0"));
     sink.finish();
@@ -354,12 +346,11 @@ fn an_incomplete_tail_is_dropped_and_internal_damage_is_left_alone() {
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("left untouched"), "{warnings:?}");
     assert_eq!(fs::read(&log).unwrap(), corrupt);
-    let _ = fs::remove_dir_all(directory);
 }
 
 #[test]
 fn a_lock_that_cannot_be_opened_disables_export_without_failing_training() {
-    let directory = temp_dir("unavailable-lock");
+    let (_tmp, directory) = temp_dir("unavailable-lock");
     fs::create_dir_all(directory.join(".observe.lock")).unwrap();
     let mut sink = ObserveSink::open(&config(&directory), run_info(None)).unwrap();
     assert!(!sink.observer().wants(2));
@@ -368,12 +359,11 @@ fn a_lock_that_cannot_be_opened_disables_export_without_failing_training() {
     assert!(warnings[0].contains("cannot be locked"));
     sink.finish();
     assert!(!directory.join(LOG_FILE).exists());
-    let _ = fs::remove_dir_all(directory);
 }
 
 #[test]
 fn a_second_writer_on_the_same_directory_is_disabled() {
-    let directory = temp_dir("exclusive");
+    let (_tmp, directory) = temp_dir("exclusive");
     let mut first = ObserveSink::open(&config(&directory), run_info(None)).unwrap();
     let mut second = ObserveSink::open(&config(&directory), run_info(None)).unwrap();
     assert!(!second.observer().wants(2));
@@ -387,12 +377,11 @@ fn a_second_writer_on_the_same_directory_is_disabled() {
     let mut third = ObserveSink::open(&config(&directory), run_info(None)).unwrap();
     assert!(third.observer().wants(2), "the lock goes with the writer");
     third.finish();
-    let _ = fs::remove_dir_all(directory);
 }
 
 #[test]
 fn a_prompt_lost_with_its_batch_comes_back_with_the_next_rollout() {
-    let directory = temp_dir("prompt");
+    let (_tmp, directory) = temp_dir("prompt");
     let mut sink = ObserveSink::open_with_capacity(&config(&directory), run_info(None), 1).unwrap();
     let shared = sink.shared();
     let queued = {
@@ -420,12 +409,11 @@ fn a_prompt_lost_with_its_batch_comes_back_with_the_next_rollout() {
     assert_eq!(rollouts.len(), 4);
     assert_eq!(rollouts[0]["update"], 4);
     assert_eq!(prompts[0]["batch_id"], rollouts[0]["batch_id"]);
-    let _ = fs::remove_dir_all(directory);
 }
 
 #[test]
 fn a_stalled_writer_bounds_the_stop_and_its_warning_is_still_drained() {
-    let directory = temp_dir("stop");
+    let (_tmp, directory) = temp_dir("stop");
     let mut sink = ObserveSink::open(&config(&directory), run_info(None)).unwrap();
     let observer = sink.observer();
     let shared = sink.shared();
@@ -443,5 +431,4 @@ fn a_stalled_writer_bounds_the_stop_and_its_warning_is_still_drained() {
     );
     assert!(!observer.wants(2));
     drop(stalled);
-    let _ = fs::remove_dir_all(directory);
 }

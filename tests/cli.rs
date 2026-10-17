@@ -215,9 +215,8 @@ fn train_sft_runs_through_the_cli_and_writes_metrics_and_adapter() {
         return;
     };
     let _guard = common::serialize_models();
-    let dir = std::env::temp_dir().join(format!("retrograd-cli-sft-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = common::scratch("cli-sft");
+    let dir = tmp.path();
     std::fs::write(
         dir.join("train.txt"),
         "The quick brown fox jumps over the lazy dog. ".repeat(36),
@@ -302,7 +301,6 @@ fn train_sft_runs_through_the_cli_and_writes_metrics_and_adapter() {
     assert!(bench_stdout.contains("p90"), "{bench_stdout}");
     assert!(bench_stdout.contains("verdict"), "{bench_stdout}");
     assert!(bench_stdout.contains("improved"), "{bench_stdout}");
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
 /// `collect` end to end on a toy local scenario: rollouts through the fixture
@@ -316,9 +314,8 @@ fn collect_writes_a_dataset_sft_trains_on() {
         return;
     };
     let _guard = common::serialize_models();
-    let dir = std::env::temp_dir().join(format!("retrograd-cli-collect-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = common::scratch("cli-collect");
+    let dir = tmp.path();
     let scenario = serde_json::json!({
         "id": "answer",
         "system": "Use the tools to finish the task.",
@@ -420,7 +417,6 @@ fn collect_writes_a_dataset_sft_trains_on() {
         .expect("train on the collected traces");
     assert!(train.status.success(), "{}", stderr(&train));
     assert!(dir.join("adapter.gguf").is_file());
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
 /// Every line of `observe.jsonl`, and the records the feed publishes.
@@ -475,9 +471,8 @@ fn rollout_runs_export_what_they_trained_on() {
     };
     let _guard = common::serialize_models();
     let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
-    let dir = std::env::temp_dir().join(format!("retrograd-cli-observe-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = common::scratch("cli-observe");
+    let dir = tmp.path();
     let common = format!(
         "[model]\npath='{}'\ndevice='cpu'\n[output]\npath='adapter.gguf'\n[lora]\nrank=2\nalpha=4.0\n\
          targets=['blk.2.attn_q.weight']\n[training]\nctx=64\nmicro_batch=16\nlr=0.00001\n",
@@ -517,7 +512,7 @@ fn rollout_runs_export_what_they_trained_on() {
         std::fs::write(&config_path, config).unwrap();
         let output = Command::new(env!("CARGO_BIN_EXE_retrograd"))
             .args(["train", config_path.to_str().unwrap()])
-            .current_dir(&dir)
+            .current_dir(dir)
             .env("NO_COLOR", "1")
             .output()
             .expect("run the CLI");
@@ -567,7 +562,6 @@ fn rollout_runs_export_what_they_trained_on() {
         assert!(position(rollouts[1]) < position(outcomes[0]));
         assert!(position(outcomes[0]) < position(summaries[1]));
     }
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -577,9 +571,8 @@ fn train_failure_is_exported_and_does_not_write_an_adapter() {
         return;
     };
     let _guard = common::serialize_models();
-    let dir = std::env::temp_dir().join(format!("retrograd-cli-failure-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = common::scratch("cli-failure");
+    let dir = tmp.path();
     std::fs::write(dir.join("train.txt"), "too short").unwrap();
     let config = format!(
         "[run]\nalgorithm='sft'\n[model]\npath='{}'\ndevice='cpu'\n[output]\npath='adapter.gguf'\n[lora]\nrank=2\nalpha=4.0\ntargets=['blk.2.attn_q.weight']\n[training]\nctx=32\nmicro_batch=16\ngradient_accumulation=2\nepochs=1\n[metrics]\nwandb_export_dir='wandb'\n[sft]\ndata='train.txt'\ndata_format='text'\n",
@@ -600,5 +593,4 @@ fn train_failure_is_exported_and_does_not_write_an_adapter() {
     assert!(events.contains("\"event\":\"run_started\""));
     assert!(events.contains("\"event\":\"run_failed\""));
     assert!(!events.contains("\"event\":\"run_finished\""));
-    std::fs::remove_dir_all(dir).unwrap();
 }

@@ -155,7 +155,7 @@ fn router(fixture: &Fixture) -> axum::Router {
 #[tokio::test]
 async fn the_overview_lists_every_update_and_which_ones_carry_texts() {
     let fixture = Fixture::new("trajectories-overview");
-    let observe = fixture.dir.join("observe");
+    let observe = fixture.dir.path().join("observe");
     write_export(&observe);
     restored_run(&fixture, RUN, Some(&observe));
     let router = router(&fixture);
@@ -181,7 +181,7 @@ async fn the_overview_lists_every_update_and_which_ones_carry_texts() {
 #[tokio::test]
 async fn an_update_lists_its_groups_a_page_at_a_time_without_texts() {
     let fixture = Fixture::new("trajectories-update");
-    let observe = fixture.dir.join("observe");
+    let observe = fixture.dir.path().join("observe");
     write_export(&observe);
     restored_run(&fixture, RUN, Some(&observe));
     let router = router(&fixture);
@@ -237,7 +237,7 @@ async fn an_update_lists_its_groups_a_page_at_a_time_without_texts() {
 #[tokio::test]
 async fn a_group_carries_every_text_and_can_be_read_one_member_at_a_time() {
     let fixture = Fixture::new("trajectories-group");
-    let observe = fixture.dir.join("observe");
+    let observe = fixture.dir.path().join("observe");
     write_export(&observe);
     restored_run(&fixture, RUN, Some(&observe));
     let router = router(&fixture);
@@ -277,7 +277,7 @@ async fn a_group_carries_every_text_and_can_be_read_one_member_at_a_time() {
 #[tokio::test]
 async fn a_resume_hides_the_updates_it_replays() {
     let fixture = Fixture::new("trajectories-resume");
-    let observe = fixture.dir.join("observe");
+    let observe = fixture.dir.path().join("observe");
     let mut first = sink(&observe, 1, None);
     first.update_summary(1, []);
     first.update_summary(2, []);
@@ -334,7 +334,7 @@ async fn a_run_without_an_export_says_so_rather_than_failing() {
 #[tokio::test]
 async fn a_run_listing_says_which_runs_are_observed() {
     let fixture = Fixture::new("trajectories-listing");
-    let observe = fixture.dir.join("observe");
+    let observe = fixture.dir.path().join("observe");
     write_export(&observe);
     restored_run(&fixture, RUN, Some(&observe));
     restored_run(&fixture, PLAIN_RUN, None);

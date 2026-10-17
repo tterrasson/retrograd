@@ -30,6 +30,7 @@ utoipa = { workspace = true, optional = true }
 retrograd-config.workspace = true
 retrograd-core.workspace = true
 retrograd-plan = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
 toml.workspace = true
 
 [lints]

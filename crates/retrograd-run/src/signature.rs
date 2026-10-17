@@ -455,7 +455,7 @@ mod tests {
 
     #[test]
     fn trajectory_and_dataset_fingerprints_are_stable_and_sensitive_to_inputs() {
-        let root = temp_path("fingerprint");
+        let (_tmp, root) = temp_path("fingerprint");
         let config_path = write_sft_config(&root);
         let config = config::load(&config_path).unwrap();
         let signature = trajectory_signature(&config).unwrap();
@@ -474,7 +474,6 @@ mod tests {
         );
         assert_eq!(checked_total_steps("test", &[2, 3, 4]).unwrap(), 24);
         assert!(checked_total_steps("test", &[u64::MAX, 2]).is_err());
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -495,7 +494,7 @@ mod tests {
 
     #[test]
     fn reference_context_changes_the_trajectory_but_its_path_does_not() {
-        let root = temp_path("reference-signature");
+        let (_tmp, root) = temp_path("reference-signature");
         let mut config = config::load(write_sft_config(&root)).unwrap();
         config.reference = Some(retrograd_config::ReferenceConfig {
             model: root.join("anchor.gguf"),
@@ -508,12 +507,11 @@ mod tests {
         assert_eq!(signature, trajectory_signature(&config).unwrap());
         config.reference.as_mut().unwrap().n_ctx = Some(config.training.n_ctx * 2);
         assert_ne!(signature, trajectory_signature(&config).unwrap());
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn sft_template_variables_change_the_trajectory_only_when_set() {
-        let root = temp_path("sft-template-variables-signature");
+        let (_tmp, root) = temp_path("sft-template-variables-signature");
         let config = config::load(write_sft_config(&root)).unwrap();
         let with = |variables: &[(&str, bool)]| {
             let mut config = config.clone();
@@ -531,7 +529,6 @@ mod tests {
         let off = with(&[("enable_thinking", false)]);
         assert_ne!(with(&[]), off);
         assert_ne!(off, with(&[("enable_thinking", true)]));
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -539,7 +536,7 @@ mod tests {
         // Sleeping cannot alter the training problem or the serialized
         // optimizer state, so a checkpoint must resume under a different duty
         // cycle. Putting it in the signature would refuse that resume.
-        let root = temp_path("duty-cycle-signature");
+        let (_tmp, root) = temp_path("duty-cycle-signature");
         let config_path = write_sft_config(&root);
         let config = config::load(&config_path).unwrap();
         let signature = trajectory_signature(&config).unwrap();
@@ -551,12 +548,11 @@ mod tests {
         let mut other = config;
         other.training.max_gpu_duty_cycle = Some(0.75);
         assert_eq!(signature, trajectory_signature(&other).unwrap());
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn the_importance_sampling_level_changes_the_trajectory_only_when_sequence() {
-        let root = temp_path("importance-sampling-signature");
+        let (_tmp, root) = temp_path("importance-sampling-signature");
         fs::create_dir_all(&root).unwrap();
         let config_path = root.join("run.toml");
         fs::write(
@@ -569,7 +565,6 @@ mod tests {
         )
         .unwrap();
         let config = config::load(&config_path).unwrap();
-        fs::remove_dir_all(root).unwrap();
         let token = trajectory_signature(&config).unwrap();
         // Frozen: a checkpoint written by a per-token run before the level
         // existed must keep resuming.
@@ -592,7 +587,7 @@ mod tests {
 
     #[test]
     fn metadata_describes_the_run() {
-        let root = temp_path("metadata");
+        let (_tmp, root) = temp_path("metadata");
         let config_path = write_sft_config(&root);
         let config = config::load(&config_path).unwrap();
         let metadata = metadata(&config);
@@ -602,6 +597,5 @@ mod tests {
             root.join("data.txt").display().to_string()
         );
         assert_eq!(metadata.scheduler, "constant");
-        fs::remove_dir_all(root).unwrap();
     }
 }

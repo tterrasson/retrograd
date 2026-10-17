@@ -23,7 +23,7 @@ async fn finished(fixture: &Fixture, name: &str) -> (axum::Router, String, serde
 async fn the_checkpoint_listing_is_a_directory_read_newest_first() {
     let fixture = Fixture::new("artifacts-checkpoints");
     let (router, id, _) = finished(&fixture, "ckpt").await;
-    let directory = fixture.dir.join("ckpt");
+    let directory = fixture.dir.path().join("ckpt");
     std::fs::create_dir_all(&directory).expect("the checkpoint directory");
     write_checkpoint(
         &directory,
@@ -31,7 +31,7 @@ async fn the_checkpoint_listing_is_a_directory_read_newest_first() {
         10,
         "sft",
         "signature",
-        &fixture.dir.join("model.gguf"),
+        &fixture.dir.path().join("model.gguf"),
     );
     write_checkpoint(
         &directory,
@@ -39,7 +39,7 @@ async fn the_checkpoint_listing_is_a_directory_read_newest_first() {
         20,
         "sft",
         "signature",
-        &fixture.dir.join("model.gguf"),
+        &fixture.dir.path().join("model.gguf"),
     );
     write_checkpoint(
         &directory,
@@ -47,7 +47,7 @@ async fn the_checkpoint_listing_is_a_directory_read_newest_first() {
         15,
         "sft",
         "signature",
-        &fixture.dir.join("model.gguf"),
+        &fixture.dir.path().join("model.gguf"),
     );
     // Not a checkpoint: no manifest. Listed, not hidden - a client that asked to
     // resume from it deserves to know why it cannot.
@@ -199,7 +199,7 @@ async fn an_artifact_is_downloaded_by_name_and_nothing_else_is() {
 async fn deleting_a_run_forgets_its_bookkeeping_and_keeps_the_client_s_files() {
     let fixture = Fixture::new("artifacts-delete");
     let (router, id, _) = finished(&fixture, "delete").await;
-    let directory = fixture.dir.join("ckpt");
+    let directory = fixture.dir.path().join("ckpt");
     std::fs::create_dir_all(&directory).expect("the checkpoint directory");
     write_checkpoint(
         &directory,
@@ -207,7 +207,7 @@ async fn deleting_a_run_forgets_its_bookkeeping_and_keeps_the_client_s_files() {
         10,
         "sft",
         "signature",
-        &fixture.dir.join("model.gguf"),
+        &fixture.dir.path().join("model.gguf"),
     );
     let run_dir = fixture.state_dir().join(&id);
     assert!(run_dir.is_dir());
@@ -289,7 +289,7 @@ async fn a_live_run_cannot_be_deleted() {
 #[tokio::test]
 async fn a_restored_run_still_knows_where_its_outputs_are() {
     let fixture = Fixture::new("artifacts-restored");
-    let directory = fixture.dir.join("ckpt");
+    let directory = fixture.dir.path().join("ckpt");
     {
         let (router, id, _) = finished(&fixture, "restored").await;
         std::fs::create_dir_all(&directory).expect("the checkpoint directory");
@@ -299,7 +299,7 @@ async fn a_restored_run_still_knows_where_its_outputs_are() {
             30,
             "sft",
             "signature",
-            &fixture.dir.join("model.gguf"),
+            &fixture.dir.path().join("model.gguf"),
         );
         drop(router);
 

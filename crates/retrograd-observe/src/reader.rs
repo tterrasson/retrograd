@@ -799,19 +799,17 @@ mod tests {
     use crate::record;
 
     struct Log {
-        dir: PathBuf,
+        dir: tempfile::TempDir,
         lines: Vec<String>,
         next_batch: u64,
     }
 
     impl Log {
         fn new(label: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "retrograd-observe-reader-{label}-{}",
-                std::process::id()
-            ));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).expect("temp dir");
+            let dir = tempfile::Builder::new()
+                .prefix(&format!("retrograd-observe-reader-{label}-"))
+                .tempdir()
+                .expect("temp dir");
             Self {
                 dir,
                 lines: Vec::new(),
@@ -839,13 +837,7 @@ mod tests {
         fn write(&self) {
             let mut text = self.lines.join("\n");
             text.push('\n');
-            std::fs::write(self.dir.join(LOG_FILE), text).expect("write");
-        }
-    }
-
-    impl Drop for Log {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.dir);
+            std::fs::write(self.dir.path().join(LOG_FILE), text).expect("write");
         }
     }
 
@@ -901,7 +893,7 @@ mod tests {
             .batch(0, vec![update(1)]);
         log.write();
 
-        let index = ObserveIndex::open(&log.dir).expect("open");
+        let index = ObserveIndex::open(log.dir.path()).expect("open");
         let run = index.run().expect("run");
         assert_eq!(run.algorithm, "grpo");
         assert_eq!(run.every, Some(1));
@@ -934,7 +926,7 @@ mod tests {
             .batch(1, vec![run(Some(1))])
             .batch(1, vec![update(2)]);
         log.write();
-        let index = ObserveIndex::open(&log.dir).expect("open");
+        let index = ObserveIndex::open(log.dir.path()).expect("open");
         let seen: Vec<(u32, u32)> = index
             .updates()
             .iter()
@@ -951,7 +943,7 @@ mod tests {
             .batch(0, vec![update(1)])
             .batch(1, vec![run(None)]);
         log.write();
-        let index = ObserveIndex::open(&log.dir).expect("open");
+        let index = ObserveIndex::open(log.dir.path()).expect("open");
         assert!(index.updates().is_empty());
     }
 
@@ -964,7 +956,7 @@ mod tests {
         // The second rollout of the batch is not written yet.
         log.lines.truncate(complete.len() - 1);
         log.write();
-        let mut index = ObserveIndex::open(&log.dir).expect("open");
+        let mut index = ObserveIndex::open(log.dir.path()).expect("open");
         assert!(index.updates().is_empty());
 
         log.lines = complete;
@@ -981,7 +973,7 @@ mod tests {
         log.lines.pop();
         log.batch(0, vec![update(1)]);
         log.write();
-        let index = ObserveIndex::open(&log.dir).expect("open");
+        let index = ObserveIndex::open(log.dir.path()).expect("open");
         let updates = index.updates();
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].rollouts, 0);
@@ -993,7 +985,7 @@ mod tests {
         let mut log = Log::new("shrunk");
         log.batch(0, vec![run(None)]).batch(0, vec![update(1)]);
         log.write();
-        let mut index = ObserveIndex::open(&log.dir).expect("open");
+        let mut index = ObserveIndex::open(log.dir.path()).expect("open");
         assert_eq!(index.updates().len(), 1);
 
         log.lines.truncate(1);
@@ -1014,7 +1006,7 @@ mod tests {
         log.lines[0] = log.lines[0].replacen("\"v\":1", "\"v\":9", 1);
         log.write();
         assert!(matches!(
-            ObserveIndex::open(&log.dir),
+            ObserveIndex::open(log.dir.path()),
             Err(ReadError::Version { version: 9, .. })
         ));
     }
@@ -1022,7 +1014,7 @@ mod tests {
     #[test]
     fn a_directory_without_a_log_is_an_empty_export() {
         let log = Log::new("empty");
-        let index = ObserveIndex::open(&log.dir).expect("open");
+        let index = ObserveIndex::open(log.dir.path()).expect("open");
         assert!(index.run().is_none());
         assert!(index.updates().is_empty());
     }

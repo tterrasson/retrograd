@@ -315,6 +315,21 @@ fn stale_process_lock(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+/// A scratch directory for one test: unique to the run, and removed when the
+/// returned guard drops, so a test leaves nothing behind and parallel tests
+/// cannot collide. Bind the guard, then work through its path:
+///
+/// ```ignore
+/// let tmp = common::scratch("sgd");
+/// let root = tmp.path();
+/// ```
+pub fn scratch(name: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("retrograd-{name}-"))
+        .tempdir()
+        .expect("create scratch directory")
+}
+
 /// Serializes the runtime across both threads and separately spawned test
 /// binaries. A `Mutex` alone cannot protect the latter: cargo runs integration
 /// test binaries as distinct processes.

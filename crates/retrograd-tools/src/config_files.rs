@@ -226,7 +226,8 @@ mod tests {
 
     #[test]
     fn exchange_format_and_policy_overlay_merge_without_rewriting_transport() {
-        let path = std::env::temp_dir().join(format!("retrograd-mcp-{}.json", std::process::id()));
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let path = tmp.path().join("mcp.json");
         let exchange = serde_json::json!({
             "mcpServers": {
                 "demo": {
@@ -243,7 +244,6 @@ mod tests {
         }))
         .unwrap();
         let (servers, warnings) = load_mcp_config_files(&[&path], &[policy]).unwrap();
-        fs::remove_file(path).ok();
         assert!(warnings.is_empty());
         assert_eq!(servers.len(), 1);
         assert!(servers[0].stateless);
@@ -286,8 +286,8 @@ mod tests {
         let _guard = ENV_TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let path =
-            std::env::temp_dir().join(format!("retrograd-mcp-interp-{}.json", std::process::id()));
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let path = tmp.path().join("mcp.json");
         // SAFETY: guarded by ENV_TEST_LOCK, see its doc comment above.
         unsafe {
             std::env::set_var(
@@ -312,7 +312,6 @@ mod tests {
         });
         fs::write(&path, exchange.to_string()).unwrap();
         let (servers, warnings) = load_mcp_config_files(&[&path], &[]).unwrap();
-        fs::remove_file(path).ok();
         // SAFETY: guarded by ENV_TEST_LOCK, see its doc comment above.
         unsafe { std::env::remove_var("RETROGRAD_TEST_MCP_KEY") };
         // SAFETY: guarded by ENV_TEST_LOCK, see its doc comment above.
@@ -337,15 +336,14 @@ mod tests {
     fn sse_and_unknown_fields_are_refused() {
         // SSE is a well-formed exchange entry: the refusal is the loader's, not
         // the parser's.
-        let path =
-            std::env::temp_dir().join(format!("retrograd-mcp-sse-{}.json", std::process::id()));
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let path = tmp.path().join("mcp.json");
         fs::write(
             &path,
             r#"{"mcpServers":{"x":{"type":"sse","url":"https://x"}}}"#,
         )
         .unwrap();
         let result = load_mcp_config_files(&[&path], &[]);
-        fs::remove_file(path).ok();
         let error = result.expect_err("SSE must be refused").to_string();
         assert!(error.contains("uses SSE"), "{error}");
 

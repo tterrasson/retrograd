@@ -1065,18 +1065,22 @@ mod tests {
         }
     }
 
-    fn temp_file(name: &str, source: &str) -> std::path::PathBuf {
+    fn temp_file(name: &str, source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
         temp_file_ext(name, "jsonl", source)
     }
 
-    fn temp_file_ext(name: &str, extension: &str, source: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "retrograd-dataset-{name}-{}-{}.{extension}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+    fn temp_file_ext(
+        name: &str,
+        extension: &str,
+        source: &str,
+    ) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("retrograd-dataset-{name}-"))
+            .tempdir()
+            .expect("create the scratch directory");
+        let path = dir.path().join(format!("{name}.{extension}"));
         std::fs::write(&path, source).unwrap();
-        path
+        (dir, path)
     }
 
     #[test]
@@ -1103,37 +1107,34 @@ mod tests {
 
     #[test]
     fn an_unknown_extension_falls_back_to_sniffing_the_first_line() {
-        let jsonish = temp_file_ext("sniff-jsonish", "dat", "{\"messages\":[]}\n");
+        let (_tmp, jsonish) = temp_file_ext("sniff-jsonish", "dat", "{\"messages\":[]}\n");
         assert_eq!(DataFormat::infer(&jsonish).unwrap(), DataFormat::ChatJsonl);
-        std::fs::remove_file(&jsonish).unwrap();
 
         // Blank leading lines are skipped before the sniff.
-        let blank_then_json = temp_file_ext("sniff-blank", "dat", "\n\n{\"messages\":[]}\n");
+        let (_tmp, blank_then_json) =
+            temp_file_ext("sniff-blank", "dat", "\n\n{\"messages\":[]}\n");
         assert_eq!(
             DataFormat::infer(&blank_then_json).unwrap(),
             DataFormat::ChatJsonl
         );
-        std::fs::remove_file(&blank_then_json).unwrap();
     }
 
     #[test]
     fn an_unrecognized_extension_and_content_is_refused_rather_than_guessed_as_text() {
         // An unrecognized `.csv` must not be silently treated as raw text
-        let csv = temp_file_ext("sniff-csv", "csv", "id,label\n1,a\n2,b\n");
+        let (_tmp, csv) = temp_file_ext("sniff-csv", "csv", "id,label\n1,a\n2,b\n");
         let error = DataFormat::infer(&csv).unwrap_err();
         assert!(error.to_string().contains("could not determine"), "{error}");
-        std::fs::remove_file(&csv).unwrap();
 
-        let empty = temp_file_ext("sniff-empty", "dat", "");
+        let (_tmp, empty) = temp_file_ext("sniff-empty", "dat", "");
         let error = DataFormat::infer(&empty).unwrap_err();
         assert!(error.to_string().contains("could not determine"), "{error}");
-        std::fs::remove_file(&empty).unwrap();
     }
 
     #[test]
     fn read_text_reports_missing_files_as_io_errors() {
-        let path = std::env::temp_dir().join("retrograd-does-not-exist-xyz.txt");
-        let _ = std::fs::remove_file(&path);
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let path = tmp.path().join("retrograd-does-not-exist-xyz.txt");
         assert!(matches!(
             read_text(&path),
             Err(retrograd_core::Error::Io(_))
@@ -1269,7 +1270,7 @@ mod tests {
 
     #[test]
     fn measured_lengths_counts_the_tokens_of_each_full_conversation() {
-        let path = temp_file(
+        let (_tmp, path) = temp_file(
             "measured",
             "{\"messages\":[{\"role\":\"user\",\"content\":\"Q\"},{\"role\":\"assistant\",\"content\":\"A\"}]}\n\
              {\"messages\":[{\"role\":\"user\",\"content\":\"longer question\"},{\"role\":\"assistant\",\"content\":\"a longer answer\"}]}\n",
@@ -1285,12 +1286,11 @@ mod tests {
             lengths[0] as usize,
             FakeBackend.tokenize_text(&full).unwrap().len()
         );
-        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
     fn measured_lengths_of_a_text_corpus_is_the_whole_file() {
-        let path = temp_file_ext("measured-text", "txt", "some plain text corpus");
+        let (_tmp, path) = temp_file_ext("measured-text", "txt", "some plain text corpus");
         let lengths = measured_lengths(&FakeBackend, &path, DataFormat::Text).unwrap();
         assert_eq!(lengths.len(), 1);
         assert_eq!(
@@ -1300,12 +1300,11 @@ mod tests {
                 .unwrap()
                 .len()
         );
-        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
     fn jsonl_preparation_pads_rows_and_reports_line_numbers() {
-        let path = temp_file(
+        let (_tmp, path) = temp_file(
             "valid",
             "{\"messages\":[{\"role\":\"user\",\"content\":\"Q\"},{\"role\":\"assistant\",\"content\":\"A\"}]}\n",
         );
@@ -1316,14 +1315,12 @@ mod tests {
         assert_eq!(prepared.supervised_tokens, 1);
         assert_eq!(prepared.tokens.last(), Some(&0));
         assert_eq!(prepared.labels.last(), Some(&IGNORE_LABEL));
-        std::fs::remove_file(&path).unwrap();
 
-        let path = temp_file("invalid", "{}\n");
+        let (_tmp, path) = temp_file("invalid", "{}\n");
         let error = prepare_chat_jsonl(&FakeBackend, &path, 32).unwrap_err();
         assert!(error.to_string().contains(":1:"), "{error}");
-        std::fs::remove_file(path).unwrap();
 
-        let path = temp_file(
+        let (_tmp, path) = temp_file(
             "blank",
             "{\"messages\":[{\"role\":\"user\",\"content\":\"Q\"},{\"role\":\"assistant\",\"content\":\"A\"}]}\n\n",
         );
@@ -1332,28 +1329,25 @@ mod tests {
             error.to_string().contains(":2: empty JSONL record"),
             "{error}"
         );
-        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn jsonl_reader_rejects_empty_files_and_preserves_record_line_numbers() {
-        let empty = temp_file("empty", "");
+        let (_tmp, empty) = temp_file("empty", "");
         let error = read_chat_jsonl(&empty).unwrap_err();
         assert!(error.to_string().contains("contains no JSONL records"));
-        std::fs::remove_file(&empty).unwrap();
 
-        let path = temp_file(
+        let (_tmp, path) = temp_file(
             "lines",
             "\n{\"messages\":[{\"role\":\"user\",\"content\":\"Q\"},{\"role\":\"assistant\",\"content\":\"A\"}]}\n",
         );
         let error = read_chat_jsonl(&path).unwrap_err();
         assert!(error.to_string().contains(":1: empty JSONL record"));
-        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn chat_jsonl_supports_multiple_conversations_and_unicode_content() {
-        let path = temp_file(
+        let (_tmp, path) = temp_file(
             "unicode",
             "{\"messages\":[{\"role\":\"system\",\"content\":\"Answer in English\"},{\"role\":\"user\",\"content\":\"🌍\"},{\"role\":\"assistant\",\"content\":\"Hello\"}]}\n{\"messages\":[{\"role\":\"user\",\"content\":\"Q2\"},{\"role\":\"assistant\",\"content\":\"A2\"}]}\n",
         );
@@ -1372,24 +1366,21 @@ mod tests {
                 .iter()
                 .any(|&label| label != IGNORE_LABEL)
         );
-        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn chat_jsonl_rejects_unknown_fields_and_empty_text() {
-        let path = temp_file("unknown-field", "{\"messages\":[],\"extra\":true}\n");
+        let (_tmp, path) = temp_file("unknown-field", "{\"messages\":[],\"extra\":true}\n");
         let error = read_chat_jsonl(&path).unwrap_err();
         assert!(error.to_string().contains(":1: invalid JSON:"));
         assert!(error.to_string().contains("extra"));
-        std::fs::remove_file(&path).unwrap();
 
-        let path = temp_file(
+        let (_tmp, path) = temp_file(
             "empty-content",
             "{\"messages\":[{\"role\":\"user\",\"content\":\"\"},{\"role\":\"assistant\",\"content\":\"a\"}]}\n",
         );
         let error = prepare_chat_jsonl(&FakeBackend, &path, 32).unwrap_err();
         assert!(error.to_string().contains("content must not be empty"));
-        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
@@ -1402,7 +1393,7 @@ mod tests {
         source.push_str(
             "{\"messages\":[{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"assistant\",\"content\":\"b\"}]}\n",
         );
-        let path = temp_file("collect", &source);
+        let (_tmp, path) = temp_file("collect", &source);
 
         let errors = validate_chat_jsonl(&path).unwrap().errors;
         assert_eq!(
@@ -1417,7 +1408,6 @@ mod tests {
         assert!(errors[3].message.contains("unknown role"));
         // The one valid record on line 5 raises nothing.
         assert!(errors.iter().all(|error| error.line != 5));
-        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
@@ -1425,17 +1415,16 @@ mod tests {
         // `read_chat_jsonl` also serves the rollout prompt reader
         // (`retrograd-training`), whose records are exactly a user turn with no
         // assistant response yet.
-        let path = temp_file(
+        let (_tmp, path) = temp_file(
             "prompt-only",
             "{\"messages\":[{\"role\":\"user\",\"content\":\"a prompt with no answer\"}]}\n",
         );
         assert!(validate_chat_jsonl(&path).unwrap().is_valid());
-        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
     fn validate_chat_jsonl_flags_implausible_turn_order() {
-        let path = temp_file(
+        let (_tmp, path) = temp_file(
             "alternation",
             "{\"messages\":[{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"user\",\"content\":\"b\"},{\"role\":\"assistant\",\"content\":\"c\"}]}\n",
         );
@@ -1443,20 +1432,18 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].kind, RecordErrorKind::InvalidValue);
         assert!(errors[0].message.contains("alternate"), "{:?}", errors[0]);
-        std::fs::remove_file(&path).unwrap();
 
         // A system message anywhere does not count against alternation.
-        let path = temp_file(
+        let (_tmp, path) = temp_file(
             "alternation-system",
             "{\"messages\":[{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"system\",\"content\":\"s\"},{\"role\":\"assistant\",\"content\":\"c\"}]}\n",
         );
         assert!(validate_chat_jsonl(&path).unwrap().is_valid());
-        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
     fn a_tool_record_may_open_on_two_user_turns_and_a_plain_one_may_not() {
-        let path = temp_file(
+        let (_tmp, path) = temp_file(
             "alternation-tools",
             "{\"tools\":[{\"name\":\"run\"}],\"messages\":[{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"user\",\"content\":\"b\"},{\"role\":\"assistant\",\"content\":\"c\"}]}\n\
              {\"tools\":[{\"name\":\"run\"}],\"messages\":[{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"assistant\",\"content\":\"b\"},{\"role\":\"assistant\",\"content\":\"c\"}]}\n\
@@ -1473,12 +1460,11 @@ mod tests {
                 .iter()
                 .all(|error| error.message.contains("alternate"))
         );
-        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
     fn a_tool_record_is_refused_on_its_line_as_an_invalid_value() {
-        let path = temp_file(
+        let (_tmp, path) = temp_file(
             "tool-without-call",
             "{\"tools\":[{\"name\":\"run\"}],\"messages\":[{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"tool\",\"content\":\"b\"},{\"role\":\"assistant\",\"content\":\"c\"}]}\n",
         );
@@ -1489,7 +1475,6 @@ mod tests {
             errors[0].message,
             ChatExampleError::ToolWithoutCall.to_string()
         );
-        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
@@ -1509,9 +1494,8 @@ mod tests {
 
     #[test]
     fn validate_chat_jsonl_refuses_an_empty_file() {
-        let path = temp_file("validate-empty", "");
+        let (_tmp, path) = temp_file("validate-empty", "");
         let error = validate_chat_jsonl(&path).unwrap_err();
         assert!(error.to_string().contains("contains no JSONL records"));
-        std::fs::remove_file(&path).unwrap();
     }
 }

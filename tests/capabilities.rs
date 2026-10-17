@@ -192,10 +192,8 @@ fn real_chat_template_prepares_sft_rows_and_renders_tools_prefix_stably() {
     let _guard = common::serialize_models();
     let trainer = Trainer::new(&model, cpu_config()).expect("load model");
     let n_ctx = trainer.context_size().expect("context size");
-    let path = std::env::temp_dir().join(format!(
-        "retrograd-chat-template-{}.jsonl",
-        std::process::id()
-    ));
+    let tmp = common::scratch("chat-template");
+    let path = tmp.path().join("chat-template.jsonl");
     std::fs::write(
         &path,
         "{\"messages\":[{\"role\":\"system\",\"content\":\"Be concise.\"},{\"role\":\"user\",\"content\":\"Say hello.\"},{\"role\":\"assistant\",\"content\":\"Hello!\"}]}\n",
@@ -208,7 +206,6 @@ fn real_chat_template_prepares_sft_rows_and_renders_tools_prefix_stably() {
         n_ctx,
     )
     .expect("prepare chat JSONL through the model template");
-    std::fs::remove_file(path).unwrap();
 
     assert_eq!(prepared.examples, 1);
     assert_eq!(prepared.tokens.len(), n_ctx);
@@ -362,17 +359,14 @@ fn real_chat_template_prepares_a_tool_record_it_reads_back() {
         "the row ends on the token the policy stops on"
     );
 
-    let path = std::env::temp_dir().join(format!(
-        "retrograd-tool-record-{}.jsonl",
-        std::process::id()
-    ));
+    let tmp = common::scratch("tool-record");
+    let path = tmp.path().join("tool-record.jsonl");
     std::fs::write(&path, format!("{record}\n")).unwrap();
     let format = retrograd::dataset::DataFormat::ChatJsonl;
     let prepared =
         retrograd::dataset::prepare(&trainer, &path, format, n_ctx).expect("prepare the file");
     let lengths =
         retrograd::dataset::measured_lengths(&trainer, &path, format).expect("measure the file");
-    std::fs::remove_file(path).unwrap();
     assert_eq!(prepared.examples, 1);
     assert_eq!(prepared.supervised_tokens, trained.len());
     assert_eq!(lengths, [stream.tokens.len() as u32]);

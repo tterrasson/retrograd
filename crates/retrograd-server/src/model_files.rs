@@ -158,19 +158,18 @@ fn role_of(name: &str) -> dto::ModelFileRole {
 mod tests {
     use super::*;
 
-    fn temp_root(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "retrograd-model-files-{label}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("temp root");
-        dir
+    fn temp_root(label: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("retrograd-model-files-{label}-"))
+            .tempdir()
+            .expect("create the model files root");
+        let root = dir.path().to_path_buf();
+        (dir, root)
     }
 
     #[test]
     fn files_are_found_by_extension_and_marked_by_name() {
-        let root = temp_root("roles");
+        let (_tmp, root) = temp_root("roles");
         std::fs::create_dir_all(root.join("qwen")).expect("dir");
         std::fs::write(root.join("qwen/model-q8_0.gguf"), b"x").expect("file");
         std::fs::write(root.join("qwen/mmproj-f16.gguf"), b"x").expect("file");
@@ -192,12 +191,11 @@ mod tests {
             ]
         );
         assert!(!listing.truncated);
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn the_walk_stops_at_its_depth() {
-        let root = temp_root("depth");
+        let (_tmp, root) = temp_root("depth");
         let deep = root.join("a/b/c/d");
         std::fs::create_dir_all(&deep).expect("dir");
         std::fs::write(root.join("a/b/c/shallow.gguf"), b"x").expect("file");
@@ -209,26 +207,24 @@ mod tests {
             .map(|file| file.relative.as_str())
             .collect();
         assert_eq!(names, vec!["a/b/c/shallow.gguf"]);
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn a_listing_past_its_bound_says_it_stopped() {
-        let root = temp_root("bound");
+        let (_tmp, root) = temp_root("bound");
         for index in 0..=MAX_FILES {
             std::fs::write(root.join(format!("m{index:05}.gguf")), b"").expect("file");
         }
         let listing = scan(std::slice::from_ref(&root));
         assert_eq!(listing.files.len(), MAX_FILES);
         assert!(listing.truncated);
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]
     #[test]
     fn a_link_out_of_the_root_is_not_followed() {
-        let root = temp_root("links");
-        let outside = temp_root("links-outside");
+        let (_tmp, root) = temp_root("links");
+        let (_outside, outside) = temp_root("links-outside");
         std::fs::write(outside.join("secret.gguf"), b"x").expect("file");
         std::fs::create_dir_all(root.join("real")).expect("dir");
         std::fs::write(root.join("real/inside.gguf"), b"x").expect("file");
@@ -243,7 +239,5 @@ mod tests {
             .map(|file| file.relative.as_str())
             .collect();
         assert_eq!(names, vec!["alias.gguf", "real/inside.gguf"]);
-        let _ = std::fs::remove_dir_all(root);
-        let _ = std::fs::remove_dir_all(outside);
     }
 }
