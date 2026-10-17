@@ -18,8 +18,8 @@ use super::metrics::{AgentMetricTotals, ratio_or_zero};
 use super::observe::{UpdateExport, draft};
 use super::selection::{
     DropBreakdown, UpdateFate, check_dropped_fraction, reasoning_truncation_warning,
-    restore_truncated_members, split_environment_scored, tool_call_parse_warning,
-    withhold_truncated_members,
+    rerender_normalization_warning, restore_truncated_members, split_environment_scored,
+    tool_call_parse_warning, withhold_truncated_members,
 };
 use super::{AgentFlow, UpdateBoundary, UpdateHook};
 use crate::env::EnvironmentFactory;
@@ -40,6 +40,9 @@ struct CollectedGroup {
     /// [`tool_call_parse_warning`]: the format a model actually emitted is what
     /// turns "no tool call was parsed" from a guess into a reading.
     first_assistant_text: Option<String>,
+    /// Where the first turn its template re-renders differently parts ways,
+    /// for [`rerender_normalization_warning`].
+    first_normalization: Option<String>,
     truncated: usize,
     /// Of `truncated`, the trajectories cut by a turn that was still reasoning.
     cut_while_reasoning: usize,
@@ -76,6 +79,7 @@ async fn collect_and_start_judge(
     };
     let mut metrics = AgentMetricTotals::default();
     let mut first_assistant_text = None;
+    let mut first_normalization = None;
     if let Some(group) = &outcome.group {
         metrics.observe(group);
         first_assistant_text = group
@@ -84,6 +88,11 @@ async fn collect_and_start_judge(
             .flat_map(|trajectory| trajectory.messages.iter())
             .find(|message| message.role == Role::Assistant)
             .map(|message| message.content.clone());
+        first_normalization = group
+            .trajectories
+            .iter()
+            .filter_map(|trajectory| trajectory.provenance.as_ref())
+            .find_map(|provenance| provenance.first_normalization.clone());
     }
     let truncated = outcome
         .group
@@ -116,6 +125,7 @@ async fn collect_and_start_judge(
         last_error: outcome.last_error,
         metrics,
         first_assistant_text,
+        first_normalization,
         truncated,
         cut_while_reasoning,
         withheld,
@@ -291,6 +301,9 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
         tracing::warn!("{warning}");
     }
     let mut final_metrics = TrainMetrics::default();
+    // Said once per run, at the first update that shows it: the template does
+    // not change between updates, only how often the model hits the case.
+    let mut normalization_warned = false;
     for update in start_update..config.updates {
         let scenario_at = |offset: usize| {
             &scenarios[(update as usize * config.scenarios_per_update + offset) % scenarios.len()]
@@ -336,6 +349,7 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
             last_error,
             metric_totals,
             first_assistant_text,
+            first_normalization,
             cut_while_reasoning,
             mut breakdown,
             withheld,
@@ -369,6 +383,15 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
             };
             for warning in reasoning.into_iter().chain(parse) {
                 tracing::warn!("{warning}");
+            }
+        }
+        if !normalization_warned {
+            let (normalized, checked) = metric_totals.normalized_turns();
+            if let Some(warning) =
+                rerender_normalization_warning(normalized, checked, first_normalization.as_deref())
+            {
+                tracing::warn!("{warning}");
+                normalization_warned = true;
             }
         }
         let agent_metrics = metric_totals.values(attempted, failures);
@@ -587,6 +610,7 @@ struct Collected {
     last_error: Option<String>,
     metric_totals: AgentMetricTotals,
     first_assistant_text: Option<String>,
+    first_normalization: Option<String>,
     cut_while_reasoning: usize,
     breakdown: DropBreakdown,
     withheld: Vec<(u64, Vec<Trajectory>)>,
@@ -608,6 +632,7 @@ fn collect(outcomes: Vec<CollectedGroup>, mut export: Option<&mut UpdateExport>)
         last_error: None,
         metric_totals: AgentMetricTotals::default(),
         first_assistant_text: None,
+        first_normalization: None,
         cut_while_reasoning: 0,
         breakdown: DropBreakdown::default(),
         withheld: Vec::new(),
@@ -627,6 +652,7 @@ fn collect(outcomes: Vec<CollectedGroup>, mut export: Option<&mut UpdateExport>)
         c.last_error = outcome.last_error.or(c.last_error);
         c.metric_totals.merge(outcome.metrics);
         c.first_assistant_text = c.first_assistant_text.or(outcome.first_assistant_text);
+        c.first_normalization = c.first_normalization.or(outcome.first_normalization);
         c.breakdown.truncated += outcome.truncated;
         c.cut_while_reasoning += outcome.cut_while_reasoning;
         c.withheld.extend(outcome.withheld);

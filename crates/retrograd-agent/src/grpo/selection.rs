@@ -145,6 +145,54 @@ pub(super) fn reasoning_truncation_warning(
     ))
 }
 
+/// Builds the warning for a run whose template re-renders some sampled turns
+/// differently from how they were sampled, while its parser still reads them
+/// as the same turn: an empty reasoning block the history leaves out,
+/// whitespace around a tag.
+///
+/// Not a refusal: the sampled tokens stay what is trained, and no incremental
+/// stream could follow the template's version without re-tokenizing what was
+/// sampled. But an inference server re-renders the history, so the model is
+/// trained on one context and served another, and that is worth saying once.
+pub(super) fn rerender_normalization_warning(
+    normalized: usize,
+    checked: usize,
+    first: Option<&str>,
+) -> Option<String> {
+    if normalized == 0 {
+        return None;
+    }
+    let first = first
+        .map(|first| format!(" First, {first}."))
+        .unwrap_or_default();
+    Some(format!(
+        "the chat template re-renders {normalized} of {checked} sampled turns differently from how \
+         they were sampled, though its parser reads them as the same turns. They are trained as \
+         sampled; an inference server that re-renders the history shows the model the template's \
+         version instead (agent/rerender_normalized_fraction).{first}"
+    ))
+}
+
+#[cfg(test)]
+mod rerender_normalization_tests {
+    use super::*;
+
+    #[test]
+    fn a_run_whose_history_is_its_samples_is_left_alone() {
+        assert!(rerender_normalization_warning(0, 12, None).is_none());
+    }
+
+    #[test]
+    fn a_normalized_turn_is_counted_and_its_gap_shown() {
+        let warning = rerender_normalization_warning(3, 12, Some("assistant turn 0: x")).unwrap();
+        assert!(warning.contains("3 of 12 sampled turns"), "{warning}");
+        assert!(
+            warning.ends_with("First, assistant turn 0: x."),
+            "{warning}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod reasoning_truncation_tests {
     use super::*;

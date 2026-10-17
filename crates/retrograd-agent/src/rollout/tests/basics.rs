@@ -212,7 +212,9 @@ async fn an_unstable_chat_template_fails_instead_of_training_off_policy() {
     );
     let error = engine.rollout(&scenario(), 7).await.unwrap_err();
     assert!(
-        error.to_string().contains("rewrote turn 0"),
+        error
+            .to_string()
+            .contains("rewrote the framing before assistant turn 0"),
         "unexpected error: {error}"
     );
 }
@@ -392,7 +394,7 @@ impl Policy for ForcedPolicy {
         messages: &[Message],
         _tools: &[ToolSpec],
         _add: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         Ok(framing(messages, &[1, 2], &[20]))
     }
 
@@ -459,7 +461,7 @@ impl Policy for ForcedCutPolicy {
         messages: &[Message],
         _tools: &[ToolSpec],
         _add: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         Ok(framing(messages, &[1, 2], &[20]))
     }
 

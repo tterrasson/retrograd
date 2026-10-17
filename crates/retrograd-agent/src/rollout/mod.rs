@@ -32,7 +32,7 @@ use self::deadline::{before_deadline, deadline_expired};
 use self::environments::{attach_env_state, close_environments, create_environments};
 use crate::FailureKind;
 use crate::env::{Environment, EnvironmentFactory, ToolProviderFactory};
-use crate::policy::Policy;
+use crate::policy::{Policy, RenderedFraming};
 use crate::rendering::{ToolRendering, resolve_tool_rendering};
 use crate::tools::{HermesToolCallParser, ToolCallParser, ToolProvider};
 use crate::trajectory::{Message, Trajectory, TrajectoryGroup};
@@ -196,7 +196,7 @@ impl RolloutEngine {
         messages: &[Message],
         rendering: &ToolRendering,
         add_assistant: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         self.policy
             .render_chat_framing(messages, rendering.template_specs(), add_assistant)
             .await

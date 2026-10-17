@@ -12,14 +12,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use retrograd_core::SamplingParams;
-use retrograd_dataset::chat_template::{decode_parsed_assistant, split_assistant_spans};
+use retrograd_dataset::chat_template::{decode_parsed_assistant, split_turns};
 use retrograd_dataset::{DatasetBackend, ToolConversationRenderer, ToolStream};
 use serde_json::{Value, json};
 
 use super::*;
 use crate::chat::{template_messages, template_tools};
 use crate::export::{AssistantForm, to_chat_example};
-use crate::policy::{Policy, PolicyGeneration};
+use crate::policy::{Policy, PolicyGeneration, RenderedFraming};
 use crate::tools::{ParsedAssistant, ToolCallParser, ToolSpec};
 use crate::trajectory::{Message, Trajectory};
 
@@ -186,21 +186,19 @@ impl Policy for TemplatePolicy {
         messages: &[Message],
         tools: &[ToolSpec],
         add_assistant: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         let (json, sentinels) = template_messages(messages)?;
         let tools = match tools.is_empty() {
             true => None,
             false => Some(template_tools(tools)?),
         };
         let rendered = self.format_chat_messages(&json, tools.as_deref(), add_assistant)?;
-        Ok(split_assistant_spans(&rendered, &sentinels)?
-            .iter()
-            .enumerate()
-            .map(|(index, piece)| match index {
-                0 => self.tokenize_text(piece).unwrap(),
-                _ => tokenize(piece),
-            })
-            .collect())
+        let framing = split_turns(&rendered, &sentinels)?;
+        let tail = match framing.turns.is_empty() {
+            true => self.tokenize_text(&framing.tail)?,
+            false => tokenize(&framing.tail),
+        };
+        Ok(RenderedFraming { framing, tail })
     }
 
     async fn supports_native_tools(&self) -> Result<bool> {

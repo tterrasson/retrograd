@@ -18,6 +18,7 @@ pub mod chat_template;
 pub mod preference;
 mod tool_conversation;
 pub mod topk;
+pub mod turn_check;
 
 pub use preference::{
     PreferenceExample, PreferenceExampleError, PreferencePreparer, PreferenceRecord, PreparedPair,

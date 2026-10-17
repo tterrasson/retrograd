@@ -216,6 +216,35 @@ off. Exported trajectories keep each turn's reasoning as `reasoning_content`,
 which the template writes back in its own block when the record is used for
 SFT.
 
+Across turns, the sampled tokens are never rendered again: after each tool
+result, the rollout appends only what the template writes after the last turn.
+The re-render is still checked, once per turn, against what that turn was
+sampled after and as - the generation prompt before it and, for a turn that
+reasoned, the tags the template puts around its reasoning. Three outcomes:
+
+- **Exact.** The history the template writes is the sampled text. This is the
+  common case, whether the model opens the reasoning block itself (Qwen3) or
+  the prompt opens it for the model (Qwen3.5 with `enable_thinking = true`).
+- **Normalized.** The texts differ, but the template's parser reads the same
+  turn out of both: Qwen3 with `enable_thinking = false`, whose prompt closes an
+  empty block that the history of a turn leaves out, or extra whitespace around
+  a tag. The trajectory keeps the sampled tokens. An inference server that
+  re-renders the history, such as llama-server, shows the model the template's
+  version instead. `agent/rerender_normalized_fraction` is the share of turns
+  in that case, and the run warns once, quoting the first difference.
+- **Refused.** The parser reads something else out of the history, or the
+  template drops the reasoning of earlier turns: one that never writes
+  `reasoning_content` (LFM2.5 reads a field of its own), or Qwen3 once a message
+  that is not a tool result follows the turn. The trajectory fails, naming the
+  turn and the part of its framing that changed. The context such a template
+  renders at inference is not a prefix of the sampled stream, so no single
+  stream can be trained on.
+
+SFT on tool records runs the same check, so a record is accepted exactly when a
+rollout of it would be. A turn with `reasoning_content` must also be one a
+rollout under the same `template_variables` could sample: under a mode whose
+prompt closes the reasoning block, it is refused.
+
 The loss is divided by the token budget (`max_turns × max_new_tokens_per_turn`,
 capped at `max_trajectory_tokens`), so changing these limits scales the gradient: re-tune `lr` when you change
 them. Every key is listed in the
@@ -298,6 +327,7 @@ retrograd collect agent.toml --out pairs.jsonl --pairs   # best against worst, a
 | `agent/truncated_fraction` | Trajectories that hit a limit. Above ~20%, raise the limits or use `truncation = "min_reward"`. |
 | `agent/failed_fraction` | Trajectories that crashed (tool or runtime). |
 | `agent/tool_calls_per_turn` | Falls first when the model stops using tools. |
+| `agent/rerender_normalized_fraction` | Turns the template re-renders differently from how they were sampled, though they read the same; see [Reasoning models](#reasoning-models). |
 | `judge/degenerate_group_fraction` | Groups where the judge gave everyone the same score. |
 | `env/acquire_ms_mean` | Time waiting for a container. |
 

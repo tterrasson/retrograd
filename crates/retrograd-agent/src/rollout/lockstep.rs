@@ -9,12 +9,15 @@ use super::deadline::{before_deadline, deadline_expired, truncate};
 use super::environments::step_environment;
 use super::state::RolloutState;
 use crate::env::{EnvTask, Environment};
-use crate::policy::PolicyGeneration;
+use crate::policy::{PolicyGeneration, RenderedFraming};
 use crate::rendering::{ToolRendering, inject_tool_instructions, observation_message};
 use crate::tools::{ParsedAssistant, ToolResult};
 use crate::trajectory::{Message, Provenance, Role, Step, StepKind, Trajectory};
 use crate::{Error, Result};
 use retrograd_agent_core::scenario::Scenario;
+use retrograd_dataset::turn_check::{
+    SampledTurn, TextGap, TurnCheck, TurnPart, TurnReading, moved_piece, verify_turn,
+};
 
 impl RolloutEngine {
     /// The lockstep loop. The outer `Result` is a group-wide setup failure; the
@@ -142,7 +145,7 @@ impl RolloutEngine {
             let mut state = match prompt {
                 Ok(prompt) => RolloutState::new(seed, messages, prompt),
                 Err(error) => {
-                    let mut state = RolloutState::new(seed, messages, Vec::new());
+                    let mut state = RolloutState::new(seed, messages, Default::default());
                     state.fail(error);
                     state
                 }
@@ -195,7 +198,7 @@ impl RolloutEngine {
                 })
                 .collect::<Vec<_>>();
 
-            let generated = if let (0, Some(prompt)) = (turn, &shared_prompt) {
+            let generated = if let (0, Some((prompt, _))) = (turn, &shared_prompt) {
                 // Every member still sits on the shared prompt.
                 before_deadline(deadline, self.generate_shared(prompt, sampling)).await
             } else {
@@ -307,7 +310,12 @@ impl RolloutEngine {
                 break;
             };
             for ((index, reward, done, observed), render) in continuing.into_iter().zip(renders) {
-                self.apply_observation(&mut states[index], render, reward, done, observed);
+                let observation = Observation {
+                    reward,
+                    done,
+                    observed,
+                };
+                self.apply_observation(&mut states[index], render, observation, rendering);
             }
         }
 
@@ -428,6 +436,7 @@ impl RolloutEngine {
             tool_calls: parsed.tool_calls.clone(),
             tool_call_id: None,
             is_error: false,
+            reasoning: Some(parsed.reasoning.clone()).filter(|reasoning| !reasoning.is_empty()),
         });
 
         // A turn that emitted its stop token is complete even when it used
@@ -487,95 +496,124 @@ impl RolloutEngine {
 
     /// Renders the opening prompt and checks it leaves room to answer in.
     ///
-    /// The scenario has no assistant turn yet, so the framing is one piece and
-    /// that piece *is* the prompt.
+    /// The scenario has no assistant turn yet, so the framing is the tail alone
+    /// and the tail *is* the prompt: its tokens, and the text the first turn is
+    /// checked against.
     async fn render_prompt(
         &self,
         messages: &[Message],
         rendering: &ToolRendering,
-    ) -> Result<Vec<i32>> {
-        let framing = self.render_framing(messages, rendering, true).await?;
-        let [prompt] = <[Vec<i32>; 1]>::try_from(framing).map_err(|framing| {
-            Error::invalid(format!(
-                "opening scenario rendered {} framing pieces, expected one",
-                framing.len()
-            ))
-        })?;
-        if prompt.is_empty() || prompt.len() >= self.limits.max_trajectory_tokens {
+    ) -> Result<(Vec<i32>, String)> {
+        let RenderedFraming { framing, tail } =
+            self.render_framing(messages, rendering, true).await?;
+        if tail.is_empty() || tail.len() >= self.limits.max_trajectory_tokens {
             return Err(Error::invalid(
                 "rendered scenario leaves no room in max_trajectory_tokens",
             ));
         }
-        Ok(prompt)
+        Ok((tail, framing.tail))
     }
 
     /// Folds the re-rendered conversation back into the member's token stream,
     /// carrying the environment's verdict on the turn: its step reward lands on
     /// the observation, and `done` ends the trajectory without truncating it.
-    /// `observed` are the messages the turn's observations were written to.
     ///
     /// Only the *new* framing piece is appended. The sampled turns are already in
     /// `state.tokens` exactly as the policy emitted them and are never rendered
-    /// or re-tokenized; what the re-render is checked for is that the pieces
-    /// around them did not move.
+    /// or re-tokenized; what the re-render is checked for is the framing around
+    /// them. The turn just answered is checked against what it was sampled
+    /// after and as, once ([`verify_turn`]); every turn checked before it must
+    /// come back byte for byte.
     fn apply_observation(
         &self,
         state: &mut RolloutState,
-        render: Result<Vec<Vec<i32>>>,
-        reward: Option<f32>,
-        done: bool,
-        observed: Vec<usize>,
+        render: Result<RenderedFraming>,
+        observation: Observation,
+        rendering: &ToolRendering,
     ) {
-        let framing = match render {
-            Ok(framing) => framing,
+        let RenderedFraming { framing, tail } = match render {
+            Ok(render) => render,
             Err(error) => return state.fail(error),
         };
-        let committed = state.framing.len();
-        if framing.len() != committed + 1 {
+        let turn = state.checked.len();
+        if framing.turns.len() != turn + 1 {
             return state.fail(Error::invalid(format!(
-                "chat template rendered {} framing pieces for a conversation that had {committed} \
-                 plus one tool turn: the template is not usable for multi-turn rollouts",
-                framing.len(),
+                "chat template rendered {} assistant turns for a conversation that had {} plus one \
+                 tool turn: the template is not usable for multi-turn rollouts",
+                framing.turns.len(),
+                turn,
             )));
         }
-        if framing[..committed] != state.framing[..] {
-            let at = (0..committed)
-                .find(|&i| framing[i] != state.framing[i])
-                .unwrap_or(0);
-            return state.fail(Error::invalid(format!(
-                "chat template rewrote turn {at} of the conversation when the tool result was \
-                 appended, so the tokens already generated against it are stale (committed \
-                 {:?}, re-render {:?})",
-                state.framing[at], framing[at],
-            )));
+        if let Some((at, part, gap)) = moved_piece(&state.checked, &framing.turns) {
+            return state.fail(rewrote(at, part, &gap));
         }
+        let pieces = &framing.turns[turn];
+        let sampled = state
+            .messages
+            .iter()
+            .filter(|message| message.role == Role::Assistant)
+            .nth(turn)
+            .map(|message| message.content.as_str())
+            .expect("one assistant message per sampled turn");
+        // Only the template's own parser knows a reasoning block: under the
+        // prompt-described convention the history has to be the sampled text.
+        let parser = match rendering {
+            ToolRendering::Native { parser, .. } => Some(parser),
+            ToolRendering::Prompt { .. } | ToolRendering::None => None,
+        };
+        let read = parser.map(|parser| move |text: &str| reading(parser.parse(text)));
+        let read = read
+            .as_ref()
+            .map(|read| read as &dyn Fn(&str) -> TurnReading);
+        let check = verify_turn(
+            &state.committed,
+            &SampledTurn {
+                text: sampled,
+                reasoning: &state.assistant_reasoning[turn],
+                content: &state.assistant_prose[turn],
+            },
+            pieces,
+            read,
+        );
+        let normalized = match check {
+            TurnCheck::Exact => None,
+            TurnCheck::Normalized(gap) => Some(gap),
+            TurnCheck::Rewritten { part, gap } => return state.fail(rewrote(turn, part, &gap)),
+        };
         // The policy sampled its own end-of-turn token and the template opens the
         // new piece by closing the same turn, so the two are one token, not two.
         // Only an exact match counts: a model whose end-of-generation token is
         // not the one its template writes has nothing to fold together, and
         // gluing them anyway would put a pair the model never saw in the prompt.
-        let observation = match framing[committed].split_first() {
+        let appended = match tail.split_first() {
             Some((&terminator, rest)) if state.tokens.last() == Some(&terminator) => rest,
-            _ => &framing[committed],
+            _ => &tail[..],
         };
-        if state.tokens.len() + observation.len() > self.limits.max_trajectory_tokens {
+        if state.tokens.len() + appended.len() > self.limits.max_trajectory_tokens {
             return state.stop(true);
         }
         let observation_start = state.tokens.len();
-        state.tokens.extend_from_slice(observation);
+        state.tokens.extend_from_slice(appended);
         state.train_mask.resize(state.tokens.len(), false);
-        state.framing = framing;
-        state.env_rewarded |= reward.is_some();
-        state.environment_done |= done;
+        if let Some(gap) = normalized {
+            state.normalized_turns += 1;
+            state
+                .first_normalization
+                .get_or_insert_with(|| format!("assistant turn {turn}: {gap}"));
+        }
+        state.checked.push(pieces.clone());
+        state.committed = framing.tail;
+        state.env_rewarded |= observation.reward.is_some();
+        state.environment_done |= observation.done;
         state.push_step(
             Step {
                 kind: StepKind::ToolResult,
                 token_range: (observation_start, state.tokens.len()),
-                reward,
+                reward: observation.reward,
             },
-            observed,
+            observation.observed,
         );
-        if done {
+        if observation.done {
             state.stop(false);
         }
     }
@@ -620,6 +658,9 @@ impl RolloutEngine {
                 assistant_reasoning: state.assistant_reasoning,
                 cut_while_reasoning: state.cut_while_reasoning,
                 invalid_turns: state.invalid_turns,
+                checked_turns: state.checked.len(),
+                normalized_turns: state.normalized_turns,
+                first_normalization: state.first_normalization,
             }),
         };
         trajectory.validate()?;
@@ -656,6 +697,32 @@ impl RolloutEngine {
         }
         Ok(generations)
     }
+}
+
+/// The environment's verdict on one turn: its step reward, whether it ended
+/// the episode, and the messages its observations were written to.
+struct Observation {
+    reward: Option<f32>,
+    done: bool,
+    observed: Vec<usize>,
+}
+
+/// What [`verify_turn`] compares of a parsed turn.
+fn reading(parsed: ParsedAssistant) -> TurnReading {
+    TurnReading {
+        reasoning: parsed.reasoning.trim().to_owned(),
+        content: parsed.content.trim().to_owned(),
+        calls: !parsed.tool_calls.is_empty() || !parsed.parse_errors.is_empty(),
+    }
+}
+
+/// Why a member stops when the template renders a turn differently once the
+/// conversation continues past it.
+fn rewrote(turn: usize, part: TurnPart, gap: &TextGap) -> Error {
+    Error::invalid(format!(
+        "chat template rewrote {part} assistant turn {turn} when the tool result was appended, \
+         so the tokens already generated against it are stale: {gap}"
+    ))
 }
 
 /// The observation a turn that called nothing comes back with, under

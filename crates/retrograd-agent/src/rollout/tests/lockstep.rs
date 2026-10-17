@@ -17,7 +17,7 @@ impl Policy for BatchedScoringPolicy {
         messages: &[Message],
         _tools: &[ToolSpec],
         _add: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         Ok(framing(messages, &[1, 2], &[20]))
     }
 

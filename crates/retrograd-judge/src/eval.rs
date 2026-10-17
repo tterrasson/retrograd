@@ -113,6 +113,7 @@ impl Fixture {
                             tool_calls: Vec::new(),
                             tool_call_id: None,
                             is_error: message.is_error,
+                            reasoning: None,
                         })
                         .collect(),
                     tokens: vec![0, 1],

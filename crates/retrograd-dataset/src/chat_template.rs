@@ -29,8 +29,18 @@ pub enum ChatTemplateError {
          reorders a turn cannot be used for multi-turn rollouts"
     )]
     DroppedTurn { turn: usize, turns: usize },
-    #[error("chat template rendered the assistant span sentinel {sentinel} more than once")]
-    RepeatedSentinel { sentinel: String },
+    /// The inference server re-renders the history the same way, so the turns
+    /// sampled after this one would continue a conversation it never shows.
+    #[error(
+        "chat template drops the reasoning of assistant turn {turn} once the conversation \
+         continues past it, so the turns sampled after it continue a history inference never \
+         renders: such a template cannot be used for multi-turn rollouts of a model that reasons"
+    )]
+    DroppedReasoning { turn: usize },
+    #[error("chat template renders the reasoning of assistant turn {turn} after its content")]
+    ReasoningAfterContent { turn: usize },
+    #[error("chat template rendered the {part} of assistant turn {turn} more than once")]
+    RepeatedSentinel { turn: usize, part: SpanPart },
     /// [`parse_hermes`] would cut the call short at the first closing tag, so
     /// writing it would teach a call that does not read back.
     #[error(
@@ -59,6 +69,75 @@ pub fn assistant_span(index: usize) -> String {
     format!("retro_span_{index}_9d41c7")
 }
 
+/// The placeholder an assistant turn's reasoning is handed to the template as,
+/// for a turn that has some. Same shape as [`assistant_span`], under a prefix
+/// neither shares with the other.
+///
+/// The template writes a turn's reasoning in a block of its own, with framing
+/// around it that a turn without reasoning does not get - and that the
+/// generation prompt may already have opened. Handing it over apart from the
+/// content is what lets that framing be cut out and compared, instead of being
+/// written around a turn that was sampled without it.
+pub fn reasoning_span(index: usize) -> String {
+    format!("retro_reasoning_{index}_9d41c7")
+}
+
+/// Which of a turn's placeholders a cut refers to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpanPart {
+    Reasoning,
+    Content,
+}
+
+impl std::fmt::Display for SpanPart {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Reasoning => "reasoning",
+            Self::Content => "content",
+        })
+    }
+}
+
+/// The placeholders one assistant turn was handed to the template as.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TurnSentinels {
+    /// For a turn whose reasoning is not empty.
+    pub reasoning: Option<String>,
+    pub content: String,
+}
+
+impl TurnSentinels {
+    fn parts(&self) -> impl Iterator<Item = (SpanPart, &str)> {
+        self.reasoning
+            .as_deref()
+            .map(|reasoning| (SpanPart::Reasoning, reasoning))
+            .into_iter()
+            .chain([(SpanPart::Content, self.content.as_str())])
+    }
+}
+
+/// What a template writes around one sampled turn.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TurnPieces {
+    /// From the end of the previous turn - or the start of the text - to the
+    /// turn's first placeholder: its reasoning when it has some, its content
+    /// otherwise.
+    pub pre: String,
+    /// Between the reasoning and the content; `None` for a turn handed over
+    /// without reasoning.
+    pub mid: Option<String>,
+}
+
+/// A rendered conversation cut around its sampled turns.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Framing {
+    pub turns: Vec<TurnPieces>,
+    /// After the last turn's content: what closes it, what follows it, and the
+    /// generation prompt when one was asked for. The whole text for a
+    /// conversation with no assistant turn yet.
+    pub tail: String,
+}
+
 /// One tool call, as a template renders it and as a parser reads it back.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TemplateCall {
@@ -78,7 +157,8 @@ pub struct TemplateMessage<'a> {
     /// Only ever rendered for the assistant turn [`template_messages_revealing`]
     /// reveals; a sentinelled turn never shows its calls.
     pub tool_calls: &'a [TemplateCall],
-    /// Handed over as `reasoning_content` under the same rule as `tool_calls`.
+    /// Handed over as `reasoning_content`: for real on a revealed turn, as a
+    /// [`reasoning_span`] on a sentinelled one - when it is not empty.
     pub reasoning: Option<&'a str>,
 }
 
@@ -105,8 +185,9 @@ impl SystemTurn for TemplateMessage<'_> {
 }
 
 /// Serializes a conversation for the model's chat template, replacing every
-/// assistant turn's content with a sentinel. Returns the JSON and the sentinels
-/// in turn order.
+/// assistant turn's content with a sentinel - and its reasoning, when it has
+/// some, with another. Returns the JSON and each turn's sentinels in turn
+/// order.
 ///
 /// The template never sees a sampled turn, on purpose. It cannot be trusted with
 /// one: it is free to trim the content, to lift a `<think>` block out of it and
@@ -119,8 +200,10 @@ impl SystemTurn for TemplateMessage<'_> {
 /// template gets to decide.
 ///
 /// An assistant turn's `tool_calls` are not handed over either, for the same
-/// reason: the calls are already inside the sampled tokens.
-pub fn template_messages(messages: &[TemplateMessage<'_>]) -> Result<(String, Vec<String>)> {
+/// reason: the calls are already inside the sampled tokens. Its reasoning is,
+/// as [`reasoning_span`], because where the template puts it - and what it
+/// writes around it - is framing the sampled turn has to be checked against.
+pub fn template_messages(messages: &[TemplateMessage<'_>]) -> Result<(String, Vec<TurnSentinels>)> {
     serialize_messages(messages, Reveal::None)
 }
 
@@ -169,7 +252,7 @@ impl Reveal {
 fn serialize_messages(
     messages: &[TemplateMessage<'_>],
     reveal: Reveal,
-) -> Result<(String, Vec<String>)> {
+) -> Result<(String, Vec<TurnSentinels>)> {
     let mut sentinels = Vec::new();
     let mut assistant = 0;
     let rendered = messages
@@ -189,9 +272,19 @@ fn serialize_messages(
                     }
                     message.content.to_string()
                 } else {
-                    let sentinel = assistant_span(index);
-                    sentinels.push(sentinel.clone());
-                    sentinel
+                    let reasoning = message
+                        .reasoning
+                        .filter(|reasoning| !reasoning.is_empty())
+                        .map(|_| reasoning_span(index));
+                    if let Some(reasoning) = &reasoning {
+                        object.insert("reasoning_content".into(), Value::String(reasoning.clone()));
+                    }
+                    let content = assistant_span(index);
+                    sentinels.push(TurnSentinels {
+                        reasoning,
+                        content: content.clone(),
+                    });
+                    content
                 }
             } else {
                 message.content.to_string()
@@ -227,33 +320,67 @@ fn openai_calls(calls: &[TemplateCall]) -> Value {
 
 /// Cuts a rendered conversation into the framing around the sampled turns.
 ///
-/// Returns `sentinels.len() + 1` pieces: what the template put before the first
-/// sampled turn, between consecutive ones, and after the last. The sentinels are
-/// consumed in order, so a template that reorders or drops an assistant turn is
-/// caught here rather than corrupting the token stream downstream.
-pub fn split_assistant_spans(rendered: &str, sentinels: &[String]) -> Result<Vec<String>> {
-    let mut segments = Vec::with_capacity(sentinels.len() + 1);
+/// Every sentinel must be rendered exactly once, a turn's reasoning before its
+/// content, and the turns in order: a template that drops, repeats or
+/// reorders one is caught here rather than corrupting the token stream
+/// downstream.
+pub fn split_turns(rendered: &str, sentinels: &[TurnSentinels]) -> Result<Framing> {
+    for (turn, turn_sentinels) in sentinels.iter().enumerate() {
+        for (part, sentinel) in turn_sentinels.parts() {
+            match (rendered.matches(sentinel).count(), part) {
+                (1, _) => {}
+                (0, SpanPart::Content) => {
+                    return Err(ChatTemplateError::DroppedTurn {
+                        turn,
+                        turns: sentinels.len(),
+                    });
+                }
+                (0, SpanPart::Reasoning) => {
+                    return Err(ChatTemplateError::DroppedReasoning { turn });
+                }
+                _ => return Err(ChatTemplateError::RepeatedSentinel { turn, part }),
+            }
+        }
+    }
+    let mut turns = Vec::with_capacity(sentinels.len());
     let mut rest = rendered;
-    for sentinel in sentinels {
-        let Some((before, after)) = rest.split_once(sentinel.as_str()) else {
+    for (turn, turn_sentinels) in sentinels.iter().enumerate() {
+        // Each sentinel is in the text once; one that is not in what is left
+        // was rendered before an earlier turn.
+        let Some(content) = rest.find(&turn_sentinels.content) else {
             return Err(ChatTemplateError::DroppedTurn {
-                turn: segments.len(),
+                turn,
                 turns: sentinels.len(),
             });
         };
-        segments.push(before.to_string());
-        rest = after;
+        let pieces = match &turn_sentinels.reasoning {
+            Some(reasoning) => {
+                let Some(start) = rest.find(reasoning.as_str()) else {
+                    return Err(ChatTemplateError::DroppedTurn {
+                        turn,
+                        turns: sentinels.len(),
+                    });
+                };
+                if start > content {
+                    return Err(ChatTemplateError::ReasoningAfterContent { turn });
+                }
+                TurnPieces {
+                    pre: rest[..start].to_owned(),
+                    mid: Some(rest[start + reasoning.len()..content].to_owned()),
+                }
+            }
+            None => TurnPieces {
+                pre: rest[..content].to_owned(),
+                mid: None,
+            },
+        };
+        turns.push(pieces);
+        rest = &rest[content + turn_sentinels.content.len()..];
     }
-    if let Some(sentinel) = sentinels
-        .iter()
-        .find(|sentinel| rest.contains(&***sentinel))
-    {
-        return Err(ChatTemplateError::RepeatedSentinel {
-            sentinel: sentinel.clone(),
-        });
-    }
-    segments.push(rest.to_string());
-    Ok(segments)
+    Ok(Framing {
+        turns,
+        tail: rest.to_owned(),
+    })
 }
 
 /// One entry of a tool catalog.
@@ -946,6 +1073,145 @@ mod tests {
         assert_eq!(decide_rendering(2, false, true), ToolRenderingKind::Prompt);
     }
 
+    fn sentinels(reasoning: bool) -> TurnSentinels {
+        TurnSentinels {
+            reasoning: reasoning.then(|| reasoning_span(0)),
+            content: assistant_span(0),
+        }
+    }
+
+    #[test]
+    fn a_turn_that_reasons_is_handed_over_as_two_sentinels() {
+        let messages = [
+            TemplateMessage::text("user", "go"),
+            TemplateMessage {
+                reasoning: Some("left looks open"),
+                ..TemplateMessage::text("assistant", "left")
+            },
+            TemplateMessage {
+                reasoning: Some(""),
+                ..TemplateMessage::text("assistant", "up")
+            },
+        ];
+        let (json, sentinels) = template_messages(&messages).unwrap();
+        let json: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(json[1]["reasoning_content"], reasoning_span(0));
+        assert_eq!(json[1]["content"], assistant_span(0));
+        assert!(
+            json[2].get("reasoning_content").is_none(),
+            "empty reasoning is no reasoning"
+        );
+        assert_eq!(
+            sentinels,
+            [
+                TurnSentinels {
+                    reasoning: Some(reasoning_span(0)),
+                    content: assistant_span(0),
+                },
+                TurnSentinels {
+                    reasoning: None,
+                    content: assistant_span(1),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_turn_is_cut_before_its_reasoning_between_it_and_its_content_and_after() {
+        let (rs, cs) = (reasoning_span(0), assistant_span(0));
+        let framing = split_turns(
+            &format!("<a><think>{rs}</think>\n{cs}</a><b>"),
+            &[sentinels(true)],
+        )
+        .unwrap();
+        assert_eq!(
+            framing,
+            Framing {
+                turns: vec![TurnPieces {
+                    pre: "<a><think>".into(),
+                    mid: Some("</think>\n".into()),
+                }],
+                tail: "</a><b>".into(),
+            }
+        );
+
+        let framing = split_turns(&format!("<a>{cs}</a><b>"), &[sentinels(false)]).unwrap();
+        assert_eq!(
+            framing.turns,
+            [TurnPieces {
+                pre: "<a>".into(),
+                mid: None,
+            }]
+        );
+        assert_eq!(framing.tail, "</a><b>");
+
+        let empty = split_turns("<a>", &[]).unwrap();
+        assert!(empty.turns.is_empty());
+        assert_eq!(empty.tail, "<a>");
+    }
+
+    #[test]
+    fn a_template_that_drops_repeats_or_moves_the_reasoning_is_refused() {
+        let (rs, cs) = (reasoning_span(0), assistant_span(0));
+        let error = split_turns(&format!("<a>{cs}</a>"), &[sentinels(true)]).unwrap_err();
+        assert!(
+            matches!(error, ChatTemplateError::DroppedReasoning { turn: 0 }),
+            "{error}"
+        );
+        assert!(error.to_string().contains("drops the reasoning"), "{error}");
+
+        let error = split_turns(&format!("<a>{rs}{rs}{cs}</a>"), &[sentinels(true)]).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ChatTemplateError::RepeatedSentinel {
+                    turn: 0,
+                    part: SpanPart::Reasoning
+                }
+            ),
+            "{error}"
+        );
+        let error = split_turns(&format!("<a>{cs}{cs}</a>"), &[sentinels(false)]).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ChatTemplateError::RepeatedSentinel {
+                    turn: 0,
+                    part: SpanPart::Content
+                }
+            ),
+            "{error}"
+        );
+
+        let error = split_turns(&format!("<a>{cs}{rs}</a>"), &[sentinels(true)]).unwrap_err();
+        assert!(
+            matches!(error, ChatTemplateError::ReasoningAfterContent { turn: 0 }),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn turns_are_cut_in_order() {
+        let both = [
+            sentinels(false),
+            TurnSentinels {
+                reasoning: Some(reasoning_span(1)),
+                content: assistant_span(1),
+            },
+        ];
+        let (cs0, rs1, cs1) = (assistant_span(0), reasoning_span(1), assistant_span(1));
+        let framing = split_turns(&format!("a{cs0}b{rs1}c{cs1}d"), &both).unwrap();
+        assert_eq!(framing.turns[1].pre, "b");
+        assert_eq!(framing.turns[1].mid.as_deref(), Some("c"));
+        assert_eq!(framing.tail, "d");
+
+        let error = split_turns(&format!("a{cs1}b{cs0}c{rs1}"), &both).unwrap_err();
+        assert!(
+            matches!(error, ChatTemplateError::DroppedTurn { turn: 1, turns: 2 }),
+            "{error}"
+        );
+    }
+
     #[test]
     fn a_revealed_turn_carries_its_calls_and_the_others_stay_sentinels() {
         let calls = [TemplateCall {
@@ -968,7 +1234,7 @@ mod tests {
         let (hidden, sentinels) = template_messages(&messages).unwrap();
         let hidden: Value = serde_json::from_str(&hidden).unwrap();
         assert!(hidden[1].get("tool_calls").is_none());
-        assert_eq!(hidden[1]["content"], sentinels[0]);
+        assert_eq!(hidden[1]["content"], sentinels[0].content);
 
         let revealed: Value =
             serde_json::from_str(&template_messages_revealing(&messages, 0).unwrap()).unwrap();
@@ -980,7 +1246,7 @@ mod tests {
             "arguments go to the template as an object"
         );
         assert_eq!(
-            revealed[3]["content"], sentinels[1],
+            revealed[3]["content"], sentinels[1].content,
             "the other turns keep the sentinel they have in the hidden form"
         );
     }

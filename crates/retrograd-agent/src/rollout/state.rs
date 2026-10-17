@@ -1,3 +1,5 @@
+use retrograd_dataset::chat_template::TurnPieces;
+
 use crate::Error;
 use crate::trajectory::{Message, Step, StepKind};
 
@@ -7,11 +9,15 @@ pub(super) struct RolloutState {
     pub(super) seed: u64,
     pub(super) messages: Vec<Message>,
     pub(super) tokens: Vec<i32>,
-    /// The template's framing already folded into `tokens`, one piece per gap
-    /// around the sampled turns. Re-rendering after a tool turn must reproduce
-    /// these byte for byte and add exactly one piece: anything else means the
-    /// template rewrote a turn the member has already generated against.
-    pub(super) framing: Vec<Vec<i32>>,
+    /// What the template writes around each turn the conversation has been
+    /// rendered past, checked once against what the turn was sampled after and
+    /// as. Every later render must reproduce these byte for byte: anything else
+    /// means the template rewrote a turn the member has already generated
+    /// against.
+    pub(super) checked: Vec<TurnPieces>,
+    /// The text of the framing piece last folded into `tokens` - the
+    /// generation prompt the turn being sampled follows.
+    pub(super) committed: String,
     pub(super) train_mask: Vec<bool>,
     pub(super) steps: Vec<Step>,
     /// For each entry of `steps`, the messages it produced.
@@ -41,11 +47,18 @@ pub(super) struct RolloutState {
     /// Assistant turns with a parse error or no call where one was expected,
     /// over the whole trajectory - unlike `failed_turns`, never reset.
     pub(super) invalid_turns: usize,
+    /// Of the turns in `checked`, those the template re-renders differently
+    /// from how they were sampled, and where the first one parts ways.
+    pub(super) normalized_turns: usize,
+    pub(super) first_normalization: Option<String>,
     pub(super) failure: Option<Error>,
 }
 
 impl RolloutState {
-    pub(super) fn new(seed: u64, messages: Vec<Message>, opening: Vec<i32>) -> Self {
+    /// `opening` is the rendered scenario, as tokens and as the text the first
+    /// turn is checked against.
+    pub(super) fn new(seed: u64, messages: Vec<Message>, opening: (Vec<i32>, String)) -> Self {
+        let (opening, committed) = opening;
         let context_len = opening.len();
         Self {
             seed,
@@ -57,8 +70,9 @@ impl RolloutState {
                 token_range: (0, context_len),
                 reward: None,
             }],
-            tokens: opening.clone(),
-            framing: vec![opening],
+            tokens: opening,
+            checked: Vec::new(),
+            committed,
             old_logprobs: None,
             truncated: false,
             finished: false,
@@ -69,6 +83,8 @@ impl RolloutState {
             assistant_reasoning: Vec::new(),
             cut_while_reasoning: false,
             invalid_turns: 0,
+            normalized_turns: 0,
+            first_normalization: None,
             failure: None,
         }
     }

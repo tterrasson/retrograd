@@ -7,7 +7,7 @@
 //! write, one per byte for the rest - which is all the framing arithmetic needs.
 
 use retrograd_dataset::chat_template::{
-    TemplateMessage, ToolRenderingKind, observation_text, split_assistant_spans, template_messages,
+    TemplateMessage, ToolRenderingKind, observation_text, split_turns, template_messages,
 };
 use retrograd_dataset::{ChatExample, DatasetBackend, ToolConversationRenderer, ToolStream};
 use retrograd_engine::{
@@ -56,12 +56,20 @@ fn marker_id(index: usize) -> i32 {
 
 struct FixtureBackend {
     template: String,
+    /// The template variables every render runs under, as a run's
+    /// `template_variables`.
+    variables: Option<&'static str>,
 }
 
 impl FixtureBackend {
     fn new(name: &str) -> Self {
+        Self::with_variables(name, None)
+    }
+
+    fn with_variables(name: &str, variables: Option<&'static str>) -> Self {
         Self {
             template: fixture(name),
+            variables,
         }
     }
 
@@ -135,7 +143,7 @@ impl DatasetBackend for FixtureBackend {
             &self.template,
             messages_json,
             tools_json,
-            None,
+            self.variables,
             add_assistant,
         )
     }
@@ -156,7 +164,7 @@ impl DatasetBackend for FixtureBackend {
     }
 
     fn tool_call_parser(&self, tools_json: &str) -> retrograd_core::Result<Option<String>> {
-        tool_call_parser_from_source(&self.template, Some(tools_json), None).map(Some)
+        tool_call_parser_from_source(&self.template, Some(tools_json), self.variables).map(Some)
     }
 
     fn parse_assistant(&self, parser: &str, text: &str) -> retrograd_core::Result<String> {
@@ -249,8 +257,9 @@ fn rollout_framing(backend: &FixtureBackend, example: &ChatExample) -> Vec<Vec<i
         let rendered = backend
             .format_chat_messages(&json, Some(&tools), true)
             .expect("the template renders");
-        let pieces = split_assistant_spans(&rendered, &sentinels).expect("sentinels in order");
-        let piece = pieces.last().expect("one piece per gap");
+        let piece = &split_turns(&rendered, &sentinels)
+            .expect("sentinels in order")
+            .tail;
         let tokens = match turn {
             0 => backend.tokenize_text(piece).expect("infallible stand-in"),
             _ => {
@@ -329,55 +338,146 @@ fn a_template_blind_to_tools_takes_the_prompt_path() {
     );
 }
 
-/// A turn's reasoning, given apart from its content, is written by the
-/// template in its own block and trained like the rest of the turn: the record
-/// names no tag, the template knows them.
-#[test]
-fn a_turn_s_reasoning_is_written_by_the_template_and_trained() {
+/// The modes of the templates that reason in a block of their own, each with
+/// whether its generation prompt leaves the model room to reason: Qwen3 opens
+/// nothing and lets the model open the block, Qwen3.5 under `enable_thinking`
+/// opens it itself, and either one closes an empty block in the prompt when
+/// thinking is off.
+const REASONING_MODES: [(&str, Option<&str>, bool); 9] = [
+    ("qwen3-0.6b", None, true),
+    ("qwen3-0.6b", THINKING_ON, true),
+    ("qwen3-0.6b", THINKING_OFF, false),
+    ("qwen3-1.7b", None, true),
+    ("qwen3-1.7b", THINKING_ON, true),
+    ("qwen3-1.7b", THINKING_OFF, false),
+    ("qwen3.5-0.8b", None, false),
+    ("qwen3.5-0.8b", THINKING_ON, true),
+    ("qwen3.5-0.8b", THINKING_OFF, false),
+];
+
+const THINKING_ON: Option<&str> = Some(r#"{"enable_thinking":true}"#);
+const THINKING_OFF: Option<&str> = Some(r#"{"enable_thinking":false}"#);
+
+/// [`record`], each assistant turn reasoning.
+fn reasoning_record() -> ChatExample {
     let mut example = record();
     example.messages[2].reasoning_content = Some("left looks open".into());
-    example.validate().expect("reasoning on an assistant turn");
+    example.messages[5].reasoning_content = Some("the exit was up".into());
+    example.validate().expect("reasoning on assistant turns");
+    example
+}
 
-    let backend = FixtureBackend::new("qwen3-0.6b");
-    let stream = ToolConversationRenderer::new(&backend)
-        .stream(&example)
-        .unwrap_or_else(|error| panic!("{error}"));
-    let trained = stream
+fn trained(stream: &ToolStream) -> Vec<i32> {
+    stream
         .tokens
         .iter()
         .zip(&stream.train_mask)
         .filter(|(_, trained)| **trained)
         .map(|(&token, _)| token)
-        .collect::<Vec<_>>();
-    let needle = FixtureBackend::tokenize("<think>\nleft looks open\n</think>");
-    assert!(
-        trained.windows(needle.len()).any(|window| window == needle),
-        "the reasoning block is not among the trained tokens"
-    );
+        .collect()
 }
 
-/// A turn whose template writes reasoning framing outside the turn itself - an
-/// empty block before a turn it is not shown (Qwen3.5, and Qwen3 for the last
-/// turn), the reasoning in its place once it is - is not local to its
-/// sentinel. The record is refused, with a way out, rather than trained
-/// without its reasoning: an answer without calls included, whose content
-/// alone would drop the reasoning from the stream.
+fn contains(haystack: &[i32], needle: &[i32]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
+/// A record prepares under every mode of a template that reasons, as long as
+/// it is one a rollout under that mode could produce: reasoning where the
+/// prompt leaves the model room for it, none where the prompt closed the
+/// block. The framing is the one a rollout commits either way - including
+/// where the template's history leaves out the empty block its prompt wrote.
 #[test]
-fn a_template_that_frames_reasoning_outside_the_turn_refuses_it_explicitly() {
-    for (template, turn) in [("qwen3-0.6b", 5), ("qwen3.5-0.8b", 2), ("qwen3.5-0.8b", 5)] {
-        let backend = FixtureBackend::new(template);
-        let mut example = record();
-        example.messages[turn].reasoning_content = Some("left looks open".into());
-        let error = ToolConversationRenderer::new(&backend)
+fn a_record_prepares_through_each_mode_of_a_template_that_reasons() {
+    for (name, variables, reasons) in REASONING_MODES {
+        let backend = FixtureBackend::with_variables(name, variables);
+        let example = match reasons {
+            true => reasoning_record(),
+            false => record(),
+        };
+        let case = format!("{name} {variables:?}");
+        let stream = ToolConversationRenderer::new(&backend)
             .stream(&example)
-            .expect_err("the turn is not local to its sentinel");
-        let message = error.to_string();
-        assert!(
-            message.contains("non-locally"),
-            "{template} {turn}: {message}"
+            .unwrap_or_else(|error| panic!("{case}: {error}"));
+        assert_eq!(
+            framing_runs(&stream),
+            rollout_framing(&backend, &example),
+            "{case}: the framing is the one a rollout of this conversation commits"
         );
-        assert!(message.contains("raw"), "{template} {turn}: {message}");
+        if reasons {
+            let trained = trained(&stream);
+            for reasoning in ["left looks open", "the exit was up"] {
+                assert!(
+                    contains(&trained, &FixtureBackend::tokenize(reasoning)),
+                    "{case}: {reasoning:?} is not among the trained tokens"
+                );
+            }
+            // Nothing the template writes for a turn without reasoning stands
+            // before one that has some.
+            let empty = FixtureBackend::tokenize("<think>\n\n</think>");
+            assert!(!contains(&stream.tokens, &empty), "{case}");
+        }
     }
+}
+
+/// The text a reasoning turn is trained as is the one a model reasoning under
+/// that mode samples: from the tag the prompt left it to open - none when the
+/// prompt opened the block - to the end of its content.
+#[test]
+fn a_reasoning_turn_is_trained_from_where_its_prompt_stops() {
+    for (name, variables, expected) in [
+        (
+            "qwen3-0.6b",
+            None,
+            "<think>\nthe exit was up\n</think>\n\nThe exit is up.",
+        ),
+        (
+            "qwen3.5-0.8b",
+            THINKING_ON,
+            "the exit was up\n</think>\n\nThe exit is up.",
+        ),
+    ] {
+        let backend = FixtureBackend::with_variables(name, variables);
+        let stream = ToolConversationRenderer::new(&backend)
+            .stream(&reasoning_record())
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        let mut last_turn = FixtureBackend::tokenize(expected);
+        last_turn.extend(FixtureBackend::tokenize("<|im_end|>"));
+        assert!(trained(&stream).ends_with(&last_turn), "{name}");
+    }
+}
+
+/// Reasoning under a mode whose prompt closed the block is a turn no rollout
+/// could sample - the model would reason after its own empty block - and the
+/// record says so instead of training it.
+#[test]
+fn reasoning_where_the_prompt_closed_the_block_is_refused() {
+    for (name, variables, reasons) in REASONING_MODES {
+        if reasons {
+            continue;
+        }
+        let backend = FixtureBackend::with_variables(name, variables);
+        let error = ToolConversationRenderer::new(&backend)
+            .stream(&reasoning_record())
+            .expect_err("a turn no rollout under this mode samples");
+        assert!(
+            error.to_string().contains("reasoning"),
+            "{name} {variables:?}: {error}"
+        );
+    }
+}
+
+/// LFM2.5 reads a turn's reasoning from a field of its own and never from
+/// `reasoning_content`: a record that reasons would be trained without its
+/// reasoning, so it is refused.
+#[test]
+fn a_template_that_does_not_write_the_reasoning_refuses_it() {
+    let backend = FixtureBackend::new("lfm2.5-230m");
+    let error = ToolConversationRenderer::new(&backend)
+        .stream(&reasoning_record())
+        .expect_err("the reasoning would be lost");
+    assert!(error.to_string().contains("reasoning"), "{error}");
 }
 
 #[test]

@@ -12,6 +12,7 @@ mod failures;
 mod lockstep;
 mod render;
 mod sft_parity;
+mod template_parity;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,7 +23,7 @@ use retrograd_core::SamplingParams;
 
 use super::RolloutEngine;
 use crate::env::{EnvState, Environment, EnvironmentFactory, StepOutcome};
-use crate::policy::{Policy, PolicyGeneration};
+use crate::policy::{Policy, PolicyGeneration, RenderedFraming};
 use crate::tools::{
     HermesToolCallParser, ToolCall, ToolCallParser, ToolProvider, ToolResult, ToolSpec,
 };
@@ -43,7 +44,7 @@ fn logprobs(train_mask: &[bool], value: f32) -> Vec<f32> {
 /// One piece per gap around the sampled turns is what the engine asks for, and
 /// it checks that the pieces it has already committed come back unchanged - a
 /// fake must return one piece per gap.
-fn framing(messages: &[Message], opening: &[i32], observation: &[i32]) -> Vec<Vec<i32>> {
+fn pieces(messages: &[Message], opening: &[i32], observation: &[i32]) -> Vec<Vec<i32>> {
     let mut pieces = vec![opening.to_vec()];
     for _ in messages
         .iter()
@@ -52,6 +53,10 @@ fn framing(messages: &[Message], opening: &[i32], observation: &[i32]) -> Vec<Ve
         pieces.push(observation.to_vec());
     }
     pieces
+}
+
+fn framing(messages: &[Message], opening: &[i32], observation: &[i32]) -> RenderedFraming {
+    RenderedFraming::from_token_pieces(pieces(messages, opening, observation))
 }
 
 #[derive(Default)]
@@ -66,7 +71,7 @@ impl Policy for FakePolicy {
         messages: &[Message],
         _tools: &[ToolSpec],
         _add: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         Ok(framing(messages, &[1, 2], &[20]))
     }
 
@@ -108,7 +113,7 @@ impl Policy for MultiTurnPolicy {
         messages: &[Message],
         _tools: &[ToolSpec],
         _add: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         Ok(framing(messages, &[1, 2], &[20]))
     }
 
@@ -200,7 +205,7 @@ impl Policy for DivergentPolicy {
         messages: &[Message],
         _tools: &[ToolSpec],
         _add: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         Ok(framing(messages, &[1, 2], &[20]))
     }
 
@@ -253,7 +258,7 @@ impl Policy for FlakyPolicy {
         messages: &[Message],
         _tools: &[ToolSpec],
         _add: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         Ok(framing(messages, &[1, 2], &[20]))
     }
 
@@ -295,7 +300,7 @@ impl Policy for BudgetPolicy {
         messages: &[Message],
         _tools: &[ToolSpec],
         _add: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         Ok(framing(messages, &[1, 2], &[20]))
     }
 
@@ -334,7 +339,7 @@ impl Policy for SharedTerminatorPolicy {
         messages: &[Message],
         _tools: &[ToolSpec],
         _add: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         Ok(framing(messages, &[1, 2], &[TERMINATOR, 20]))
     }
 
@@ -378,18 +383,22 @@ impl Policy for UnstablePrefixPolicy {
         messages: &[Message],
         _tools: &[ToolSpec],
         _add: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         // The opening piece changes the moment a tool turn exists, so the
         // tokens the member already generated were conditioned on a prompt the
         // template cannot render.
-        Ok(framing(messages, &[1, 2], &[20])
-            .into_iter()
-            .enumerate()
-            .map(|(index, piece)| match index {
-                0 if messages.iter().any(|message| message.role == Role::Tool) => vec![99, 98],
-                _ => piece,
-            })
-            .collect())
+        Ok(RenderedFraming::from_token_pieces(
+            pieces(messages, &[1, 2], &[20])
+                .into_iter()
+                .enumerate()
+                .map(|(index, piece)| match index {
+                    0 if messages.iter().any(|message| message.role == Role::Tool) => {
+                        vec![99, 98]
+                    }
+                    _ => piece,
+                })
+                .collect(),
+        ))
     }
 
     async fn generate_shared(
@@ -426,7 +435,7 @@ impl Policy for SlowPolicy {
         messages: &[Message],
         _tools: &[ToolSpec],
         _add: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         Ok(framing(messages, &[1, 2], &[20]))
     }
 
@@ -500,7 +509,7 @@ impl Policy for NativeToolPolicy {
         messages: &[Message],
         tools: &[ToolSpec],
         add: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         match tools.is_empty() {
             true => {
                 self.prompt_renders.fetch_add(1, Ordering::Relaxed);
@@ -615,7 +624,7 @@ impl Policy for StallingPolicy {
         messages: &[Message],
         tools: &[ToolSpec],
         add: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         MultiTurnPolicy
             .render_chat_framing(messages, tools, add)
             .await

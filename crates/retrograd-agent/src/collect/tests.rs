@@ -13,7 +13,7 @@ use serde_json::json;
 use super::*;
 use crate::env::{EnvState, Environment, EnvironmentFactory, StepOutcome};
 use crate::judge::Score;
-use crate::policy::{Policy, PolicyGeneration};
+use crate::policy::{Policy, PolicyGeneration, RenderedFraming};
 use crate::tools::{HermesToolCallParser, ToolCall, ToolResult, ToolSpec};
 use crate::trajectory::{Message, Role};
 use retrograd_agent_core::scenario::RolloutLimits;
@@ -40,7 +40,7 @@ impl Policy for ScriptPolicy {
         messages: &[Message],
         _tools: &[ToolSpec],
         _add: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         let mut pieces = vec![vec![1]];
         for message in messages {
             match message.role {
@@ -51,7 +51,7 @@ impl Policy for ScriptPolicy {
                     .extend(bytes(&message.content)),
             }
         }
-        Ok(pieces)
+        Ok(RenderedFraming::from_token_pieces(pieces))
     }
 
     async fn generate_shared(

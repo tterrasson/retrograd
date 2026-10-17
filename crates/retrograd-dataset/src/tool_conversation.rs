@@ -20,12 +20,16 @@ use retrograd_core::{Error, Result};
 use serde_json::{Value, json};
 
 use crate::chat_template::{
-    ChatTemplateError, ParsedCalls, TemplateCall, TemplateMessage, TemplateTool, ToolRenderingKind,
-    assistant_span, decide_rendering, decode_parsed_assistant, hermes_call_text,
-    inject_tool_instructions, observation_text, parse_hermes, prompt_tool_instructions,
-    split_assistant_spans, template_messages, template_messages_revealing, template_tools,
+    ChatTemplateError, Framing, ParsedCalls, TemplateCall, TemplateMessage, TemplateTool,
+    ToolRenderingKind, TurnPieces, TurnSentinels, decide_rendering, decode_parsed_assistant,
+    hermes_call_text, inject_tool_instructions, observation_text, parse_hermes,
+    prompt_tool_instructions, split_turns, template_messages, template_messages_revealing,
+    template_tools,
 };
-use crate::{ChatExample, ChatExampleError, DatasetBackend, IGNORE_LABEL};
+use crate::turn_check::{
+    SampledTurn, TextGap, TurnCheck, TurnPart, TurnReading, moved_piece, verify_turn,
+};
+use crate::{ChatExample, ChatExampleError, ChatMessage, DatasetBackend, IGNORE_LABEL};
 
 /// The catalog and the calls, checked without a model: what the server can
 /// refuse at upload and what an export is checked against before it is
@@ -139,14 +143,31 @@ pub enum ToolRenderError {
         expected: String,
         parsed: String,
     },
+    /// A template that writes the reasoning where its own parser does not
+    /// read it back - typically after a generation prompt that already closed
+    /// the block, where no rollout can sample one.
+    #[error(
+        "assistant turn {turn} does not read back with the reasoning it declares: expected \
+         {expected:?}, parsed {parsed:?}; a generation prompt that closes the reasoning block \
+         (thinking turned off through template_variables) leaves the model no room for one"
+    )]
+    ReasoningDoesNotRoundTrip {
+        turn: usize,
+        expected: String,
+        parsed: String,
+    },
     #[error("assistant turn {turn} gives its tool calls twice, in content and in tool_calls")]
     CallsGivenTwice { turn: usize },
     /// The rollout refuses the same template, on the same check.
     #[error(
-        "the chat template rewrites the framing before assistant turn {turn} once the \
-         conversation continues past it, so it cannot be used for multi-turn rollouts"
+        "the chat template rewrites {part} assistant turn {turn} once the conversation \
+         continues past it, so it cannot be used for multi-turn rollouts: {gap}"
     )]
-    RewrittenFraming { turn: usize },
+    RewrittenTurn {
+        turn: usize,
+        part: TurnPart,
+        gap: TextGap,
+    },
 }
 
 impl From<ToolRenderError> for Error {
@@ -297,36 +318,54 @@ impl<'b, B: DatasetBackend + ?Sized> ToolConversationRenderer<'b, B> {
         }
         let rendering = self.rendering(&example.tools)?;
         let (calls, answers) = resolve_calls(example);
+        // A raw turn's reasoning is whatever its parser reads out of it, which
+        // is what a rollout that sampled the same text hands the template.
+        let raw_reasoning = example
+            .messages
+            .iter()
+            .map(|message| match message.raw {
+                true => self
+                    .read_back(&rendering, &message.content)
+                    .ok()
+                    .map(|parsed| parsed.reasoning.trim().to_owned()),
+                false => None,
+            })
+            .collect::<Vec<_>>();
 
         let mut messages = example
             .messages
             .iter()
+            .zip(&raw_reasoning)
             .enumerate()
-            .map(|(index, message)| match message.role.as_str() {
-                "tool" => {
-                    let id = answers[index]
-                        .as_deref()
-                        .expect("validated: every observation answers a call");
-                    TemplateMessage {
-                        role: "tool",
-                        content: observation_text(
-                            rendering.kind,
-                            id,
-                            &message.content,
-                            message.is_error,
-                        )
-                        .into(),
-                        tool_call_id: Some(id),
-                        tool_calls: &[],
-                        reasoning: None,
+            .map(
+                |(index, (message, raw_reasoning))| match message.role.as_str() {
+                    "tool" => {
+                        let id = answers[index]
+                            .as_deref()
+                            .expect("validated: every observation answers a call");
+                        TemplateMessage {
+                            role: "tool",
+                            content: observation_text(
+                                rendering.kind,
+                                id,
+                                &message.content,
+                                message.is_error,
+                            )
+                            .into(),
+                            tool_call_id: Some(id),
+                            tool_calls: &[],
+                            reasoning: None,
+                        }
                     }
-                }
-                role => TemplateMessage {
-                    tool_calls: &calls[index],
-                    reasoning: message.reasoning_content.as_deref(),
-                    ..TemplateMessage::text(role, message.content.as_str())
+                    role => TemplateMessage {
+                        tool_calls: &calls[index],
+                        reasoning: raw_reasoning
+                            .as_deref()
+                            .or(message.reasoning_content.as_deref()),
+                        ..TemplateMessage::text(role, message.content.as_str())
+                    },
                 },
-            })
+            )
             .collect::<Vec<_>>();
         if let Some(instructions) = &rendering.instructions {
             inject_tool_instructions(&mut messages, instructions);
@@ -341,62 +380,67 @@ impl<'b, B: DatasetBackend + ?Sized> ToolConversationRenderer<'b, B> {
             .filter(|(_, message)| message.role == "assistant")
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
-        let pieces = self.framing(&messages, &turn_positions, tools_json)?;
         // The whole conversation, every turn a sentinel: what a structured turn
-        // is cut out of, and where the last turn's closer is read.
+        // is cut out of, the last turn's framing, and where its closer is read.
         let (json, sentinels) = template_messages(&messages).map_err(ToolRenderError::from)?;
         let rendered = self
             .backend
             .format_chat_messages(&json, tools_json, false)?;
-        let closing = split_assistant_spans(&rendered, &sentinels)
-            .map_err(ToolRenderError::from)?
-            .pop()
-            .expect("a split yields one piece more than there are turns");
+        let finished = split_turns(&rendered, &sentinels).map_err(ToolRenderError::from)?;
 
+        // The framing a rollout commits before each turn - its generation
+        // prompt - and each turn's text, checked the way the rollout checks it
+        // the first time the conversation is rendered past it.
+        let mut committed: Vec<String> = Vec::with_capacity(assistants.len());
+        let mut checked: Vec<TurnPieces> = Vec::with_capacity(assistants.len());
         let mut turns = Vec::with_capacity(assistants.len());
-        for (turn, &index) in assistants.iter().enumerate() {
-            let message = &example.messages[index];
-            let declared = &calls[index];
-            // A turn that reasons is what the template writes for it, calls or
-            // not: its content alone would drop the reasoning from the stream.
-            let reasons = message
-                .reasoning_content
-                .as_deref()
-                .is_some_and(|reasoning| !reasoning.is_empty());
-            let text = match (message.raw, declared.is_empty(), rendering.kind) {
-                (true, _, _) => message.content.clone(),
-                (false, true, _) if !reasons => message.content.clone(),
-                (false, false, ToolRenderingKind::Native) | (false, true, _) => {
-                    let revealed = template_messages_revealing(&messages, turn)
-                        .map_err(ToolRenderError::from)?;
-                    let whole = self
-                        .backend
-                        .format_chat_messages(&revealed, tools_json, false)?;
-                    local_turn(&rendered, &whole, &assistant_span(turn))
-                        .ok_or(ToolRenderError::NonLocalTurn { turn })?
-                        .to_owned()
+        let source = TurnSource {
+            rendering: &rendering,
+            messages: &messages,
+            hidden: &rendered,
+            sentinels: &sentinels,
+        };
+        for (turn, &position) in turn_positions.iter().enumerate() {
+            let framing = self.framing(&messages[..position], tools_json)?;
+            if let Some((at, part, gap)) = moved_piece(&checked, &framing.turns) {
+                return Err(ToolRenderError::RewrittenTurn {
+                    turn: at,
+                    part,
+                    gap,
                 }
-                (false, false, _) => {
-                    let calls = hermes_call_text(declared).map_err(ToolRenderError::from)?;
-                    match message.content.is_empty() {
-                        true => calls,
-                        false => format!("{}\n{calls}", message.content),
-                    }
-                }
-            };
-            // Prose that already holds calls would teach every call twice.
-            if !message.raw && !declared.is_empty() && !message.content.is_empty() {
-                let prose = self.read_back(&rendering, &message.content);
-                if prose.is_ok_and(|parsed| !parsed.calls.is_empty() || !parsed.errors.is_empty()) {
-                    return Err(ToolRenderError::CallsGivenTwice { turn }.into());
-                }
+                .into());
             }
-            self.check_read_back(&rendering, turn, &text, declared)?;
-            turns.push(text);
+            if let Some(previous) = turn.checked_sub(1) {
+                let pieces = framing.turns[previous].clone();
+                let index = assistants[previous];
+                let text = self.turn_text(
+                    &source,
+                    previous,
+                    &example.messages[index],
+                    &calls[index],
+                    &committed[previous],
+                    &pieces,
+                )?;
+                self.check_turn(&rendering, previous, &committed[previous], &text, &pieces)?;
+                checked.push(pieces);
+                turns.push(text);
+            }
+            committed.push(framing.tail);
         }
+        // The last turn is never rendered past by a rollout: its framing is
+        // the finished conversation's, and nothing checks it.
+        let last = assistants.len() - 1;
+        turns.push(self.turn_text(
+            &source,
+            last,
+            &example.messages[assistants[last]],
+            &calls[assistants[last]],
+            &committed[last],
+            &finished.turns[last],
+        )?);
 
         let eos = self.backend.eos_token()?;
-        let mut tokens = self.backend.tokenize_text(&pieces[0])?;
+        let mut tokens = self.backend.tokenize_text(&committed[0])?;
         let mut train_mask = vec![false; tokens.len()];
         for (turn, text) in turns.iter().enumerate() {
             let sampled = self.backend.tokenize_fragment(text)?;
@@ -409,7 +453,7 @@ impl<'b, B: DatasetBackend + ?Sized> ToolConversationRenderer<'b, B> {
             // template's closer is framing.
             let next = self
                 .backend
-                .tokenize_fragment(pieces.get(turn + 1).unwrap_or(&closing))?;
+                .tokenize_fragment(committed.get(turn + 1).unwrap_or(&finished.tail))?;
             let framing = match next.first() {
                 Some(&closer) if self.backend.is_eog_token(closer)? => {
                     tokens.push(closer);
@@ -431,37 +475,128 @@ impl<'b, B: DatasetBackend + ?Sized> ToolConversationRenderer<'b, B> {
         Ok(ToolStream { tokens, train_mask })
     }
 
-    /// The framing before each assistant turn, rendered the way a rollout
-    /// renders it: the conversation up to that turn, with the generation prompt,
-    /// every earlier turn a sentinel. Returns one piece per assistant turn.
+    /// The conversation up to an assistant turn, rendered the way a rollout
+    /// renders it: with the generation prompt, every earlier turn a sentinel.
     ///
     /// Rendering the finished conversation once would not do. A template is
     /// free to write a turn it is handed differently from the prompt it opens a
     /// generation with - Qwen3 puts an empty `<think>` block before the last
     /// assistant turn of a conversation, and no generation prompt writes one -
-    /// and the rollout only ever sees the second. It also refuses, on each
-    /// render, a template that rewrites a piece already committed, which a
-    /// rollout could not use either.
+    /// and the rollout only ever sees the second.
     fn framing(
         &self,
         messages: &[TemplateMessage<'_>],
-        assistants: &[usize],
         tools_json: Option<&str>,
-    ) -> Result<Vec<String>> {
-        let mut committed: Vec<String> = Vec::with_capacity(assistants.len());
-        for (turn, &index) in assistants.iter().enumerate() {
-            let (json, sentinels) =
-                template_messages(&messages[..index]).map_err(ToolRenderError::from)?;
-            let rendered = self.backend.format_chat_messages(&json, tools_json, true)?;
-            let pieces =
-                split_assistant_spans(&rendered, &sentinels).map_err(ToolRenderError::from)?;
-            if pieces[..turn] != committed[..] {
-                let at = (0..turn).find(|&i| pieces[i] != committed[i]).unwrap_or(0);
-                return Err(ToolRenderError::RewrittenFraming { turn: at }.into());
+    ) -> Result<Framing> {
+        let (json, sentinels) = template_messages(messages).map_err(ToolRenderError::from)?;
+        let rendered = self.backend.format_chat_messages(&json, tools_json, true)?;
+        Ok(split_turns(&rendered, &sentinels).map_err(ToolRenderError::from)?)
+    }
+
+    /// The text one assistant turn is trained as, checked to read back as the
+    /// record declares it.
+    ///
+    /// `committed` is the generation prompt the turn follows and `pieces` what
+    /// the template writes around it in the history. A structured turn that
+    /// reasons is written by the template from its reasoning sentinel on, and
+    /// opened with what the history writes before its reasoning beyond that
+    /// prompt: the tag a model opens its block with, when the prompt leaves
+    /// that to it.
+    fn turn_text(
+        &self,
+        source: &TurnSource<'_, '_>,
+        turn: usize,
+        message: &ChatMessage,
+        declared: &[TemplateCall],
+        committed: &str,
+        pieces: &TurnPieces,
+    ) -> Result<String> {
+        let rendering = source.rendering;
+        // A turn that reasons is what the template writes for it, calls or
+        // not: its content alone would drop the reasoning from the stream.
+        let reasoning = message
+            .reasoning_content
+            .as_deref()
+            .filter(|reasoning| !reasoning.is_empty());
+        let text = match (message.raw, declared.is_empty(), rendering.kind) {
+            (true, _, _) => message.content.clone(),
+            (false, true, _) if reasoning.is_none() => message.content.clone(),
+            (false, false, ToolRenderingKind::Native) | (false, true, _) => {
+                let revealed = template_messages_revealing(source.messages, turn)
+                    .map_err(ToolRenderError::from)?;
+                let whole = self.backend.format_chat_messages(
+                    &revealed,
+                    rendering.tools_json.as_deref(),
+                    false,
+                )?;
+                let written = local_turn(source.hidden, &whole, &source.sentinels[turn])
+                    .ok_or(ToolRenderError::NonLocalTurn { turn })?;
+                let opening = match reasoning {
+                    Some(_) => pieces.pre.strip_prefix(committed).unwrap_or_default(),
+                    None => "",
+                };
+                format!("{opening}{written}")
             }
-            committed = pieces;
+            (false, false, _) => {
+                let calls = hermes_call_text(declared).map_err(ToolRenderError::from)?;
+                match message.content.is_empty() {
+                    true => calls,
+                    false => format!("{}\n{calls}", message.content),
+                }
+            }
+        };
+        // Prose that already holds calls would teach every call twice.
+        if !message.raw && !declared.is_empty() && !message.content.is_empty() {
+            let prose = self.read_back(rendering, &message.content);
+            if prose.is_ok_and(|parsed| !parsed.calls.is_empty() || !parsed.errors.is_empty()) {
+                return Err(ToolRenderError::CallsGivenTwice { turn }.into());
+            }
         }
-        Ok(committed)
+        // Only a reasoning the record declares: a structured turn may still
+        // carry its reasoning inline, in its content, as a raw one does.
+        self.check_read_back(rendering, turn, &text, declared, reasoning)?;
+        Ok(text)
+    }
+
+    /// The check a rollout runs on a turn the first time the conversation is
+    /// rendered past it, on the text it would have sampled.
+    fn check_turn(
+        &self,
+        rendering: &Rendering,
+        turn: usize,
+        committed: &str,
+        text: &str,
+        pieces: &TurnPieces,
+    ) -> Result<()> {
+        let reading = |text: &str| match self.read_back(rendering, text) {
+            Ok(parsed) => TurnReading::from(parsed),
+            Err(_) => TurnReading {
+                content: text.trim().to_owned(),
+                calls: true,
+                ..Default::default()
+            },
+        };
+        let sampled = reading(text);
+        let read: Option<&dyn Fn(&str) -> TurnReading> = match rendering.kind {
+            ToolRenderingKind::Native => Some(&reading),
+            ToolRenderingKind::Prompt | ToolRenderingKind::None => None,
+        };
+        let check = verify_turn(
+            committed,
+            &SampledTurn {
+                text,
+                reasoning: &sampled.reasoning,
+                content: &sampled.content,
+            },
+            pieces,
+            read,
+        );
+        match check {
+            TurnCheck::Exact | TurnCheck::Normalized(_) => Ok(()),
+            TurnCheck::Rewritten { part, gap } => {
+                Err(ToolRenderError::RewrittenTurn { turn, part, gap }.into())
+            }
+        }
     }
 
     /// Reads an assistant turn back with the parser its rendering pairs with,
@@ -488,13 +623,16 @@ impl<'b, B: DatasetBackend + ?Sized> ToolConversationRenderer<'b, B> {
     }
 
     /// What a turn teaches is what a rollout will read: the same calls, in the
-    /// same order, with the same arguments, and nothing that fails to parse.
+    /// same order, with the same arguments, nothing that fails to parse - and,
+    /// for a structured turn, the reasoning it declares, none when it declares
+    /// none.
     fn check_read_back(
         &self,
         rendering: &Rendering,
         turn: usize,
         text: &str,
         declared: &[TemplateCall],
+        reasoning: Option<&str>,
     ) -> Result<()> {
         let parsed = self.read_back(rendering, text);
         let matches = parsed.as_ref().is_ok_and(|parsed| {
@@ -504,6 +642,16 @@ impl<'b, B: DatasetBackend + ?Sized> ToolConversationRenderer<'b, B> {
                     parsed.name == declared.name && parsed.arguments == declared.arguments
                 })
         });
+        if let (Ok(parsed), Some(reasoning)) = (&parsed, reasoning)
+            && parsed.reasoning.trim() != reasoning.trim()
+        {
+            return Err(ToolRenderError::ReasoningDoesNotRoundTrip {
+                turn,
+                expected: reasoning.trim().to_owned(),
+                parsed: parsed.reasoning.trim().to_owned(),
+            }
+            .into());
+        }
         if matches {
             return Ok(());
         }
@@ -526,6 +674,16 @@ impl<'b, B: DatasetBackend + ?Sized> ToolConversationRenderer<'b, B> {
     }
 }
 
+/// What a structured turn's text is cut out of: the conversation as the
+/// template is handed it, its all-sentinel rendering, and each turn's
+/// sentinels in it.
+struct TurnSource<'m, 'a> {
+    rendering: &'m Rendering,
+    messages: &'m [TemplateMessage<'a>],
+    hidden: &'m str,
+    sentinels: &'m [TurnSentinels],
+}
+
 fn calls_text(calls: &[TemplateCall]) -> String {
     Value::Array(
         calls
@@ -537,10 +695,13 @@ fn calls_text(calls: &[TemplateCall]) -> String {
 }
 
 /// What `whole` - `hidden` with one turn rendered for real - has in place of
-/// that turn's sentinel, when the rest of the text is untouched.
-fn local_turn<'w>(hidden: &str, whole: &'w str, sentinel: &str) -> Option<&'w str> {
-    let at = hidden.find(sentinel)?;
-    let (before, after) = (&hidden[..at], &hidden[at + sentinel.len()..]);
+/// that turn's sentinels and what the template wrote between them, when the
+/// rest of the text is untouched.
+fn local_turn<'w>(hidden: &str, whole: &'w str, sentinels: &TurnSentinels) -> Option<&'w str> {
+    let first = sentinels.reasoning.as_deref().unwrap_or(&sentinels.content);
+    let start = hidden.find(first)?;
+    let end = hidden.find(&sentinels.content)? + sentinels.content.len();
+    let (before, after) = (&hidden[..start], &hidden[end..]);
     (whole.len() >= before.len() + after.len()
         && whole.starts_with(before)
         && whole.ends_with(after))

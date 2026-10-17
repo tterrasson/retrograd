@@ -177,6 +177,7 @@ pub fn observation_message(observation: &ToolResult, rendering: &ToolRendering) 
         tool_calls: Vec::new(),
         tool_call_id: Some(observation.call_id.clone()),
         is_error: observation.is_error,
+        reasoning: None,
     }
 }
 

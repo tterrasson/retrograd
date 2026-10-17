@@ -31,6 +31,16 @@ pub struct Message {
     /// real failure from a successful result that merely mentions one.
     #[serde(default, skip_serializing_if = "is_false")]
     pub is_error: bool,
+    /// For `Role::Assistant`: the reasoning block its parser split out of
+    /// `content`, tags removed, when it is not empty. `content` still holds the
+    /// turn as sampled; this is what the template is handed as the turn's
+    /// reasoning when the conversation is rendered past it.
+    #[serde(
+        default,
+        rename = "reasoning_content",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reasoning: Option<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -56,6 +66,7 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: None,
             is_error: false,
+            reasoning: None,
         }
     }
 }
@@ -103,6 +114,16 @@ pub struct Provenance {
     /// Assistant turns that named no valid call: a parse error, or a turn that
     /// called nothing where a call was expected.
     pub invalid_turns: usize,
+    /// Assistant turns the conversation was rendered past, each checked once
+    /// against what it was sampled after and as.
+    pub checked_turns: usize,
+    /// Of those, the turns the template re-renders differently - an empty
+    /// reasoning block it leaves out, whitespace around a tag - that its parser
+    /// still reads as the same turn. Trained as sampled; inference that
+    /// re-renders the history shows the model the template's version.
+    pub normalized_turns: usize,
+    /// Where the first of them parts ways with the history, for the warning.
+    pub first_normalization: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

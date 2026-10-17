@@ -7,9 +7,11 @@
 //! a format it never saw during pre-training. This module builds what the
 //! template expects instead.
 
-use retrograd_dataset::chat_template::{self, TemplateCall, TemplateMessage, TemplateTool};
+use retrograd_dataset::chat_template::{
+    self, TemplateCall, TemplateMessage, TemplateTool, TurnSentinels,
+};
 
-pub use retrograd_dataset::chat_template::split_assistant_spans;
+pub use retrograd_dataset::chat_template::split_turns;
 
 use crate::Result;
 use crate::tools::ToolSpec;
@@ -17,22 +19,22 @@ use crate::trajectory::Message;
 
 /// The template's view of a rollout message. Its calls are never handed over:
 /// an assistant turn is always a sentinel, and the calls are already inside the
-/// sampled tokens.
+/// sampled tokens. Its reasoning is, so the template writes the framing it
+/// puts around a reasoning block - which a rollout checks against what the
+/// turn was sampled after.
 fn template_message(message: &Message) -> TemplateMessage<'_> {
     TemplateMessage {
         role: message.role.as_str(),
         content: message.content.as_str().into(),
         tool_call_id: message.tool_call_id.as_deref(),
         tool_calls: &[],
-        // The content is the text as sampled, its reasoning block included:
-        // the template reads that out of the content itself when it cares.
-        reasoning: None,
+        reasoning: message.reasoning.as_deref(),
     }
 }
 
 /// Serializes a conversation for the model's chat template, every assistant
-/// turn replaced by a sentinel; see [`chat_template::template_messages`].
-pub fn template_messages(messages: &[Message]) -> Result<(String, Vec<String>)> {
+/// turn replaced by sentinels; see [`chat_template::template_messages`].
+pub fn template_messages(messages: &[Message]) -> Result<(String, Vec<TurnSentinels>)> {
     let messages = messages.iter().map(template_message).collect::<Vec<_>>();
     Ok(chat_template::template_messages(&messages)?)
 }
@@ -98,6 +100,7 @@ mod tests {
                 }],
                 tool_call_id: None,
                 is_error: false,
+                reasoning: None,
             },
             Message {
                 role: Role::Tool,
@@ -105,6 +108,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: Some("call-1".into()),
                 is_error: false,
+                reasoning: None,
             },
         ];
         let (json, sentinels) = template_messages(&messages).unwrap();
@@ -117,7 +121,7 @@ mod tests {
             "one sentinel per assistant turn, in turn order"
         );
         assert_eq!(
-            rendered[1]["content"], sentinels[0],
+            rendered[1]["content"], sentinels[0].content,
             "the sampled text must be withheld from the template: it can trim it, restructure it, \
              or hand back a re-tokenization of it that is not what was sampled"
         );
@@ -140,22 +144,48 @@ mod tests {
         let (_, sentinels) = template_messages(&messages).unwrap();
         let rendered = format!(
             "<user>hello</user><a>{}</a><tool>observation</tool><a>{}</a><gen>",
-            sentinels[0], sentinels[1]
+            sentinels[0].content, sentinels[1].content
         );
+        let framing = split_turns(&rendered, &sentinels).unwrap();
         assert_eq!(
-            split_assistant_spans(&rendered, &sentinels).unwrap(),
-            vec![
-                "<user>hello</user><a>",
-                "</a><tool>observation</tool><a>",
-                "</a><gen>",
-            ]
+            framing
+                .turns
+                .iter()
+                .map(|turn| turn.pre.as_str())
+                .collect::<Vec<_>>(),
+            ["<user>hello</user><a>", "</a><tool>observation</tool><a>"]
         );
+        assert_eq!(framing.tail, "</a><gen>");
+    }
+
+    #[test]
+    fn a_turn_that_reasoned_hands_its_reasoning_over_as_a_sentinel_of_its_own() {
+        let messages = vec![
+            Message::text(Role::User, "hello"),
+            Message {
+                reasoning: Some("think first".into()),
+                ..Message::text(Role::Assistant, "<r>think first</r>sampled")
+            },
+        ];
+        let (json, sentinels) = template_messages(&messages).unwrap();
+        let rendered: Value = serde_json::from_str(&json).unwrap();
+        let reasoning = sentinels[0]
+            .reasoning
+            .as_deref()
+            .expect("a reasoning sentinel");
+        assert_eq!(rendered[1]["reasoning_content"], reasoning);
+        assert_eq!(rendered[1]["content"], sentinels[0].content);
     }
 
     #[test]
     fn a_template_that_drops_an_assistant_turn_is_refused() {
-        let sentinels = vec!["span-0".to_string(), "span-1".to_string()];
-        let error = split_assistant_spans("head span-1 tail", &sentinels).unwrap_err();
+        let messages = vec![
+            Message::text(Role::Assistant, "one"),
+            Message::text(Role::Assistant, "two"),
+        ];
+        let (_, sentinels) = template_messages(&messages).unwrap();
+        let error =
+            split_turns(&format!("head {} tail", sentinels[1].content), &sentinels).unwrap_err();
         assert!(error.to_string().contains("did not render assistant turn"));
     }
 
@@ -190,6 +220,7 @@ mod tests {
             }],
             tool_call_id: None,
             is_error: false,
+            reasoning: None,
         }
     }
 
