@@ -425,15 +425,17 @@ impl RunEngine for FakeEngine {
 // ---------------------------------------------------------------------------
 
 pub struct Fixture {
-    pub dir: PathBuf,
+    pub dir: tempfile::TempDir,
 }
 
 impl Fixture {
     pub fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("retrograd-runs-api-{name}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create the fixture directory");
-        std::fs::write(dir.join("model.gguf"), b"not a real GGUF").expect("write the model stub");
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("retrograd-runs-api-{name}-"))
+            .tempdir()
+            .expect("create the fixture directory");
+        std::fs::write(dir.path().join("model.gguf"), b"not a real GGUF")
+            .expect("write the model stub");
         let mut data = String::new();
         for index in 0..200 {
             data.push_str(&format!(
@@ -441,22 +443,16 @@ impl Fixture {
                  {{\"role\":\"assistant\",\"content\":\"an answer\"}}]}}\n"
             ));
         }
-        std::fs::write(dir.join("data.jsonl"), data).expect("write the dataset");
+        std::fs::write(dir.path().join("data.jsonl"), data).expect("write the dataset");
         Self { dir }
     }
 
     pub fn path(&self, name: &str) -> String {
-        self.dir.join(name).to_string_lossy().into_owned()
+        self.dir.path().join(name).to_string_lossy().into_owned()
     }
 
     pub fn state_dir(&self) -> PathBuf {
-        self.dir.join("state")
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        self.dir.path().join("state")
     }
 }
 

@@ -457,10 +457,8 @@ mod tests {
 
     #[test]
     fn a_file_that_is_missing_corrupt_or_from_the_future_reads_as_empty() {
-        let dir =
-            std::env::temp_dir().join(format!("retrograd-calibration-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join("calibration.json");
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let path = tmp.path().join("calibration.json");
         assert!(CalibrationStore::load(&path).entries.is_empty());
 
         let mut store = CalibrationStore::empty();
@@ -485,7 +483,6 @@ mod tests {
             CalibrationStore::load(&path).factors("k"),
             Calibration::default()
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -26,11 +26,12 @@ use retrograd_dataset::PreparedDataset;
 use retrograd_ffi as ffi;
 
 #[cfg(test)]
-use retrograd_core::{CheckpointDtype, KvDtype, LrScheduler};
+use retrograd_core::{CheckpointDtype, GenerationKvDtype, KvDtype, LrScheduler};
 
 type TokenRows = Vec<Vec<i32>>;
 type LogprobRows = Vec<Vec<f32>>;
-type GenerationBatch = (TokenRows, Option<LogprobRows>);
+type ForcedRows = Vec<Vec<bool>>;
+type GenerationBatch = (TokenRows, Option<LogprobRows>, ForcedRows);
 
 /// Phase timings for a human reading a test lane (`RETRO_TEST_TIMING`): tests
 /// install no `tracing` subscriber, so this writes to stderr directly.
@@ -95,6 +96,7 @@ fn train_config_to_ffi(config: &TrainConfig) -> Result<ffi::RetroTrainConfig> {
         n_seq_max: config.n_seq_max,
         generation_concurrency: config.effective_generation_concurrency(),
         fast_generation_context: config.fast_generation_context,
+        generation_kv_dtype: config.generation_kv_dtype.as_ffi(),
         kv_dtype: config.kv_dtype.as_ffi(),
         threads: config.threads,
         epochs: config.epochs,
@@ -447,8 +449,8 @@ pub use quant::*;
 pub use rir::*;
 pub use stats::{DutyCycleStats, GenerationStats, OptimizerMemory, OptimizerTiming, ScoringStats};
 pub use trainer::{
-    VOCABULARY_WITNESSES, VocabularyMismatch, parse_assistant_output, render_chat_template_source,
-    tool_call_parser_from_source,
+    SampledRow, VOCABULARY_WITNESSES, VocabularyMismatch, parse_assistant_output,
+    render_chat_template_source, tool_call_parser_from_source,
 };
 
 // The "uninitialized buffer filled through FFI" helpers below each mark a
@@ -691,6 +693,7 @@ mod tests {
             shared_prefix_fanout: retrograd_core::SharedPrefixFanout::Exact(3),
             generation_concurrency: 3,
             fast_generation_context: true,
+            generation_kv_dtype: GenerationKvDtype::Q8_0,
             kv_dtype: KvDtype::F16,
             threads: 6,
             epochs: 3,
@@ -734,6 +737,7 @@ mod tests {
         assert_eq!(ffi.n_seq_max, 4);
         assert_eq!(ffi.generation_concurrency, 3);
         assert!(ffi.fast_generation_context);
+        assert_eq!(ffi.generation_kv_dtype, 1);
         assert_eq!(ffi.kv_dtype, 1);
         assert_eq!(ffi.threads, 6);
         assert_eq!(ffi.epochs, 3);

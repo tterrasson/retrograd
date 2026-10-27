@@ -408,8 +408,8 @@ fn an_empty_catalog_lists_nothing_rather_than_failing() {
 fn preflight_resolves_the_path_parses_the_device_and_returns_the_report() {
     // A real file is needed because the path is canonicalized before use; the
     // *model* is fake, the path is not.
-    let model =
-        std::env::temp_dir().join(format!("retrograd-server-preflight-{}", std::process::id()));
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let model = tmp.path().join("model.gguf");
     std::fs::write(&model, b"not really a gguf").expect("write fixture");
 
     let (status, content_type, body) = tokio_block(post_json(
@@ -435,17 +435,12 @@ fn preflight_resolves_the_path_parses_the_device_and_returns_the_report() {
     let warnings = body["warnings"].as_array().expect("warnings");
     assert_eq!(warnings[0]["code"], "fixture");
     assert_eq!(warnings[0]["message"], "training graph preflight");
-
-    std::fs::remove_file(&model).expect("clean up fixture");
 }
 
 #[test]
 fn preflight_reaches_the_probe_exactly_once_per_request() {
-    let model = std::env::temp_dir().join(format!(
-        "retrograd-server-once-{}-{}",
-        std::process::id(),
-        line!()
-    ));
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let model = tmp.path().join("model.gguf");
     std::fs::write(&model, b"x").expect("write fixture");
     let probe = FakeProbe::with_report("report");
     let router = build_router(AppState::new(
@@ -467,14 +462,12 @@ fn preflight_reaches_the_probe_exactly_once_per_request() {
     ));
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
-
-    std::fs::remove_file(&model).expect("clean up fixture");
 }
 
 #[test]
 fn preflight_surfaces_cpu_fallbacks_as_warnings() {
-    let model =
-        std::env::temp_dir().join(format!("retrograd-server-warnings-{}", std::process::id()));
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let model = tmp.path().join("model.gguf");
     std::fs::write(&model, b"x").expect("write fixture");
     let router = router_from(
         "",
@@ -496,8 +489,6 @@ fn preflight_surfaces_cpu_fallbacks_as_warnings() {
             .expect("warning")
             .contains("cpu_fallback")
     );
-
-    std::fs::remove_file(&model).expect("clean up fixture");
 }
 
 #[test]

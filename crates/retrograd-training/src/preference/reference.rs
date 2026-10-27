@@ -290,16 +290,18 @@ mod tests {
         }
     }
 
-    fn directory(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "retrograd-preference-cache-{label}-{}",
-            std::process::id()
-        ))
+    fn directory(label: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("retrograd-preference-cache-{label}-"))
+            .tempdir()
+            .expect("create the cache directory");
+        let root = dir.path().to_path_buf();
+        (dir, root)
     }
 
     #[test]
     fn a_table_survives_the_trip_and_its_header_is_checked_field_by_field() {
-        let root = directory("round-trip");
+        let (_tmp, root) = directory("round-trip");
         let cache = ReferenceCache::new(&root, header());
         assert_eq!(cache.read().unwrap(), None);
         assert!(matches!(
@@ -327,14 +329,12 @@ mod tests {
                 "{field}: {error}"
             );
         }
-        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn a_file_that_is_not_a_cache_is_refused() {
-        let root = directory("garbage");
+        let (_tmp, root) = directory("garbage");
         let cache = ReferenceCache::new(&root, header());
-        fs::create_dir_all(&root).unwrap();
         fs::write(&cache.path, b"not a cache at all").unwrap();
         assert!(cache.read().unwrap_err().to_string().contains("is not a"));
 
@@ -342,7 +342,6 @@ mod tests {
         let bytes = fs::read(&cache.path).unwrap();
         fs::write(&cache.path, &bytes[..bytes.len() - 8]).unwrap();
         assert!(cache.read().unwrap_err().to_string().contains("truncated"));
-        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

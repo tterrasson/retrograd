@@ -978,11 +978,13 @@ mod tests {
         super::super::control::channel().0
     }
 
-    fn registry(label: &str) -> RunRegistry {
-        let dir =
-            std::env::temp_dir().join(format!("retrograd-registry-{label}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        RunRegistry::open(dir)
+    fn registry(label: &str) -> (tempfile::TempDir, RunRegistry) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("retrograd-registry-{label}-"))
+            .tempdir()
+            .expect("create the registry directory");
+        let registry = RunRegistry::open(dir.path());
+        (dir, registry)
     }
 
     #[test]
@@ -1003,7 +1005,7 @@ mod tests {
 
     #[test]
     fn a_handle_records_its_progress_and_its_terminal_reason() {
-        let registry = registry("progress");
+        let (_tmp, registry) = registry("progress");
         let handle = registry
             .create(Some("a".into()), record(), None, control())
             .unwrap();
@@ -1033,12 +1035,11 @@ mod tests {
         assert!(state.finished_at.is_some());
         // Terminal is terminal.
         assert!(!handle.transition(dto::RunStatus::Running));
-        let _ = std::fs::remove_dir_all(registry.state_dir());
     }
 
     #[test]
     fn a_listing_is_newest_first_filtered_and_paged() {
-        let registry = registry("listing");
+        let (_tmp, registry) = registry("listing");
         let first = registry
             .create(Some("a".into()), record(), None, control())
             .unwrap();
@@ -1104,12 +1105,11 @@ mod tests {
             ..Default::default()
         });
         assert!(page.runs.is_empty());
-        let _ = std::fs::remove_dir_all(registry.state_dir());
     }
 
     #[test]
     fn a_registry_reopens_onto_the_history_it_left() {
-        let registry = registry("reopen");
+        let (_tmp, registry) = registry("reopen");
         let dir = registry.state_dir().to_path_buf();
         let live = registry
             .create(Some("live".into()), record(), None, control())
@@ -1135,12 +1135,11 @@ mod tests {
             "the V1 does not re-attach: a run left running is interrupted"
         );
         assert_eq!(reopened.active(), 0);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn an_idempotency_key_finds_the_run_it_created() {
-        let registry = registry("idempotency");
+        let (_tmp, registry) = registry("idempotency");
         let handle = registry
             .create(None, record(), Some("key-1".into()), control())
             .unwrap();
@@ -1149,6 +1148,5 @@ mod tests {
             Some(handle.id)
         );
         assert!(registry.by_idempotency_key("key-2").is_none());
-        let _ = std::fs::remove_dir_all(registry.state_dir());
     }
 }

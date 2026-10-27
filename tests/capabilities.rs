@@ -192,10 +192,8 @@ fn real_chat_template_prepares_sft_rows_and_renders_tools_prefix_stably() {
     let _guard = common::serialize_models();
     let trainer = Trainer::new(&model, cpu_config()).expect("load model");
     let n_ctx = trainer.context_size().expect("context size");
-    let path = std::env::temp_dir().join(format!(
-        "retrograd-chat-template-{}.jsonl",
-        std::process::id()
-    ));
+    let tmp = common::scratch("chat-template");
+    let path = tmp.path().join("chat-template.jsonl");
     std::fs::write(
         &path,
         "{\"messages\":[{\"role\":\"system\",\"content\":\"Be concise.\"},{\"role\":\"user\",\"content\":\"Say hello.\"},{\"role\":\"assistant\",\"content\":\"Hello!\"}]}\n",
@@ -208,7 +206,6 @@ fn real_chat_template_prepares_sft_rows_and_renders_tools_prefix_stably() {
         n_ctx,
     )
     .expect("prepare chat JSONL through the model template");
-    std::fs::remove_file(path).unwrap();
 
     assert_eq!(prepared.examples, 1);
     assert_eq!(prepared.tokens.len(), n_ctx);
@@ -362,17 +359,14 @@ fn real_chat_template_prepares_a_tool_record_it_reads_back() {
         "the row ends on the token the policy stops on"
     );
 
-    let path = std::env::temp_dir().join(format!(
-        "retrograd-tool-record-{}.jsonl",
-        std::process::id()
-    ));
+    let tmp = common::scratch("tool-record");
+    let path = tmp.path().join("tool-record.jsonl");
     std::fs::write(&path, format!("{record}\n")).unwrap();
     let format = retrograd::dataset::DataFormat::ChatJsonl;
     let prepared =
         retrograd::dataset::prepare(&trainer, &path, format, n_ctx).expect("prepare the file");
     let lengths =
         retrograd::dataset::measured_lengths(&trainer, &path, format).expect("measure the file");
-    std::fs::remove_file(path).unwrap();
     assert_eq!(prepared.examples, 1);
     assert_eq!(prepared.supervised_tokens, trained.len());
     assert_eq!(lengths, [stream.tokens.len() as u32]);
@@ -656,4 +650,99 @@ fn the_duty_cycle_setter_validates_and_clears_between_operations() {
             .requested_fraction,
         1.0
     );
+}
+
+/// A budget of zero on a prompt that already opened the reasoning block: the
+/// next tokens are the end tag the template's parser declares, forced and
+/// reported as such, and a generator that cannot report them refuses the row.
+#[test]
+fn a_reasoning_budget_forces_the_template_s_end_tag_and_says_so() {
+    let Some(model) = common::model_path_if_available() else {
+        eprintln!(
+            "skipping: no local model at {}",
+            common::model_path().display()
+        );
+        return;
+    };
+    let _guard = common::serialize_models();
+    let mut trainer = Trainer::new(&model, cpu_config()).expect("load model");
+
+    let rendered = trainer
+        .format_chat_messages(r#"[{"role":"user","content":"Hi."}]"#, None, true)
+        .expect("render the prompt");
+    let end = trainer
+        .tokenize_fragment("</think>")
+        .expect("tokenize the end tag");
+    let sampling = retrograd::SamplingParams {
+        temperature: 1.0,
+        top_p: 1.0,
+        max_new_tokens: u32::try_from(end.len() + 4).expect("a few tokens"),
+        seed: 7,
+    };
+
+    trainer
+        .set_reasoning_budget(Some(0))
+        .expect("the template declares a reasoning block");
+    // The opening tag alone, and followed by the newline a template writes
+    // after it (Qwen3.5 under `enable_thinking`): the prompt's own tokens after
+    // the tag are not the forced sequence, which is emitted whole either way.
+    for opening in ["<think>", "<think>\n"] {
+        let prompt = trainer
+            .tokenize_text(&format!("{rendered}{opening}"))
+            .expect("tokenize the prompt");
+        let rows = trainer
+            .generate_sampled_continuous(&[(prompt.as_slice(), sampling)])
+            .expect("generate under the budget");
+        let row = &rows[0];
+        assert_eq!(
+            &row.tokens[..end.len()],
+            end.as_slice(),
+            "{opening:?}: {row:?}"
+        );
+        assert!(
+            row.forced[..end.len()].iter().all(|&forced| forced),
+            "{opening:?}: {row:?}"
+        );
+        assert!(
+            !row.forced[end.len()..].contains(&true),
+            "{opening:?}: {row:?}"
+        );
+    }
+
+    // A prompt that opens and closes the block itself leaves nothing to force.
+    let closed = trainer
+        .tokenize_text(&format!("{rendered}<think>\n\n</think>\n\n"))
+        .expect("tokenize the prompt");
+    let rows = trainer
+        .generate_sampled_continuous(&[(closed.as_slice(), sampling)])
+        .expect("generate after a closed block");
+    assert!(!rows[0].forced.contains(&true), "{:?}", rows[0]);
+
+    let prompt = trainer
+        .tokenize_text(&format!("{rendered}<think>"))
+        .expect("tokenize the prompt");
+
+    let error = trainer
+        .generate_tokens_continuous(&[(prompt.as_slice(), sampling)])
+        .expect_err("a generator without a forced mask refuses forced tokens");
+    assert!(error.to_string().contains("reasoning budget"), "{error}");
+
+    trainer.set_reasoning_budget(None).expect("lift the budget");
+    let rows = trainer
+        .generate_sampled_continuous(&[(prompt.as_slice(), sampling)])
+        .expect("generate without a budget");
+    assert!(!rows[0].forced.contains(&true), "{:?}", rows[0]);
+}
+
+#[test]
+fn a_reasoning_budget_needs_a_template_that_declares_a_reasoning_block() {
+    let model = common::tiny_model_path();
+    let _guard = common::serialize_models();
+    let mut trainer = Trainer::new(&model, cpu_config()).expect("load the tiny model");
+    trainer
+        .set_reasoning_budget(Some(64))
+        .expect_err("no reasoning block to budget");
+    trainer
+        .set_reasoning_budget(None)
+        .expect("no budget needs no block");
 }

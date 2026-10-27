@@ -7,7 +7,7 @@
 //! catalogue substitution and its redaction, and the mapping from a resolver
 //! failure to a problem document.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -198,15 +198,17 @@ impl ModelProbe for FakeProbe {
 /// Files the handler canonicalizes before reading. Cleaned up on drop, so a
 /// failing test does not leave a fixture behind for the next one to trip on.
 struct Fixture {
-    dir: PathBuf,
+    dir: tempfile::TempDir,
 }
 
 impl Fixture {
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("retrograd-plan-api-{name}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create the fixture directory");
-        std::fs::write(dir.join("model.gguf"), b"not a real GGUF").expect("write the model stub");
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("retrograd-plan-api-{name}-"))
+            .tempdir()
+            .expect("create the fixture directory");
+        std::fs::write(dir.path().join("model.gguf"), b"not a real GGUF")
+            .expect("write the model stub");
         let mut data = String::new();
         for index in 0..200 {
             data.push_str(&format!(
@@ -215,12 +217,12 @@ impl Fixture {
                  \"an answer of a similar length\"}}]}}\n"
             ));
         }
-        std::fs::write(dir.join("data.jsonl"), data).expect("write the dataset");
+        std::fs::write(dir.path().join("data.jsonl"), data).expect("write the dataset");
         Self { dir }
     }
 
     fn path(&self, name: &str) -> String {
-        self.dir.join(name).to_string_lossy().into_owned()
+        self.dir.path().join(name).to_string_lossy().into_owned()
     }
 
     /// A server configuration whose state directory is inside the fixture, so a
@@ -234,12 +236,6 @@ impl Fixture {
     /// table, which is what a stored factor has to be compared against.
     fn fresh_state_dir_toml(&self) -> String {
         format!("state_dir = \"{}\"\n", self.path("state-fresh"))
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -784,7 +780,7 @@ async fn a_recipe_and_a_config_together_are_refused() {
 async fn a_path_outside_the_allowed_roots_is_forbidden() {
     let fixture = Fixture::new("roots");
     let declaration = format!("path_roots = [\"{}\"]\n", fixture.path("nowhere"));
-    std::fs::create_dir_all(fixture.dir.join("nowhere")).unwrap();
+    std::fs::create_dir_all(fixture.dir.path().join("nowhere")).unwrap();
     let (status, problem) = post(
         router_with(&declaration, 24 * GIB),
         "/v1/plan",

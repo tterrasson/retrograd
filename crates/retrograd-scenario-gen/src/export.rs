@@ -128,24 +128,11 @@ mod tests {
     use crate::types::{CatalogSummary, RejectionCounts};
 
     /// A directory of its own under the system temp dir, removed on drop.
-    struct Scratch(PathBuf);
-
-    impl Scratch {
-        fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "retrograd-scenario-gen-{}-{name}",
-                std::process::id()
-            ));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).expect("create the scratch directory");
-            Self(dir)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
+    fn scratch(name: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(&format!("retrograd-scenario-gen-{name}-"))
+            .tempdir()
+            .expect("create the scratch directory")
     }
 
     fn corpus() -> GeneratedCorpus {
@@ -187,8 +174,8 @@ mod tests {
 
     #[test]
     fn a_written_corpus_verifies_against_its_manifest() {
-        let scratch = Scratch::new("round-trip");
-        let path = scratch.0.join("nested/scenarios.jsonl");
+        let scratch = scratch("round-trip");
+        let path = scratch.path().join("nested/scenarios.jsonl");
         let corpus = corpus();
         write_corpus(&corpus, &path, false).expect("write the corpus");
         let manifest = verify_manifest(&path)
@@ -199,8 +186,8 @@ mod tests {
 
     #[test]
     fn an_existing_corpus_is_replaced_only_when_asked() {
-        let scratch = Scratch::new("overwrite");
-        let path = scratch.0.join("scenarios.jsonl");
+        let scratch = scratch("overwrite");
+        let path = scratch.path().join("scenarios.jsonl");
         let corpus = corpus();
         write_corpus(&corpus, &path, false).expect("first write");
         let error = write_corpus(&corpus, &path, false).expect_err("second write");
@@ -213,8 +200,8 @@ mod tests {
 
     #[test]
     fn a_corpus_edited_after_its_manifest_is_refused() {
-        let scratch = Scratch::new("tampered");
-        let path = scratch.0.join("scenarios.jsonl");
+        let scratch = scratch("tampered");
+        let path = scratch.path().join("scenarios.jsonl");
         write_corpus(&corpus(), &path, false).expect("write the corpus");
         let mut file = OpenOptions::new()
             .append(true)
@@ -230,8 +217,8 @@ mod tests {
 
     #[test]
     fn a_corpus_without_a_manifest_has_nothing_to_verify() {
-        let scratch = Scratch::new("no-manifest");
-        let path = scratch.0.join("scenarios.jsonl");
+        let scratch = scratch("no-manifest");
+        let path = scratch.path().join("scenarios.jsonl");
         fs::write(&path, b"{}\n").expect("write a bare corpus");
         let manifest = verify_manifest(&path).expect("a missing manifest is not an error");
         assert!(manifest.is_none());
@@ -239,8 +226,8 @@ mod tests {
 
     #[test]
     fn a_manifest_built_for_other_scenarios_is_not_written() {
-        let scratch = Scratch::new("stale-manifest");
-        let path = scratch.0.join("scenarios.jsonl");
+        let scratch = scratch("stale-manifest");
+        let path = scratch.path().join("scenarios.jsonl");
         let mut corpus = corpus();
         corpus.scenarios[0].user.push_str(" Then delete them.");
         let error = write_corpus(&corpus, &path, false).expect_err("stale manifest");

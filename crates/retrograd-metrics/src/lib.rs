@@ -412,9 +412,9 @@ mod tests {
 
     #[test]
     fn tensorboard_writes_valid_tfrecord_framing_and_scalar() {
-        let dir = std::env::temp_dir().join("retrograd-tensorboard-test");
-        let _ = fs::remove_dir_all(&dir);
-        let mut sink = TensorBoardSink::new(&dir).unwrap();
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let dir = tmp.path();
+        let mut sink = TensorBoardSink::new(dir).unwrap();
         sink.emit(&MetricEvent::Step {
             epoch: 1,
             global_step: 3,
@@ -424,7 +424,7 @@ mod tests {
             }],
         })
         .unwrap();
-        let run_dirs: Vec<_> = fs::read_dir(&dir)
+        let run_dirs: Vec<_> = fs::read_dir(dir)
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .collect();
@@ -460,15 +460,14 @@ mod tests {
                 .any(|window| window == b"train/loss")
         );
 
-        let _second_sink = TensorBoardSink::new(&dir).unwrap();
-        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
-        let _ = fs::remove_dir_all(dir);
+        let _second_sink = TensorBoardSink::new(dir).unwrap();
+        assert_eq!(fs::read_dir(dir).unwrap().count(), 2);
     }
 
     #[test]
     fn wandb_export_writes_parseable_jsonl_and_manifest() {
-        let dir = std::env::temp_dir().join("retrograd-wandb-export-test");
-        let _ = fs::remove_dir_all(&dir);
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let dir = tmp.path();
         let metadata = RunMetadata {
             algorithm: "sft".into(),
             model: "model.gguf".into(),
@@ -479,7 +478,7 @@ mod tests {
             scheduler: "constant".into(),
             warmup_steps: 0,
         };
-        let mut sink = WandbExportSink::new(&dir, &metadata).unwrap();
+        let mut sink = WandbExportSink::new(dir, &metadata).unwrap();
         sink.emit(&MetricEvent::RunFinished { global_step: 2 })
             .unwrap();
         let manifest: serde_json::Value =
@@ -494,6 +493,5 @@ mod tests {
         .unwrap();
         assert_eq!(event["event"], "run_finished");
         assert_eq!(event["global_step"], 2);
-        let _ = fs::remove_dir_all(dir);
     }
 }

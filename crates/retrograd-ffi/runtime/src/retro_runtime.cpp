@@ -112,6 +112,7 @@ retro_train_config default_train_config() {
     config.checkpoint_every_n_layers = 1;
     config.checkpoint_dtype = RETRO_CHECKPOINT_DTYPE_F32;
     config.master_weights = RETRO_MASTER_WEIGHTS_AUTO;
+    config.generation_kv_dtype = RETRO_GENERATION_KV_DTYPE_F16;
     config.require_gpu_resident = false;
     // Keep the default aligned with the Rust configuration so omitted configs
     // still shuffle training rows.
@@ -243,6 +244,20 @@ bool validate_train_config(const retro_train_config & config) {
             config.master_weights != RETRO_MASTER_WEIGHTS_F32 &&
             config.master_weights != RETRO_MASTER_WEIGHTS_OFF) {
         set_error("master_weights must be auto, f32, or off");
+        return false;
+    }
+    if (config.generation_kv_dtype != RETRO_GENERATION_KV_DTYPE_F16 &&
+            config.generation_kv_dtype != RETRO_GENERATION_KV_DTYPE_Q8_0 &&
+            config.generation_kv_dtype != RETRO_GENERATION_KV_DTYPE_Q4_0) {
+        set_error("generation_kv_dtype must be f16, q8_0, or q4_0");
+        return false;
+    }
+    // A quantized V cache is read only by Flash Attention, which the generation
+    // context requests only in its fast form; without it llama.cpp refuses the
+    // context with a message that names neither option.
+    if (config.generation_kv_dtype != RETRO_GENERATION_KV_DTYPE_F16 &&
+            !config.fast_generation_context) {
+        set_error("a quantized generation_kv_dtype requires fast_generation_context");
         return false;
     }
     if (config.optimizer < RETRO_OPTIMIZER_ADAMW || config.optimizer > RETRO_OPTIMIZER_GEFEN) {

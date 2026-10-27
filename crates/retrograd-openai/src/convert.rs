@@ -259,6 +259,7 @@ fn convert_message(index: usize, message: &WireMessage) -> Result<Message, OpenA
         tool_calls,
         tool_call_id,
         is_error: false,
+        reasoning: None,
     })
 }
 

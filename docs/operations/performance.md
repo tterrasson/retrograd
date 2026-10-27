@@ -12,6 +12,9 @@ Try these in order:
    `checkpoint_dtype = "bf16"`.
 4. Keep `fast_sampling_context`, `kv_dtype = "f16"` and
    `chunked_cross_entropy` at their defaults, which already save memory.
+5. Set `training.generation_kv_dtype = "q8_0"` to halve the generation cache
+   (`"q4_0"` quarters it). This one changes the samples slightly: it only
+   affects generation, never the gradient.
 
 `ctx`, `group_size` and `prompts_per_update` also change memory use, but they
 change what is being trained: do not use them only to save memory.

@@ -11,11 +11,12 @@ html {
   font-size: 0.85em;
 }
 
-.text-pre {
+/* Not `.text-pre`: Vuetify's utility of that name sets `white-space: pre !important`. */
+.rg-pre {
   font-family: var(--rg-mono);
   font-size: 0.85rem;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
   margin: 0;
 }
 

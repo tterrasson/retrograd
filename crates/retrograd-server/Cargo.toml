@@ -79,6 +79,7 @@ uuid = { workspace = true, features = ["serde", "v4"] }
 [dev-dependencies]
 http-body-util.workspace = true
 retrograd-plan = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
 tower = { workspace = true, features = ["util"] }
 
 [[bin]]

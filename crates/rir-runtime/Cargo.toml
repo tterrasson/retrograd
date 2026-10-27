@@ -39,6 +39,7 @@ rir-emit.workspace = true
 # Timing tests and offline search share the same emit, build, and measurement
 # path. The resulting dependency cycle is test-only and accepted by Cargo.
 rir-sweep.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

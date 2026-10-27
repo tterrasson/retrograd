@@ -33,6 +33,7 @@ mcp = ["dep:rmcp", "dep:http", "dep:futures-util"]
 
 [dev-dependencies]
 rmcp = { workspace = true, features = ["macros", "server", "transport-io"] }
+tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [lints]

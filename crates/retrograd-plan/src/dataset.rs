@@ -240,9 +240,8 @@ mod tests {
 
     #[test]
     fn a_chat_jsonl_file_yields_one_length_per_record() {
-        let dir = std::env::temp_dir().join("retrograd-plan-dataset-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("chat.jsonl");
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let path = tmp.path().join("chat.jsonl");
         std::fs::write(
             &path,
             "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},\
@@ -255,14 +254,12 @@ mod tests {
         assert_eq!(stats.examples, 2);
         assert!(!stats.measured);
         assert!(stats.percentile(1.0) > stats.percentile(0.0));
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn a_tool_record_counts_its_catalog_and_its_calls() {
-        let dir = std::env::temp_dir().join("retrograd-plan-dataset-tools-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("chat.jsonl");
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let path = tmp.path().join("chat.jsonl");
         let plain = "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},\
                      {\"role\":\"assistant\",\"content\":\"hello\"}]}";
         let tools = "{\"tools\":[{\"name\":\"run\",\"description\":\"run a command\"}],\
@@ -280,14 +277,12 @@ mod tests {
             "{:?}",
             stats.lengths()
         );
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn a_preference_pair_counts_its_prompt_once_per_response() {
-        let dir = std::env::temp_dir().join("retrograd-plan-dataset-preference-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("pairs.jsonl");
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let path = tmp.path().join("pairs.jsonl");
         std::fs::write(
             &path,
             "{\"prompt\":[{\"role\":\"user\",\"content\":\"a question\"}],\
@@ -303,7 +298,6 @@ mod tests {
             stats.max_length(),
             tokens_from_chars(2 * prompt + responses)
         );
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]

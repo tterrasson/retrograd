@@ -94,6 +94,7 @@ rotary constants are never trained; the run lists what it excluded at start-up.
 | `generation_batch` | derived | Generation batch size. |
 | `shared_prefix_fanout` | `auto` | Packing of sequences that share a prompt (GRPO answers, preference pairs): `auto`, `off`, `max`, or an integer ≥ 2. |
 | `fast_sampling_context` | `true` | F16 KV cache and flash attention for generation. `false` for bit-exact sampling. |
+| `generation_kv_dtype` | `f16` | KV cache type for generation: `f16`, `q8_0` or `q4_0`. That cache holds `ctx × generation_concurrency` tokens; `q8_0` halves it, `q4_0` quarters it, and sampling drifts further from the trained policy the coarser it is. The quantized types require `fast_sampling_context`. |
 | `kv_dtype` | `f16` | KV cache type for training: `f16` or `f32`. Falls back to F32 when the device requires it. |
 | `gradient_checkpointing` | `false` | Recompute activations to save memory. |
 | `checkpoint_every_n_layers` | `4` | Checkpoint stride when gradient checkpointing is on. |
@@ -345,7 +346,8 @@ passes over the pairs; `training.gradient_accumulation` is pinned to
 | `importance_sampling_level` | `token` | `token` or `sequence` ([GSPO](../training/grpo#sequence-level-importance-sampling-gspo)). |
 | `kl_coefficient` | `0.0` | KL penalty toward the reference. |
 | `system_suffix` | `""` | Text appended to every system message. |
-| `template_variables` | `{}` | Chat template variables, e.g. `{ enable_thinking = false }`. |
+| `template_variables` | `{}` | Chat template variables, e.g. `{ enable_thinking = false }`. Unset variables keep the template's own default. |
+| `reasoning_budget` | `-1` | Tokens a reasoning block may run before the template's end tag is forced; `-1` lets the model decide. Forced tokens are not trained on. Refused for a template with no reasoning block. |
 | `seed` | `42` | Seed. |
 | `mcp_config` | none | Path, or list of paths, to `mcp.json` files. |
 

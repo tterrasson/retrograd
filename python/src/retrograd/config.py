@@ -10,6 +10,7 @@ Scheduler: TypeAlias = Literal["constant", "linear", "cosine"]
 DatasetFormat: TypeAlias = Literal["auto", "text", "chat_jsonl"]
 LoraDtype: TypeAlias = Literal["f32", "f16"]
 KvDtype: TypeAlias = Literal["f32", "f16"]
+GenerationKvDtype: TypeAlias = Literal["f16", "q8_0", "q4_0"]
 MasterWeights: TypeAlias = Literal["auto", "f32", "off"]
 #: Optimizer kind. ``muon`` and ``gefen`` take their own knobs from
 #: :attr:`TrainingConfig.optimizer_options`.
@@ -253,6 +254,12 @@ class TrainingConfig:
     #: F16 KV cache and flash attention for the sampling context. ``False``
     #: trades that speed for bit-exact sampling.
     fast_generation_context: bool = True
+    #: KV-cache storage of that sampling context: ``"f16"``, ``"q8_0"`` or
+    #: ``"q4_0"``. The cache grows as ``context_size * generation_concurrency``;
+    #: ``q8_0`` halves it and ``q4_0`` quarters it, sampling further from the
+    #: trained policy the coarser it is. The quantized types require
+    #: ``fast_generation_context``.
+    generation_kv_dtype: GenerationKvDtype = "f16"
     #: KV-cache precision for the differentiable optimizer context. The runtime
     #: falls back to ``f32`` when the device lacks compatible flash attention.
     kv_dtype: KvDtype = "f16"
@@ -367,6 +374,10 @@ class TrainingConfig:
             raise ValueError("device must be auto, cpu, or gpu")
         if self.kv_dtype not in ("f32", "f16"):
             raise ValueError("kv_dtype must be f32 or f16")
+        if self.generation_kv_dtype not in ("f16", "q8_0", "q4_0"):
+            raise ValueError("generation_kv_dtype must be f16, q8_0, or q4_0")
+        if self.generation_kv_dtype != "f16" and not self.fast_generation_context:
+            raise ValueError("a quantized generation_kv_dtype requires fast_generation_context")
         if self.master_weights not in ("auto", "f32", "off"):
             raise ValueError("master_weights must be auto, f32, or off")
         if self.optimizer not in ("adamw", "sgd", "muon", "gefen"):
@@ -390,6 +401,7 @@ class TrainingConfig:
             "generation_concurrency": self.generation_concurrency,
             "generation_batch": self.generation_batch,
             "fast_generation_context": self.fast_generation_context,
+            "generation_kv_dtype": self.generation_kv_dtype,
             "kv_dtype": self.kv_dtype,
             "threads": self.threads,
             "epochs": self.epochs,

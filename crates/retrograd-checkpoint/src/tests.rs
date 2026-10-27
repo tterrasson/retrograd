@@ -185,7 +185,7 @@ fn every_state_file_round_trips_through_messagepack() {
 
 #[test]
 fn a_written_checkpoint_reads_back_identically() {
-    let root = tempdir();
+    let (_tmp, root) = tempdir();
     let state = root.join("step-000000000042.state");
     let checkpoint = sample();
     checkpoint
@@ -200,7 +200,7 @@ fn a_written_checkpoint_reads_back_identically() {
 
 #[test]
 fn replacing_a_checkpoint_never_mixes_adapter_and_state() {
-    let root = tempdir();
+    let (_tmp, root) = tempdir();
     let state = root.join("best.state");
     let first = sample();
     first
@@ -221,7 +221,7 @@ fn replacing_a_checkpoint_never_mixes_adapter_and_state() {
 
 #[test]
 fn an_interrupted_replacement_falls_back_to_the_complete_backup() {
-    let root = tempdir();
+    let (_tmp, root) = tempdir();
     let state = root.join("best.state");
     let checkpoint = sample();
     checkpoint
@@ -239,7 +239,7 @@ fn an_interrupted_replacement_falls_back_to_the_complete_backup() {
 
 #[test]
 fn a_failing_adapter_write_leaves_nothing_behind() {
-    let root = tempdir();
+    let (_tmp, root) = tempdir();
     let state = root.join("step-000000000042.state");
     let error = sample()
         .write(&state, |_| Err(Error::runtime("disk on fire")))
@@ -253,7 +253,7 @@ fn a_failing_adapter_write_leaves_nothing_behind() {
 
 #[test]
 fn a_directory_without_a_manifest_is_not_a_checkpoint() {
-    let root = tempdir();
+    let (_tmp, root) = tempdir();
     let state = root.join("step-000000000042.state");
     let checkpoint = sample();
     checkpoint
@@ -266,7 +266,7 @@ fn a_directory_without_a_manifest_is_not_a_checkpoint() {
 
 #[test]
 fn a_declared_state_file_that_is_missing_is_refused() {
-    let root = tempdir();
+    let (_tmp, root) = tempdir();
     let state = root.join("step-000000000042.state");
     sample()
         .write(&state, write_sample_payloads(b"GGUF"))
@@ -278,7 +278,7 @@ fn a_declared_state_file_that_is_missing_is_refused() {
 
 #[test]
 fn an_unknown_schema_version_is_refused() {
-    let root = tempdir();
+    let (_tmp, root) = tempdir();
     let state = root.join("step-000000000042.state");
     let mut checkpoint = sample();
     checkpoint.manifest.format_version = FORMAT_VERSION + 1;
@@ -291,7 +291,7 @@ fn an_unknown_schema_version_is_refused() {
 
 #[test]
 fn a_required_artifact_that_is_missing_is_refused_but_a_recreatable_one_is_not() {
-    let root = tempdir();
+    let (_tmp, root) = tempdir();
     let mut checkpoint = sample();
     checkpoint
         .manifest
@@ -407,7 +407,7 @@ fn the_adamw_accessor_refuses_another_optimizers_slots() {
 /// file is an error rather than a short read.
 #[test]
 fn a_slot_payload_streams_back_through_a_bounded_buffer() {
-    let root = tempdir();
+    let (_tmp, root) = tempdir();
     let state = root.join("step-000000000042.state");
     let checkpoint = sample();
     checkpoint
@@ -445,7 +445,7 @@ fn a_slot_payload_streams_back_through_a_bounded_buffer() {
 /// declares none, so this synthetic row is the only way to exercise it:
 #[test]
 fn a_shared_slot_round_trips_beside_the_parameter_ones() {
-    let root = tempdir();
+    let (_tmp, root) = tempdir();
     let state = root.join("step-000000000042.state");
     let mut checkpoint = sample();
     // 256 F32 codebook entries, owned by the optimizer, not by any
@@ -492,7 +492,6 @@ fn a_shared_slot_round_trips_beside_the_parameter_ones() {
         })
         .unwrap();
     assert_eq!(seen, [(0, 512), (512, 512)]);
-    let _ = fs::remove_dir_all(&root);
 }
 
 /// The scope is part of a slot's identity, so the table rules hold across
@@ -534,7 +533,7 @@ fn the_scope_is_part_of_a_slots_identity_in_the_table() {
 /// published for it.
 #[test]
 fn a_base_weight_checkpoint_carries_a_bundle_and_publishes_no_adapter() {
-    let root = tempdir();
+    let (_tmp, root) = tempdir();
     let state = root.join("step-000000000042.state");
     let mut checkpoint = sample();
     checkpoint.manifest.adapter = None;
@@ -600,7 +599,7 @@ fn a_base_weight_checkpoint_carries_a_bundle_and_publishes_no_adapter() {
 /// describe a checkpoint that is not there.
 #[test]
 fn a_payload_the_writer_skipped_is_refused_before_publication() {
-    let root = tempdir();
+    let (_tmp, root) = tempdir();
     let state = root.join("step-000000000042.state");
     let error = sample()
         .write(&state, |paths| {
@@ -758,7 +757,7 @@ fn fingerprints_separate_content_and_order() {
 
 #[test]
 fn a_cached_file_fingerprint_answers_the_hash_and_follows_the_content() {
-    let dir = tempdir();
+    let (_tmp, dir) = tempdir();
     let model = dir.join("model.gguf");
     fs::write(&model, b"weights-a").unwrap();
     let direct = fingerprint_file(&model).unwrap();
@@ -771,7 +770,6 @@ fn a_cached_file_fingerprint_answers_the_hash_and_follows_the_content() {
     let replaced = fingerprint_file_cached(&model).unwrap();
     assert_ne!(replaced, direct);
     assert_eq!(replaced, fingerprint_file(&model).unwrap());
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -811,7 +809,7 @@ fn a_budget_charges_the_retained_checkpoints_and_the_one_being_written() {
 
 #[test]
 fn a_budget_larger_than_the_filesystem_is_refused_and_names_what_fits() {
-    let dir = tempdir();
+    let (_tmp, dir) = tempdir();
     let free = free_space(&dir).unwrap();
     assert!(free > 0, "a writable scratch directory has free space");
     let budget = DiskBudget {
@@ -834,12 +832,11 @@ fn a_budget_larger_than_the_filesystem_is_refused_and_names_what_fits() {
     assert!(message.contains("of which 0 fit"), "{message}");
     // Widening the cadence is not a fix; the message says so.
     assert!(message.contains("cadence"), "{message}");
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn an_empty_footprint_is_affordable_and_a_free_figure_comes_from_an_ancestor() {
-    let dir = tempdir();
+    let (_tmp, dir) = tempdir();
     // A not-yet-existing subdirectory is measured against its filesystem.
     // The figure is not compared: it is a live machine's, and it moves
     // between two calls.
@@ -850,18 +847,11 @@ fn an_empty_footprint_is_affordable_and_a_free_figure_comes_from_an_ancestor() {
     assert_eq!(empty.required_bytes(), CHECKPOINT_METADATA_BYTES);
     assert_eq!(empty.affordable(0), 0);
     empty.check(&unborn, "nothing to write").unwrap();
-    let _ = fs::remove_dir_all(&dir);
 }
 
-/// Unique scratch directory; removed by the OS, not worth a dependency.
-fn tempdir() -> PathBuf {
-    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let index = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "retrograd-checkpoint-{}-{index}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&path);
-    fs::create_dir_all(&path).unwrap();
-    path
+/// Unique scratch directory, removed when the test ends.
+fn tempdir() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("create the scratch directory");
+    let path = dir.path().to_path_buf();
+    (dir, path)
 }

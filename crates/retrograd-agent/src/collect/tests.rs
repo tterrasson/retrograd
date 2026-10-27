@@ -13,7 +13,7 @@ use serde_json::json;
 use super::*;
 use crate::env::{EnvState, Environment, EnvironmentFactory, StepOutcome};
 use crate::judge::Score;
-use crate::policy::{Policy, PolicyGeneration};
+use crate::policy::{Policy, PolicyGeneration, RenderedFraming};
 use crate::tools::{HermesToolCallParser, ToolCall, ToolResult, ToolSpec};
 use crate::trajectory::{Message, Role};
 use retrograd_agent_core::scenario::RolloutLimits;
@@ -40,7 +40,7 @@ impl Policy for ScriptPolicy {
         messages: &[Message],
         _tools: &[ToolSpec],
         _add: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         let mut pieces = vec![vec![1]];
         for message in messages {
             match message.role {
@@ -51,7 +51,7 @@ impl Policy for ScriptPolicy {
                     .extend(bytes(&message.content)),
             }
         }
-        Ok(pieces)
+        Ok(RenderedFraming::from_token_pieces(pieces))
     }
 
     async fn generate_shared(
@@ -102,6 +102,7 @@ fn generation(prompt: &[i32]) -> PolicyGeneration {
         tokens: vec![token],
         text: text.into(),
         stopped_at_eog: true,
+        forced: Vec::new(),
     }
 }
 
@@ -406,14 +407,14 @@ async fn what_is_written_reads_back_as_a_valid_dataset() {
     )
     .await;
     stats.unwrap();
-    let path = std::env::temp_dir().join(format!("retrograd-collect-{}.jsonl", std::process::id()));
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let path = tmp.path().join("collect.jsonl");
     let lines = records
         .iter()
         .map(|record| serde_json::to_string(record).unwrap() + "\n")
         .collect::<String>();
     std::fs::write(&path, lines).unwrap();
     let read = retrograd_dataset::read_chat_jsonl(&path).unwrap();
-    std::fs::remove_file(&path).unwrap();
     assert_eq!(read.len(), 2);
     for record in read {
         record.example.validate().unwrap();

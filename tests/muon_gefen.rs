@@ -21,7 +21,7 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use common::gefen::gefen_step;
 use retrograd::checkpoint::{self, Checkpoint};
@@ -104,13 +104,6 @@ fn resolved(model: &Path, selector: &TrainableSelector) -> TrainableSet {
     let inventory = tensor_inventory(model, Device::Cpu).expect("read the tensor inventory");
     resolve_base(&inventory, TrainablePolicy::Partial, selector)
         .expect("the selected tensors resolve")
-}
-
-fn scratch(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("retrograd-opt-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&path);
-    std::fs::create_dir_all(&path).expect("create scratch directory");
-    path
 }
 
 fn read_f32(bytes: &[u8]) -> Vec<f32> {
@@ -488,7 +481,8 @@ fn muon_falls_back_by_role_and_the_two_tables_live_side_by_side() {
 fn a_muon_momentum_round_trips_and_the_resume_is_exact() {
     let model = fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("muon-resume");
+    let tmp = common::scratch("muon-resume");
+    let root = tmp.path();
 
     let mut trainer =
         Trainer::new(&model, config(OptimizerKind::Muon, matrix_selector())).expect("load trainer");
@@ -719,7 +713,8 @@ fn a_gefen_step_on_the_gpu_is_the_same_fixed_block_algorithm() {
 fn shared_v_at_one_element_per_block_keeps_adamws_second_moment() {
     let model = fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("gefen-b1");
+    let tmp = common::scratch("gefen-b1");
+    let root = tmp.path();
 
     let state_of = |kind: OptimizerKind, name: &str| {
         let mut trainer =
@@ -778,7 +773,8 @@ fn shared_v_at_one_element_per_block_keeps_adamws_second_moment() {
 fn quantized_m_round_trips_its_indices_scales_and_shared_codebook() {
     let model = fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("gefen-quantized");
+    let tmp = common::scratch("gefen-quantized");
+    let root = tmp.path();
     let kind = gefen(GefenVariant::QuantizedM, 512);
 
     let mut trainer = Trainer::new(&model, config(kind, matrix_selector())).expect("load trainer");
@@ -871,7 +867,8 @@ fn quantized_m_round_trips_its_indices_scales_and_shared_codebook() {
 fn a_shared_v_payload_does_not_restore_into_a_quantized_m_run() {
     let model = fixture!();
     let _guard = common::serialize_models();
-    let root = scratch("gefen-variants");
+    let tmp = common::scratch("gefen-variants");
+    let root = tmp.path();
 
     let mut trainer = Trainer::new(
         &model,

@@ -24,6 +24,10 @@ pub(super) struct AgentMetricTotals {
     turns: usize,
     tokens: usize,
     truncated: usize,
+    /// Assistant turns checked against their re-render, and those of them the
+    /// template renders differently from how they were sampled.
+    checked_turns: usize,
+    normalized_turns: usize,
 }
 
 impl AgentMetricTotals {
@@ -33,6 +37,12 @@ impl AgentMetricTotals {
     /// [`tool_call_parse_warning`](super::selection::tool_call_parse_warning).
     pub(super) fn tool_calls(&self) -> usize {
         self.tool_calls
+    }
+
+    /// `(normalized, checked)` assistant turns, for
+    /// [`rerender_normalization_warning`](super::selection::rerender_normalization_warning).
+    pub(super) fn normalized_turns(&self) -> (usize, usize) {
+        (self.normalized_turns, self.checked_turns)
     }
 
     pub(super) fn observe(&mut self, group: &TrajectoryGroup) {
@@ -58,6 +68,10 @@ impl AgentMetricTotals {
                 .count();
             self.tokens += trajectory.tokens.len();
             self.truncated += usize::from(trajectory.truncated);
+            if let Some(provenance) = &trajectory.provenance {
+                self.checked_turns += provenance.checked_turns;
+                self.normalized_turns += provenance.normalized_turns;
+            }
         }
     }
 
@@ -69,6 +83,8 @@ impl AgentMetricTotals {
         self.turns += other.turns;
         self.tokens += other.tokens;
         self.truncated += other.truncated;
+        self.checked_turns += other.checked_turns;
+        self.normalized_turns += other.normalized_turns;
     }
 
     pub(super) fn values(self, attempted: usize, failures: RolloutFailures) -> Vec<MetricValue> {
@@ -121,6 +137,14 @@ impl AgentMetricTotals {
                 name: "agent/lost_fraction".into(),
                 value: 1.0 - (self.trajectories + failures.total()) as f32 / attempted_count,
             },
+            // Per checked turn rather than per trajectory: a template either
+            // normalizes a kind of turn or it does not, and the share of turns
+            // is the share of the training signal whose history inference
+            // renders differently.
+            MetricValue {
+                name: "agent/rerender_normalized_fraction".into(),
+                value: ratio_or_zero(self.normalized_turns as u64, self.checked_turns as u64),
+            },
         ]
     }
 }
@@ -149,6 +173,7 @@ pub(super) fn agent_metrics(
 mod tests {
     use super::*;
     use crate::grpo::fixtures::group;
+    use crate::trajectory::Provenance;
 
     #[test]
     fn failure_causes_are_reported_separately() {
@@ -171,5 +196,29 @@ mod tests {
         // 8 attempted, 3 failed, 3 collected: two members went down with a
         // group that fell under its baseline.
         assert!((value("agent/lost_fraction") - 2.0 / 8.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_normalized_fraction_counts_checked_turns() {
+        let value = |groups: &[TrajectoryGroup]| {
+            agent_metrics(groups, 2, RolloutFailures::default())
+                .into_iter()
+                .find(|metric| metric.name == "agent/rerender_normalized_fraction")
+                .expect("always reported")
+                .value
+        };
+        assert_eq!(value(&[group(&[false, false])]), 0.0, "nothing checked");
+
+        let mut checked = group(&[false, false]);
+        for (trajectory, (checked, normalized)) in
+            checked.trajectories.iter_mut().zip([(3, 1), (1, 0)])
+        {
+            trajectory.provenance = Some(Provenance {
+                checked_turns: checked,
+                normalized_turns: normalized,
+                ..Default::default()
+            });
+        }
+        assert!((value(&[checked]) - 1.0 / 4.0).abs() < 1e-6);
     }
 }

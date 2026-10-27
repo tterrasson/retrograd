@@ -555,6 +555,18 @@ extern "C" int retro_trainer_set_chat_template_variables(
     });
 }
 
+extern "C" int retro_trainer_set_reasoning_budget(
+        retro_trainer * trainer,
+        int32_t budget) {
+    return retro::boundary([&]() -> int {
+        retro::trainer_state * state = retro::checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        return retro::set_reasoning_budget(*state, budget);
+    });
+}
+
 extern "C" int retro_trainer_chat_template_supports_tools(
         retro_trainer * trainer,
         bool * out_supports) {
@@ -588,6 +600,7 @@ extern "C" int retro_chat_template_render(
         const char * template_src,
         const char * messages_json,
         const char * tools_json,
+        const char * variables_json,
         bool add_assistant,
         char * buffer,
         size_t n_buffer,
@@ -606,7 +619,7 @@ extern "C" int retro_chat_template_render(
             return -1;
         }
         return retro::render_chat_template_source(
-                template_src, messages_json, tools_json, add_assistant,
+                template_src, messages_json, tools_json, variables_json, add_assistant,
                 buffer, n_buffer, out_n_bytes);
     });
 }
@@ -614,6 +627,7 @@ extern "C" int retro_chat_template_render(
 extern "C" int retro_chat_template_tool_call_parser(
         const char * template_src,
         const char * tools_json,
+        const char * variables_json,
         char * buffer,
         size_t n_buffer,
         size_t * out_n_bytes) {
@@ -627,7 +641,7 @@ extern "C" int retro_chat_template_tool_call_parser(
             return -1;
         }
         return retro::build_tool_call_parser_from_source(
-                template_src, tools_json, buffer, n_buffer, out_n_bytes);
+                template_src, tools_json, variables_json, buffer, n_buffer, out_n_bytes);
     });
 }
 
@@ -1061,9 +1075,10 @@ extern "C" int retro_trainer_generate_batch(
         int32_t * out_tokens,
         float * out_logprobs,
         size_t n_out_max,
-        size_t * out_n_tokens) {
+        size_t * out_n_tokens,
+        uint8_t * out_forced) {
     return retro::generate_batch_impl(trainer, prompt_tokens, n_prompt, sampling,
-            n_sequences, out_tokens, out_logprobs, n_out_max, out_n_tokens);
+            n_sequences, out_tokens, out_logprobs, n_out_max, out_n_tokens, out_forced);
 }
 
 extern "C" int retro_trainer_generate_continuous_batch(
@@ -1073,9 +1088,11 @@ extern "C" int retro_trainer_generate_continuous_batch(
         int32_t * out_tokens,
         float * out_logprobs,
         size_t n_out_max,
-        size_t * out_n_tokens) {
+        size_t * out_n_tokens,
+        uint8_t * out_forced) {
     return retro::generate_continuous_batch_impl(
-            trainer, sequences, n_sequences, out_tokens, out_logprobs, n_out_max, out_n_tokens);
+            trainer, sequences, n_sequences, out_tokens, out_logprobs, n_out_max, out_n_tokens,
+            out_forced);
 }
 
 extern "C" int retro_trainer_score_tokens(

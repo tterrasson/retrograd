@@ -604,6 +604,15 @@
       },
       "type": "object"
     },
+    "GenerationKvDtype": {
+      "description": "Storage of the dedicated generation context's KV cache.\n\nRead only when the fast sampling context is on: the quantized types store V\nin blocks that only Flash Attention reads, and that context is the one that\nrequests it. Sampling has no backward graph, so nothing here touches the\ngradient - only the distribution the rollouts are drawn from, which drifts\nfurther from the trained policy the coarser the cache. The cache grows as\n`ctx × generation_concurrency`, and for a small model on a long agentic\ncontext it is most of the device: `q8_0` halves it at a perturbation of the\norder of the weights' own quantization, `q4_0` quarters it and is visible\nin the samples.",
+      "enum": [
+        "f16",
+        "q8_0",
+        "q4_0"
+      ],
+      "type": "string"
+    },
     "GrpoToml": {
       "additionalProperties": false,
       "properties": {
@@ -1562,6 +1571,17 @@
           "type": [
             "integer",
             "null"
+          ]
+        },
+        "generation_kv_dtype": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/GenerationKvDtype",
+              "description": "KV-cache storage of the fast sampling context: `\"f16\"` (default),\n`\"q8_0\"` or `\"q4_0\"`. The quantized types require it on."
+            }
           ]
         },
         "gradient_accumulation": {

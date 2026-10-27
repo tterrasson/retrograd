@@ -738,11 +738,13 @@ mod tests {
     use super::*;
     use futures_util::stream;
 
-    fn store(label: &str) -> DatasetStore {
-        let dir =
-            std::env::temp_dir().join(format!("retrograd-datasets-{label}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        DatasetStore::open(&dir)
+    fn store(label: &str) -> (tempfile::TempDir, DatasetStore) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("retrograd-datasets-{label}-"))
+            .tempdir()
+            .expect("create the store directory");
+        let store = DatasetStore::open(dir.path());
+        (dir, store)
     }
 
     fn body(
@@ -753,7 +755,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_same_content_twice_yields_the_same_id_and_writes_nothing_twice() {
-        let store = store("dedup");
+        let (_tmp, store) = store("dedup");
         let content = b"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":\"yo\"}]}\n";
         let first = store
             .ingest(
@@ -780,12 +782,11 @@ mod tests {
             Ingested::Created(_) => panic!("must be a repeat"),
         }
         assert_eq!(store.list().len(), 1, "no second directory was written");
-        let _ = std::fs::remove_dir_all(store.root.parent().unwrap());
     }
 
     #[tokio::test]
     async fn concurrent_identical_uploads_commit_one_dataset_without_deleting_it() {
-        let store = store("concurrent-dedup");
+        let (_tmp, store) = store("concurrent-dedup");
         let content = b"one complete dataset\n";
         let options = || IngestOptions {
             format: Some(UploadFormat::Text),
@@ -809,12 +810,11 @@ mod tests {
         let meta = store.list().pop().unwrap();
         assert!(store.data_path(&meta).is_file());
         assert!(store.root.join(&meta.id).join("meta.json").is_file());
-        let _ = std::fs::remove_dir_all(store.root.parent().unwrap());
     }
 
     #[tokio::test]
     async fn concurrent_uploads_cannot_both_spend_the_same_quota() {
-        let store = store("concurrent-quota");
+        let (_tmp, store) = store("concurrent-quota");
         let options = || IngestOptions {
             format: Some(UploadFormat::Text),
             max_datasets_bytes: Some(10),
@@ -830,12 +830,11 @@ mod tests {
             left.err().or_else(|| right.err()),
             Some(IngestError::QuotaExceeded { .. })
         ));
-        let _ = std::fs::remove_dir_all(store.root.parent().unwrap());
     }
 
     #[tokio::test]
     async fn an_idle_upload_is_stopped_and_its_temporary_is_removed() {
-        let store = store("idle-timeout");
+        let (_tmp, store) = store("idle-timeout");
         let pending = futures_util::stream::pending::<Result<bytes::Bytes, BodyError>>();
         let error = store
             .ingest(
@@ -852,12 +851,11 @@ mod tests {
             std::fs::read_dir(store.root.join("tmp")).unwrap().count(),
             0
         );
-        let _ = std::fs::remove_dir_all(store.root.parent().unwrap());
     }
 
     #[tokio::test]
     async fn an_oversized_upload_is_refused_and_leaves_no_temporary() {
-        let store = store("oversize");
+        let (_tmp, store) = store("oversize");
         let content = vec![b'a'; 100];
         let error = store
             .ingest(
@@ -876,12 +874,11 @@ mod tests {
             tmp.is_empty(),
             "an oversized upload must not leave a temporary file behind"
         );
-        let _ = std::fs::remove_dir_all(store.root.parent().unwrap());
     }
 
     #[tokio::test]
     async fn a_malformed_chat_jsonl_reports_every_problem() {
-        let store = store("invalid");
+        let (_tmp, store) = store("invalid");
         let content =
             b"not json\nnot json either\n{\"messages\":[{\"role\":\"tool\",\"content\":\"x\"}]}\n";
         let error = store
@@ -902,12 +899,11 @@ mod tests {
             other => panic!("expected a validation failure, got {other:?}"),
         }
         assert_eq!(store.list().len(), 0);
-        let _ = std::fs::remove_dir_all(store.root.parent().unwrap());
     }
 
     #[tokio::test]
     async fn a_preference_upload_is_validated_and_measured_as_pairs() {
-        let store = store("preference");
+        let (_tmp, store) = store("preference");
         let pair = b"{\"prompt\":[{\"role\":\"user\",\"content\":\"q\"}],\
                      \"chosen\":[{\"role\":\"assistant\",\"content\":\"a\"}],\
                      \"rejected\":[{\"role\":\"assistant\",\"content\":\"b\"}]}\n";
@@ -955,12 +951,11 @@ mod tests {
             parse_format_hint(Some("preference")).unwrap(),
             Some(UploadFormat::PreferenceJsonl)
         );
-        let _ = std::fs::remove_dir_all(store.root.parent().unwrap());
     }
 
     #[tokio::test]
     async fn the_quota_refuses_new_content_but_never_a_repeat() {
-        let store = store("quota");
+        let (_tmp, store) = store("quota");
         let a = b"{\"messages\":[{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"assistant\",\"content\":\"b\"}]}\n";
         let first = store
             .ingest(
@@ -1000,12 +995,11 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(repeat, Ingested::AlreadyExists(_)));
-        let _ = std::fs::remove_dir_all(store.root.parent().unwrap());
     }
 
     #[tokio::test]
     async fn a_declared_size_is_refused_before_anything_is_written() {
-        let store = store("declared");
+        let (_tmp, store) = store("declared");
         let content = b"{\"messages\":[{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"assistant\",\"content\":\"b\"}]}\n";
 
         // Over the per-dataset limit, and over the quota: both are answered
@@ -1039,12 +1033,11 @@ mod tests {
         // Refused before the disk was touched, so not even a temporary exists.
         let tmp: Vec<_> = std::fs::read_dir(store.root.join("tmp")).unwrap().collect();
         assert!(tmp.is_empty(), "nothing should have been written");
-        let _ = std::fs::remove_dir_all(store.root.parent().unwrap());
     }
 
     #[tokio::test]
     async fn a_body_cut_by_the_limit_layer_is_a_size_failure_not_a_transport_one() {
-        let store = store("body-too-large");
+        let (_tmp, store) = store("body-too-large");
         let cut = stream::iter(vec![
             Ok(bytes::Bytes::from_static(b"{\"messages\":[]}")),
             Err(BodyError::TooLarge),
@@ -1057,17 +1050,15 @@ mod tests {
             matches!(error, IngestError::TooLarge { .. }),
             "the limit layer's rejection must not read as a hung-up client"
         );
-        let _ = std::fs::remove_dir_all(store.root.parent().unwrap());
     }
 
     #[tokio::test]
     async fn a_tokenization_is_cached_on_the_card_and_survives_a_reopen() {
-        let dir = std::env::temp_dir().join(format!(
-            "retrograd-datasets-tokenize-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = DatasetStore::open(&dir);
+        let tmp = tempfile::Builder::new()
+            .prefix("retrograd-datasets-tokenize-")
+            .tempdir()
+            .expect("create the store directory");
+        let store = DatasetStore::open(tmp.path());
         let content = b"{\"messages\":[{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"assistant\",\"content\":\"b\"}]}\n";
         let id = store
             .ingest(body(content), IngestOptions::default())
@@ -1098,7 +1089,7 @@ mod tests {
 
         // The lengths come back exactly, which is what lets a resolution report
         // an exact truncation rate at an `n_ctx` nobody listed up front.
-        let reopened = DatasetStore::open(&dir);
+        let reopened = DatasetStore::open(tmp.path());
         let meta = reopened.get(&id).expect("the card survives");
         let cached = meta.tokenized_for(&key).expect("the measurement survives");
         let stats = cached.dataset_stats().expect("lengths were persisted");
@@ -1108,7 +1099,6 @@ mod tests {
         // A different tokenizer is a different key, so nothing is reused.
         let other = tokenizer_key(&model, "model-b");
         assert!(meta.tokenized_for(&other).is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1146,10 +1136,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_store_reopened_sees_what_the_previous_one_wrote() {
-        let dir =
-            std::env::temp_dir().join(format!("retrograd-datasets-reopen-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = DatasetStore::open(&dir);
+        let tmp = tempfile::Builder::new()
+            .prefix("retrograd-datasets-reopen-")
+            .tempdir()
+            .expect("create the store directory");
+        let store = DatasetStore::open(tmp.path());
         let content = b"plain text corpus with more than a few words in it\n".repeat(20);
         let ingested = store
             .ingest(
@@ -1165,29 +1156,27 @@ mod tests {
         let id = ingested.meta().id.clone();
         drop(store);
 
-        let reopened = DatasetStore::open(&dir);
+        let reopened = DatasetStore::open(tmp.path());
         let meta = reopened.get(&id).expect("the dataset survives a reopen");
         assert_eq!(meta.name.as_deref(), Some("corpus"));
         assert_eq!(meta.format, "text");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn a_corrupted_meta_json_is_isolated_rather_than_failing_startup() {
-        let dir =
-            std::env::temp_dir().join(format!("retrograd-datasets-corrupt-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("datasets/ds_broken")).unwrap();
-        std::fs::write(dir.join("datasets/ds_broken/meta.json"), "not json").unwrap();
-        let store = DatasetStore::open(&dir);
+        let tmp = tempfile::Builder::new()
+            .prefix("retrograd-datasets-corrupt-")
+            .tempdir()
+            .expect("create the store directory");
+        std::fs::create_dir_all(tmp.path().join("datasets/ds_broken")).unwrap();
+        std::fs::write(tmp.path().join("datasets/ds_broken/meta.json"), "not json").unwrap();
+        let store = DatasetStore::open(tmp.path());
         assert!(store.list().is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn delete_reports_whether_there_was_anything_to_remove() {
-        let store = store("delete");
+        let (_tmp, store) = store("delete");
         assert!(!store.delete("ds_does_not_exist"));
-        let _ = std::fs::remove_dir_all(store.root.parent().unwrap());
     }
 }

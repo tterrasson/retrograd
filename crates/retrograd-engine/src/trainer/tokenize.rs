@@ -207,8 +207,10 @@ impl Trainer {
         }
     }
 
-    /// Replaces chat-template variables and invalidates the cached tool-support probe.
-    /// `None` or `{}` clears them; conversation-owned keys are rejected.
+    /// Replaces chat-template variables and invalidates what was derived from
+    /// them: the tool-support probe, the tool-call parser and the reasoning
+    /// budget's tags. `None` or `{}` clears them; conversation-owned keys are
+    /// rejected. An unset `enable_thinking` renders the template's own default.
     pub fn set_chat_template_variables(&mut self, variables_json: Option<&str>) -> Result<()> {
         let variables = variables_json
             .map(|variables| CString::new(variables).map_err(nul_error))
@@ -220,6 +222,26 @@ impl Trainer {
                 variables.as_ref().map_or(std::ptr::null(), |v| v.as_ptr()),
             )
         })
+    }
+
+    /// Caps a reasoning block at `budget` tokens, after which the runtime
+    /// forces the template's end tag; `None` lets the model decide. The tags are
+    /// the ones llama.cpp's chat parser derives for this template under the
+    /// current variables, so a template that declares no reasoning block is an
+    /// error here rather than a budget that never applies. Set it after the
+    /// variables: changing them re-derives the tags.
+    ///
+    /// The forced tokens are the runtime's, not the policy's: only
+    /// [`Trainer::generate_sampled_continuous`] reports them, and the other
+    /// generators refuse a row that has any.
+    pub fn set_reasoning_budget(&mut self, budget: Option<u32>) -> Result<()> {
+        let budget = match budget {
+            None => -1,
+            Some(budget) => i32::try_from(budget)
+                .map_err(|_| Error::invalid(format!("reasoning budget {budget} exceeds i32")))?,
+        };
+        // SAFETY: the `Trainer` invariant holds for this synchronous call.
+        self.check(unsafe { ffi::retro_trainer_set_reasoning_budget(self.raw.as_ptr(), budget) })
     }
 
     /// Whether the model's own chat template renders a tool catalog. Probed once
@@ -311,20 +333,20 @@ where
 /// agreement between what a template writes and what
 /// [`tool_call_parser_from_source`] reads back can be checked on template
 /// fixtures, without a GGUF and therefore inside the fast lane.
+///
+/// `variables_json` is read as [`Trainer::set_chat_template_variables`] reads
+/// it; `None` sets none.
 pub fn render_chat_template_source(
     template_src: &str,
     messages_json: &str,
     tools_json: Option<&str>,
+    variables_json: Option<&str>,
     add_assistant: bool,
 ) -> Result<String> {
     let template = CString::new(template_src).map_err(nul_error)?;
     let messages = CString::new(messages_json).map_err(nul_error)?;
-    let tools = tools_json
-        .map(|tools| CString::new(tools).map_err(nul_error))
-        .transpose()?;
-    let tools_ptr = tools
-        .as_ref()
-        .map_or(std::ptr::null(), |tools| tools.as_ptr());
+    let tools = optional_cstring(tools_json)?;
+    let variables = optional_cstring(variables_json)?;
     // SAFETY: every borrowed buffer lives through this synchronous call, and
     // the entry opens no model.
     unsafe {
@@ -332,7 +354,8 @@ pub fn render_chat_template_source(
             ffi::retro_chat_template_render(
                 template.as_ptr(),
                 messages.as_ptr(),
-                tools_ptr,
+                optional_ptr(&tools),
+                optional_ptr(&variables),
                 add_assistant,
                 buffer,
                 n_buffer,
@@ -345,30 +368,39 @@ pub fn render_chat_template_source(
 /// [`Trainer::tool_call_parser`] over a template given as Jinja source. Unlike
 /// the method, a template that yields no parser is an `Err` here: a fixture that
 /// stopped being parseable is a result to read, not a fallback to take.
+/// `variables_json` as for [`render_chat_template_source`]: a parser and the
+/// prompt it reads the continuation of must be rendered under the same ones.
 pub fn tool_call_parser_from_source(
     template_src: &str,
     tools_json: Option<&str>,
+    variables_json: Option<&str>,
 ) -> Result<String> {
     let template = CString::new(template_src).map_err(nul_error)?;
-    let tools = tools_json
-        .map(|tools| CString::new(tools).map_err(nul_error))
-        .transpose()?;
-    let tools_ptr = tools
-        .as_ref()
-        .map_or(std::ptr::null(), |tools| tools.as_ptr());
+    let tools = optional_cstring(tools_json)?;
+    let variables = optional_cstring(variables_json)?;
     // SAFETY: every borrowed buffer lives through this synchronous call, and
     // the entry opens no model.
     unsafe {
         read_string(|buffer, n_buffer, out| {
             ffi::retro_chat_template_tool_call_parser(
                 template.as_ptr(),
-                tools_ptr,
+                optional_ptr(&tools),
+                optional_ptr(&variables),
                 buffer,
                 n_buffer,
                 out,
             )
         })
     }
+}
+
+fn optional_cstring(text: Option<&str>) -> Result<Option<CString>> {
+    text.map(|text| CString::new(text).map_err(nul_error))
+        .transpose()
+}
+
+fn optional_ptr(text: &Option<CString>) -> *const std::ffi::c_char {
+    text.as_ref().map_or(std::ptr::null(), |text| text.as_ptr())
 }
 
 /// Runs a parser from [`Trainer::tool_call_parser`] over one assistant output.

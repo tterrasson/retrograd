@@ -302,19 +302,20 @@ pub const GENERATION_KV_BUDGET_FRACTION: u64 = 25;
 /// The largest number of sequences that can decode at once inside the
 /// generation-KV allowance, as a power of two.
 ///
-/// `element_bytes` is the KV element width the generation context will use - two
-/// when `fast_sampling_context` is on, which is the default for a rollout
-/// objective.
+/// `block` is the `(bytes, elements)` storage block the generation context will
+/// use - see [`crate::cost::generation_kv_block`]: F16's `(2, 1)` by default for
+/// a rollout objective.
 pub fn generation_capacity(
     model: &ModelInfo,
     n_ctx: u32,
     vram_bytes: u64,
-    element_bytes: u64,
+    block: (u64, u64),
 ) -> u32 {
     let allowance = vram_bytes / 100 * GENERATION_KV_BUDGET_FRACTION;
     let mut sequences = 256u32;
     while sequences > 1 {
-        let bytes = model.kv_cache_bytes(n_ctx as u64 * sequences as u64, element_bytes);
+        let bytes =
+            crate::cost::blocked_kv_cache_bytes(model, n_ctx as u64 * sequences as u64, block);
         if bytes <= allowance {
             return sequences;
         }
@@ -930,8 +931,8 @@ mod tests {
     #[test]
     fn the_generation_capacity_shrinks_with_the_budget() {
         let model = crate::testing::tiny_model();
-        let roomy = generation_capacity(&model, 1024, 24 * 1024 * 1024 * 1024, 2);
-        let tight = generation_capacity(&model, 1024, 512 * 1024 * 1024, 2);
+        let roomy = generation_capacity(&model, 1024, 24 * 1024 * 1024 * 1024, (2, 1));
+        let tight = generation_capacity(&model, 1024, 512 * 1024 * 1024, (2, 1));
         assert!(roomy >= tight, "{roomy} < {tight}");
         assert!(roomy.is_power_of_two() && tight.is_power_of_two());
         assert!(tight >= 1);

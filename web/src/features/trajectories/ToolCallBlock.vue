@@ -16,12 +16,12 @@ const lines = computed(() => (props.result?.content ?? '').split('\n').length)
       <span v-else-if="result === null" class="text-caption rg-muted ml-2">no result</span>
     </summary>
     <div class="text-caption rg-muted mt-1">arguments</div>
-    <pre class="text-pre rg-code">{{ args }}</pre>
+    <pre class="rg-pre rg-code">{{ args }}</pre>
     <template v-if="result">
       <div class="text-caption mt-1" :class="result.is_error ? 'text-error' : 'rg-muted'">
         result<template v-if="lines > 1"> · {{ lines }} lines</template>
       </div>
-      <pre class="text-pre rg-code" :class="{ 'text-error': result.is_error }">{{
+      <pre class="rg-pre rg-code" :class="{ 'text-error': result.is_error }">{{
         result.content
       }}</pre>
     </template>

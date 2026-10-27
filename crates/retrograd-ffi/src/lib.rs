@@ -79,6 +79,9 @@ pub struct RetroTrainConfig {
     /// One of `RETRO_MASTER_WEIGHTS_*`: whether a half-precision parameter is
     /// trained through an F32 master copy.
     pub master_weights: c_int,
+    /// One of `RETRO_GENERATION_KV_DTYPE_*`: the dedicated generation context's
+    /// KV-cache storage.
+    pub generation_kv_dtype: c_int,
 }
 
 /// Which fixed-block state a Gefen run keeps, mirroring `retro_gefen_variant`.
@@ -770,6 +773,8 @@ unsafe extern "C" {
         variables_json: *const c_char,
     ) -> c_int;
 
+    pub fn retro_trainer_set_reasoning_budget(trainer: *mut RetroTrainer, budget: i32) -> c_int;
+
     pub fn retro_trainer_chat_template_supports_tools(
         trainer: *mut RetroTrainer,
         out_supports: *mut bool,
@@ -789,6 +794,7 @@ unsafe extern "C" {
         template_src: *const c_char,
         messages_json: *const c_char,
         tools_json: *const c_char,
+        variables_json: *const c_char,
         add_assistant: bool,
         buffer: *mut c_char,
         n_buffer: usize,
@@ -798,6 +804,7 @@ unsafe extern "C" {
     pub fn retro_chat_template_tool_call_parser(
         template_src: *const c_char,
         tools_json: *const c_char,
+        variables_json: *const c_char,
         buffer: *mut c_char,
         n_buffer: usize,
         out_n_bytes: *mut usize,
@@ -1037,6 +1044,7 @@ unsafe extern "C" {
         out_logprobs: *mut c_float,
         n_out_max: usize,
         out_n_tokens: *mut usize,
+        out_forced: *mut u8,
     ) -> c_int;
 
     pub fn retro_trainer_generate_continuous_batch(
@@ -1047,6 +1055,7 @@ unsafe extern "C" {
         out_logprobs: *mut c_float,
         n_out_max: usize,
         out_n_tokens: *mut usize,
+        out_forced: *mut u8,
     ) -> c_int;
 
     pub fn retro_trainer_score_tokens(
@@ -1658,7 +1667,7 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroLoraConfig, target_patterns), 16);
         assert_eq!(offset_of!(RetroLoraConfig, dtype), 32);
 
-        assert_eq!(size_of::<RetroTrainConfig>(), 168);
+        assert_eq!(size_of::<RetroTrainConfig>(), 176);
         assert_eq!(align_of::<RetroTrainConfig>(), 8);
         assert_eq!(offset_of!(RetroTrainConfig, generation_concurrency), 16);
         assert_eq!(offset_of!(RetroTrainConfig, kv_dtype), 24);
@@ -1703,6 +1712,10 @@ mod contract_tests {
         // master_weights lands in the tail padding after gefen_eps, so the
         // struct size is unchanged.
         assert_eq!(offset_of!(RetroTrainConfig, master_weights), 164);
+        // master_weights filled the slot ending at 168, so generation_kv_dtype
+        // opens a new one: the struct goes from 168 to 176, four bytes of it
+        // tail padding.
+        assert_eq!(offset_of!(RetroTrainConfig, generation_kv_dtype), 168);
 
         assert_eq!(size_of::<RetroScoringStats>(), 48);
         assert_eq!(align_of::<RetroScoringStats>(), 8);
@@ -2030,7 +2043,9 @@ mod contract_tests {
                 ptr::null_mut(),
                 0,
                 &mut count,
+                ptr::null_mut(),
             ));
+            assert_null_trainer(retro_trainer_set_reasoning_budget(ptr::null_mut(), -1));
             assert_null_trainer(retro_trainer_tokenize_text(
                 ptr::null_mut(),
                 text.as_ptr(),
@@ -2109,6 +2124,7 @@ mod contract_tests {
                 ptr::null_mut(),
                 0,
                 &mut count,
+                ptr::null_mut(),
             ));
             assert_null_trainer(retro_trainer_score_tokens(
                 ptr::null_mut(),
@@ -2353,6 +2369,7 @@ mod contract_tests {
             gefen_beta2: 0.0,
             gefen_eps: 0.0,
             master_weights: 0,
+            generation_kv_dtype: 0,
         };
         unsafe {
             assert!(retro_trainer_new(path.as_ptr(), &invalid).is_null());

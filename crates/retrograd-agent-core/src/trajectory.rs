@@ -31,6 +31,16 @@ pub struct Message {
     /// real failure from a successful result that merely mentions one.
     #[serde(default, skip_serializing_if = "is_false")]
     pub is_error: bool,
+    /// For `Role::Assistant`: the reasoning block its parser split out of
+    /// `content`, tags removed, when it is not empty. `content` still holds the
+    /// turn as sampled; this is what the template is handed as the turn's
+    /// reasoning when the conversation is rendered past it.
+    #[serde(
+        default,
+        rename = "reasoning_content",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reasoning: Option<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -56,6 +66,7 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: None,
             is_error: false,
+            reasoning: None,
         }
     }
 }
@@ -92,11 +103,27 @@ pub struct Provenance {
     /// How that catalog reached the model.
     pub rendering: ToolRenderingKind,
     /// For each assistant turn, in order, the prose the parser read out of it:
-    /// the turn without its call markup.
+    /// the turn without its call markup and without its reasoning block.
     pub assistant_prose: Vec<String>,
+    /// For each assistant turn, in order, the reasoning block the parser split
+    /// out of it, tags removed; empty for a turn that did not reason.
+    pub assistant_reasoning: Vec<String>,
+    /// The trajectory was truncated by a turn that ran out of tokens while
+    /// still reasoning - no answer and no call, only the reasoning block.
+    pub cut_while_reasoning: bool,
     /// Assistant turns that named no valid call: a parse error, or a turn that
     /// called nothing where a call was expected.
     pub invalid_turns: usize,
+    /// Assistant turns the conversation was rendered past, each checked once
+    /// against what it was sampled after and as.
+    pub checked_turns: usize,
+    /// Of those, the turns the template re-renders differently - an empty
+    /// reasoning block it leaves out, whitespace around a tag - that its parser
+    /// still reads as the same turn. Trained as sampled; inference that
+    /// re-renders the history shows the model the template's version.
+    pub normalized_turns: usize,
+    /// Where the first of them parts ways with the history, for the warning.
+    pub first_normalization: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -152,11 +179,13 @@ impl Trajectory {
                     "trajectory steps must partition the token sequence",
                 ));
             }
-            let expected = step.kind == StepKind::PolicyAction;
-            if self.train_mask[start..end]
-                .iter()
-                .any(|&train| train != expected)
-            {
+            // A policy action trains what the policy sampled, which is every
+            // token of it but those a reasoning budget forced in its place. It
+            // may train none: a turn cut by a token limit while the budget was
+            // forcing the end tag holds only forced tokens, and the trajectory
+            // is kept as truncated. That the whole trajectory trains something
+            // is checked above.
+            if step.kind != StepKind::PolicyAction && self.train_mask[start..end].contains(&true) {
                 return Err(Error::invalid(
                     "only PolicyAction steps may contain trainable tokens",
                 ));
@@ -263,6 +292,50 @@ mod tests {
         let mut invalid = trajectory;
         invalid.train_mask[3] = true;
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn a_policy_action_of_forced_tokens_only_is_valid_but_a_trajectory_trains_something() {
+        let mut trajectory = Trajectory {
+            scenario_id: "s".into(),
+            messages: vec![],
+            tokens: vec![1, 2, 3, 4, 5],
+            old_logprobs: vec![-0.1],
+            train_mask: vec![false, true, false, false, false],
+            steps: vec![
+                Step {
+                    kind: StepKind::Context,
+                    token_range: (0, 1),
+                    reward: None,
+                },
+                Step {
+                    kind: StepKind::PolicyAction,
+                    token_range: (1, 2),
+                    reward: None,
+                },
+                Step {
+                    kind: StepKind::ToolResult,
+                    token_range: (2, 3),
+                    reward: None,
+                },
+                // The last turn: a budget forcing its end tag, cut by the
+                // turn's token limit before the policy sampled anything.
+                Step {
+                    kind: StepKind::PolicyAction,
+                    token_range: (3, 5),
+                    reward: None,
+                },
+            ],
+            reward: Some(0.0),
+            truncated: true,
+            metadata: Default::default(),
+            provenance: None,
+        };
+        trajectory.validate().unwrap();
+
+        trajectory.train_mask[1] = false;
+        trajectory.old_logprobs.clear();
+        assert!(trajectory.validate().is_err());
     }
 
     #[test]

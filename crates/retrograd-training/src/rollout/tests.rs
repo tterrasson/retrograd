@@ -61,13 +61,14 @@ fn evenly_spaced_subset_keeps_ends_and_spread() {
     );
 }
 
-fn temp_prompts(name: &str, source: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "retrograd-prompts-{name}-{}.jsonl",
-        std::process::id()
-    ));
+fn temp_prompts(name: &str, source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("retrograd-prompts-{name}-"))
+        .tempdir()
+        .expect("create the prompts directory");
+    let path = dir.path().join("prompts.jsonl");
     std::fs::write(&path, source).unwrap();
-    path
+    (dir, path)
 }
 
 fn shell(script: &str) -> Vec<String> {
@@ -76,7 +77,7 @@ fn shell(script: &str) -> Vec<String> {
 
 #[test]
 fn prompt_reader_accepts_strict_non_empty_jsonl() {
-    let path = temp_prompts(
+    let (_tmp, path) = temp_prompts(
         "valid",
         concat!(
             "{\"messages\":[{\"role\":\"system\",\"content\":\"concise\"},{\"role\":\"user\",\"content\":\"first\"}]}\n",
@@ -88,12 +89,11 @@ fn prompt_reader_accepts_strict_non_empty_jsonl() {
         prompts.iter().map(Prompt::reward_text).collect::<Vec<_>>(),
         ["first", "second"]
     );
-    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
 fn eval_prompt_reader_detaches_the_assistant_reference() {
-    let path = temp_prompts(
+    let (_tmp, path) = temp_prompts(
         "eval-reference",
         "{\"messages\":[{\"role\":\"system\",\"content\":\"concise\"},{\"role\":\"user\",\"content\":\"2+2\"},{\"role\":\"assistant\",\"content\":\"4\"}]}\n",
     );
@@ -106,7 +106,6 @@ fn eval_prompt_reader_detaches_the_assistant_reference() {
         prompts[0].conversation.messages.last().unwrap().role,
         "user"
     );
-    std::fs::remove_file(path).unwrap();
 }
 
 /// A training line may carry a `rubric` - criteria for the judge - where it may
@@ -114,7 +113,7 @@ fn eval_prompt_reader_detaches_the_assistant_reference() {
 /// the policy would be trained on, the other is only ever read by the judge.
 #[test]
 fn a_training_prompt_carries_its_rubric_into_the_judged_group() {
-    let path = temp_prompts(
+    let (_tmp, path) = temp_prompts(
         "rubric",
         "{\"messages\":[{\"role\":\"system\",\"content\":\"concise\"},{\"role\":\"user\",\"content\":\"list the ports\"}],\"rubric\":\"expected: ss -tulpn\"}\n{\"messages\":[{\"role\":\"user\",\"content\":\"no rubric\"}],\"rubric\":\"   \"}\n",
     );
@@ -145,7 +144,6 @@ fn a_training_prompt_carries_its_rubric_into_the_judged_group() {
             .and_then(|value| value.as_str()),
         Some("expected: ss -tulpn")
     );
-    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
@@ -178,10 +176,9 @@ fn prompt_reader_reports_record_level_errors() {
             ":1: tool records are SFT data; agentic prompts are scenarios (agent_grpo)",
         ),
     ] {
-        let path = temp_prompts(name, source);
+        let (_tmp, path) = temp_prompts(name, source);
         let error = read_prompts(&path).unwrap_err();
         assert!(error.to_string().contains(expected), "{name}: {error}");
-        std::fs::remove_file(path).unwrap();
     }
 }
 

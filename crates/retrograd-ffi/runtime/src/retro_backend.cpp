@@ -37,6 +37,15 @@ ggml_backend_dev_t first_gpu_device() {
 
 namespace {
 
+// validate_train_config has already refused any other value.
+ggml_type generation_kv_type(int32_t dtype) {
+    switch (dtype) {
+        case RETRO_GENERATION_KV_DTYPE_Q8_0: return GGML_TYPE_Q8_0;
+        case RETRO_GENERATION_KV_DTYPE_Q4_0: return GGML_TYPE_Q4_0;
+        default:                             return GGML_TYPE_F16;
+    }
+}
+
 uint32_t automatic_thread_count() {
 #if defined(__APPLE__)
     uint32_t performance_cores = 0;
@@ -1255,8 +1264,11 @@ bool load_model_and_context(trainer_state & state) {
             // The optimizer may independently opt into differentiable F16 KV
             // on devices/shapes that report Flash Attention backward. Sampling
             // can always use this smaller cache because it has no backward graph.
-            generation_params.type_k = GGML_TYPE_F16;
-            generation_params.type_v = GGML_TYPE_F16;
+            // The quantized types go further on the same reasoning, and need
+            // the flash-attention path requested here to read a quantized V.
+            const ggml_type kv_type = generation_kv_type(state.train_config.generation_kv_dtype);
+            generation_params.type_k = kv_type;
+            generation_params.type_v = kv_type;
             generation_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO;
         }
         generation_ctx.reset(llama_init_from_model(model.get(), generation_params));
@@ -1684,6 +1696,17 @@ std::string backend_report(const trainer_state & state) {
             : llama_n_ubatch(state.ctx.get())) << "\n";
     out << "  fast_sampling_context: "
         << (state.train_config.fast_generation_context ? "true" : "false") << "\n";
+    // What the generation context was built with: its own type when fast, the
+    // optimizer's otherwise, nothing when sampling shares the optimizer context.
+    out << "  generation_kv_dtype: ";
+    if (!state.generation_ctx) {
+        out << "none";
+    } else if (state.train_config.fast_generation_context) {
+        out << ggml_type_name(generation_kv_type(state.train_config.generation_kv_dtype));
+    } else {
+        out << (state.effective_kv_dtype == RETRO_KV_DTYPE_F16 ? "f16" : "f32");
+    }
+    out << "\n";
     out << "  training_kv_requested_dtype: "
         << (state.train_config.kv_dtype == RETRO_KV_DTYPE_F16 ? "F16" : "F32") << "\n";
     out << "  training_kv_dtype: "

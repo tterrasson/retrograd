@@ -230,6 +230,7 @@ impl Collection<'_> {
         }
         // Before anything renders the template: the tool-support probe is cached.
         trainer.set_chat_template_variables(Some(&agent.template_variables_json()))?;
+        trainer.set_reasoning_budget(agent.reasoning_budget)?;
         let mut limits = agent.config.limits;
         limits.max_trajectory_tokens = agent.trajectory_limit(trainer.context_size()?)?;
 

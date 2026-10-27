@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn latest_checkpoint_chooses_highest_step_and_validates_empty_directories() {
-        let root = temp_path("checkpoints");
+        let (_tmp, root) = temp_path("checkpoints");
         fs::create_dir_all(&root).unwrap();
         fs::create_dir(root.join("step-000000000007.state")).unwrap();
         fs::create_dir(root.join("step-000000000042.state")).unwrap();
@@ -104,26 +104,23 @@ mod tests {
             root.join("step-000000000042.state")
         );
 
-        let empty = temp_path("empty-checkpoints");
+        let (_empty, empty) = temp_path("empty-checkpoints");
         fs::create_dir_all(&empty).unwrap();
         let error = latest_checkpoint(&empty).unwrap_err();
         assert!(error.to_string().contains("found no checkpoints"));
-        fs::remove_dir_all(root).unwrap();
-        fs::remove_dir_all(empty).unwrap();
 
-        let eval_only = temp_path("eval-only-checkpoints");
+        let (_eval_only, eval_only) = temp_path("eval-only-checkpoints");
         fs::create_dir_all(&eval_only).unwrap();
         fs::create_dir(eval_only.join("best.state")).unwrap();
         assert_eq!(
             latest_checkpoint(&eval_only).unwrap(),
             eval_only.join("best.state")
         );
-        fs::remove_dir_all(eval_only).unwrap();
     }
 
     #[test]
     fn resume_override_uses_the_latest_checkpoint_and_rejects_conflicts() {
-        let root = temp_path("resume");
+        let (_tmp, root) = temp_path("resume");
         let config_path = write_sft_config(&root);
         let checkpoint_dir = root.join("checkpoints");
         fs::create_dir_all(checkpoint_dir.join("step-000000000003.state")).unwrap();
@@ -180,7 +177,5 @@ mod tests {
                 .to_string()
                 .contains("could not read checkpoint directory")
         );
-
-        fs::remove_dir_all(root).unwrap();
     }
 }

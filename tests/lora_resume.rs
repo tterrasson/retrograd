@@ -88,9 +88,11 @@ fn resume_and_train(device: Device, adapter_path: &std::path::Path) {
         "[{device:?}] resumed training did not change the adapter"
     );
 
-    let resumed_out = std::env::temp_dir().join(format!("retrograd-resume-out-{device:?}.gguf"));
+    let tmp = common::scratch("resume-out");
+    let resumed_out = tmp
+        .path()
+        .join(format!("retrograd-resume-out-{device:?}.gguf"));
     trainer.save_lora(&resumed_out).expect("save resumed lora");
-    let _ = std::fs::remove_file(&resumed_out);
 }
 
 #[test]
@@ -103,10 +105,10 @@ fn cpu_resume_trains_a_loaded_adapter() {
         );
         return;
     }
-    let adapter = std::env::temp_dir().join("retrograd-resume-cpu.gguf");
+    let tmp = common::scratch("resume-cpu");
+    let adapter = tmp.path().join("retrograd-resume-cpu.gguf");
     train_and_export(Device::Cpu, &adapter);
     resume_and_train(Device::Cpu, &adapter);
-    let _ = std::fs::remove_file(&adapter);
 }
 
 #[cfg(retro_metal)]
@@ -124,10 +126,10 @@ fn metal_resume_trains_a_loaded_adapter() {
         );
         return;
     }
-    let adapter = std::env::temp_dir().join("retrograd-resume-metal.gguf");
+    let tmp = common::scratch("resume-metal");
+    let adapter = tmp.path().join("retrograd-resume-metal.gguf");
     train_and_export(Device::Gpu, &adapter);
     resume_and_train(Device::Gpu, &adapter);
-    let _ = std::fs::remove_file(&adapter);
 }
 
 #[cfg(retro_cuda)]
@@ -141,10 +143,10 @@ fn cuda_resume_trains_a_loaded_adapter() {
         eprintln!("skipping: CUDA device or local model unavailable");
         return;
     }
-    let adapter = std::env::temp_dir().join("retrograd-resume-cuda.gguf");
+    let tmp = common::scratch("resume-cuda");
+    let adapter = tmp.path().join("retrograd-resume-cuda.gguf");
     train_and_export(Device::Gpu, &adapter);
     resume_and_train(Device::Gpu, &adapter);
-    let _ = std::fs::remove_file(&adapter);
 }
 
 /// The optimizer captures the trainable tensors once, so swapping the adapter
@@ -159,7 +161,8 @@ fn loading_an_adapter_after_training_is_refused() {
         );
         return;
     }
-    let adapter = std::env::temp_dir().join("retrograd-resume-guard.gguf");
+    let tmp = common::scratch("resume-guard");
+    let adapter = tmp.path().join("retrograd-resume-guard.gguf");
     train_and_export(Device::Cpu, &adapter);
 
     let model = common::model_path();
@@ -176,5 +179,4 @@ fn loading_an_adapter_after_training_is_refused() {
         error.to_string().contains("optimizer"),
         "unexpected error: {error}"
     );
-    let _ = std::fs::remove_file(&adapter);
 }

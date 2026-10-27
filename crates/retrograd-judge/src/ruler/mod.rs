@@ -1229,12 +1229,8 @@ mod tests {
 
     #[test]
     fn the_cache_round_trips_through_its_jsonl_file() {
-        let path = std::env::temp_dir().join(format!(
-            "retrograd-judge-cache-{}-{:?}.jsonl",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::remove_file(&path).ok();
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let path = tmp.path().join("cache.jsonl");
         let scores = vec![Score {
             value: 0.5,
             valid: true,
@@ -1263,17 +1259,12 @@ mod tests {
         assert_eq!(cache.len(), 2);
         assert_eq!(texts.get("k3").map(String::as_str), Some("a summary"));
         assert_eq!(cache.get("k1"), Some(&scores));
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn concurrent_cache_stores_leave_complete_jsonl_rows() {
-        let path = std::env::temp_dir().join(format!(
-            "retrograd-judge-concurrent-cache-{}-{:?}.jsonl",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::remove_file(&path).ok();
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let path = tmp.path().join("cache.jsonl");
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let mut judge_config = config(listener.local_addr().unwrap());
         judge_config.cache_path = Some(path.clone());
@@ -1301,6 +1292,5 @@ mod tests {
         }
         let (scores, _) = load_cache(Some(&path)).unwrap();
         assert_eq!(scores.len(), 16);
-        std::fs::remove_file(&path).ok();
     }
 }

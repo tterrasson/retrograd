@@ -400,15 +400,15 @@ pub fn memory_breakdown_line(report: &MemoryReport) -> String {
 mod tests_support {
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    pub fn temp_path(label: &str) -> PathBuf {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-        std::env::temp_dir().join(format!(
-            "retrograd-run-{label}-{}-{}",
-            std::process::id(),
-            NEXT_ID.fetch_add(1, Ordering::Relaxed)
-        ))
+    /// A scratch directory removed when the returned guard drops.
+    pub fn temp_path(label: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("retrograd-run-{label}-"))
+            .tempdir()
+            .expect("create the scratch directory");
+        let path = dir.path().to_path_buf();
+        (dir, path)
     }
 
     pub fn write_sft_config(root: &Path) -> PathBuf {

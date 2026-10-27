@@ -41,6 +41,7 @@ http-env = ["retrograd-env/http-env"]
 container = ["retrograd-env/container"]
 
 [dev-dependencies]
+tempfile.workspace = true
 # `test-util` pauses the clock so the rollout deadline is exercised in virtual
 # time instead of making the fast lane sleep for it.
 tokio = { workspace = true, features = ["net", "test-util"] }

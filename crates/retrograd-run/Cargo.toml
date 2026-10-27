@@ -44,5 +44,8 @@ mcp = ["agent", "retrograd-agent/mcp"]
 # The Docker-backed environment pool. Pulls bollard.
 container = ["agent", "retrograd-agent/container", "retrograd-config/container"]
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

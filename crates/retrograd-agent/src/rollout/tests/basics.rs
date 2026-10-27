@@ -212,7 +212,9 @@ async fn an_unstable_chat_template_fails_instead_of_training_off_policy() {
     );
     let error = engine.rollout(&scenario(), 7).await.unwrap_err();
     assert!(
-        error.to_string().contains("rewrote turn 0"),
+        error
+            .to_string()
+            .contains("rewrote the framing before assistant turn 0"),
         "unexpected error: {error}"
     );
 }
@@ -380,4 +382,139 @@ async fn a_valid_call_resets_the_failed_turn_count() {
         "one call, then two failed turns before the cut; the call did not count"
     );
     assert!(trajectory.truncated);
+}
+
+/// Answers with three tokens, the middle one forced by the reasoning budget.
+struct ForcedPolicy;
+
+#[async_trait]
+impl Policy for ForcedPolicy {
+    async fn render_chat_framing(
+        &self,
+        messages: &[Message],
+        _tools: &[ToolSpec],
+        _add: bool,
+    ) -> Result<RenderedFraming> {
+        Ok(framing(messages, &[1, 2], &[20]))
+    }
+
+    async fn generate_shared(
+        &self,
+        _prompt: Vec<i32>,
+        sampling: Vec<SamplingParams>,
+    ) -> Result<Vec<PolicyGeneration>> {
+        Ok(sampling
+            .iter()
+            .map(|_| PolicyGeneration {
+                tokens: vec![11, 12, 13],
+                text: "answer".into(),
+                stopped_at_eog: true,
+                forced: vec![false, true, false],
+            })
+            .collect())
+    }
+
+    async fn score_masked(&self, _tokens: Vec<i32>, train_mask: Vec<bool>) -> Result<Vec<f32>> {
+        Ok(logprobs(&train_mask, -0.5))
+    }
+}
+
+#[tokio::test]
+async fn a_token_the_reasoning_budget_forced_is_kept_but_not_trained() {
+    let engine = RolloutEngine::new(
+        Arc::new(ForcedPolicy),
+        RolloutLimits {
+            max_new_tokens_per_turn: 4,
+            max_trajectory_tokens: 8,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let trajectory = engine.rollout(&scenario(), 7).await.unwrap();
+    assert_eq!(trajectory.tokens, [1, 2, 11, 12, 13]);
+    assert_eq!(trajectory.train_mask, [false, false, true, false, true]);
+    assert_eq!(trajectory.old_logprobs, [-0.5, -0.5]);
+}
+
+/// Calls a tool on the first turn; on the second, the reasoning budget forces
+/// the end tag and the turn's token limit falls before the tag is out.
+struct ForcedCutPolicy;
+
+impl ForcedCutPolicy {
+    fn generation(prompt_len: usize) -> PolicyGeneration {
+        match prompt_len > 2 {
+            true => PolicyGeneration {
+                tokens: vec![11, 12],
+                text: String::new(),
+                stopped_at_eog: false,
+                forced: vec![true, true],
+            },
+            false => multi_turn_generation(prompt_len),
+        }
+    }
+}
+
+#[async_trait]
+impl Policy for ForcedCutPolicy {
+    async fn render_chat_framing(
+        &self,
+        messages: &[Message],
+        _tools: &[ToolSpec],
+        _add: bool,
+    ) -> Result<RenderedFraming> {
+        Ok(framing(messages, &[1, 2], &[20]))
+    }
+
+    async fn generate_shared(
+        &self,
+        prompt: Vec<i32>,
+        sampling: Vec<SamplingParams>,
+    ) -> Result<Vec<PolicyGeneration>> {
+        Ok(sampling
+            .iter()
+            .map(|_| Self::generation(prompt.len()))
+            .collect())
+    }
+
+    async fn generate_continuous(
+        &self,
+        requests: Vec<(Vec<i32>, SamplingParams)>,
+    ) -> Result<Vec<PolicyGeneration>> {
+        Ok(requests
+            .iter()
+            .map(|(prompt, _)| Self::generation(prompt.len()))
+            .collect())
+    }
+
+    async fn score_masked(&self, _tokens: Vec<i32>, train_mask: Vec<bool>) -> Result<Vec<f32>> {
+        Ok(logprobs(&train_mask, -0.5))
+    }
+}
+
+/// A last turn of forced tokens only trains nothing, and the trajectory is
+/// still kept, as the truncation it is.
+#[tokio::test]
+async fn a_last_turn_cut_while_the_budget_forces_its_end_tag_is_kept_as_truncated() {
+    let engine = engine_with(
+        Arc::new(ForcedCutPolicy),
+        RolloutLimits {
+            max_turns: 4,
+            max_new_tokens_per_turn: 2,
+            max_trajectory_tokens: 32,
+            ..Default::default()
+        },
+    );
+    let trajectory = engine.rollout(&scenario(), 7).await.unwrap();
+    assert!(trajectory.truncated);
+    assert_eq!(trajectory.tokens, [1, 2, 10, 20, 11, 12]);
+    assert_eq!(
+        trajectory.train_mask,
+        [false, false, true, false, false, false]
+    );
+    assert_eq!(trajectory.old_logprobs, [-0.5]);
+    let last = trajectory.steps.last().unwrap();
+    assert_eq!(
+        (last.kind, last.token_range),
+        (StepKind::PolicyAction, (4, 6))
+    );
 }

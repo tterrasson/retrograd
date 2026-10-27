@@ -279,7 +279,8 @@ fn an_unusable_teacher_is_refused_by_a_gate_that_names_it() {
         eprintln!("skipping: no local test model");
         return;
     };
-    let missing = std::env::temp_dir().join("retrograd-distill-absent-teacher.gguf");
+    let tmp = common::scratch("distill-absent-teacher");
+    let missing = tmp.path().join("retrograd-distill-absent-teacher.gguf");
     let error = Teacher::open(&missing, &config()).expect_err("a missing teacher is refused");
     assert!(error.is_user_error(), "{error}");
     assert!(
@@ -385,8 +386,9 @@ fn an_identical_teacher_leaves_the_adapter_untouched() {
         n_topk: 1,
     };
 
-    let before = std::env::temp_dir().join("retrograd-distill-null-before.gguf");
-    let after = std::env::temp_dir().join("retrograd-distill-null-after.gguf");
+    let tmp = common::scratch("distill-null");
+    let before = tmp.path().join("retrograd-distill-null-before.gguf");
+    let after = tmp.path().join("retrograd-distill-null-after.gguf");
     student.save_lora(&before).expect("save adapter");
     let metrics = student.train_weighted(&batch, 0).expect("weighted step");
     student.save_lora(&after).expect("save adapter");
@@ -401,8 +403,6 @@ fn an_identical_teacher_leaves_the_adapter_untouched() {
         before_bytes, after_bytes,
         "a zero-advantage update moved the adapter"
     );
-    let _ = std::fs::remove_file(&before);
-    let _ = std::fs::remove_file(&after);
 }
 
 /// The null test of the *measurement* path, symmetric to the null test of the
@@ -421,9 +421,8 @@ fn a_measurement_against_an_identical_teacher_reports_no_divergence() {
         eprintln!("skipping: no local test model");
         return;
     };
-    let dir = std::env::temp_dir().join(format!("retrograd-distill-eval-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create the measurement directory");
+    let tmp = common::scratch("distill-eval");
+    let dir = tmp.path();
     let held_out = dir.join("held-out.jsonl");
     std::fs::write(
         &held_out,
@@ -498,8 +497,6 @@ fn a_measurement_against_an_identical_teacher_reports_no_divergence() {
     assert_eq!(bench.reference_examples, 1);
     let perplexity = bench.reference_perplexity().expect("a reference answer");
     assert!(perplexity > 1.0 && perplexity.is_finite(), "{perplexity}");
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The null test of the objective again, but end to end through the CLI: the
@@ -520,9 +517,8 @@ fn a_distillation_update_against_an_identical_teacher_writes_an_untouched_adapte
         eprintln!("skipping: no local test model");
         return;
     };
-    let dir = std::env::temp_dir().join(format!("retrograd-distill-cli-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create the run directory");
+    let tmp = common::scratch("distill-cli");
+    let dir = tmp.path();
     std::fs::write(
         dir.join("prompts.jsonl"),
         format!("{{\"messages\":[{{\"role\":\"user\",\"content\":\"{PROMPT}\"}}]}}\n"),
@@ -571,7 +567,6 @@ fn a_distillation_update_against_an_identical_teacher_writes_an_untouched_adapte
         trained, fresh,
         "an identical teacher moved the adapter: the update is not a no-op"
     );
-    std::fs::remove_dir_all(dir).expect("clean up");
 }
 
 /// The null test of the offline top-k path, symmetric to the objective's.
@@ -661,7 +656,8 @@ fn a_unit_sidecar_reproduces_the_sft_run_on_both_optimizer_paths() {
         let sft = sft_trainer
             .train_sft_with_progress(&prepared, None, |_| {})
             .expect("sft step");
-        let sft_adapter = std::env::temp_dir().join("retrograd-distill-null-sft.gguf");
+        let tmp = common::scratch("distill-null");
+        let sft_adapter = tmp.path().join("retrograd-distill-null-sft.gguf");
         sft_trainer.save_lora(&sft_adapter).expect("save adapter");
         drop(sft_trainer);
 
@@ -680,7 +676,7 @@ fn a_unit_sidecar_reproduces_the_sft_run_on_both_optimizer_paths() {
                 0,
             )
             .expect("top-k step");
-        let kd_adapter = std::env::temp_dir().join("retrograd-distill-null-kd.gguf");
+        let kd_adapter = tmp.path().join("retrograd-distill-null-kd.gguf");
         kd_trainer.save_lora(&kd_adapter).expect("save adapter");
         drop(kd_trainer);
 
@@ -702,7 +698,5 @@ fn a_unit_sidecar_reproduces_the_sft_run_on_both_optimizer_paths() {
             sft_bytes, kd_bytes,
             "chunked={chunked}: a unit sidecar moved the adapter differently from SFT"
         );
-        let _ = std::fs::remove_file(&sft_adapter);
-        let _ = std::fs::remove_file(&kd_adapter);
     }
 }

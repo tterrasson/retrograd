@@ -19,7 +19,7 @@ async fn parent(fixture: &Fixture, name: &str) -> (axum::Router, String, std::pa
     let id = created["id"].as_str().expect("an id").to_string();
     let view = wait_for_terminal(&router, &id).await;
 
-    let directory = fixture.dir.join("ckpt");
+    let directory = fixture.dir.path().join("ckpt");
     std::fs::create_dir_all(&directory).expect("the checkpoint directory");
     let signature = trajectory_of(&view["effective_config"]);
     write_checkpoint(
@@ -28,7 +28,7 @@ async fn parent(fixture: &Fixture, name: &str) -> (axum::Router, String, std::pa
         10,
         "sft",
         &signature,
-        &fixture.dir.join("model.gguf"),
+        &fixture.dir.path().join("model.gguf"),
     );
     write_checkpoint(
         &directory,
@@ -36,7 +36,7 @@ async fn parent(fixture: &Fixture, name: &str) -> (axum::Router, String, std::pa
         20,
         "sft",
         &signature,
-        &fixture.dir.join("model.gguf"),
+        &fixture.dir.path().join("model.gguf"),
     );
     (router, id, directory)
 }

@@ -12,7 +12,7 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use retrograd::checkpoint::{self, Checkpoint};
 use retrograd::{CheckpointMetadata, Device, KvDtype, LoraConfig, TargetSet, TrainConfig, Trainer};
@@ -87,13 +87,6 @@ fn metadata(model: &Path) -> CheckpointMetadata {
     }
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("retrograd-kvgrad-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&path);
-    std::fs::create_dir_all(&path).expect("create scratch directory");
-    path
-}
-
 /// Trains one step on every attention projection and returns each LoRA tensor
 /// paired with the total magnitude of its AdamW second moment. A tensor that
 /// never received a gradient has `v` identically zero.
@@ -103,7 +96,8 @@ fn second_moment_magnitudes(
     kv_dtype: KvDtype,
     scratch_name: &str,
 ) -> Vec<(String, f64)> {
-    let root = scratch(scratch_name);
+    let tmp = common::scratch(scratch_name);
+    let root = tmp.path();
     let mut trainer = Trainer::new(model, config(device, kv_dtype)).expect("load trainer");
     if kv_dtype == KvDtype::F16 {
         let report = trainer.backend_report().expect("F16 KV backend report");
@@ -162,7 +156,6 @@ fn second_moment_magnitudes(
         })
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
-    let _ = std::fs::remove_dir_all(&root);
     out
 }
 

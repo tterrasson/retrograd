@@ -230,13 +230,6 @@ fn resolved_set(model: &Path, device: Device) -> TrainableSet {
         .expect("the selected projections resolve")
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("retrograd-f16-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&path);
-    std::fs::create_dir_all(&path).expect("create scratch directory");
-    path
-}
-
 /// One optimizer step, on exactly one row.
 fn train_one_row(trainer: &mut Trainer) -> u64 {
     let mut tokens = trainer.tokenize_text(&TEXT.repeat(8)).expect("tokenize");
@@ -789,7 +782,8 @@ fn the_store_follows_the_master(storage: &Storage, optimizer: OptimizerKind) {
     };
     let device = Device::Cpu;
     let _guard = common::serialize_models();
-    let root = scratch("master");
+    let tmp = common::scratch("master");
+    let root = tmp.path();
 
     let mut trainer =
         Trainer::new(&model, config(optimizer, device, true)).expect("load the stored trainer");
@@ -892,7 +886,6 @@ fn the_store_follows_the_master(storage: &Storage, optimizer: OptimizerKind) {
          grid point its own F32 master rounds to",
         storage.dtype
     );
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// A whole model's worth of master copies fits in the context the allocator
@@ -1766,7 +1759,8 @@ fn checkpoint_restores(storage: &Storage, optimizer: OptimizerKind, device: Devi
         return;
     };
     let _guard = common::serialize_models();
-    let root = scratch("resume");
+    let tmp = common::scratch("resume");
+    let root = tmp.path();
     let set = resolved_set(&model, device);
 
     // Long enough that the momenta are no longer their initial zeros.
@@ -1937,7 +1931,8 @@ fn interrupted_run_continuity(
     master: bool,
 ) {
     let _guard = common::serialize_models();
-    let root = scratch("continuity");
+    let tmp = common::scratch("continuity");
+    let root = tmp.path();
     let set = resolved_set(&model, device);
 
     // Both halves are longer than one step: with `n_batch / n_ubatch` micro

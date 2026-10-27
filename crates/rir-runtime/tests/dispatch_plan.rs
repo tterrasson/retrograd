@@ -68,16 +68,14 @@ fn pass(kernel: &rir_core::ValidatedKernel, schedule: Schedule) -> Option<(Manif
     let lowered = rir_lower::lower(kernel, schedule).expect("lowering a plan pass");
     let glsl = rir_emit::emit_vulkan(&lowered).expect("emitting a plan pass");
     let manifest = Manifest::from_json(&rir_emit::emit_manifest(&lowered, None)).expect("manifest");
-    let dir = std::env::temp_dir().join(format!(
-        "rir-plan-{}-{}",
-        std::process::id(),
-        rir_emit::artifact_name(&lowered)
-    ));
-    std::fs::create_dir_all(&dir).expect("temporary directory");
-    let comp = dir.join("kernel.comp");
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("rir-plan-{}-", rir_emit::artifact_name(&lowered)))
+        .tempdir()
+        .expect("temporary directory");
+    let comp = dir.path().join("kernel.comp");
     std::fs::write(&comp, glsl).expect("writing the shader");
     let spirv = compile_glsl(&comp);
-    let _ = std::fs::remove_dir_all(&dir);
+    drop(dir);
     match spirv {
         Ok(s) => Some((manifest, s)),
         Err(e) if is_unavailable(&e) => {

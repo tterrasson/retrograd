@@ -159,11 +159,11 @@ async function generate() {
               <div class="text-caption rg-muted">
                 adapter · {{ generation.tokens }} tokens · iteration {{ generation.iteration }}
               </div>
-              <pre class="text-pre rg-code">{{ generation.text }}</pre>
+              <pre class="rg-pre rg-code">{{ generation.text }}</pre>
             </v-col>
             <v-col v-if="generation.base_text != null" cols="6">
               <div class="text-caption rg-muted">base</div>
-              <pre class="text-pre rg-code">{{ generation.base_text }}</pre>
+              <pre class="rg-pre rg-code">{{ generation.base_text }}</pre>
             </v-col>
           </v-row>
         </v-card-text>

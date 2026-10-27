@@ -53,14 +53,15 @@ fn fixture_model() -> Option<PathBuf> {
 }
 
 struct Workspace {
-    dir: PathBuf,
+    dir: tempfile::TempDir,
 }
 
 impl Workspace {
     fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!("retrograd-server-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("the workspace");
+        let dir = tempfile::Builder::new()
+            .prefix("retrograd-server-e2e-")
+            .tempdir()
+            .expect("the workspace");
         // Short exchanges, so the pinned context holds them whole and no example
         // is truncated - truncation is a semantic degradation the resolver would
         // (correctly) refuse without an opt-in.
@@ -78,19 +79,13 @@ impl Workspace {
                 index + 1
             ));
         }
-        std::fs::write(dir.join("train.jsonl"), &data).expect("the training data");
-        std::fs::write(dir.join("eval.jsonl"), &data).expect("the evaluation data");
+        std::fs::write(dir.path().join("train.jsonl"), &data).expect("the training data");
+        std::fs::write(dir.path().join("eval.jsonl"), &data).expect("the evaluation data");
         Self { dir }
     }
 
     fn path(&self, name: &str) -> String {
-        self.dir.join(name).to_string_lossy().into_owned()
-    }
-}
-
-impl Drop for Workspace {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        self.dir.path().join(name).to_string_lossy().into_owned()
     }
 }
 
@@ -98,7 +93,7 @@ impl Drop for Workspace {
 /// the probe that loads a model.
 fn router(workspace: &Workspace) -> Router {
     let config = ServerConfig {
-        state_dir: Some(workspace.dir.join("state")),
+        state_dir: Some(workspace.dir.path().join("state")),
         // On, deliberately: this is the lane that checks the measured pass against
         // llama.cpp rather than against a fake.
         calibrate_runs: Some(true),
@@ -475,7 +470,7 @@ async fn a_run_on_the_cpu_fixture_is_planned_driven_and_forked() {
     // And the correction table the calibration wrote is on disk, keyed by this
     // machine - which is what makes the resolver better on the next run rather
     // than only on this one.
-    let calibration = workspace.dir.join("state/calibration.json");
+    let calibration = workspace.dir.path().join("state/calibration.json");
     assert!(calibration.is_file(), "the calibration table was written");
     let table = std::fs::read_to_string(&calibration).expect("read");
     assert!(table.contains("entries"), "{table}");
@@ -540,7 +535,7 @@ async fn a_base_weight_plan_is_measured_as_the_run_it_describes() {
     .await;
     assert_eq!(status, StatusCode::OK, "{adapter}");
     let calibration: Value = serde_json::from_str(
-        &std::fs::read_to_string(workspace.dir.join("state").join("calibration.json"))
+        &std::fs::read_to_string(workspace.dir.path().join("state").join("calibration.json"))
             .expect("the calibration table"),
     )
     .expect("valid json");

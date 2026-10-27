@@ -221,17 +221,18 @@ mod tests {
         }
     }
 
-    fn temp_dir(label: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("retrograd-journal-{label}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create");
-        dir
+    fn temp_dir(label: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("retrograd-journal-{label}-"))
+            .tempdir()
+            .expect("create the journal directory");
+        let path = dir.path().to_path_buf();
+        (dir, path)
     }
 
     #[test]
     fn a_run_survives_the_process_that_wrote_it() {
-        let dir = temp_dir("roundtrip");
+        let (_tmp, dir) = temp_dir("roundtrip");
         let journal = Journal::create(&dir, "abc").expect("create the journal");
         journal.write_document(&stored("abc", dto::RunStatus::Completed, 10));
         journal.append(&dto::RunEvent {
@@ -263,12 +264,11 @@ mod tests {
             "{}",
             restored[0].effective_config.get()
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_run_still_marked_running_is_interrupted_on_disk() {
-        let dir = temp_dir("interrupted");
+        let (_tmp, dir) = temp_dir("interrupted");
         let journal = Journal::create(&dir, "live").expect("create the journal");
         journal.write_document(&stored("live", dto::RunStatus::Running, 10));
 
@@ -283,12 +283,11 @@ mod tests {
             1,
             "a terminal run is not re-marked on every scan"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn the_history_is_newest_first_and_skips_what_it_cannot_read() {
-        let dir = temp_dir("ordering");
+        let (_tmp, dir) = temp_dir("ordering");
         for (id, created) in [("old", 10_u64), ("new", 30), ("mid", 20)] {
             let journal = Journal::create(&dir, id).expect("create");
             journal.write_document(&stored(id, dto::RunStatus::Completed, created));
@@ -298,6 +297,5 @@ mod tests {
 
         let ids: Vec<String> = scan(&dir).into_iter().map(|run| run.id).collect();
         assert_eq!(ids, ["new", "mid", "old"]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

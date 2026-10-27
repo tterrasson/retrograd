@@ -45,7 +45,9 @@ pub use judge::{
     Aggregation, CommandReward, CompactionConfig, JudgeBackend, JudgeBatchMetrics, JudgeConfig,
     JudgeContext, JudgeFailurePolicy, JudgeStrategy, RewardBackend, RulerConfig, RulerJudge, Score,
 };
-pub use policy::{Policy, PolicyActor, PolicyGeneration, PolicyHandle, TrainerLender};
+pub use policy::{
+    Policy, PolicyActor, PolicyGeneration, PolicyHandle, RenderedFraming, TrainerLender,
+};
 pub use retrograd_agent_core::config::{AgentConfig, AgentGrpoConfig};
 pub use retrograd_agent_core::scenario::{RolloutLimits, Scenario, TruncationPolicy};
 pub use retrograd_agent_core::{

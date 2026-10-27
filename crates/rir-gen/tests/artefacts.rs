@@ -250,10 +250,13 @@ fn the_generated_shaders_compile_if_a_glsl_compiler_is_available() {
         eprintln!("no GLSL compiler - shader validation skipped");
         return;
     };
-    // Per process: two lanes running this test at once must not write each
+    // Per run: two lanes running this test at once must not write each
     // other's sources or SPIR-V.
-    let tmp = std::env::temp_dir().join(format!("rir-glsl-check-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp).unwrap();
+    let scratch = tempfile::Builder::new()
+        .prefix("rir-glsl-check-")
+        .tempdir()
+        .unwrap();
+    let tmp = scratch.path();
     let jobs: Vec<(String, String)> = generate_all()
         .unwrap()
         .into_iter()
@@ -302,8 +305,11 @@ fn the_generated_shaders_compile_if_a_metal_compiler_is_available() {
         return;
     }
 
-    let tmp = std::env::temp_dir().join("rir-metal-check");
-    std::fs::create_dir_all(&tmp).unwrap();
+    let scratch = tempfile::Builder::new()
+        .prefix("rir-metal-check-")
+        .tempdir()
+        .unwrap();
+    let tmp = scratch.path();
     // The pairing of a source with the language version *its own* manifest
     // claims is resolved here, before anything is spawned: it reads the whole
     // file list of each kernel so every emitted source is covered.
@@ -397,9 +403,13 @@ fn the_generated_kernels_compile_if_a_cuda_toolkit_is_available() {
         eprintln!("no CUDA toolkit - .cu validation skipped");
         return;
     }
-    // Per process: two lanes running this test at once must not write each
+    // Per run: two lanes running this test at once must not write each
     // other's sources.
-    let root = std::env::temp_dir().join(format!("rir-cuda-check-{}", std::process::id()));
+    let scratch = tempfile::Builder::new()
+        .prefix("rir-cuda-check-")
+        .tempdir()
+        .unwrap();
+    let root = scratch.path();
     let rir = root.join("ggml-cuda/rir");
     let params = root.join("ggml-rir");
     std::fs::create_dir_all(&rir).unwrap();
@@ -499,7 +509,6 @@ fn the_generated_kernels_compile_if_a_cuda_toolkit_is_available() {
             String::from_utf8_lossy(&out.stderr)
         ))
     });
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// The blocked scan, now that it is a table entry rather than a compiler

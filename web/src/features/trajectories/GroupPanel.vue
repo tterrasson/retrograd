@@ -159,13 +159,13 @@ function toggleMember(member: number) {
         <template v-for="(message, index) in prompt.messages" :key="index">
           <details v-if="message.role === 'system'" class="mb-1">
             <summary class="text-caption rg-clickable">system</summary>
-            <pre class="text-pre rg-code">{{ message.content }}</pre>
+            <pre class="rg-pre rg-code">{{ message.content }}</pre>
           </details>
           <MessageBubble v-else :message="message" :markdown="filters.markdown" />
         </template>
         <template v-if="prompt.reward_text && prompt.reward_text !== lastUser">
           <div class="text-caption rg-muted">reward text</div>
-          <pre class="text-pre rg-code">{{ prompt.reward_text }}</pre>
+          <pre class="rg-pre rg-code">{{ prompt.reward_text }}</pre>
         </template>
         <details v-if="prompt.metadata && Object.keys(prompt.metadata).length">
           <summary class="text-caption rg-clickable">scenario metadata</summary>

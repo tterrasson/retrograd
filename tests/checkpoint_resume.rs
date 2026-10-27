@@ -5,7 +5,7 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use retrograd::checkpoint::{self, ArtifactPolicy, Checkpoint};
 use retrograd::{
@@ -36,13 +36,6 @@ fn lora() -> LoraConfig {
     config.seed = 7;
     config.targets = TargetSet::Patterns(vec!["blk.2.attn_q.weight".to_string()]);
     config
-}
-
-fn scratch(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("retrograd-ckpt-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&path);
-    std::fs::create_dir_all(&path).expect("create scratch directory");
-    path
 }
 
 fn metadata(model: &Path, global_step: u64) -> CheckpointMetadata {
@@ -162,7 +155,8 @@ fn a_checkpoint_taken_before_the_first_step_declares_no_optimizer_state() {
         return;
     };
     let _guard = common::serialize_models();
-    let root = scratch("cold");
+    let tmp = common::scratch("cold");
+    let root = tmp.path();
     let mut trainer = Trainer::new(&model, config()).expect("load trainer");
     trainer.create_lora(&lora()).expect("create lora");
 
@@ -189,7 +183,8 @@ fn a_checkpoint_after_a_step_carries_named_slots_that_restore_verbatim() {
         return;
     };
     let _guard = common::serialize_models();
-    let root = scratch("moments");
+    let tmp = common::scratch("moments");
+    let root = tmp.path();
 
     let mut trainer = Trainer::new(&model, config()).expect("load trainer");
     trainer.create_lora(&lora()).expect("create lora");
@@ -321,7 +316,8 @@ fn a_checkpoint_gguf_holds_only_lora_tensors_and_loads_as_a_cold_adapter() {
         return;
     };
     let _guard = common::serialize_models();
-    let root = scratch("gguf");
+    let tmp = common::scratch("gguf");
+    let root = tmp.path();
 
     let mut trainer = Trainer::new(&model, config()).expect("load trainer");
     trainer.create_lora(&lora()).expect("create lora");
@@ -366,7 +362,8 @@ fn restoring_the_optimizer_state_tracks_the_uninterrupted_run_more_closely() {
         return;
     };
     let _guard = common::serialize_models();
-    let root = scratch("continuity");
+    let tmp = common::scratch("continuity");
+    let root = tmp.path();
 
     // Reference: two consecutive training runs in one process.
     let mut straight = Trainer::new(&model, config()).expect("load trainer");
@@ -429,7 +426,8 @@ fn exact_numerical_continuity_after_a_resume() {
         return;
     };
     let _guard = common::serialize_models();
-    let root = scratch("exact");
+    let tmp = common::scratch("exact");
+    let root = tmp.path();
 
     let mut straight = Trainer::new(&model, config()).expect("load trainer");
     straight.create_lora(&lora()).expect("create lora");
@@ -468,7 +466,8 @@ fn an_incompatible_run_is_refused_before_anything_is_written_into_the_trainer() 
         return;
     };
     let _guard = common::serialize_models();
-    let root = scratch("refuse");
+    let tmp = common::scratch("refuse");
+    let root = tmp.path();
 
     let mut trainer = Trainer::new(&model, config()).expect("load trainer");
     trainer.create_lora(&lora()).expect("create lora");
@@ -532,7 +531,8 @@ fn an_interrupted_write_leaves_no_loadable_checkpoint() {
         return;
     };
     let _guard = common::serialize_models();
-    let root = scratch("atomic");
+    let tmp = common::scratch("atomic");
+    let root = tmp.path();
 
     let mut trainer = Trainer::new(&model, config()).expect("load trainer");
     trainer.create_lora(&lora()).expect("create lora");
@@ -560,7 +560,8 @@ fn an_artifact_travels_with_the_checkpoint_under_its_declared_policy() {
         return;
     };
     let _guard = common::serialize_models();
-    let root = scratch("artifacts");
+    let tmp = common::scratch("artifacts");
+    let root = tmp.path();
 
     let mut trainer = Trainer::new(&model, config()).expect("load trainer");
     trainer.create_lora(&lora()).expect("create lora");

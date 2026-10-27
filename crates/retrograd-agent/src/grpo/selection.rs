@@ -121,6 +121,100 @@ pub(super) fn tool_call_parse_warning(
     ))
 }
 
+/// Builds the warning for a first update where at least half the rollouts were
+/// truncated by a turn still reasoning: the model's reasoning block outgrew the
+/// turn's token budget, so it never reached an answer or a call.
+///
+/// Told apart from a call-format mismatch by the parser itself, which splits
+/// the reasoning block out with the template's own tags: a cut turn reads as
+/// reasoning and nothing else.
+pub(super) fn reasoning_truncation_warning(
+    attempted: usize,
+    cut_while_reasoning: usize,
+    max_new_tokens_per_turn: u32,
+) -> Option<String> {
+    if cut_while_reasoning == 0 || cut_while_reasoning * 2 < attempted {
+        return None;
+    }
+    Some(format!(
+        "{cut_while_reasoning} of {attempted} rollouts were truncated while the model was still \
+         reasoning, before any answer or tool call: its reasoning outgrew \
+         agent.max_new_tokens_per_turn ({max_new_tokens_per_turn}). Raise it, cap the reasoning \
+         with agent.reasoning_budget, or turn it off with \
+         template_variables = {{ enable_thinking = false }} if the template reads that variable"
+    ))
+}
+
+/// Builds the warning for a run whose template re-renders some sampled turns
+/// differently from how they were sampled, while its parser still reads them
+/// as the same turn: an empty reasoning block the history leaves out,
+/// whitespace around a tag.
+///
+/// Not a refusal: the sampled tokens stay what is trained, and no incremental
+/// stream could follow the template's version without re-tokenizing what was
+/// sampled. But an inference server re-renders the history, so the model is
+/// trained on one context and served another, and that is worth saying once.
+pub(super) fn rerender_normalization_warning(
+    normalized: usize,
+    checked: usize,
+    first: Option<&str>,
+) -> Option<String> {
+    if normalized == 0 {
+        return None;
+    }
+    let first = first
+        .map(|first| format!(" First, {first}."))
+        .unwrap_or_default();
+    Some(format!(
+        "the chat template re-renders {normalized} of {checked} sampled turns differently from how \
+         they were sampled, though its parser reads them as the same turns. They are trained as \
+         sampled; an inference server that re-renders the history shows the model the template's \
+         version instead (agent/rerender_normalized_fraction).{first}"
+    ))
+}
+
+#[cfg(test)]
+mod rerender_normalization_tests {
+    use super::*;
+
+    #[test]
+    fn a_run_whose_history_is_its_samples_is_left_alone() {
+        assert!(rerender_normalization_warning(0, 12, None).is_none());
+    }
+
+    #[test]
+    fn a_normalized_turn_is_counted_and_its_gap_shown() {
+        let warning = rerender_normalization_warning(3, 12, Some("assistant turn 0: x")).unwrap();
+        assert!(warning.contains("3 of 12 sampled turns"), "{warning}");
+        assert!(
+            warning.ends_with("First, assistant turn 0: x."),
+            "{warning}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod reasoning_truncation_tests {
+    use super::*;
+
+    #[test]
+    fn a_minority_cut_while_reasoning_is_not_the_story() {
+        assert!(reasoning_truncation_warning(16, 0, 512).is_none());
+        assert!(reasoning_truncation_warning(16, 7, 512).is_none());
+    }
+
+    #[test]
+    fn a_majority_cut_while_reasoning_names_the_budget_and_the_way_out() {
+        let warning = reasoning_truncation_warning(16, 16, 512).expect("warned");
+        assert!(warning.starts_with("16 of 16 rollouts"), "{warning}");
+        assert!(
+            warning.contains("max_new_tokens_per_turn (512)"),
+            "{warning}"
+        );
+        assert!(warning.contains("reasoning_budget"), "{warning}");
+    }
+}
+
 #[cfg(test)]
 mod tool_call_guard_tests {
     use super::*;

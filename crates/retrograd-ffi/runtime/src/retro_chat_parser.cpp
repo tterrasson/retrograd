@@ -9,6 +9,7 @@
 
 #include "chat.h"
 
+#include <cctype>
 #include <mutex>
 #include <unordered_map>
 
@@ -19,14 +20,17 @@ namespace {
 using json = common_json;
 
 // Everything the derivation reads: the template source the tool catalog
-// selects, the bos/eos text it renders, and the catalog itself, since the
-// generated grammar may name its functions. The derivation is deterministic,
-// so the same recipe always yields the parser it was validated with.
+// selects, the bos/eos text it renders, the catalog itself, since the
+// generated grammar may name its functions, and the template variables, since
+// they decide the generation prompt the parser starts from. The derivation is
+// deterministic, so the same recipe always yields the parser it was validated
+// with.
 struct parser_recipe {
     std::string template_src;
     std::string bos_token;
     std::string eos_token;
     std::string tools_json;
+    std::string variables_json;
 };
 
 std::string encode_parser_blob(const parser_recipe & recipe) {
@@ -35,6 +39,7 @@ std::string encode_parser_blob(const parser_recipe & recipe) {
     envelope["bos_token"] = recipe.bos_token;
     envelope["eos_token"] = recipe.eos_token;
     envelope["tools"] = recipe.tools_json;
+    envelope["variables"] = recipe.variables_json;
     return envelope.dump();
 }
 
@@ -59,7 +64,8 @@ bool decode_parser_blob(const std::string & blob, parser_recipe & out) {
         return true;
     };
     return read("template", out.template_src) && read("bos_token", out.bos_token)
-        && read("eos_token", out.eos_token) && read("tools", out.tools_json);
+        && read("eos_token", out.eos_token) && read("tools", out.tools_json)
+        && read("variables", out.variables_json);
 }
 
 // These parser entry points return JSON through the same two-call buffer
@@ -86,19 +92,18 @@ enum class parser_derivation {
     error,
 };
 
-parser_derivation derive_parser(
-        const common_chat_templates * templates,
-        const std::string & tools_json,
-        common_chat_params & params,
-        std::string & template_src) {
-    common_chat_templates_inputs inputs;
+// The inputs of a derivation that do not depend on the catalog: one user turn
+// and the generation prompt, rendered under the same variables as the prompts
+// the parser will read the continuations of. `variables_json` is the resolved
+// object, `enable_thinking` included (see resolve_derivation_variables).
+bool derivation_inputs(const std::string & variables_json, common_chat_templates_inputs & inputs) {
     inputs.use_jinja = true;
     inputs.add_generation_prompt = true;
     inputs.parallel_tool_calls = true;
-    // The sampled text is what gets trained, so nothing may be moved out of it
-    // into a separate `reasoning_content` field: a template's own thinking tags
-    // stay part of the content the trajectory replays.
-    inputs.reasoning_format = COMMON_REASONING_FORMAT_NONE;
+    // llama.cpp splits the reasoning out, with the tags its own analysis of the
+    // template found, so no tag is spelled here. Training never reads this
+    // text back: it trains the sampled tokens (see Policy::render_chat_framing).
+    inputs.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
     // One user turn is the minimum the generation-prompt probe needs: it
     // renders the conversation with and without the assistant prefix and keeps
     // the difference.
@@ -106,6 +111,40 @@ parser_derivation derive_parser(
     user.role = "user";
     user.content = "probe";
     inputs.messages.push_back(user);
+
+    json variables;
+    try {
+        variables = json::parse(variables_json);
+    } catch (const std::exception & err) {
+        set_error(std::string("failed to parse chat template variables: ") + err.what());
+        return false;
+    }
+    if (!variables.is_object()) {
+        set_error("chat template variables must be a JSON object");
+        return false;
+    }
+    // llama.cpp hands `enable_thinking` to the template from its own flag and
+    // then lays the kwargs over it; both are set so neither can disagree, and
+    // the template sees the value retrograd's own renders resolved to.
+    if (variables.contains("enable_thinking") && variables.at("enable_thinking").is_boolean()) {
+        inputs.enable_thinking = variables.at("enable_thinking").get<bool>();
+    }
+    for (auto it = variables.begin(); it != variables.end(); ++it) {
+        inputs.chat_template_kwargs[it.key()] = it.value().dump();
+    }
+    return true;
+}
+
+parser_derivation derive_parser(
+        const common_chat_templates * templates,
+        const std::string & tools_json,
+        const std::string & variables_json,
+        common_chat_params & params,
+        std::string & template_src) {
+    common_chat_templates_inputs inputs;
+    if (!derivation_inputs(variables_json, inputs)) {
+        return parser_derivation::error;
+    }
 
     if (!tools_json.empty()) {
         json tools;
@@ -185,7 +224,8 @@ std::shared_ptr<const common_chat_parser_params> cached_parser(const std::string
     }
     common_chat_params params;
     std::string template_src;
-    if (derive_parser(templates.get(), recipe.tools_json, params, template_src) != parser_derivation::ok) {
+    if (derive_parser(templates.get(), recipe.tools_json, recipe.variables_json, params, template_src)
+            != parser_derivation::ok) {
         return nullptr;
     }
     auto parser = std::make_shared<common_chat_parser_params>(params);
@@ -231,8 +271,12 @@ int build_tool_call_parser(
         return RETRO_CHAT_PARSER_UNAVAILABLE;
     }
     parser_recipe recipe;
+    if (!resolve_derivation_variables(state, recipe.variables_json)) {
+        return -1;
+    }
     common_chat_params params;
-    switch (derive_parser(templates.get(), tools_key, params, recipe.template_src)) {
+    switch (derive_parser(templates.get(), tools_key, recipe.variables_json, params,
+                          recipe.template_src)) {
         case parser_derivation::ok:
             break;
         case parser_derivation::unavailable:
@@ -261,9 +305,14 @@ int build_tool_call_parser(
 int build_tool_call_parser_from_source(
         const char * template_src,
         const char * tools_json,
+        const char * variables_json,
         char * buffer,
         size_t n_buffer,
         size_t * out_n_bytes) {
+    std::string variables;
+    if (!resolve_derivation_variables_source(template_src, variables_json, variables)) {
+        return -1;
+    }
     common_chat_templates_ptr templates;
     try {
         // A null model is legal precisely when the source is given explicitly;
@@ -282,7 +331,7 @@ int build_tool_call_parser_from_source(
     const std::string tools = tools_json ? std::string(tools_json) : std::string();
     parser_recipe recipe;
     common_chat_params params;
-    switch (derive_parser(templates.get(), tools, params, recipe.template_src)) {
+    switch (derive_parser(templates.get(), tools, variables, params, recipe.template_src)) {
         case parser_derivation::ok:
             break;
         case parser_derivation::unavailable:
@@ -291,6 +340,7 @@ int build_tool_call_parser_from_source(
             return -1;
     }
     recipe.tools_json = tools;
+    recipe.variables_json = variables;
     return copy_json_out(
             encode_parser_blob(recipe), "failed to build tool-call parser", buffer, n_buffer, out_n_bytes);
 }
@@ -332,6 +382,98 @@ int parse_assistant_output(
     out["tool_calls"] = calls;
 
     return copy_json_out(out.dump(), "failed to render parsed assistant output", buffer, n_buffer, out_n_bytes);
+}
+
+int set_reasoning_budget(trainer_state & state, int32_t budget) {
+    if (budget < -1) {
+        set_error("reasoning budget must be -1 (the model decides) or a token count");
+        return -1;
+    }
+    state.reasoning_budget = budget;
+    state.reasoning_plan = reasoning_budget_plan{};
+    return resolve_reasoning_budget(state) ? 0 : -1;
+}
+
+// The tags are the ones llama-server would budget with: those the chat parser
+// derived for this template under these variables declares. No tag is
+// spelled here, which is the point - a template whose parser knows no
+// reasoning block is refused, not guessed at.
+const reasoning_budget_plan * resolve_reasoning_budget(trainer_state & state) {
+    reasoning_budget_plan & plan = state.reasoning_plan;
+    if (plan.resolved) {
+        return &plan;
+    }
+    plan = reasoning_budget_plan{};
+    plan.budget = state.reasoning_budget;
+    if (state.reasoning_budget < 0) {
+        plan.resolved = true;
+        return &plan;
+    }
+
+    common_chat_templates_ptr templates;
+    try {
+        templates = common_chat_templates_init(state.model.get(), "");
+    } catch (const std::bad_alloc &) {
+        throw;
+    } catch (const std::exception & err) {
+        set_error(std::string("failed to initialize the model chat template: ") + err.what());
+        return nullptr;
+    }
+    if (!templates) {
+        set_error("model defines no chat template, so no reasoning block to budget");
+        return nullptr;
+    }
+    std::string variables;
+    common_chat_templates_inputs inputs;
+    if (!resolve_derivation_variables(state, variables) || !derivation_inputs(variables, inputs)) {
+        return nullptr;
+    }
+    common_chat_params params;
+    try {
+        params = common_chat_templates_apply(templates.get(), inputs);
+    } catch (const std::bad_alloc &) {
+        throw;
+    } catch (const std::exception & err) {
+        set_error(std::string("failed to read the reasoning tags of the chat template: ") + err.what());
+        return nullptr;
+    }
+
+    const llama_vocab * vocab = llama_model_get_vocab(state.model.get());
+    const auto tokens = [&](const std::string & text) {
+        return common_tokenize(vocab, text, /*add_special=*/false, /*parse_special=*/true);
+    };
+    if (!params.thinking_start_tag.empty()) {
+        plan.start = tokens(params.thinking_start_tag);
+    }
+    for (const auto & tag : params.thinking_end_tags) {
+        if (!tag.empty()) {
+            plan.ends.push_back(tokens(tag));
+        }
+    }
+    if (plan.start.empty() || plan.ends.empty() || plan.ends.front().empty()) {
+        set_error("the chat template declares no reasoning block, so a reasoning budget has "
+                  "nothing to limit");
+        return nullptr;
+    }
+    plan.forced = plan.ends.front();
+
+    // Counted like common_sampler_init counts its prefill: a tokenizer that
+    // puts a space before the first special token adds one token the template
+    // did not write.
+    const auto prompt = tokens(params.generation_prompt);
+    size_t tail = prompt.size();
+    if (!prompt.empty() && !params.generation_prompt.empty()) {
+        const std::string piece = common_token_to_piece(vocab, prompt.front(), true);
+        if (!piece.empty() && std::isspace(static_cast<unsigned char>(piece[0]))
+                && !std::isspace(static_cast<unsigned char>(params.generation_prompt[0]))) {
+            --tail;
+        }
+    }
+    plan.n_prompt_tail = tail;
+    plan.budget = state.reasoning_budget;
+    plan.active = true;
+    plan.resolved = true;
+    return &plan;
 }
 
 }  // namespace retro

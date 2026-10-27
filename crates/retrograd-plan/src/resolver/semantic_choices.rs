@@ -2,6 +2,9 @@
 
 use super::*;
 
+use retrograd_core::GenerationKvDtype;
+use serde::Deserialize;
+
 pub(super) fn choose_context(
     input: &ResolveInput<'_>,
     provenance: &mut Provenance,
@@ -472,24 +475,30 @@ pub(super) fn draft_rollout_width(
     // KV cache can hold, so they are derived from the budget and not tabulated.
     let mut rollout = RolloutShape::default();
     let (group_size, prompts_per_update, updates, inner_epochs) = if recipe.objective.is_rollout() {
-        // The generation cache is F16 unless the client turned the fast sampling
-        // context off, in which case it inherits `kv_dtype` - which is F16 too
-        // now, so only an explicit `f32` widens this.
+        // The generation cache is `generation_kv_dtype` (F16 by default) unless
+        // the client turned the fast sampling context off, in which case it
+        // inherits `kv_dtype` - which is F16 too now, so only an explicit `f32`
+        // widens this. A misspelt type reads as F16 here: the document build
+        // refuses it with the sentence the client needs.
         let inherits_optimizer_cache =
             param_bool(input.params, "training", "fast_sampling_context") == Some(false);
-        let element_bytes = if inherits_optimizer_cache
-            && param_str(input.params, "training", "kv_dtype") == Some("f32")
-        {
-            4
+        let block = if inherits_optimizer_cache {
+            if param_str(input.params, "training", "kv_dtype") == Some("f32") {
+                (4, 1)
+            } else {
+                (2, 1)
+            }
         } else {
-            2
+            input
+                .params
+                .get("training")
+                .and_then(|training| training.get("generation_kv_dtype"))
+                .and_then(|value| GenerationKvDtype::deserialize(value).ok())
+                .unwrap_or_default()
+                .block()
         };
-        let capacity = tuning::generation_capacity(
-            input.model,
-            n_ctx,
-            budgets.vram.effective_bytes,
-            element_bytes,
-        );
+        let capacity =
+            tuning::generation_capacity(input.model, n_ctx, budgets.vram.effective_bytes, block);
         let algorithm = recipe.objective.algorithm();
         let is_grpo = algorithm == "grpo";
         // PPO does not group: one rollout per prompt, so there is nothing to

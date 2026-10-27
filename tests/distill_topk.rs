@@ -185,8 +185,8 @@ fn a_topk_run_trains_end_to_end_on_both_optimizer_paths() {
         eprintln!("skipping: no local test model");
         return;
     };
-    let directory = std::env::temp_dir().join("retrograd-distill-topk");
-    std::fs::create_dir_all(&directory).expect("scratch directory");
+    let tmp = common::scratch("distill-topk");
+    let directory = tmp.path();
 
     for chunked in [false, true] {
         let training = TrainConfig {
@@ -242,7 +242,6 @@ fn a_topk_run_trains_end_to_end_on_both_optimizer_paths() {
             "chunked={chunked}: a top-k update left the adapter untouched"
         );
     }
-    let _ = std::fs::remove_dir_all(&directory);
 }
 
 /// The refusals of `distill::offline::prepare`, without loading a model: a

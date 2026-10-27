@@ -46,7 +46,7 @@ async fn finished(fixture: &Fixture, router: &Router) -> String {
         .expect("a LoRA run writes an adapter")
         .to_string();
     std::fs::write(&adapter, b"not a real adapter").expect("write the adapter");
-    let directory = fixture.dir.join("ckpt");
+    let directory = fixture.dir.path().join("ckpt");
     std::fs::create_dir_all(&directory).expect("the checkpoint directory");
     for (id, step) in [("step-000000000010", 10), ("best", 5)] {
         write_checkpoint(
@@ -55,7 +55,7 @@ async fn finished(fixture: &Fixture, router: &Router) -> String {
             step,
             "sft",
             "signature",
-            &fixture.dir.join("model.gguf"),
+            &fixture.dir.path().join("model.gguf"),
         );
     }
     id
@@ -95,8 +95,8 @@ async fn each_id_loads_the_weights_it_names() {
     let fixture = Fixture::new("openai-resolve");
     let (router, loader, _) = serving(&fixture, FakeEngine::succeeding());
     let id = finished(&fixture, &router).await;
-    let model = fixture.dir.join("model.gguf");
-    let checkpoint = |name: &str| fixture.dir.join("ckpt").join(format!("{name}.gguf"));
+    let model = fixture.dir.path().join("model.gguf");
+    let checkpoint = |name: &str| fixture.dir.path().join("ckpt").join(format!("{name}.gguf"));
 
     for (suffix, fingerprint, adapter) in [
         ("", "final", None),

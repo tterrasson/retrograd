@@ -12,7 +12,8 @@ use crate::tools::{ToolCallParser, ToolSpec};
 use crate::trajectory::Message;
 use crate::{Error, Result};
 use retrograd_core::{SamplingParams, TrainConfig, TrainMetrics};
-use retrograd_engine::{GenerationStats, Trainer};
+use retrograd_dataset::chat_template::{Framing, TurnSentinels};
+use retrograd_engine::{GenerationStats, SampledRow, Trainer};
 use retrograd_training::Progress;
 use retrograd_training::batch::{
     BatchObservation, GrpoBatchParams, TrainSequence, train_grpo_batch_observed,
@@ -26,16 +27,58 @@ pub struct PolicyGeneration {
     /// its own rather than against `max_new_tokens`. Without this a response
     /// whose stop token lands exactly on the budget looks truncated.
     pub stopped_at_eog: bool,
+    /// Token for token, whether the reasoning budget forced it rather than the
+    /// policy sampling it. Forced tokens stay in the trajectory, which is what
+    /// the model saw, but out of its train mask: the policy did not choose
+    /// them. Empty when nothing was forced.
+    pub forced: Vec<bool>,
+}
+
+/// A conversation rendered around its sampled turns.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RenderedFraming {
+    /// What the template writes around each assistant turn, and after the
+    /// last one.
+    pub framing: Framing,
+    /// `framing.tail`, tokenized: as the opening of a stream when the
+    /// conversation has no assistant turn yet, as a fragment to append to one
+    /// otherwise. The only piece that ever reaches the token stream after the
+    /// prompt; the others are text the rollout checks against.
+    pub tail: Vec<i32>,
+}
+
+#[cfg(test)]
+impl RenderedFraming {
+    /// A framing whose pieces are token lists standing for text: each piece's
+    /// text is its tokens spelled out, so a fake policy that never moves a
+    /// piece renders one every check accepts as is.
+    pub(crate) fn from_token_pieces(mut pieces: Vec<Vec<i32>>) -> Self {
+        let tail = pieces.pop().expect("a framing has a tail");
+        Self {
+            framing: Framing {
+                turns: pieces
+                    .iter()
+                    .map(|piece| retrograd_dataset::chat_template::TurnPieces {
+                        pre: format!("{piece:?}"),
+                        mid: None,
+                    })
+                    .collect(),
+                tail: format!("{tail:?}"),
+            },
+            tail,
+        }
+    }
 }
 
 #[async_trait]
 pub trait Policy: Send + Sync {
     /// Renders the conversation into the framing around its assistant turns.
     ///
-    /// Returns one piece more than there are assistant messages: the tokens
-    /// before the first sampled turn, between consecutive ones, and after the
-    /// last (including the generation prompt when `add_assistant`). Interleaving
-    /// them with the tokens the policy sampled rebuilds the whole prompt.
+    /// The text before each sampled turn - and, for a turn that reasoned,
+    /// between its reasoning and its content - and after the last one
+    /// (including the generation prompt when `add_assistant`). Interleaving
+    /// the framing that was committed with the tokens the policy sampled
+    /// rebuilds the whole prompt.
     ///
     /// Rendering *around* the sampled turns rather than through them is what
     /// makes a multi-turn prompt assemblable at all. Handing a sampled turn back
@@ -51,7 +94,7 @@ pub trait Policy: Send + Sync {
         messages: &[Message],
         tools: &[ToolSpec],
         add_assistant: bool,
-    ) -> Result<Vec<Vec<i32>>>;
+    ) -> Result<RenderedFraming>;
 
     /// Whether the model's own chat template renders a tool catalog, and can
     /// therefore be handed the tools instead of being told about them in a
@@ -164,9 +207,9 @@ enum PolicyRequest {
     RenderChatFraming {
         messages_json: String,
         tools_json: Option<String>,
-        sentinels: Vec<String>,
+        sentinels: Vec<TurnSentinels>,
         add_assistant: bool,
-        reply: oneshot::Sender<Result<Vec<Vec<i32>>>>,
+        reply: oneshot::Sender<Result<RenderedFraming>>,
     },
     SupportsNativeTools {
         reply: oneshot::Sender<Result<bool>>,
@@ -292,7 +335,7 @@ impl Policy for PolicyHandle {
         messages: &[Message],
         tools: &[ToolSpec],
         add_assistant: bool,
-    ) -> Result<Vec<Vec<i32>>> {
+    ) -> Result<RenderedFraming> {
         let (messages_json, sentinels) = template_messages(messages)?;
         let tools_json = match tools.is_empty() {
             true => None,
@@ -416,31 +459,27 @@ impl TrainerLender {
     }
 }
 
-/// Renders the conversation and tokenizes each framing piece on its own.
+/// Renders the conversation, cuts it around the sampled turns, and tokenizes
+/// the piece after the last one.
 ///
-/// Piece-by-piece rather than in one pass over the joined text, because the
-/// sampled turns that go between them are *not* re-tokenized: only the first
-/// piece opens the stream, so the rest are tokenized as fragments and no BOS
-/// lands in the middle of a prompt.
+/// That piece alone, because the sampled turns that go between the others are
+/// *not* re-tokenized and the others are already in the stream. It opens the
+/// stream only when nothing was sampled yet; otherwise it is tokenized as a
+/// fragment, so no BOS lands in the middle of a prompt.
 fn render_framing(
     trainer: &Trainer,
     messages_json: &str,
     tools_json: Option<&str>,
-    sentinels: &[String],
+    sentinels: &[TurnSentinels],
     add_assistant: bool,
-) -> Result<Vec<Vec<i32>>> {
+) -> Result<RenderedFraming> {
     let rendered = trainer.format_chat_messages(messages_json, tools_json, add_assistant)?;
-    crate::chat::split_assistant_spans(&rendered, sentinels)?
-        .into_iter()
-        .enumerate()
-        .map(|(index, segment)| {
-            let tokens = match index {
-                0 => trainer.tokenize_text(&segment),
-                _ => trainer.tokenize_fragment(&segment),
-            };
-            tokens.map_err(Error::from)
-        })
-        .collect()
+    let framing = crate::chat::split_turns(&rendered, sentinels)?;
+    let tail = match framing.turns.is_empty() {
+        true => trainer.tokenize_text(&framing.tail),
+        false => trainer.tokenize_fragment(&framing.tail),
+    }?;
+    Ok(RenderedFraming { framing, tail })
 }
 
 /// How much of a generation the tool-call parser gets to see.
@@ -467,7 +506,12 @@ fn tool_call_parse_end(tokens_len: usize, stopped_at_eog: bool) -> usize {
 }
 
 /// Detokenizes a sampled row and decides whether it stopped on its own.
-fn finish_generation(trainer: &mut Trainer, tokens: Vec<i32>) -> Result<PolicyGeneration> {
+fn finish_generation(trainer: &mut Trainer, row: SampledRow) -> Result<PolicyGeneration> {
+    let SampledRow { tokens, forced } = row;
+    let forced = match forced.contains(&true) {
+        true => forced,
+        false => Vec::new(),
+    };
     let stopped_at_eog = match tokens.last() {
         Some(&last) => trainer.is_eog_token(last)?,
         None => false,
@@ -483,6 +527,7 @@ fn finish_generation(trainer: &mut Trainer, tokens: Vec<i32>) -> Result<PolicyGe
         tokens,
         text,
         stopped_at_eog,
+        forced,
     })
 }
 
@@ -518,7 +563,7 @@ mod tool_call_parse_end_tests {
 /// queue before anything downstream can fail: a short-circuiting `collect` over
 /// `pop_front` would leave this request's tail behind, and the next request of
 /// the wave would then answer with another group's tokens instead of an error.
-fn take_rows(count: usize, rows: &mut VecDeque<Vec<i32>>) -> Result<Vec<Vec<i32>>> {
+fn take_rows<T>(count: usize, rows: &mut VecDeque<T>) -> Result<Vec<T>> {
     if rows.len() < count {
         rows.clear();
         return Err(Error::PolicyGeneration(
@@ -604,11 +649,11 @@ impl QueuedGeneration {
         }
     }
 
-    fn send_rows(self, trainer: &mut Trainer, rows: &mut VecDeque<Vec<i32>>) {
+    fn send_rows(self, trainer: &mut Trainer, rows: &mut VecDeque<SampledRow>) {
         let result = take_rows(self.len(), rows).and_then(|taken| {
             taken
                 .into_iter()
-                .map(|tokens| finish_generation(trainer, tokens))
+                .map(|row| finish_generation(trainer, row))
                 .collect()
         });
         match self {
@@ -709,7 +754,7 @@ fn run_generation_wave(trainer: &mut Trainer, queued: Vec<QueuedGeneration>) {
                 .collect::<Vec<_>>(),
         })
         .collect::<Vec<_>>();
-    let generated = trainer.generate_tokens_continuous(&sequences);
+    let generated = trainer.generate_sampled_continuous(&sequences);
     let mut rows = match generated {
         Ok(rows) if rows.len() == expected => VecDeque::from(rows),
         Ok(rows) => {

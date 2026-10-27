@@ -27,6 +27,7 @@ utoipa = { workspace = true, optional = true }
 # Checks the derived schema against the parser, behind `openapi` like the schema
 # itself. No default features: they fetch remote references over HTTP.
 jsonschema = { version = "0.58", default-features = false }
+tempfile.workspace = true
 
 [features]
 default = []

@@ -53,7 +53,7 @@ const SMOKE_GRPO: &str = "examples/smoke_tiny_grpo.toml";
 /// run stops at model loading instead of training the fixture that may well be
 /// present on the machine running the tests. The device is pinned to `cpu`
 /// so the run reaches that model-loading error on any machine, GPU or not.
-fn config_without_a_model() -> std::path::PathBuf {
+fn config_without_a_model(dir: &std::path::Path) -> std::path::PathBuf {
     let source = std::fs::read_to_string(SMOKE_GRPO).expect("read smoke GRPO config");
     let mut text = String::new();
     for line in source.lines() {
@@ -66,14 +66,7 @@ fn config_without_a_model() -> std::path::PathBuf {
             text.push('\n');
         }
     }
-    let path = std::env::temp_dir().join(format!(
-        "retrograd-profile-{}-{}.toml",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos(),
-    ));
+    let path = dir.join("profile.toml");
     std::fs::write(&path, text).expect("write temp config");
     path
 }
@@ -82,7 +75,8 @@ fn config_without_a_model() -> std::path::PathBuf {
 fn the_micro_batch_accepts_the_sweep_values() {
     // The campaign sweeps divisors of the 64-token step window; none of these
     // must trip the validation. Reaching the model load proves they were accepted.
-    let config = config_without_a_model();
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let config = config_without_a_model(tmp.path());
     for value in ["8", "16", "32", "64"] {
         let output = run(&[config.to_str().expect("utf-8 path"), "--micro-batch", value]);
         let message = stderr(&output);
@@ -95,7 +89,6 @@ fn the_micro_batch_accepts_the_sweep_values() {
             "the run should have reached model loading, got: {message}"
         );
     }
-    let _ = std::fs::remove_file(&config);
 }
 
 #[test]

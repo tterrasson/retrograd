@@ -38,6 +38,9 @@ pub struct AgentRunConfig {
     pub system_suffix: String,
     /// Extra variables handed to the model's chat template on every render.
     pub template_variables: serde_json::Map<String, serde_json::Value>,
+    /// Tokens one reasoning block may run before the runtime forces its end
+    /// tag; `None` lets the model decide.
+    pub reasoning_budget: Option<u32>,
     pub scenario_generation: Option<ScenarioGenerationConfig>,
     /// The remote model `retrograd collect --api` generates trajectories with.
     /// Read by that command alone; a training run ignores it.
@@ -281,7 +284,19 @@ pub struct AgentToml {
     #[serde(skip_serializing_if = "serde_json::Map::is_empty")]
     #[cfg_attr(feature = "openapi", schema(value_type = Object))]
     pub template_variables: serde_json::Map<String, serde_json::Value>,
+    /// Tokens one reasoning block may run before the end tag the template
+    /// declares is forced, as llama-server's `--reasoning-budget`: -1 (the
+    /// default) lets the model decide, 0 closes the block as soon as it opens.
+    /// The tags come from the model's chat template, so a budget on a template
+    /// with no reasoning block is refused when the run starts. Forced tokens
+    /// stay in the trajectory but are not trained on.
+    #[serde(skip_serializing_if = "is_unlimited_reasoning")]
+    pub reasoning_budget: i32,
     pub seed: u64,
+}
+
+fn is_unlimited_reasoning(budget: &i32) -> bool {
+    *budget == -1
 }
 
 impl Default for AgentToml {
@@ -316,6 +331,7 @@ impl Default for AgentToml {
             truncation: defaults.truncation,
             system_suffix: String::new(),
             template_variables: serde_json::Map::new(),
+            reasoning_budget: -1,
             seed: defaults.seed,
         }
     }
@@ -332,6 +348,16 @@ pub(crate) fn build_agent(
     if value.scenarios.as_os_str().is_empty() {
         return Err(Error::config("agent.scenarios is required"));
     }
+    // -1 is the documented "the model decides", every other negative a typo.
+    let reasoning_budget = match value.reasoning_budget {
+        -1 => None,
+        budget => Some(u32::try_from(budget).map_err(|_| {
+            Error::config(format!(
+                "agent.reasoning_budget must be -1 (the model decides) or a token count, not \
+                 {budget}"
+            ))
+        })?),
+    };
     // A judge is an addition, not the default. What a rollout cannot do without
     // is *a* reward, and an environment that grades its own steps - an HTTP
     // world, or a sandbox running a `metadata.env.verify` command - already is
@@ -455,6 +481,7 @@ pub(crate) fn build_agent(
         tool_plan,
         system_suffix: value.system_suffix,
         template_variables: value.template_variables,
+        reasoning_budget,
         scenario_generation: value.scenario_generation,
         collect_api: value.collect_api,
         explicit_trajectory_limit,
