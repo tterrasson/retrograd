@@ -150,6 +150,7 @@ fn main() {
         "parsers/gemma4.cpp",
         "parsers/gigachat-v3.cpp",
         "parsers/gpt-oss.cpp",
+        "parsers/harmony-xml.cpp",
         "parsers/k2-horizon.cpp",
         "parsers/kimi-k2.cpp",
         "parsers/kimi-k3.cpp",
