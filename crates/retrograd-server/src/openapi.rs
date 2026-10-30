@@ -504,6 +504,15 @@ const OPERATIONS: &[Operation] = &[
     )
     .accepts(&["application/json"])
     .openai(),
+    op(
+        "post",
+        "/v1/responses",
+        "OpenAI: a response from a run's weights (Responses API, stateless: store must be false), streamed or not",
+        None,
+        None,
+    )
+    .accepts(&["application/json"])
+    .openai(),
 ];
 
 /// The paths object, built from [`OPERATIONS`].

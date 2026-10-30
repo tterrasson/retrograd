@@ -44,7 +44,10 @@ use crate::state::AppState;
 /// Whether a request path belongs to the OpenAI contract, whose errors are
 /// OpenAI envelopes rather than problem documents - the SDKs read nothing else.
 pub fn is_openai_path(path: &str) -> bool {
-    path == "/v1/chat/completions" || path == "/v1/models" || path.starts_with("/v1/models/")
+    path == "/v1/chat/completions"
+        || path == "/v1/responses"
+        || path == "/v1/models"
+        || path.starts_with("/v1/models/")
 }
 
 /// The runs of this server, as model ids.
@@ -523,9 +526,11 @@ mod tests {
     #[test]
     fn only_the_openai_routes_answer_in_its_envelope() {
         assert!(is_openai_path("/v1/chat/completions"));
+        assert!(is_openai_path("/v1/responses"));
         assert!(is_openai_path("/v1/models"));
         assert!(is_openai_path("/v1/models/abc@best"));
         assert!(!is_openai_path("/v1/modelsx"));
+        assert!(!is_openai_path("/v1/responsesx"));
         assert!(!is_openai_path("/v1/runs"));
     }
 }

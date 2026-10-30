@@ -223,3 +223,43 @@ async fn switching_checkpoints_activates_the_adapter_without_reloading_the_base(
     );
     assert_eq!(sampled_base.text, expected_text_base);
 }
+
+#[tokio::test]
+async fn a_structured_response_obeys_its_schema_on_the_real_engine() {
+    let _guard = serialize_models();
+    let Some(fixture) = common::model_path_if_available() else {
+        return;
+    };
+    let prepared = retrograd_openai::responses::prepare(
+        serde_json::from_value(serde_json::json!({
+            "model":"m", "input":"Give me a point", "store":false, "max_output_tokens":32,
+            "text":{"format":{"type":"json_schema","name":"point","schema":{"const":{"x":1}}}},
+            "include":["message.output_text.logprobs"], "top_logprobs":3
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let session = session();
+    let sampled = session
+        .complete(spec(&fixture, None), prepared.request)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let completion = retrograd_openai::finish(sampled, &[]);
+    let text = completion.content.unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&text).unwrap(),
+        serde_json::json!({"x":1})
+    );
+    let logprobs = serde_json::to_value(completion.logprobs.unwrap()).unwrap();
+    for entry in logprobs["content"].as_array().unwrap() {
+        assert!(entry["logprob"].as_f64().is_some());
+        for top in entry["top_logprobs"].as_array().unwrap() {
+            assert!(
+                top["logprob"].as_f64().is_some(),
+                "zero-mass probabilities use a numeric sentinel"
+            );
+        }
+    }
+}

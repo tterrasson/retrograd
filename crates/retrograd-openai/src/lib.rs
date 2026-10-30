@@ -12,7 +12,7 @@
 //! every surface is served by the same backend - the [`Session`] for weights on
 //! disk, a live run's own thread for a run that is training. The surfaces live
 //! in their own subtrees: [`chat`] (Chat Completions, served today) and
-//! [`responses`] (the Responses API, served next).
+//! [`responses`] (the Responses API, stateless: `store: false` only).
 //!
 //! The answer is rendered and parsed by the same code as the agentic rollouts
 //! ([`retrograd_agent::rendering`]), so a model evaluated through this endpoint
@@ -117,6 +117,7 @@ pub fn router(endpoint: Endpoint) -> Router {
         .route("/models", get(list_models))
         .route("/models/{*model}", get(get_model))
         .merge(chat::router())
+        .merge(responses::router())
         .with_state(endpoint)
 }
 

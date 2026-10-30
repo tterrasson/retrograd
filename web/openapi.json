@@ -6555,6 +6555,41 @@
         "summary": "Build the training graph and report on it"
       }
     },
+    "/v1/responses": {
+      "post": {
+        "operationId": "post_responses",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem document (RFC 9457)"
+          }
+        },
+        "summary": "OpenAI: a response from a run's weights (Responses API, stateless: store must be false), streamed or not",
+        "tags": [
+          "openai"
+        ]
+      }
+    },
     "/v1/rewards": {
       "get": {
         "operationId": "get_rewards",

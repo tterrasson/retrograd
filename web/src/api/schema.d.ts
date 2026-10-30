@@ -346,6 +346,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/v1/responses': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** OpenAI: a response from a run's weights (Responses API, stateless: store must be false), streamed or not */
+    post: operations['post_responses']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/v1/rewards': {
     parameters: {
       query?: never
@@ -3879,6 +3896,37 @@ export interface operations {
         content: {
           'application/json': components['schemas']['PreflightResponse']
         }
+      }
+      /** @description a problem document (RFC 9457) */
+      default: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['Problem']
+        }
+      }
+    }
+  }
+  post_responses: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': string
+      }
+    }
+    responses: {
+      /** @description ok */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
       }
       /** @description a problem document (RFC 9457) */
       default: {
