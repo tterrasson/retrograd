@@ -12,7 +12,7 @@
 //! every surface is served by the same backend - the [`Session`] for weights on
 //! disk, a live run's own thread for a run that is training. The surfaces live
 //! in their own subtrees: [`chat`] (Chat Completions), [`responses`] (the
-//! Responses API, with its store).
+//! Responses API, with its store) and [`completions`] (legacy Completions).
 //!
 //! The answer is rendered and parsed by the same code as the agentic rollouts
 //! ([`retrograd_agent::rendering`]), so a model evaluated through this endpoint
@@ -21,6 +21,7 @@
 pub mod auth;
 pub mod backend;
 pub mod chat;
+pub mod completions;
 pub mod error;
 pub mod grammar;
 pub mod render;
@@ -69,6 +70,7 @@ pub trait ModelSource: Send + Sync + 'static {
 }
 
 /// Where a request for one id goes.
+#[derive(Clone)]
 pub enum Target {
     /// Weights on disk, served by the [`Session`].
     Cold {
@@ -113,7 +115,7 @@ pub struct Endpoint {
 }
 
 /// `GET /models`, `GET /models/{model}`, and the generation surfaces
-/// (`POST /chat/completions`, `POST /responses`),
+/// (`POST /chat/completions`, `POST /responses`, `POST /completions`),
 /// relative to wherever the caller mounts them - `/v1` for every OpenAI client.
 ///
 /// No timeout layer belongs over these: a stream stays open until its answer
@@ -124,6 +126,7 @@ pub fn router(endpoint: Endpoint) -> Router {
         .route("/models/{*model}", get(get_model))
         .merge(chat::router())
         .merge(responses::router())
+        .merge(completions::router())
         .with_state(endpoint)
 }
 

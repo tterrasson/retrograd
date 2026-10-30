@@ -305,6 +305,7 @@ pub fn prepare(request: ResponsesRequest) -> Result<Prepared, OpenAiError> {
         store: request.store.unwrap_or(true),
         previous_response_id: request.previous_response_id.clone(),
         request: GenerationRequest {
+            raw_prompt: None,
             messages,
             tools,
             sampling: SamplingParamsV2 {

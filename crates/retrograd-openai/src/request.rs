@@ -18,7 +18,13 @@ use retrograd_core::SamplingParamsV2;
 pub struct GenerationRequest {
     /// In the order the client sent them. A `tool` message carries the tool's
     /// own output; how it is framed depends on the rendering, decided later.
+    /// Empty when `raw_prompt` is set.
     pub messages: Vec<Message>,
+    /// When set, the prompt is this text tokenized as-is: no chat template, no
+    /// tools, no parser (the legacy completions surface answers the raw
+    /// prompt, the way the model was pretrained on, not the way a chat is
+    /// formatted).
+    pub raw_prompt: Option<String>,
     /// Empty for `tool_choice: "none"`: with no constrained decoding, a
     /// catalog in the prompt is an invitation to call, so none is rendered.
     pub tools: Vec<ToolSpec>,

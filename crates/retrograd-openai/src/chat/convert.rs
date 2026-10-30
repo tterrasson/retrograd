@@ -33,7 +33,7 @@ const MAX_STOP: usize = 4;
 /// How many completions of one prompt one request may ask for. The scheduler
 /// gives each choice its own slot of the pool, so the bound is a contract,
 /// not a capacity: a request beyond it is refused, not queued.
-const MAX_N: u64 = 128;
+pub(crate) const MAX_N: u64 = 128;
 /// OpenAI's own bound on `top_logprobs`.
 pub(crate) const MAX_TOP_LOGPROBS: u64 = 20;
 /// OpenAI's own bounds on the penalties.
@@ -128,6 +128,7 @@ pub fn prepare(request: ChatCompletionRequest) -> Result<Prepared, OpenAiError> 
     Ok(Prepared {
         model: request.model,
         request: GenerationRequest {
+            raw_prompt: None,
             messages,
             tools,
             sampling: SamplingParamsV2 {
@@ -661,7 +662,7 @@ pub(crate) fn seed(value: Option<i64>) -> Result<u32, OpenAiError> {
     }
 }
 
-fn stop(value: Option<Stop>) -> Result<Vec<String>, OpenAiError> {
+pub(crate) fn stop(value: Option<Stop>) -> Result<Vec<String>, OpenAiError> {
     let stops = match value {
         None => Vec::new(),
         Some(Stop::One(stop)) => vec![stop],

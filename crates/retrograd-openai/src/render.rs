@@ -217,6 +217,35 @@ pub fn render_prompt(
     request: &GenerationRequest,
     parsers: &mut ParserCache,
 ) -> Result<Rendered, OpenAiError> {
+    // The raw-prompt path (legacy completions): no template, no tools, no
+    // parser - the text is the prompt.
+    if let Some(raw) = &request.raw_prompt {
+        let tokens = model.tokenize(raw)?;
+        if tokens.is_empty() {
+            return Err(OpenAiError::invalid_param(
+                "prompt",
+                "the prompt tokenized to nothing",
+            ));
+        }
+        let context = model.context_size()?;
+        let requested = request.sampling.max_new_tokens;
+        if tokens.len().saturating_add(requested as usize) > context {
+            return Err(OpenAiError::context_length_exceeded(
+                tokens.len(),
+                requested,
+                context,
+            ));
+        }
+        let sampling: Vec<SamplingParamsV2> = (0..request.n.max(1))
+            .map(|index| request.sampling.for_choice(index))
+            .collect();
+        return Ok(Rendered {
+            tokens,
+            reader: None,
+            unparse_special: false,
+            sampling,
+        });
+    }
     let tools_json = match request.tools.is_empty() {
         true => None,
         false => Some(chat::template_tools(&request.tools)?),
@@ -526,6 +555,19 @@ pub(crate) fn serialize_logprob<S: serde::Serializer>(
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     serializer.serialize_f32(if value.is_finite() { *value } else { -9999.0 })
+}
+
+/// Same sentinel, for a whole vector of logprobs (the legacy completions
+/// format's `token_logprobs`).
+pub(crate) fn serialize_logprob_vec<S: serde::Serializer>(
+    values: &[f32],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(values.iter().map(
+        |value| {
+            if value.is_finite() { *value } else { -9999.0 }
+        },
+    ))
 }
 
 #[cfg(test)]

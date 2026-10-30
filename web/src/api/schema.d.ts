@@ -38,6 +38,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/v1/completions': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** OpenAI: a legacy text completion of a raw prompt (no chat template), streamed or not */
+    post: operations['post_completions']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/v1/config-schema': {
     parameters: {
       query?: never
@@ -3292,6 +3309,37 @@ export interface operations {
     }
   }
   post_chat_completions: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': string
+      }
+    }
+    responses: {
+      /** @description ok */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description a problem document (RFC 9457) */
+      default: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['Problem']
+        }
+      }
+    }
+  }
+  post_completions: {
     parameters: {
       query?: never
       header?: never

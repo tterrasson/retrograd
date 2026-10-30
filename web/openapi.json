@@ -5862,6 +5862,41 @@
         ]
       }
     },
+    "/v1/completions": {
+      "post": {
+        "operationId": "post_completions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem document (RFC 9457)"
+          }
+        },
+        "summary": "OpenAI: a legacy text completion of a raw prompt (no chat template), streamed or not",
+        "tags": [
+          "openai"
+        ]
+      }
+    },
     "/v1/config-schema": {
       "get": {
         "operationId": "get_config_schema",

@@ -554,7 +554,15 @@ const OPERATIONS: &[Operation] = &[
         query("after", "string", "The item id to start after"),
     ])
     .openai(),
-
+    op(
+        "post",
+        "/v1/completions",
+        "OpenAI: a legacy text completion of a raw prompt (no chat template), streamed or not",
+        None,
+        None,
+    )
+    .accepts(&["application/json"])
+    .openai(),
 
 ];
 
