@@ -57,6 +57,7 @@ if [[ "${RETRO_PROFILE_TESTS:-0}" == "1" ]]; then
     --test engine_contracts \
     --test engine_runtime \
     --test infer_runtime \
+    --test serve_runtime \
     --test rollout_scheduler \
     --test kv_projection_gradients \
     --test recurrent_families \

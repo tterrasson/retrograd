@@ -222,6 +222,11 @@ retrograd-plan.workspace = true
 # scheduler over a real engine on the CPU fixture. The shipped binaries reach
 # it through `retrograd-serve` only.
 retrograd-infer.workspace = true
+# The serving session, for the integration test that serves a chat completion
+# through it on the CPU fixture and compares with the engine's own generation.
+retrograd-openai.workspace = true
+# Async tests for the serving session.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # tests/rir_quant_oracle.rs holds ggml `to_float` → the RIR dequantization
 # oracle → its Loop IR expansion end to end, on the same bytes, with no device
 # and no schedule beyond the CPU serial one. Only the tests link RIR: neither
