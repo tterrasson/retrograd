@@ -253,6 +253,7 @@ pub(crate) fn run_rollout_groups<B: DecodeBackend>(
                             logprobs: false,
                             adapter: None,
                             unparse_special: false,
+                            retention: None,
                         },
                     ));
                     base += take;

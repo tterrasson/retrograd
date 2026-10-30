@@ -68,6 +68,7 @@ async fn create(State(endpoint): State<Endpoint>, body: Bytes) -> Result<Respons
         // tokens count once, not once per choice.
         if let Some(first) = answers.first() {
             usage.prompt_tokens += first.prompt_tokens as u64;
+            usage.prompt_tokens_details.cached_tokens += first.cached_tokens as u64;
         }
         for sampled in answers {
             let completion = finish(sampled, &stop);
@@ -339,7 +340,7 @@ fn stream_events(
                                 }));
                             }
                         }
-                        Event::End { index: choice, reason, text } => {
+                        Event::End { index: choice, reason, text, .. } => {
                             ended.insert(choice, true);
                             let finish_reason = match reason {
                                 FinishReason::Eog | FinishReason::Stop => chat_wire::FinishReason::Stop,

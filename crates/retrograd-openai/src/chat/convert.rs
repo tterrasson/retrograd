@@ -150,6 +150,7 @@ pub fn prepare(request: ChatCompletionRequest) -> Result<Prepared, OpenAiError> 
             logprobs,
             tool_constraint: constraint,
             reasoning_budget: None,
+            retention: None,
         },
         stream,
         include_usage: stream

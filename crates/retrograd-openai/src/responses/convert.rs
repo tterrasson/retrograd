@@ -327,6 +327,7 @@ pub fn prepare(request: ResponsesRequest) -> Result<Prepared, OpenAiError> {
             logprobs,
             tool_constraint: constraint,
             reasoning_budget,
+            retention: None,
         },
     })
 }

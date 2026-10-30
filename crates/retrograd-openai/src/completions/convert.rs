@@ -43,6 +43,7 @@ impl Prepared {
             logprobs: self.logprobs,
             tool_constraint: None,
             reasoning_budget: None,
+            retention: None,
         }
     }
 }

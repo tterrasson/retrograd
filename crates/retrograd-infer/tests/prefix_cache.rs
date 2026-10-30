@@ -2,8 +2,9 @@
 //! (whole-slot copies at exact boundaries, partial-range copies mid-sequence
 //! on a unified pool), the fully-cached-prompt replay, LRU eviction with pin
 //! protection, swap to host snapshots and restore, invalidation on a weights
-//! version change, and the reservation accounting that charges only the
-//! non-shared suffix. No model needed; the bit-parity of a real reuse path is
+//! version change, the reservation accounting that charges only the
+//! non-shared suffix, and request retentions (a conversation's tail pinned
+//! until its continuation, bounded in count and time). No model needed; the bit-parity of a real reuse path is
 //! covered by the CPU fixture lane.
 
 use std::sync::{Arc, Mutex};
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use retrograd_infer::{
     ActorHandle, ActorOptions, AdmissionMode, Event, FakeBackend, FinishReason, Poll, Request,
-    SchedulerOptions, SharedFake, fake_sampling,
+    Retention, SchedulerOptions, SharedFake, fake_sampling,
 };
 
 fn pieces(vocab: usize) -> Vec<String> {
@@ -91,6 +92,20 @@ fn tokens_of(events: &[Event]) -> Vec<i32> {
             _ => None,
         })
         .collect()
+}
+
+fn cached_tokens(events: &[Event]) -> Option<usize> {
+    events.iter().find_map(|event| match event {
+        Event::End { cached_tokens, .. } => Some(*cached_tokens),
+        _ => None,
+    })
+}
+
+fn retained(prompt: Vec<i32>, seed: u32, key: &str, release: Option<&str>) -> Request {
+    Request::single(prompt, fake_sampling(seed, 1)).with_retention(Some(Retention {
+        key: key.into(),
+        release: release.map(str::to_owned),
+    }))
 }
 
 fn end_reason(events: &[Event]) -> Option<FinishReason> {
@@ -494,5 +509,107 @@ fn a_hit_charges_only_the_suffix_against_the_cell_budget() {
     assert_eq!(tokens_of(&events), SCRIPT.to_vec());
     let stats = handle.kv_stats().expect("stats");
     assert_eq!(stats.hits, 1, "{stats:?}");
+    handle.join().expect("actor joins");
+}
+
+#[test]
+fn a_retained_turn_survives_slot_pressure_until_its_continuation_releases_it() {
+    let fake = fake();
+    let mut opts = options();
+    opts.scheduler.swap_min_tokens = usize::MAX; // drop, do not swap
+    let handle = spawn_on(&fake, opts);
+    // The first turn takes slot 0 and is retained under "a" (one retention
+    // fits a 4-slot pool: a quarter of the slots).
+    let first = collect(
+        handle
+            .submit(retained(PROMPT.to_vec(), 1, "a", None))
+            .expect("submit"),
+    );
+    assert_eq!(
+        cached_tokens(&first),
+        Some(0),
+        "a cold prompt reuses nothing"
+    );
+    let base = fake.lock().expect("lock").removed.len();
+    for seed in 2..=5 {
+        run_request(&handle, vec![50 + seed as i32, 60], seed, 1);
+    }
+    let guard = fake.lock().expect("lock");
+    assert!(
+        !guard.removed[base..].contains(&0),
+        "the retained turn's slot must survive the pressure: {:?}",
+        guard.removed
+    );
+    drop(guard);
+
+    // The continuation extends the retained turn: its whole span is copied,
+    // reported as cached, and the retention moves to the new tail.
+    let mut next = PROMPT.to_vec();
+    next.extend_from_slice(&[9, 10]);
+    let second = collect(
+        handle
+            .submit(retained(next, 6, "b", Some("a")))
+            .expect("submit"),
+    );
+    assert_eq!(tokens_of(&second), vec![SCRIPT[0]]);
+    assert_eq!(cached_tokens(&second), Some(PROMPT.len()));
+
+    // Released, the first turn's node is evictable again.
+    for seed in 7..=10 {
+        run_request(&handle, vec![50 + seed as i32, 61], seed, 1);
+    }
+    let guard = fake.lock().expect("lock");
+    assert!(
+        guard.removed[base..].contains(&0),
+        "the released turn is evicted under pressure: {:?}",
+        guard.removed
+    );
+    drop(guard);
+    handle.join().expect("actor joins");
+}
+
+#[test]
+fn a_retention_gives_way_to_an_admission_that_needs_its_slot() {
+    let fake = fake();
+    let handle = spawn_on(&fake, options());
+    collect(
+        handle
+            .submit(retained(PROMPT.to_vec(), 1, "a", None))
+            .expect("submit"),
+    );
+    // Four completions need all four slots: rather than wait on the retained
+    // node, admission releases it and evicts it.
+    let mut wide = Request::single(vec![80, 81], fake_sampling(1, 1));
+    wide.sampling = (1..=4).map(|seed| fake_sampling(seed, 1).into()).collect();
+    let events = collect(handle.submit(wide).expect("submit"));
+    let ends = events
+        .iter()
+        .filter(|event| matches!(event, Event::End { .. }))
+        .count();
+    assert_eq!(ends, 4, "every completion ran: {events:?}");
+    assert!(fake.lock().expect("lock").removed.contains(&0));
+    handle.join().expect("actor joins");
+}
+
+#[test]
+fn an_expired_retention_is_released_at_the_next_admission() {
+    let fake = fake();
+    let mut opts = options();
+    opts.scheduler.swap_min_tokens = usize::MAX;
+    opts.scheduler.retain_ttl = Duration::ZERO;
+    let handle = spawn_on(&fake, opts);
+    collect(
+        handle
+            .submit(retained(PROMPT.to_vec(), 1, "a", None))
+            .expect("submit"),
+    );
+    let base = fake.lock().expect("lock").removed.len();
+    for seed in 2..=5 {
+        run_request(&handle, vec![50 + seed as i32, 60], seed, 1);
+    }
+    assert!(
+        fake.lock().expect("lock").removed[base..].contains(&0),
+        "an expired retention protects nothing"
+    );
     handle.join().expect("actor joins");
 }

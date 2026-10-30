@@ -338,7 +338,7 @@ impl Endpoint {
                                         }
                                     }
                                 }
-                                Event::End { index, reason, text } => {
+                                Event::End { index, reason, text, cached_tokens } => {
                                     match reason {
                                         FinishReason::Cancelled => {
                                             yield Ok(json_event(&serde_json::json!({"error": OpenAiError::internal(
@@ -368,6 +368,9 @@ impl Endpoint {
                                                     prompt_tokens: prompt_tokens as u64,
                                                     completion_tokens,
                                                     total_tokens: prompt_tokens as u64 + completion_tokens,
+                                                    prompt_tokens_details: wire::PromptTokensDetails {
+                                                        cached_tokens: cached_tokens as u64,
+                                                    },
                                                 })),
                                             }));
                                         }

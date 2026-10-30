@@ -214,8 +214,9 @@ pub struct TextEcho {
 }
 
 /// `usage`, with the details objects the schema requires. `cached_tokens` is
-/// the number of tokens actually reused from a pinned prefix - 0 until the
-/// KV pinning of stateful responses lands.
+/// the number of input tokens copied from the prefix cache instead of
+/// prefilled (a stored turn keeps its KV pinned for its continuation, as a
+/// hint); `cache_write_tokens` stays 0, nothing is billed for writing it.
 #[derive(Clone, Debug, Serialize)]
 pub struct Usage {
     pub input_tokens: u64,

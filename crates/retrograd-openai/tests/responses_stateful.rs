@@ -133,6 +133,36 @@ async fn a_stored_response_is_readable_and_an_unstored_one_is_not() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// A stored turn keeps its KV in the prefix cache: the turn that continues it
+/// reports the shared prefix as `cached_tokens`, part of its `input_tokens`.
+#[tokio::test]
+async fn a_continuation_reports_the_prefix_it_reused_as_cached_tokens() {
+    let (router, _) = router_with("first answer");
+    let (status, first) = post(
+        &router,
+        "/v1/responses",
+        json!({"model": "tuned", "input": "hi"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["usage"]["input_tokens_details"]["cached_tokens"], 0);
+    let (status, second) = post(
+        &router,
+        "/v1/responses",
+        json!({"model": "tuned", "input": "again", "previous_response_id": first["id"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    let cached = second["usage"]["input_tokens_details"]["cached_tokens"]
+        .as_u64()
+        .unwrap();
+    let input = second["usage"]["input_tokens"].as_u64().unwrap();
+    assert!(
+        cached > 0 && cached < input,
+        "cached={cached} input={input}"
+    );
+}
+
 /// A continuation replays the stored chain (input items plus the previous
 /// output) in front of the new input, and echoes `previous_response_id`.
 #[tokio::test]

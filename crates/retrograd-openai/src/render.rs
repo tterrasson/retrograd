@@ -183,6 +183,8 @@ pub struct Sampled {
     pub logprobs: Option<Vec<SampledLogprob>>,
     /// How many sampled tokens the parser attributed to the reasoning block.
     pub reasoning_tokens: usize,
+    /// Prompt tokens copied from the prefix cache instead of prefilled.
+    pub cached_tokens: usize,
 }
 
 /// One sampled token's logprob entry: the UTF-8 bytes of its piece, its
@@ -435,6 +437,7 @@ pub fn complete(
         reader,
         logprobs: None,
         reasoning_tokens: 0,
+        cached_tokens: 0,
     })
 }
 
@@ -501,6 +504,7 @@ pub fn finish(sampled: Sampled, stop: &[String]) -> Completion {
     // Widening: token counts of one request.
     let prompt_tokens = sampled.prompt_tokens as u64;
     let completion_tokens = sampled.completion_tokens as u64;
+    let cached_tokens = sampled.cached_tokens as u64;
     Completion {
         content,
         tool_calls,
@@ -509,6 +513,7 @@ pub fn finish(sampled: Sampled, stop: &[String]) -> Completion {
             prompt_tokens,
             completion_tokens,
             total_tokens: prompt_tokens + completion_tokens,
+            prompt_tokens_details: wire::PromptTokensDetails { cached_tokens },
         },
         parse_errors,
         reasoning,

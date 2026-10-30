@@ -31,7 +31,7 @@ use axum::extract::{Extension, Path, Query, State};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::{get, post};
-use retrograd_infer::{Event, FinishReason};
+use retrograd_infer::{Event, FinishReason, Retention};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -140,14 +140,14 @@ impl Template {
         prompt_tokens: usize,
         completion_tokens: usize,
         reasoning_tokens: usize,
+        cached_tokens: usize,
     ) -> Usage {
         let input_tokens = prompt_tokens as u64;
         let output_tokens = completion_tokens as u64;
         Usage {
             input_tokens,
             input_tokens_details: InputTokensDetails {
-                // No prefix is pinned across responses yet.
-                cached_tokens: 0,
+                cached_tokens: cached_tokens as u64,
                 cache_write_tokens: 0,
             },
             output_tokens,
@@ -394,8 +394,17 @@ async fn responses_create(
     } else if let Some(input) = &request.input {
         replay_items = convert::input_items_of(input);
     }
-    let prepared = prepare(effective)?;
+    let mut prepared = prepare(effective)?;
     let id = format!("resp_{}", uuid::Uuid::new_v4().simple());
+    // A stored turn keeps its KV pinned in the prefix cache for the turn that
+    // continues it, which releases it in turn: the chain's tail stays warm
+    // and its next turn prefills only what is new.
+    if prepared.store {
+        prepared.request.retention = Some(Retention {
+            key: id.clone(),
+            release: prepared.previous_response_id.clone(),
+        });
+    }
     let created = unix_seconds();
     let (weights, base_model) = weights_identity(&target, &model);
     let store_ctx = StoreCtx {
@@ -435,6 +444,7 @@ async fn responses_create(
         completion.usage.prompt_tokens as usize,
         completion.usage.completion_tokens as usize,
         completion.reasoning_tokens,
+        completion.usage.prompt_tokens_details.cached_tokens as usize,
     );
     let output = output_items(&completion);
     let response = template.response(status, output, usage);
@@ -665,6 +675,7 @@ fn stream_buffered(
                     completion.usage.prompt_tokens as usize,
                     completion.usage.completion_tokens as usize,
                     completion.reasoning_tokens,
+                    completion.usage.prompt_tokens_details.cached_tokens as usize,
                 );
                 let output = output_items(&completion);
                 let mut sequencer = Sequencer::new();
@@ -999,7 +1010,7 @@ fn stream_events(
                                     }
                                 }
                             }
-                            Event::End { reason, text, .. } => {
+                            Event::End { reason, text, cached_tokens, .. } => {
                                 let deltas = match parser.as_mut() {
                                     Some(parser) => {
                                         let mut deltas = parser.push(&text);
@@ -1020,6 +1031,7 @@ fn stream_events(
                                     prompt_tokens,
                                     tokens as usize,
                                     reasoning_tokens as usize,
+                                    cached_tokens,
                                 );
                                 for event in builder.end(reason, usage) {
                                     yield Ok::<_, Infallible>(response_event(&event));
@@ -1117,7 +1129,7 @@ impl StreamBuilder {
 
     /// `response.created` then `response.in_progress`, with an empty output.
     fn open(&mut self) -> Vec<Ev> {
-        let usage = self.template.usage(0, 0, 0);
+        let usage = self.template.usage(0, 0, 0, 0);
         vec![
             self.sequencer
                 .push(Ev::Created {
@@ -1597,7 +1609,7 @@ mod regression_tests {
             &completion,
             Status::Completed,
             output,
-            template.usage(1, 2, 1),
+            template.usage(1, 2, 1, 0),
         ) {
             let event = serde_json::to_value(event).unwrap();
             if event["item"]["type"] == "reasoning" {

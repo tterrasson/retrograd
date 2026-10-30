@@ -181,6 +181,8 @@ async fn a_python_sdk_request_gets_a_chat_completion() {
         usage["total_tokens"].as_u64().unwrap(),
         usage["prompt_tokens"].as_u64().unwrap() + usage["completion_tokens"].as_u64().unwrap()
     );
+    // A cold prompt: nothing came from the prefix cache.
+    assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 0);
     assert_eq!(loader.specs(), [spec(Some("tuned.gguf"))]);
 }
 

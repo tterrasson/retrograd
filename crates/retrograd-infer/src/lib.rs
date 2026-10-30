@@ -39,6 +39,8 @@ pub use fake::{
     FakeBackend, SharedFake, sampling as fake_sampling, sampling_v2 as fake_sampling_v2,
 };
 pub use kv::{KvCacheKey, KvStats, PinId};
-pub use request::{Event, EventStream, FinishReason, Poll, Request, TokenEvent, TopLogprob};
+pub use request::{
+    Event, EventStream, FinishReason, Poll, Request, Retention, TokenEvent, TopLogprob,
+};
 pub use scheduler::{AdmissionMode, Scheduler, SchedulerOptions, SchedulerStats};
 pub use sync::{Completion, RequestOutcome, run_requests, run_requests_with};

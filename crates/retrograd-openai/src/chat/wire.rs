@@ -207,6 +207,14 @@ pub struct Usage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    pub prompt_tokens_details: PromptTokensDetails,
+}
+
+/// `cached_tokens`: the prompt tokens copied from the prefix cache instead of
+/// prefilled - part of `prompt_tokens`, not in addition to it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct PromptTokensDetails {
+    pub cached_tokens: u64,
 }
 
 /// One event of a streamed answer.

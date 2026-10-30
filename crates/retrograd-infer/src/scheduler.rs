@@ -17,7 +17,7 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
@@ -31,7 +31,9 @@ use crate::backend::DecodeBackend;
 use crate::detok::Detokenizer;
 use crate::error::InferError;
 use crate::kv::{KvCacheKey, KvStats, PinId, PrefixTree};
-use crate::request::{Event, EventStream, FinishReason, Request, TokenEvent, TopLogprob};
+use crate::request::{
+    Event, EventStream, FinishReason, Request, Retention, TokenEvent, TopLogprob,
+};
 
 /// Consecutive pumps without progress after which a synchronous driver gives
 /// up: every admissible request is admitted, refused or retired within a few
@@ -104,6 +106,12 @@ pub struct SchedulerOptions {
     /// dropped when evicted under pressure; shorter ones are recomputed on
     /// the next hit.
     pub swap_min_tokens: usize,
+    /// How many finished sequences requests may retain at once
+    /// ([`Request::retention`]). Never more than a quarter of the slots: a
+    /// retained node keeps its slot dormant, and admission must keep room.
+    pub max_retained: usize,
+    /// How long a retention lasts before it is released.
+    pub retain_ttl: Duration,
 }
 
 impl Default for SchedulerOptions {
@@ -118,6 +126,8 @@ impl Default for SchedulerOptions {
             min_prefix_len: 8,
             max_snapshot_bytes: 256 << 20,
             swap_min_tokens: 256,
+            max_retained: 8,
+            retain_ttl: Duration::from_secs(300),
         }
     }
 }
@@ -176,6 +186,14 @@ struct LiveMember {
     detok: Detokenizer,
     events: Option<SyncSender<Event>>,
     cancelled: Arc<AtomicBool>,
+    /// The request's retention, carried by its first completion only.
+    retention: Option<Retention>,
+}
+
+/// A retained sequence: its pin and when it was taken.
+struct Retained {
+    pin: PinId,
+    since: Instant,
 }
 
 struct LiveGroup {
@@ -188,6 +206,8 @@ struct LiveGroup {
     /// Cells reserved for the whole group (prompt + budgets, minus the
     /// cache-shared prefix).
     reserved: u64,
+    /// Prompt tokens copied from the prefix tree instead of prefilled.
+    cache_hit: usize,
     members: Vec<LiveMember>,
     phase: GroupPhase,
 }
@@ -307,6 +327,8 @@ pub struct Scheduler<B: DecodeBackend> {
     kv: PrefixTree,
     kv_key: Option<KvCacheKey>,
     kv_stats: KvStats,
+    /// Requests' retentions by key, valid under `kv_key` like the tree.
+    retained: HashMap<String, Retained>,
     /// The adapter currently active on the backend. A composed step never
     /// mixes adapters: admission only lets requests for this adapter join the
     /// live set, and switches it when nothing is live.
@@ -343,6 +365,7 @@ impl<B: DecodeBackend> Scheduler<B> {
             kv: PrefixTree::new(),
             kv_key: None,
             kv_stats: KvStats::default(),
+            retained: HashMap::new(),
             active_adapter: None,
         }
     }
@@ -408,9 +431,63 @@ impl<B: DecodeBackend> Scheduler<B> {
             for slot in slots {
                 self.backend.seq_rm(slot, -1, -1)?;
             }
+            // Clearing the tree dropped every pin with it.
+            self.retained.clear();
             self.kv_key = Some(key);
         }
         Ok(())
+    }
+
+    /// Pins `node` under `key`, replacing an earlier retention of the same key
+    /// and releasing the oldest ones past the cap.
+    fn retain(&mut self, key: String, node: usize) {
+        if let Some(old) = self.retained.remove(&key) {
+            self.kv.unpin(old.pin);
+        }
+        let cap = self.options.max_retained.min(self.n_slots / 4);
+        if cap == 0 {
+            return;
+        }
+        while self.retained.len() >= cap && self.release_oldest_retained() {}
+        let pin = self.kv.pin_node(node);
+        self.retained.insert(
+            key,
+            Retained {
+                pin,
+                since: Instant::now(),
+            },
+        );
+    }
+
+    /// Releases the retention named `key`; false when there is none.
+    fn release_retained(&mut self, key: &str) -> bool {
+        match self.retained.remove(key) {
+            Some(retained) => self.kv.unpin(retained.pin),
+            None => false,
+        }
+    }
+
+    /// Releases the oldest retention; false when there is none.
+    fn release_oldest_retained(&mut self) -> bool {
+        let oldest = self
+            .retained
+            .iter()
+            .min_by_key(|(_, retained)| retained.since)
+            .map(|(key, _)| key.clone());
+        oldest.is_some_and(|key| self.release_retained(&key))
+    }
+
+    /// Releases the retentions older than the TTL.
+    fn release_expired_retained(&mut self) {
+        let ttl = self.options.retain_ttl;
+        let kv = &mut self.kv;
+        self.retained.retain(|_, retained| {
+            let alive = retained.since.elapsed() < ttl;
+            if !alive {
+                kv.unpin(retained.pin);
+            }
+            alive
+        });
     }
 
     pub(crate) fn enqueue(&mut self, queued: Queued) {
@@ -918,6 +995,7 @@ impl<B: DecodeBackend> Scheduler<B> {
         // The prefix tree is only valid under the current weights generation:
         // a key change drops every node and releases its slot.
         self.refresh_key()?;
+        self.release_expired_retained();
         // Host byte budget for swapped snapshots: drop LRU swapped nodes when
         // over budget (they hold no pool cells, only host bytes).
         while self.kv.snapshot_bytes() > self.options.max_snapshot_bytes {
@@ -1156,8 +1234,17 @@ impl<B: DecodeBackend> Scheduler<B> {
             if held_slots + members <= slots_left && held_cells + need <= cells_left {
                 return Ok(Some((members, need, hit.map(|(node, _)| node))));
             }
-            if *evictions_left == 0 || !self.evict_one_lru()? {
+            if *evictions_left == 0 {
                 return Ok(None);
+            }
+            if !self.evict_one_lru()? {
+                // A retention is a hint: rather than leave an admissible
+                // request waiting on retained nodes, release the oldest and
+                // let the next pass evict it.
+                if !self.release_oldest_retained() {
+                    return Ok(None);
+                }
+                continue;
             }
             *evictions_left -= 1;
         }
@@ -1307,6 +1394,7 @@ impl<B: DecodeBackend> Scheduler<B> {
                 permit: _permit,
             } = queued;
             let unparse_special = request.unparse_special;
+            let mut retention = request.retention;
             for (index, sampling) in request.sampling.into_iter().enumerate() {
                 let slot = used
                     .iter()
@@ -1351,6 +1439,7 @@ impl<B: DecodeBackend> Scheduler<B> {
                     detok: Detokenizer::new(&request.stop),
                     events: Some(events.clone()),
                     cancelled: cancelled.clone(),
+                    retention: retention.take(),
                 });
             }
         }
@@ -1389,6 +1478,7 @@ impl<B: DecodeBackend> Scheduler<B> {
             prefix_end,
             leader: 0,
             reserved,
+            cache_hit,
             members,
             phase,
         });
@@ -1512,7 +1602,7 @@ impl<B: DecodeBackend> Scheduler<B> {
         member: usize,
         reason: FinishReason,
     ) -> Result<(), InferError> {
-        let (slot, request_id, index, text, events, path) = {
+        let (slot, request_id, index, text, events, path, retention, cached_tokens) = {
             let group_ref = &mut self.live[group];
             let member_ref = &mut group_ref.members[member];
             if !member_ref.live {
@@ -1530,6 +1620,8 @@ impl<B: DecodeBackend> Scheduler<B> {
                 text,
                 member_ref.events.take().expect("live member has a sender"),
                 path,
+                member_ref.retention.take(),
+                group_ref.cache_hit,
             )
         };
         // A timed-out stream is cancelled for every completion of its request.
@@ -1546,6 +1638,7 @@ impl<B: DecodeBackend> Scheduler<B> {
                     index,
                     reason,
                     text,
+                    cached_tokens,
                 },
                 self.options.slow_client_timeout,
             )
@@ -1568,19 +1661,30 @@ impl<B: DecodeBackend> Scheduler<B> {
         } else {
             0
         };
-        if self.options.prefix_cache
+        let node = if self.options.prefix_cache
+            && resident > 0
             && resident >= self.options.min_prefix_len
             && resident <= path.len()
         {
-            let (_, attached) = self.kv.insert(&path[..resident], slot);
+            let (node, attached) = self.kv.insert(&path[..resident], slot);
             if !attached {
                 // The exact path already has a node: keep the existing one.
                 self.backend.seq_rm(slot, -1, -1)?;
             }
+            Some(node)
         } else {
             self.backend.seq_rm(slot, -1, -1)?;
-        }
+            None
+        };
         self.backend.request_free(request_id)?;
+        if let Some(retention) = retention.filter(|_| reason != FinishReason::Cancelled) {
+            if let Some(release) = &retention.release {
+                self.release_retained(release);
+            }
+            if let Some(node) = node {
+                self.retain(retention.key, node);
+            }
+        }
         Ok(())
     }
 

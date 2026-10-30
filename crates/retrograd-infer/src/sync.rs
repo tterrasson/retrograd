@@ -71,6 +71,7 @@ impl RequestOutcome {
                 index,
                 reason,
                 text,
+                ..
             } => match self.completions.get_mut(index) {
                 Some(member) => {
                     member.finish = Some(reason);

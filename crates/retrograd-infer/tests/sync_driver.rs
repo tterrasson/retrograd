@@ -66,6 +66,7 @@ fn run_requests_collects_every_completion_in_submission_order() {
             logprobs: false,
             adapter: None,
             unparse_special: false,
+            retention: None,
         },
         Request::single(vec![9, 8, 7, 6], fake_sampling(8, 6)),
     ];

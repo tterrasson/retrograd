@@ -34,6 +34,24 @@ pub struct Request {
     /// Render special tokens as text in the emitted pieces (a template-derived
     /// tool-call parser needs the call delimiters to read anything).
     pub unparse_special: bool,
+    /// Keep the finished sequence's KV in the prefix tree under a caller's
+    /// key, e.g. the tail of a conversation its next turn will extend. A
+    /// hint, never a guarantee: see [`Retention`].
+    pub retention: Option<Retention>,
+}
+
+/// What a request asks the prefix tree to keep once it ends: its first
+/// completion's sequence is pinned under `key` (pinned nodes are never
+/// evicted), and the retention named `release` - the turn this one continues -
+/// is let go, since the conversation's tail moved on. Retentions are bounded
+/// in count (each keeps a slot dormant) and in time, and the oldest is
+/// released when an admission would otherwise not fit: a released prefix
+/// costs a prefill, never a wrong answer. A cancelled or failed request
+/// retains nothing and releases nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Retention {
+    pub key: String,
+    pub release: Option<String>,
 }
 
 impl Request {
@@ -47,6 +65,7 @@ impl Request {
             logprobs: false,
             adapter: None,
             unparse_special: false,
+            retention: None,
         }
     }
 
@@ -59,6 +78,12 @@ impl Request {
     /// Renders special tokens as text in the emitted pieces.
     pub fn with_unparse_special(mut self, unparse_special: bool) -> Self {
         self.unparse_special = unparse_special;
+        self
+    }
+
+    /// Retains the finished sequence under `retention.key`.
+    pub fn with_retention(mut self, retention: Option<Retention>) -> Self {
+        self.retention = retention;
         self
     }
 
@@ -131,6 +156,13 @@ impl Request {
         if self.adapter.as_ref().is_some_and(|name| name.is_empty()) {
             return Err(InferError::invalid("an adapter name must not be empty"));
         }
+        if self
+            .retention
+            .as_ref()
+            .is_some_and(|retention| retention.key.is_empty())
+        {
+            return Err(InferError::invalid("a retention key must not be empty"));
+        }
         Ok(())
     }
 }
@@ -193,11 +225,15 @@ pub enum Event {
     /// A sampled token.
     Token(TokenEvent),
     /// One completion ended; `text` is the held-back tail that turned out
-    /// not to be a stop. The stream closes once every completion has ended.
+    /// not to be a stop. `cached_tokens` is how many prompt tokens were
+    /// copied from the prefix tree instead of prefilled (the same for every
+    /// completion of the request). The stream closes once every completion
+    /// has ended.
     End {
         index: usize,
         reason: FinishReason,
         text: String,
+        cached_tokens: usize,
     },
     /// The request failed (refused reservation, backend failure). The stream
     /// closes after an error.

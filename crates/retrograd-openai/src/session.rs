@@ -290,6 +290,7 @@ impl Session {
                 reader: reader.clone(),
                 logprobs: choice.wants_logprobs.then_some(choice.logprobs),
                 reasoning_tokens: choice.reasoning_tokens,
+                cached_tokens: choice.cached_tokens,
             })
             .collect())
     }
@@ -419,6 +420,8 @@ struct Collected {
     reasoning_tokens: usize,
     /// The reasoning length the partial parse last reported.
     reasoning_seen: usize,
+    /// Prompt tokens copied from the prefix cache, from the end event.
+    cached_tokens: usize,
 }
 
 /// Drains one request's stream on a blocking thread, gathering every
@@ -441,6 +444,7 @@ fn collect(
                         wants_logprobs: token.sampled_logprob.is_some(),
                         reasoning_tokens: 0,
                         reasoning_seen: 0,
+                        cached_tokens: 0,
                     }));
                     ended.push(None);
                 }
@@ -477,6 +481,7 @@ fn collect(
                 index,
                 reason,
                 text,
+                cached_tokens,
             } => {
                 while ended.len() <= index {
                     ended.push(None);
@@ -484,6 +489,7 @@ fn collect(
                 }
                 if let Some(choice) = choices[index].as_mut() {
                     choice.text.push_str(&text);
+                    choice.cached_tokens = cached_tokens;
                 }
                 ended[index] = Some(reason);
             }
@@ -681,6 +687,7 @@ impl Worker {
             logprobs: request.logprobs.is_some(),
             adapter,
             unparse_special: rendered.unparse_special,
+            retention: request.retention,
         };
         let stream = core.scheduler.submit(request)?;
         Ok(Some(ServingJob {

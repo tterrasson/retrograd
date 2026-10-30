@@ -11,6 +11,7 @@
 use retrograd_agent_core::tools::ToolSpec;
 use retrograd_agent_core::trajectory::Message;
 use retrograd_core::SamplingParamsV2;
+use retrograd_infer::Retention;
 
 /// What any generation surface asks the model, independent of which weights
 /// answer and of which protocol asked.
@@ -48,6 +49,10 @@ pub struct GenerationRequest {
     /// request's budget machine from the engine's plan. The session drains
     /// requests before changing that plan.
     pub reasoning_budget: Option<i32>,
+    /// Keep the finished turn's KV pinned in the prefix cache under a key, and
+    /// release the turn it continues: what a stored Responses chain asks so
+    /// its next turn prefills only what is new. A hint, never a guarantee.
+    pub retention: Option<Retention>,
 }
 
 /// A tool-calling constraint the template's own format can express as a

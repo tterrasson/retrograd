@@ -17,7 +17,7 @@ use retrograd_infer::FinishReason;
 
 use crate::chat::wire::{
     ChatCompletionChunk, ChunkChoice, Delta, FinishReason as WireFinishReason, FunctionOut,
-    TokenLogprobs, ToolCallDelta, ToolCallOut, Usage,
+    PromptTokensDetails, TokenLogprobs, ToolCallDelta, ToolCallOut, Usage,
 };
 use crate::render::Completion;
 use crate::stream::{StreamDelta, StreamParser};
@@ -206,6 +206,7 @@ impl Chunker {
                     prompt_tokens: self.prompt_tokens,
                     completion_tokens: self.tokens,
                     total_tokens: self.prompt_tokens + self.tokens,
+                    prompt_tokens_details: PromptTokensDetails::default(),
                 })),
                 ..self.chunk(Delta::default(), None, None)
             });
@@ -363,6 +364,7 @@ mod tests {
                 prompt_tokens: 3,
                 completion_tokens: 4,
                 total_tokens: 7,
+                ..Usage::default()
             },
             parse_errors: 0,
             logprobs: None,
