@@ -248,6 +248,7 @@ jobs:
             echo "sdist contains files it must not ship (listed above)" >&2
             exit 1
           fi
+          tar -tzf "$sdist" | grep '/crates/retrograd-ffi/runtime/vendor/llama.cpp/grammars/json.gbnf$'
           pkg_info=$(tar -xzOf "$sdist" --wildcards '*/PKG-INFO')
           grep -qx 'License-Expression: MIT' <<<"$pkg_info"
           grep -qx 'License-File: LICENSE' <<<"$pkg_info"

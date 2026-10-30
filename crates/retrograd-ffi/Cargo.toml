@@ -9,7 +9,7 @@ build = "build.rs"
 links = "retro_runtime"
 # What `cargo package --list` reports, and so what the Python sdist copies: the
 # build inputs, not the whole submodule. Of the fork, `build.rs` and
-# `runtime/CMakeLists.txt` read the top-level CMake project and these six
+# `runtime/CMakeLists.txt` read the top-level CMake project, the JSON grammar and these six
 # directories - tests, examples, tools and the app are switched off - so its
 # models (vocabulary GGUFs), docs, conversion scripts and any local build tree
 # stay out. A new directory the build starts reading has to be added here.
@@ -27,6 +27,7 @@ include = [
     "/runtime/vendor/llama.cpp/cmake/**",
     "/runtime/vendor/llama.cpp/common/**",
     "/runtime/vendor/llama.cpp/ggml/**",
+    "/runtime/vendor/llama.cpp/grammars/json.gbnf",
     "/runtime/vendor/llama.cpp/include/**",
     "/runtime/vendor/llama.cpp/src/**",
     "/runtime/vendor/llama.cpp/vendor/**",
