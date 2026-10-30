@@ -262,6 +262,20 @@ struct gen_core {
             size_t * out_n_tokens,
             uint8_t * out_forced,
             const reasoning_budget_plan * plan);
+
+    // v2 of generate_continuous_batch() over retro_generation_sequence_v2 rows:
+    // every row samples through the CPU oracle (sample_token_v2) with its full
+    // extended parameters, grammar included. The device sampler chain stays
+    // v1, so this path never runs it. Same output layout and error contract.
+    int generate_continuous_batch_v2(
+            const retro_generation_sequence_v2 * sequences,
+            size_t n_sequences,
+            int32_t * out_tokens,
+            float * out_logprobs,
+            size_t n_out_max,
+            size_t * out_n_tokens,
+            uint8_t * out_forced,
+            const reasoning_budget_plan * plan);
 };
 
 // The device-path switches of a gen_core's owner, read per call rather than

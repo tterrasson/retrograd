@@ -1120,6 +1120,20 @@ extern "C" int retro_trainer_generate_continuous_batch(
             out_forced);
 }
 
+extern "C" int retro_trainer_generate_continuous_batch_v2(
+        retro_trainer * trainer,
+        const retro_generation_sequence_v2 * sequences,
+        size_t n_sequences,
+        int32_t * out_tokens,
+        float * out_logprobs,
+        size_t n_out_max,
+        size_t * out_n_tokens,
+        uint8_t * out_forced) {
+    return retro::generate_continuous_batch_v2_impl(
+            trainer, sequences, n_sequences, out_tokens, out_logprobs, n_out_max, out_n_tokens,
+            out_forced);
+}
+
 extern "C" int retro_trainer_generation_step(
         retro_trainer * trainer,
         const retro_step_row * rows,

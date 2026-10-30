@@ -1222,6 +1222,18 @@ typedef struct retro_sampling_params_v2 {
     const retro_grammar * grammar;      // NULL: unconstrained
 } retro_sampling_params_v2;
 
+// v2 of retro_generation_sequence: extended per-row sampling (the row's
+// struct_size must be at least sizeof(retro_sampling_params_v2)), including an optional
+// grammar handle that constrains every sampled token of the row. The v1
+// entry points are unchanged; this variant samples through the CPU oracle
+// (sample_token_v2) because the device sampler chain stays v1 - it is the
+// path a structured judge output takes, not a hot rollout loop.
+typedef struct retro_generation_sequence_v2 {
+    const int32_t * prompt_tokens;
+    size_t n_prompt;
+    retro_sampling_params_v2 sampling;
+} retro_generation_sequence_v2;
+
 // Transformation order for v2 rows, pinned and documented in the header comment:
 // logit_bias -> penalties(window) -> grammar mask -> top_k -> min_p -> temperature -> top_p -> draw.
 // For v2 rows, out_top_ids/out_top_logprobs carry the top-k of the POST-transformation
@@ -1697,6 +1709,24 @@ int retro_trainer_generate_batch(
 int retro_trainer_generate_continuous_batch(
     retro_trainer * trainer,
     const retro_generation_sequence * sequences,
+    size_t n_sequences,
+    int32_t * out_tokens,
+    float * out_logprobs,
+    size_t n_out_max,
+    size_t * out_n_tokens,
+    uint8_t * out_forced);
+
+// v2 of retro_trainer_generate_continuous_batch(): same row-major output,
+// stop criteria and `out_forced` contract, over retro_generation_sequence_v2
+// rows. Every row is sampled by the CPU oracle with its full
+// retro_sampling_params_v2 - grammar included; the grammar handle is copied
+// (GBNF text) into the row's sampler state at its first sampled token, so the
+// caller may free the handle as soon as this call returns. `out_logprobs`,
+// when non-NULL, receives the raw temperature-1 policy logprob of each emitted
+// token, exactly as the v1 entry point does.
+int retro_trainer_generate_continuous_batch_v2(
+    retro_trainer * trainer,
+    const retro_generation_sequence_v2 * sequences,
     size_t n_sequences,
     int32_t * out_tokens,
     float * out_logprobs,

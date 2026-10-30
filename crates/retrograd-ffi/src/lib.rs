@@ -558,6 +558,16 @@ pub struct RetroGenerationSequence {
     pub sampling: RetroSamplingParams,
 }
 
+/// Mirror of `retro_generation_sequence_v2`: one independently sampled prompt
+/// with extended (v2) sampling, grammar handle included.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RetroGenerationSequenceV2 {
+    pub prompt_tokens: *const i32,
+    pub n_prompt: usize,
+    pub sampling: RetroSamplingParamsV2,
+}
+
 /// Mirror of `RETRO_STATE_SEQ_FLAGS_PARTIAL_ONLY`: save/load only the partial
 /// state (recurrent state, plus the SWA KV of a sliding-window layer).
 pub const RETRO_STATE_SEQ_FLAGS_PARTIAL_ONLY: u32 = 1;
@@ -1364,6 +1374,19 @@ unsafe extern "C" {
     pub fn retro_trainer_generate_continuous_batch(
         trainer: *mut RetroTrainer,
         sequences: *const RetroGenerationSequence,
+        n_sequences: usize,
+        out_tokens: *mut i32,
+        out_logprobs: *mut c_float,
+        n_out_max: usize,
+        out_n_tokens: *mut usize,
+        out_forced: *mut u8,
+    ) -> c_int;
+
+    /// Mirror of `retro_trainer_generate_continuous_batch_v2`: v2 rows with
+    /// extended sampling (grammar included), sampled by the CPU oracle.
+    pub fn retro_trainer_generate_continuous_batch_v2(
+        trainer: *mut RetroTrainer,
+        sequences: *const RetroGenerationSequenceV2,
         n_sequences: usize,
         out_tokens: *mut i32,
         out_logprobs: *mut c_float,

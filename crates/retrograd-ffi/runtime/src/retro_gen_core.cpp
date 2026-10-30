@@ -2014,6 +2014,207 @@ int gen_core::generate_continuous_batch(
     return 0;
 }
 
+int gen_core::generate_continuous_batch_v2(
+        const retro_generation_sequence_v2 * sequences,
+        size_t n_sequences,
+        int32_t * out_tokens,
+        float * out_logprobs,
+        size_t n_out_max,
+        size_t * out_n_tokens,
+        uint8_t * out_forced,
+        const reasoning_budget_plan * plan) {
+    if (!sequences || n_sequences == 0 || !out_tokens || !out_n_tokens || n_out_max == 0) {
+        set_error("continuous v2 generation inputs and output buffers are required");
+        return -1;
+    }
+    if (n_sequences > llama_n_seq_max(ctx) || n_sequences > llama_n_batch(ctx)) {
+        set_error("continuous v2 generation batch exceeds the configured sequence or batch capacity");
+        return -1;
+    }
+    if (n_sequences > SIZE_MAX / n_out_max) {
+        set_error("continuous v2 generation output shape overflows size_t");
+        return -1;
+    }
+    const size_t n_ctx = llama_n_ctx_seq(ctx);
+    for (size_t sequence = 0; sequence < n_sequences; ++sequence) {
+        const retro_generation_sequence_v2 & item = sequences[sequence];
+        if (!item.prompt_tokens || item.n_prompt == 0 || item.n_prompt >= n_ctx
+                || !validate_sampling_v2(item.sampling)
+                || item.sampling.max_new_tokens == 0
+                || !validate_tokens(item.prompt_tokens, item.n_prompt)) {
+            if (g_last_error.empty()) set_error("invalid continuous v2 generation prompt");
+            return -1;
+        }
+        out_n_tokens[sequence] = 0;
+    }
+    const llama_vocab * vocab = this->vocab();
+    const size_t n_vocab = this->n_vocab();
+    // The placement, prefill and KV-bookkeeping helpers read only the prompt
+    // of each row, so they run over a v1 view of the v2 rows; sampling itself
+    // is v2-only and happens below, through the CPU oracle.
+    std::vector<retro_generation_sequence> view(n_sequences);
+    for (size_t sequence = 0; sequence < n_sequences; ++sequence) {
+        view[sequence].prompt_tokens = sequences[sequence].prompt_tokens;
+        view[sequence].n_prompt = sequences[sequence].n_prompt;
+        view[sequence].sampling = {};
+    }
+    const bool cache = generation_prefix_cache_enabled();
+    if (!cache) {
+        clear_generation_memory();
+    }
+    this->cache->stats.calls++;
+
+    const std::vector<size_t> order = canonical_prefill_order(view.data(), n_sequences);
+    const std::vector<kv_placement> placement = place_generation_sequences(
+            *this, view.data(), n_sequences, order, n_out_max, cache);
+    batch_guard prefill_batch(static_cast<int32_t>(llama_n_batch(ctx)));
+    std::vector<std::vector<float>> sequence_logits(n_sequences);
+    if (!prefill_continuous_prompts(
+            *this, view.data(), order, placement, prefill_batch.batch,
+            "llama_decode failed during continuous v2 prompt prefill",
+            [&](size_t sequence, int32_t row) {
+                const float * logits = llama_get_logits_ith(ctx, row);
+                if (!logits) {
+                    set_error("continuous v2 prompt prefill produced no logits");
+                    return false;
+                }
+                sequence_logits[sequence].assign(logits, logits + n_vocab);
+                return true;
+            })) {
+        clear_generation_memory();
+        return -1;
+    }
+
+    // Per-sequence oracle state: RNG, scratch, accepted-token history (the
+    // penalties' window source) and the compiled grammar, rebuilt when the
+    // row's GBNF text changes. The handle itself is copied here, so the caller
+    // may free it as soon as this call returns.
+    using sampler_ptr = std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)>;
+    std::vector<std::mt19937> rngs;
+    rngs.reserve(n_sequences);
+    std::vector<sampler_scratch> scratches(n_sequences);
+    std::vector<sampler_scratch> raw_scratches(n_sequences);
+    std::vector<std::vector<int32_t>> histories(n_sequences);
+    std::vector<sampler_ptr> grammars;
+    grammars.reserve(n_sequences);
+    for (size_t sequence = 0; sequence < n_sequences; ++sequence) {
+        grammars.emplace_back(nullptr, llama_sampler_free);
+    }
+    std::vector<size_t> limits(n_sequences);
+    std::vector<bool> live(n_sequences, true);
+    for (size_t sequence = 0; sequence < n_sequences; ++sequence) {
+        rngs.emplace_back(sequences[sequence].sampling.seed);
+        limits[sequence] = std::min<size_t>(
+                std::min<size_t>(n_out_max, sequences[sequence].sampling.max_new_tokens),
+                n_ctx - sequences[sequence].n_prompt);
+        if (sequences[sequence].sampling.grammar) {
+            const char * gbnf = retro_grammar_gbnf(sequences[sequence].sampling.grammar);
+            if (!gbnf) {
+                set_error("the v2 sampling row's grammar handle is invalid");
+                clear_generation_memory();
+                return -1;
+            }
+            grammars[sequence].reset(llama_sampler_init_grammar(vocab, gbnf, "root"));
+            if (!grammars[sequence]) {
+                set_error("failed to compile the row's grammar (invalid GBNF)");
+                clear_generation_memory();
+                return -1;
+            }
+        }
+    }
+    reasoning_budget_rows budget(vocab, plan, n_sequences);
+    for (size_t sequence = 0; sequence < n_sequences; ++sequence) {
+        budget.prime(sequence, sequences[sequence].prompt_tokens, sequences[sequence].n_prompt);
+    }
+    batch_guard decode_batch(static_cast<int32_t>(n_sequences));
+    std::vector<size_t> active;
+    active.reserve(n_sequences);
+    size_t n_live = n_sequences;
+    while (n_live > 0) {
+        active.clear();
+        // Canonical order here too: decode rows must not carry caller slots
+        // into the physical batch. See canonical_prefill_order.
+        for (const size_t sequence : order) {
+            if (!live[sequence]) continue;
+            sampler_scratch & scratch = scratches[sequence];
+            const retro_sampling_params_v2 & params = sequences[sequence].sampling;
+            float sampled_logprob = 0.0f;
+            const int32_t drawn = sample_token_v2(
+                    sequence_logits[sequence].data(), n_vocab, params, rngs[sequence], scratch,
+                    histories[sequence], grammars[sequence].get(),
+                    &sampled_logprob, nullptr, nullptr, 0);
+            if (drawn < 0) {
+                // A grammar failure surfaces here; it is never faked.
+                clear_generation_memory();
+                return -1;
+            }
+            bool forced = false;
+            const int32_t token = budget.next(sequence, drawn, forced);
+            if (forced && grammars[sequence] && scratch.probs[token] == 0.0) {
+                set_error("the reasoning budget forced a token excluded by the grammar");
+                clear_generation_memory();
+                return -1;
+            }
+            const size_t count = out_n_tokens[sequence];
+            out_tokens[sequence*n_out_max + count] = token;
+            record_forced(out_forced, sequence*n_out_max + count, forced);
+            if (out_logprobs) {
+                // Raw temperature-1 policy logprob, the v1 contract: computed
+                // from the untransformed logits row, not from the oracle's
+                // post-transformation distribution.
+                out_logprobs[sequence*n_out_max + count] = token_logprob(
+                        sequence_logits[sequence].data(), n_vocab, token,
+                        raw_scratches[sequence].probs);
+            }
+            out_n_tokens[sequence] = count + 1;
+            histories[sequence].push_back(token);
+            if (grammars[sequence]) {
+                llama_sampler_accept(grammars[sequence].get(), token);
+            }
+            if (llama_vocab_is_eog(vocab, token) || out_n_tokens[sequence] == limits[sequence]) {
+                live[sequence] = false;
+                --n_live;
+            } else {
+                active.push_back(sequence);
+            }
+        }
+        if (active.empty()) break;
+        llama_batch & batch = decode_batch.batch;
+        batch.n_tokens = static_cast<int32_t>(active.size());
+        for (size_t row = 0; row < active.size(); ++row) {
+            const size_t sequence = active[row];
+            const size_t count = out_n_tokens[sequence];
+            batch.token[row] = out_tokens[sequence*n_out_max + count - 1];
+            batch.pos[row] = static_cast<llama_pos>(
+                    sequences[sequence].n_prompt + count - 1);
+            batch.n_seq_id[row] = 1;
+            batch.seq_id[row][0] = placement[sequence].slot;
+            batch.logits[row] = true;
+        }
+        if (decode(batch) != 0) {
+            set_error("llama_decode failed during continuous v2 generation");
+            clear_generation_memory();
+            return -1;
+        }
+        for (size_t row = 0; row < active.size(); ++row) {
+            const float * logits = llama_get_logits_ith(ctx, static_cast<int32_t>(row));
+            if (!logits) {
+                set_error("continuous v2 generation produced no logits");
+                clear_generation_memory();
+                return -1;
+            }
+            sequence_logits[active[row]].assign(logits, logits + n_vocab);
+        }
+    }
+    if (cache) {
+        remember_generation_kv(*this, view.data(), n_sequences, placement,
+                out_tokens, n_out_max, out_n_tokens);
+    } else {
+        clear_generation_memory();
+    }
+    return 0;
+}
+
 // ---------------------------------------------------------------------------
 // The step-wise API: one llama_process per call, raw sequence operations, and
 // the pool occupancy report. The plan comes from the caller; the execution is

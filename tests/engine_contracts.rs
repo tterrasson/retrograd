@@ -32,6 +32,43 @@ fn trainer_new_reports_a_clean_error_for_a_missing_model_path() {
     );
 }
 
+#[test]
+fn continuous_v2_generation_keeps_each_rows_grammar_and_budget() {
+    let Some(model) = common::model_path_if_available() else {
+        return;
+    };
+    let _guard = common::serialize_models();
+    let mut training = cpu_config();
+    training.n_seq_max = 2;
+    training.generation_concurrency = 2;
+    let mut trainer = Trainer::new(model, training).expect("load model");
+    let prompt = trainer.tokenize_text("Answer:").expect("tokenize");
+    let params = |answer: &str| retrograd_core::SamplingParamsV2 {
+        grammar_gbnf: Some(format!("root ::= \"{answer}\"").into()),
+        ..retrograd_core::SamplingParamsV2::from(SamplingParams {
+            temperature: 1.0,
+            top_p: 1.0,
+            max_new_tokens: 8,
+            seed: 7,
+        })
+    };
+    let rows = trainer
+        .generate_sampled_continuous_v2(&[(&prompt, params("yes")), (&prompt, params("no"))])
+        .expect("independent constrained rows");
+    for (row, expected) in rows.iter().zip(["yes", "no"]) {
+        assert_eq!(trainer.detokenize(&row.tokens, false).unwrap(), expected);
+        assert!(row.tokens.len() <= 8);
+        assert_eq!(row.tokens.len(), row.forced.len());
+    }
+    let mut zero = params("yes");
+    zero.max_new_tokens = 0;
+    assert!(
+        trainer
+            .generate_sampled_continuous_v2(&[(&prompt, zero)])
+            .is_err()
+    );
+}
+
 /// The candidate listing is what makes a LoRA target resolvable without
 /// assuming a block layout, and the failure it replaces is what a caller sees
 /// when the assumption is wrong. Both halves are asserted together so the

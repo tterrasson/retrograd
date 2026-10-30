@@ -917,6 +917,15 @@ int generate_continuous_batch_impl(
         size_t n_out_max,
         size_t * out_n_tokens,
         uint8_t * out_forced);
+int generate_continuous_batch_v2_impl(
+        retro_trainer * trainer,
+        const retro_generation_sequence_v2 * sequences,
+        size_t n_sequences,
+        int32_t * out_tokens,
+        float * out_logprobs,
+        size_t n_out_max,
+        size_t * out_n_tokens,
+        uint8_t * out_forced);
 // Step-wise API on the trainer's generation context; same contracts as the
 // retro_engine_step / retro_engine_seq_* family (see retro_lora_train.h).
 int generation_step_impl(

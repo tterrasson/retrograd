@@ -126,6 +126,33 @@ int generate_continuous_batch_impl(
     });
 }
 
+int generate_continuous_batch_v2_impl(
+        retro_trainer * trainer,
+        const retro_generation_sequence_v2 * sequences,
+        size_t n_sequences,
+        int32_t * out_tokens,
+        float * out_logprobs,
+        size_t n_out_max,
+        size_t * out_n_tokens,
+        uint8_t * out_forced) {
+    return boundary([&]() -> int {
+        trainer_state * state = checked(trainer);
+        if (!state) return -1;
+        if (!sequences || n_sequences == 0 || !out_tokens || !out_n_tokens || n_out_max == 0) {
+            set_error("continuous v2 generation inputs and output buffers are required");
+            return -1;
+        }
+        llama_context * ctx = state->generation_ctx ? state->generation_ctx.get() : state->ctx.get();
+        const reasoning_budget_plan * plan = resolve_reasoning_budget(state->chat);
+        if (!plan) {
+            return -1;
+        }
+        gen_core core = core_over(*state, ctx);
+        return core.generate_continuous_batch_v2(sequences, n_sequences, out_tokens,
+                out_logprobs, n_out_max, out_n_tokens, out_forced, plan);
+    });
+}
+
 // The context the step-wise generation API runs on: the dedicated generation
 // context when the run has one, the main context otherwise - the same rule the
 // batched generators use.

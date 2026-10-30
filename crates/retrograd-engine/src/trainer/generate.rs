@@ -76,6 +76,110 @@ impl Trainer {
         Ok(rows.into_iter().map(|row| row.tokens).collect())
     }
 
+    /// [`Trainer::generate_sampled_continuous`], with extended sampling per
+    /// row: [`SamplingParamsV2`] carries the GBNF grammar that constrains the
+    /// output - the path a structured judge answer takes. Every row is sampled
+    /// by the CPU oracle (the device sampler chain stays v1), so this is not a
+    /// rollout loop. Grammar handles are staged per distinct GBNF text and
+    /// released when the call returns, which the runtime contract allows.
+    pub fn generate_sampled_continuous_v2(
+        &mut self,
+        sequences: &[(&[i32], SamplingParamsV2)],
+    ) -> Result<Vec<SampledRow>> {
+        if sequences.is_empty() {
+            return Err(Error::invalid(
+                "continuous v2 generation requires sequences",
+            ));
+        }
+        if sequences
+            .iter()
+            .any(|(prompt, params)| prompt.is_empty() || params.max_new_tokens == 0)
+        {
+            return Err(Error::invalid(
+                "continuous v2 generation requires non-empty prompts and positive token budgets",
+            ));
+        }
+        for (_, params) in sequences {
+            if params.logit_bias.len() > 4096 {
+                return Err(Error::invalid("logit_bias takes at most 4096 entries"));
+            }
+        }
+        let stride = sequences
+            .iter()
+            .map(|(_, params)| params.max_new_tokens as usize)
+            .max()
+            .expect("non-empty continuous v2 generation batch");
+        let capacity = sequences.len().checked_mul(stride).ok_or_else(|| {
+            Error::Overflow("continuous v2 generation shape overflows usize".into())
+        })?;
+        // Stage the logit-bias pairs once, then point each row at its slice:
+        // the Vec must not grow between the pointers being taken and the call.
+        let (bias_ids, bias_values): (Vec<i32>, Vec<f32>) = sequences
+            .iter()
+            .flat_map(|(_, params)| params.logit_bias.iter().copied())
+            .unzip();
+        let mut grammars: Vec<(std::sync::Arc<str>, ffi::Grammar)> = Vec::new();
+        let mut ffi_sequences = Vec::with_capacity(sequences.len());
+        let mut bias_offset = 0_usize;
+        for (prompt, params) in sequences {
+            let n_bias = params.logit_bias.len();
+            let mut sampling = crate::sampling_params_v2_to_ffi(
+                params,
+                bias_ids[bias_offset..].as_ptr(),
+                bias_values[bias_offset..].as_ptr(),
+            );
+            // Each row was checked above to contain at most 4096 entries.
+            sampling.n_logit_bias = n_bias as u32;
+            if let Some(gbnf) = &params.grammar_gbnf {
+                let handle = match grammars.iter().find(|(text, _)| text == gbnf) {
+                    Some((_, handle)) => handle,
+                    None => {
+                        let handle = ffi::Grammar::from_gbnf(gbnf).map_err(Error::invalid)?;
+                        grammars.push((gbnf.clone(), handle));
+                        &grammars.last().expect("just pushed").1
+                    }
+                };
+                sampling.grammar = handle.as_ptr();
+            }
+            ffi_sequences.push(ffi::RetroGenerationSequenceV2 {
+                prompt_tokens: prompt.as_ptr(),
+                n_prompt: prompt.len(),
+                sampling,
+            });
+            bias_offset += n_bias;
+        }
+        let mut tokens = vec![0_i32; capacity];
+        let mut forced = vec![0_u8; capacity];
+        let mut lengths = vec![0_usize; sequences.len()];
+        // SAFETY: the `Trainer` invariant holds and all borrowed arguments -
+        // prompts, staged bias arrays and grammar handles - live through this
+        // synchronous call.
+        self.check(unsafe {
+            ffi::retro_trainer_generate_continuous_batch_v2(
+                self.raw.as_ptr(),
+                ffi_sequences.as_ptr(),
+                ffi_sequences.len(),
+                tokens.as_mut_ptr(),
+                std::ptr::null_mut(),
+                stride,
+                lengths.as_mut_ptr(),
+                forced.as_mut_ptr(),
+            )
+        })?;
+        check_lengths(&lengths, stride)?;
+        Ok(lengths
+            .into_iter()
+            .enumerate()
+            .map(|(row, len)| {
+                let span = row * stride..row * stride + len;
+                SampledRow {
+                    tokens: tokens[span.clone()].to_vec(),
+                    forced: forced[span].iter().map(|&flag| flag != 0).collect(),
+                }
+            })
+            .collect())
+    }
+
     /// [`Trainer::generate_tokens_continuous`], with each row's forced-token
     /// mask: the generator for a caller that runs under a reasoning budget.
     pub fn generate_sampled_continuous(
