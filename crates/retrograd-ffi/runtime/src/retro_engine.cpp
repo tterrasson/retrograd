@@ -10,7 +10,9 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <sstream>
+#include <string>
 
 namespace retro {
 
@@ -32,7 +34,10 @@ struct engine_state {
     step_batch_cache step_batch;
     // No duty-cycle limiter, no scoring counters: the engine is unthrottled.
     gen_core_env env;
-    lora_adapter_ptr adapter;
+    // Every LoRA adapter registered by name, resident beside the base model.
+    // `active_adapter` names the one applied to the context (empty = base).
+    std::map<std::string, lora_adapter_ptr> adapters;
+    std::string active_adapter;
     bool lora_enabled = false;
     chat_model_state chat;
     int32_t requested_device = 0;
@@ -332,8 +337,13 @@ retro_memory_report engine_memory_totals(const engine_state & state) {
     report.has_generation_context = true;
     uint64_t adapter_bytes = 0;
     bool adapter_on_host = true;
-    if (state.adapter) {
-        for (const auto & item : state.adapter->ab_map) {
+    // The report describes the applied adapter; the registered-but-inactive
+    // ones also occupy memory, so they are counted in as well.
+    for (const auto & [name, adapter] : state.adapters) {
+        if (!adapter) {
+            continue;
+        }
+        for (const auto & item : adapter->ab_map) {
             if (item.second.a) {
                 adapter_bytes += ggml_nbytes(item.second.a);
             }
@@ -341,11 +351,14 @@ retro_memory_report engine_memory_totals(const engine_state & state) {
                 adapter_bytes += ggml_nbytes(item.second.b);
             }
         }
-        const ggml_tensor * a = state.adapter->ab_map.empty()
-                ? nullptr
-                : state.adapter->ab_map.begin()->second.a;
-        if (a && a->buffer) {
-            adapter_on_host = ggml_backend_buft_is_host(ggml_backend_buffer_get_type(a->buffer));
+        if (name == state.active_adapter) {
+            const ggml_tensor * a = adapter->ab_map.empty()
+                    ? nullptr
+                    : adapter->ab_map.begin()->second.a;
+            if (a && a->buffer) {
+                adapter_on_host =
+                        ggml_backend_buft_is_host(ggml_backend_buffer_get_type(a->buffer));
+            }
         }
     }
     report.trainable_parameter_bytes = adapter_bytes;
@@ -615,6 +628,30 @@ extern "C" int retro_engine_detokenize(
     });
 }
 
+// Applies the active adapter to the context (nullptr when the base model is
+// active), so exactly one adapter is ever applied: a decode batch stays
+// homogeneous. Returns false with the error set when the apply fails.
+bool apply_active_adapter(engine_state & state) {
+    if (state.active_adapter.empty()) {
+        llama_set_adapters_lora(state.ctx.get(), nullptr, 0, nullptr);
+        state.lora_enabled = false;
+        return true;
+    }
+    auto found = state.adapters.find(state.active_adapter);
+    if (found == state.adapters.end()) {
+        set_error("the active LoRA adapter is not registered");
+        return false;
+    }
+    llama_adapter_lora * adapters[] = { found->second.get() };
+    float scales[] = { 1.0f };
+    if (llama_set_adapters_lora(state.ctx.get(), adapters, 1, scales) != 0) {
+        set_error("failed to apply LoRA adapter to the engine context");
+        return false;
+    }
+    state.lora_enabled = true;
+    return true;
+}
+
 extern "C" int retro_engine_load_lora(retro_engine * engine, const char * adapter_path) {
     return boundary([&]() -> int {
         engine_state * state = checked_engine(engine);
@@ -635,16 +672,75 @@ extern "C" int retro_engine_load_lora(retro_engine * engine, const char * adapte
         if (!validate_lora_tensor_pairs(*adapter)) {
             return -1;
         }
-        llama_adapter_lora * adapters[] = { adapter.get() };
-        float scales[] = { 1.0f };
-        if (llama_set_adapters_lora(state->ctx.get(), adapters, 1, scales) != 0) {
-            set_error("failed to apply LoRA adapter to the engine context");
+        // The historical single-adapter contract: every other adapter goes.
+        state->adapters.clear();
+        state->adapters.emplace(adapter_path, std::move(adapter));
+        state->active_adapter = adapter_path;
+        if (!apply_active_adapter(*state)) {
             return -1;
         }
-        state->adapter = std::move(adapter);
-        state->lora_enabled = true;
         // No tensor is flagged as an optimizer parameter: the engine has no
         // optimizer, and the load path above is where a trainer's would.
+        forget_engine_kv(*state);
+        return 0;
+    });
+}
+
+extern "C" int retro_engine_load_lora_named(
+        retro_engine * engine, const char * name, const char * adapter_path) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        if (is_blank(name)) {
+            set_error("name is required");
+            return -1;
+        }
+        if (is_blank(adapter_path)) {
+            set_error("adapter_path is required");
+            return -1;
+        }
+        lora_adapter_ptr adapter(llama_adapter_lora_init(state->model.get(), adapter_path));
+        if (!adapter) {
+            set_error("failed to load LoRA adapter: " + std::string(adapter_path));
+            return -1;
+        }
+        if (!validate_lora_tensor_pairs(*adapter)) {
+            return -1;
+        }
+        // Registered beside the others, not applied: the context still runs
+        // the active adapter. Only a reload of the active one re-applies it,
+        // because the context would otherwise point at the freed old adapter.
+        const bool was_active = state->active_adapter == name;
+        state->adapters.insert_or_assign(name, std::move(adapter));
+        if (was_active) {
+            if (!apply_active_adapter(*state)) {
+                return -1;
+            }
+            forget_engine_kv(*state);
+        }
+        return 0;
+    });
+}
+
+extern "C" int retro_engine_activate_lora(retro_engine * engine, const char * name) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        const std::string wanted = name ? name : "";
+        if (!wanted.empty() && state->adapters.find(wanted) == state->adapters.end()) {
+            set_error("no LoRA adapter registered under '" + wanted + "'");
+            return -1;
+        }
+        state->active_adapter = wanted;
+        if (!apply_active_adapter(*state)) {
+            return -1;
+        }
+        // Adapter changes invalidate decoded sequence memory: a prefix decoded
+        // under the adapter of the moment is not the prefix of the next one.
         forget_engine_kv(*state);
         return 0;
     });
@@ -656,28 +752,45 @@ extern "C" int retro_engine_set_lora_enabled(retro_engine * engine, bool enabled
         if (!state) {
             return -1;
         }
-        // Adapter changes invalidate decoded sequence memory.
-        if (llama_memory_t memory = llama_get_memory(state->ctx.get())) {
-            llama_memory_clear(memory, true);
-        }
-        state->cache.forget_bookkeeping();
         if (!enabled) {
-            llama_set_adapters_lora(state->ctx.get(), nullptr, 0, nullptr);
-            state->lora_enabled = false;
-            return 0;
-        }
-        if (!state->adapter) {
-            set_error("cannot enable LoRA: no adapter exists");
+            state->active_adapter.clear();
+        } else if (state->active_adapter.empty()) {
+            set_error("cannot enable LoRA: no adapter is active");
             return -1;
         }
-        llama_adapter_lora * adapters[] = { state->adapter.get() };
-        float scales[] = { 1.0f };
-        if (llama_set_adapters_lora(state->ctx.get(), adapters, 1, scales) != 0) {
-            set_error("failed to apply LoRA adapter to the engine context");
+        if (!apply_active_adapter(*state)) {
             return -1;
         }
-        state->lora_enabled = true;
+        // Adapter changes invalidate decoded sequence memory, in both
+        // directions: disabling is as much a weights change as enabling.
+        forget_engine_kv(*state);
         return 0;
+    });
+}
+
+extern "C" int retro_engine_active_adapter(
+        retro_engine * engine, char * buffer, size_t n_buffer, size_t * out_n_bytes) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        if (!out_n_bytes) {
+            set_error("out_n_bytes is required");
+            return -1;
+        }
+        return render_string_out(
+                buffer, n_buffer, out_n_bytes, "active adapter query failed",
+                [&](char * destination, int32_t capacity) -> int32_t {
+                    const std::string & name = state->active_adapter;
+                    const auto n = static_cast<int32_t>(
+                            std::min<size_t>(name.size(), static_cast<size_t>(INT32_MAX)));
+                    if (destination && capacity > 0) {
+                        const auto to_copy = static_cast<size_t>(std::min<int32_t>(n, capacity));
+                        std::memcpy(destination, name.data(), to_copy);
+                    }
+                    return n;
+                });
     });
 }
 

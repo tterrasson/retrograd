@@ -1610,6 +1610,28 @@ unsafe extern "C" {
     pub fn retro_engine_load_lora(engine: *mut RetroEngine, adapter_path: *const c_char) -> c_int;
     pub fn retro_engine_set_lora_enabled(engine: *mut RetroEngine, enabled: bool) -> c_int;
 
+    /// Mirror of `retro_engine_load_lora_named`: register an adapter under
+    /// `name` beside the others, without applying it.
+    pub fn retro_engine_load_lora_named(
+        engine: *mut RetroEngine,
+        name: *const c_char,
+        adapter_path: *const c_char,
+    ) -> c_int;
+
+    /// Mirror of `retro_engine_activate_lora`: apply the adapter registered
+    /// under `name` (null/empty = base model); clears KV and bumps the weights
+    /// version.
+    pub fn retro_engine_activate_lora(engine: *mut RetroEngine, name: *const c_char) -> c_int;
+
+    /// Mirror of `retro_engine_active_adapter`: writes the active adapter's
+    /// name (empty = base), two-call sized-string contract.
+    pub fn retro_engine_active_adapter(
+        engine: *mut RetroEngine,
+        buffer: *mut c_char,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
     pub fn retro_engine_set_chat_template_variables(
         engine: *mut RetroEngine,
         variables_json: *const c_char,

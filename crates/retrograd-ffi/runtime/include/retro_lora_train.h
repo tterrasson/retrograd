@@ -2252,6 +2252,31 @@ int retro_engine_detokenize(
 int retro_engine_load_lora(retro_engine * engine, const char * adapter_path);
 int retro_engine_set_lora_enabled(retro_engine * engine, bool enabled);
 
+// Registers a LoRA adapter loaded from a GGUF file under `name`, keeping it
+// loaded beside the others (several checkpoints of one base model can be
+// resident at once). The adapter is NOT applied unless `name` is already the
+// active one - reloading the active adapter re-applies it and invalidates the
+// KV. Use retro_engine_activate_lora to apply one.
+int retro_engine_load_lora_named(
+    retro_engine * engine,
+    const char * name,
+    const char * adapter_path);
+
+// Applies the adapter registered under `name` to the context - exactly one
+// adapter is active at a time, so a decode batch stays homogeneous - or the
+// base model when `name` is null or empty. Every activation clears the KV
+// and bumps the weights version: a prefix computed under another adapter is
+// never reused.
+int retro_engine_activate_lora(retro_engine * engine, const char * name);
+
+// Writes the active adapter's name (empty when the base model is active),
+// following the render_string_out two-call contract.
+int retro_engine_active_adapter(
+    retro_engine * engine,
+    char * buffer,
+    size_t n_buffer,
+    size_t * out_n_bytes);
+
 // Same chat-template variable and reasoning-budget contracts as the trainer's
 // counterparts; forced tokens are reported through the generators' out_forced.
 int retro_engine_set_chat_template_variables(

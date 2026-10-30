@@ -8,6 +8,7 @@
 //! checks the "no training state" property (zero optimizer state, zero
 //! gradient).
 
+mod adapter;
 mod chat;
 mod generate;
 mod score;
