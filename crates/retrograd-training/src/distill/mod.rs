@@ -33,9 +33,10 @@ use retrograd_metrics::MetricValue;
 
 use crate::grpo::{PromptDraws, optimizer_memory_metrics, ratio_or_zero, shuffled_indices};
 use crate::rollout::{
-    EpochBatch, EpochState, GrpoObjective, GrpoStepParams, Rollout, RowLayout, SchedulerHorizon,
-    TokenStats, WeightedStepScratch, check_policy_divergence, is_truncated, read_prompts,
-    run_grpo_epoch, sample_rollout_groups_continuous, score_train_mask_group, tokenize_prompts,
+    EpochBatch, EpochState, GrpoObjective, GrpoStepParams, Rollout, RolloutStats, RowLayout,
+    SchedulerHorizon, TokenStats, WeightedStepScratch, check_policy_divergence, is_truncated,
+    read_prompts, run_grpo_epoch, sample_rollout_groups_continuous, score_train_mask_group,
+    tokenize_prompts,
 };
 use crate::{Boundary, Progress};
 
@@ -396,6 +397,9 @@ fn assemble_batch(
         &config.sampling,
         &layout,
         training.effective_generation_concurrency() as usize,
+        // Distillation publishes GRPO's reward series only; the scheduler
+        // statistics are collected per call and not emitted here.
+        &mut RolloutStats::default(),
     )?;
     let mut rollouts: Vec<Rollout> = Vec::with_capacity(state.rollouts_per_update);
     for group in sampled_groups {

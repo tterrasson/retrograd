@@ -11,7 +11,10 @@ mod observe;
 pub mod packing_benchmark;
 pub mod ppo;
 pub mod preference;
-mod rollout;
+/// The rollout building blocks shared by the rollout-based algorithms. Public
+/// so integration tests can drive the scheduler-based rollout path directly;
+/// everything except `rollout::driver`'s test entry stays crate-private.
+pub mod rollout;
 pub mod sft;
 pub mod value;
 

@@ -18,6 +18,11 @@ retrograd-config.workspace = true
 retrograd-core.workspace = true
 retrograd-dataset.workspace = true
 retrograd-engine = { workspace = true, features = ["train"] }
+# The step-wise inference policy: rollouts are sampled through its Scheduler,
+# driven synchronously on the trainer's own thread through TrainerBackend.
+# The dependency direction is training -> infer only; infer never depends on
+# this crate (checked by retrograd-infer's tests/chain_boundary.rs).
+retrograd-infer.workspace = true
 retrograd-judge.workspace = true
 retrograd-metrics.workspace = true
 # The observer trait and its plain types, for `[observe]`.

@@ -2250,6 +2250,7 @@ dependencies = [
  "retrograd-core",
  "retrograd-dataset",
  "retrograd-engine",
+ "retrograd-infer",
  "retrograd-judge",
  "retrograd-metrics",
  "retrograd-observe",

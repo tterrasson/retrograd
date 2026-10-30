@@ -13,10 +13,12 @@
 //! One responsibility per file: [`prompts`] reads and tokenizes datasets,
 //! [`reward`] speaks the reward-process protocol and runs held-out evaluation,
 //! [`judge`] blends `[grpo.judge]`'s verdicts into what that protocol returned,
-//! [`sampling`] owns the row geometry and the decode paths, [`weights`] the
+//! [`sampling`] owns the row geometry and the decode paths, [`driver`] drives
+//! those decode paths through the step-wise scheduler, [`weights`] the
 //! objective's per-token coefficients, [`packing`] the physical batches, and
 //! [`step`] the optimizer steps built on all of them.
 
+pub mod driver;
 pub(crate) mod judge;
 pub(crate) mod packing;
 pub(crate) mod prompts;
@@ -28,6 +30,7 @@ pub(crate) mod weights;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use driver::RolloutStats;
 pub(crate) use judge::{GroupJudge, JudgeGroup, JudgeTally};
 pub(crate) use packing::WeightedStepScratch;
 pub(crate) use prompts::{

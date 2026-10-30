@@ -53,6 +53,7 @@ pub(super) fn run_epochs(
                 entropy,
                 trained_tokens,
                 scoring_stats,
+                rollout_stats,
                 reference_seconds,
                 timing:
                     BatchTiming {
@@ -223,6 +224,17 @@ pub(super) fn run_epochs(
                     metric!("policy/ratio_max", ratio_max),
                     metric!("policy/kl_coefficient", effective_kl),
                     metric!("rollouts/distinct_fraction", distinct_fraction),
+                    // Scheduler statistics of the update's sampling calls:
+                    // how full the generation pool ran, and how much of the
+                    // prompts the prefix cache served instead of re-prefilling.
+                    metric!(
+                        "rollout/slot_occupancy_mean",
+                        rollout_stats.slot_occupancy_mean(layout.generation_slots)
+                    ),
+                    metric!(
+                        "rollout/prefill_reuse_fraction",
+                        rollout_stats.prefill_reuse_fraction()
+                    ),
                     metric!("timing/sampling_seconds", sampling_seconds),
                     metric!("timing/generation_seconds", generation_seconds),
                     metric!("timing/behavior_scoring_seconds", behavior_scoring_seconds),

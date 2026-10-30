@@ -1,6 +1,7 @@
 //! Phase 1 of an update: assembling the training batch.
 
 use super::*;
+use crate::rollout::RolloutStats;
 
 /// Wall-clock split of one update's batch assembly, in seconds.
 #[derive(Clone, Copy, Debug, Default)]
@@ -41,6 +42,9 @@ pub(super) struct TrainingBatch {
     pub(super) judge_tally: JudgeTally,
     /// Behavior-scorer counters attributed to this update alone.
     pub(super) scoring_stats: ScoringStats,
+    /// Scheduler statistics accumulated over the update's sampling calls:
+    /// per-step slot occupancy and prefix-cache reuse.
+    pub(super) rollout_stats: RolloutStats,
     pub(super) timing: BatchTiming,
 }
 
@@ -70,6 +74,9 @@ pub(super) struct BatchMetrics {
     /// `tokens_per_second`.
     pub(super) trained_tokens: usize,
     pub(super) scoring_stats: ScoringStats,
+    /// Scheduler statistics of the update's sampling calls, emitted as the
+    /// `rollout/*` series.
+    pub(super) rollout_stats: RolloutStats,
     pub(super) reference_seconds: f32,
     pub(super) timing: BatchTiming,
 }
@@ -141,6 +148,9 @@ pub(super) fn assemble_batch(
     let mut judge_tally = JudgeTally::default();
     let mut kept_groups = 0_usize;
     let mut groups_sampled = 0_usize;
+    // Accumulated over every sampling round of the update (dynamic sampling
+    // resamples), so the `rollout/*` series describe the whole update.
+    let mut rollout_stats = RolloutStats::default();
     let max_candidate_groups = match &config.dynamic_sampling {
         Some(dynamic) => config
             .prompts_per_update
@@ -176,6 +186,7 @@ pub(super) fn assemble_batch(
             &config.sampling,
             &layout,
             training.effective_generation_concurrency() as usize,
+            &mut rollout_stats,
         )?;
         let mut candidates: Vec<Candidate> = Vec::with_capacity(round);
         for ((prompt_slot, (_, seed_offsets)), group) in candidate_slots
@@ -402,6 +413,7 @@ pub(super) fn assemble_batch(
         groups_sampled,
         judge_tally,
         scoring_stats,
+        rollout_stats,
         timing: BatchTiming {
             generation: generation_seconds,
             behavior_scoring: behavior_scoring_seconds,

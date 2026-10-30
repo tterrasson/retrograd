@@ -1,10 +1,13 @@
 //! Rollout geometry and sampling: the fixed row layout every algorithm packs
-//! into, the token-level training mask, and the batched decode paths that turn
+//! into, the token-level training mask, and the scheduled decode path that turns
 //! prompts into rollouts.
 
-use retrograd_core::{Error, Result, SamplingParams, SharedPrefixFanout, TrainConfig};
+use retrograd_core::{
+    Error, Result, RolloutAdmission, SamplingParams, SharedPrefixFanout, TrainConfig,
+};
 use retrograd_engine::Trainer;
 
+use super::driver::{self, RolloutStats};
 use super::weights::score_train_mask_group;
 
 /// One sampled rollout: the full context sequence, an explicit token-level
@@ -72,6 +75,16 @@ pub(crate) struct RowLayout {
     pub(crate) shared_prefix_fanout: SharedPrefixFanout,
     /// Optimizer steps one packed row produces.
     pub(crate) steps_per_row: u64,
+    /// How rollout requests are admitted to the generation pool
+    /// (`training.rollout_admission`).
+    pub(crate) rollout_admission: RolloutAdmission,
+    /// Sequence slots of the dedicated generation pool, i.e.
+    /// `training.effective_generation_concurrency()`.
+    pub(crate) generation_slots: usize,
+    /// The generation context's `n_batch`, resolved from
+    /// `training.generation_batch` and the model's vocabulary exactly as the
+    /// runtime resolves it when it builds that context.
+    pub(crate) generation_batch: usize,
 }
 
 impl RowLayout {
@@ -94,6 +107,15 @@ impl RowLayout {
             n_seq_max: training.n_seq_max as usize,
             shared_prefix_fanout: training.shared_prefix_fanout,
             steps_per_row,
+            rollout_admission: training.rollout_admission,
+            // u32 -> usize widening.
+            generation_slots: training.effective_generation_concurrency() as usize,
+            // u32 -> usize widening.
+            generation_batch: retrograd_engine::generation_batch(
+                training,
+                u32::try_from(trainer.vocab_size()?)
+                    .map_err(|_| Error::overflow("the model's vocabulary exceeds u32"))?,
+            ) as usize,
         })
     }
 
@@ -197,9 +219,13 @@ pub(crate) fn sample_rollout(
     .ok_or_else(|| Error::runtime("generation batch returned no rollout"))
 }
 
-/// Samples a group from one prompt in a single multi-sequence decode. Seeds
-/// are derived independently from the supplied offsets, so batching changes
+/// Samples a group from one prompt through the step-wise scheduler. Seeds are
+/// derived independently from the supplied offsets, so batching changes
 /// scheduling only, not any member's random stream.
+///
+/// The scheduler borrows the trainer for the duration of the generation only;
+/// it is dropped before the detokenization and the teacher-forced scoring
+/// below run.
 pub(crate) fn sample_rollouts(
     trainer: &mut Trainer,
     prompt_tokens: &[i32],
@@ -211,23 +237,38 @@ pub(crate) fn sample_rollouts(
     if seed_offsets.is_empty() {
         return Err(Error::invalid("rollout batch requires seed offsets"));
     }
-    let room = generation_room(layout, prompt_tokens.len())?;
     let params = seed_offsets
         .iter()
         .map(|&seed_offset| SamplingParams {
-            max_new_tokens: sampling.max_new_tokens.min(room),
             seed: sampling.seed.wrapping_add(seed_offset as u32),
             ..*sampling
         })
         .collect::<Vec<_>>();
-    let completions = trainer.generate_tokens_batch(prompt_tokens, &params)?;
+    // The driver clamps max_new_tokens to the generation room of the trained
+    // window, the clamp the batched path applied before its generate call.
+    let groups = [(prompt_tokens, params)];
+    let completions = {
+        let mut scheduler = driver::new_scheduler(trainer, layout, seed_offsets.len())?;
+        driver::run_rollout_groups(
+            &mut scheduler,
+            layout.rollout_admission,
+            layout,
+            layout.generation_slots,
+            &groups,
+            &mut RolloutStats::default(),
+        )?
+    };
+    let completions = completions
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::runtime("generation batch returned no rollout"))?;
     let n_prompt = prompt_tokens.len();
     let mut rollouts = Vec::with_capacity(completions.len());
     for completion in completions {
-        let completion_text = trainer.detokenize(&completion, false)?;
-        let mut tokens = Vec::with_capacity(n_prompt + completion.len());
+        let completion_text = trainer.detokenize(&completion.tokens, false)?;
+        let mut tokens = Vec::with_capacity(n_prompt + completion.tokens.len());
         tokens.extend_from_slice(prompt_tokens);
-        tokens.extend_from_slice(&completion);
+        tokens.extend_from_slice(&completion.tokens);
         rollouts.push((
             Rollout {
                 train_mask: make_train_mask(n_prompt, tokens.len()),
@@ -254,19 +295,22 @@ pub(crate) fn sample_rollouts(
     Ok(rollouts)
 }
 
-/// Samples heterogeneous prompt groups in continuous decode batches. A group
-/// may span several physical waves when `sequence_capacity < group_size`; its
-/// independently seeded members are reassembled in their original order.
+/// Samples heterogeneous prompt groups through the step-wise scheduler. A
+/// group may span several physical waves when `sequence_capacity < group_size`;
+/// its independently seeded members are reassembled in their original order.
 ///
 /// Waves are filled group by group and a group is never split just because the
 /// current wave is nearly full, so a capacity that is not a multiple of the
 /// group size costs idle sequence slots rather than duplicate prompt prefills.
+/// `stats` accumulates the scheduler statistics of the call (per-step slot
+/// occupancy and prefix-cache reuse) for the update's metrics.
 pub(crate) fn sample_rollout_groups_continuous(
     trainer: &mut Trainer,
     groups: &[(&[i32], Vec<usize>)],
     sampling: &SamplingParams,
     layout: &RowLayout,
     sequence_capacity: usize,
+    stats: &mut RolloutStats,
 ) -> Result<Vec<Vec<(Rollout, String)>>> {
     if groups.is_empty() || sequence_capacity == 0 {
         return Err(Error::invalid(
@@ -278,37 +322,51 @@ pub(crate) fn sample_rollout_groups_continuous(
             "continuous rollout groups must not be empty",
         ));
     }
-    let mut output = groups
+    let request_groups: Vec<(&[i32], Vec<SamplingParams>)> = groups
         .iter()
-        .map(|(_, offsets)| Vec::with_capacity(offsets.len()))
-        .collect::<Vec<_>>();
-    let group_sizes = groups
-        .iter()
-        .map(|(_, offsets)| offsets.len())
-        .collect::<Vec<_>>();
-    for wave in continuous_waves(&group_sizes, sequence_capacity) {
-        let mut requests = Vec::with_capacity(wave.len());
-        for &(group_index, member_index) in &wave {
-            let (prompt, offsets) = &groups[group_index];
-            let room = generation_room(layout, prompt.len())?;
-            requests.push((
+        .map(|(prompt, offsets)| {
+            (
                 *prompt,
-                SamplingParams {
-                    max_new_tokens: sampling.max_new_tokens.min(room),
-                    seed: sampling.seed.wrapping_add(offsets[member_index] as u32),
-                    ..*sampling
-                },
-            ));
-        }
-        let completions = trainer.generate_tokens_continuous(&requests)?;
-        for (&(group_index, _), completion) in wave.iter().zip(completions) {
-            let prompt = groups[group_index].0;
-            let n_prompt = prompt.len();
-            let completion_text = trainer.detokenize(&completion, false)?;
-            let mut tokens = Vec::with_capacity(n_prompt + completion.len());
+                offsets
+                    .iter()
+                    .map(|&offset| SamplingParams {
+                        seed: sampling.seed.wrapping_add(offset as u32),
+                        ..*sampling
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    let queue_bound = request_groups
+        .iter()
+        .map(|(_, params)| params.len())
+        .sum::<usize>()
+        .max(1);
+    // The scheduler borrows the trainer for the duration of the generation
+    // only; it is dropped at the end of this block, before the detokenization
+    // below runs.
+    let completions = {
+        let mut scheduler = driver::new_scheduler(trainer, layout, queue_bound)?;
+        driver::run_rollout_groups(
+            &mut scheduler,
+            layout.rollout_admission,
+            layout,
+            sequence_capacity,
+            &request_groups,
+            stats,
+        )?
+    };
+    let mut output = Vec::with_capacity(groups.len());
+    for (group_index, group_completions) in completions.into_iter().enumerate() {
+        let prompt = groups[group_index].0;
+        let n_prompt = prompt.len();
+        let mut members = Vec::with_capacity(group_completions.len());
+        for completion in group_completions {
+            let completion_text = trainer.detokenize(&completion.tokens, false)?;
+            let mut tokens = Vec::with_capacity(n_prompt + completion.tokens.len());
             tokens.extend_from_slice(prompt);
-            tokens.extend_from_slice(&completion);
-            output[group_index].push((
+            tokens.extend_from_slice(&completion.tokens);
+            members.push((
                 Rollout {
                     train_mask: make_train_mask(n_prompt, tokens.len()),
                     tokens,
@@ -317,6 +375,7 @@ pub(crate) fn sample_rollout_groups_continuous(
                 completion_text,
             ));
         }
+        output.push(members);
     }
     Ok(output)
 }

@@ -3,13 +3,22 @@
 //! rollout scored then stepped), so splitting them per file would only move
 //! the imports around.
 
+use super::driver::{self, RolloutStats};
 use super::packing::*;
 use super::prompts::*;
 use super::reward::*;
 use super::sampling::*;
 use super::step::*;
 use super::weights::*;
-use retrograd_core::{ImportanceSamplingLevel, RewardMode, RewardProtocol, SharedPrefixFanout};
+use retrograd_core::SamplingParams;
+use retrograd_core::{
+    ImportanceSamplingLevel, RewardMode, RewardProtocol, RolloutAdmission, SharedPrefixFanout,
+};
+use retrograd_engine::{StepOutRow, StepOutput, StepRow};
+use retrograd_infer::{
+    DecodeBackend, FakeBackend, InferError, Scheduler, SharedFake, fake_sampling,
+};
+use std::sync::{Arc, Mutex};
 
 /// Builds the four objective values by name so call sites state which value is
 /// the clip range, KL coefficient, or loss denominator.
@@ -498,6 +507,9 @@ fn generation_room_refuses_a_prompt_that_fills_the_window() {
         ubatch: 16,
         n_seq_max: 1,
         shared_prefix_fanout: SharedPrefixFanout::Auto,
+        rollout_admission: RolloutAdmission::Lockstep,
+        generation_slots: 1,
+        generation_batch: 1,
         steps_per_row: 1,
     };
     assert_eq!(generation_room(&layout, 4).unwrap(), 12);
@@ -643,6 +655,9 @@ fn reusable_row_clears_only_the_previous_live_ranges() {
         ubatch: 2,
         n_seq_max: 1,
         shared_prefix_fanout: SharedPrefixFanout::Auto,
+        rollout_admission: RolloutAdmission::Lockstep,
+        generation_slots: 1,
+        generation_batch: 1,
         steps_per_row: 2,
     };
     let mut scratch = WeightedStepScratch::new(&layout);
@@ -695,6 +710,9 @@ fn multi_row_scratch_isolates_slots_and_survives_resizing() {
         ubatch: 2,
         n_seq_max: 1,
         shared_prefix_fanout: SharedPrefixFanout::Auto,
+        rollout_admission: RolloutAdmission::Lockstep,
+        generation_slots: 1,
+        generation_batch: 1,
         steps_per_row: 1,
     };
     let short = Rollout {
@@ -756,6 +774,9 @@ fn shared_prefix_chunks_keep_groups_together_and_split_at_capacity() {
         ubatch: 12,
         n_seq_max: 4,
         shared_prefix_fanout: SharedPrefixFanout::Auto,
+        rollout_admission: RolloutAdmission::Lockstep,
+        generation_slots: 1,
+        generation_batch: 1,
         steps_per_row: 1,
     };
     // Shared prefix costs four tokens and each member three: two members
@@ -791,6 +812,9 @@ fn packing_layout(width: usize, sequences: usize) -> RowLayout {
         ubatch: width,
         n_seq_max: sequences,
         shared_prefix_fanout: SharedPrefixFanout::Auto,
+        rollout_admission: RolloutAdmission::Lockstep,
+        generation_slots: 1,
+        generation_batch: 1,
         steps_per_row: 1,
     }
 }
@@ -1052,6 +1076,9 @@ fn packed_sequences_share_each_prompt_and_isolate_groups() {
         ubatch: 10,
         n_seq_max: 4,
         shared_prefix_fanout: SharedPrefixFanout::Auto,
+        rollout_admission: RolloutAdmission::Lockstep,
+        generation_slots: 1,
+        generation_batch: 1,
         steps_per_row: 1,
     };
     let mut scratch = WeightedStepScratch::new(&layout);
@@ -1112,6 +1139,9 @@ fn packed_sequences_stay_continuous_when_the_last_token_is_not_trained() {
         ubatch: 10,
         n_seq_max: 2,
         shared_prefix_fanout: SharedPrefixFanout::Auto,
+        rollout_admission: RolloutAdmission::Lockstep,
+        generation_slots: 1,
+        generation_batch: 1,
         steps_per_row: 1,
     };
     let mut scratch = WeightedStepScratch::new(&layout);
@@ -1176,6 +1206,9 @@ fn rollout_evals_round_the_last_label_up_to_a_ubatch() {
         ubatch: 4,
         n_seq_max: 1,
         shared_prefix_fanout: SharedPrefixFanout::Auto,
+        rollout_admission: RolloutAdmission::Lockstep,
+        generation_slots: 1,
+        generation_batch: 1,
         steps_per_row: 2,
     };
     // Last trainable target index 5 → label at 4 → ubatches 0..=1 → 2.
@@ -1540,4 +1573,352 @@ fn gspo_bounds_an_extreme_mean_log_ratio() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The scheduler-based rollout driver, on FakeBackend (no model needed).
+// ---------------------------------------------------------------------------
+
+fn driver_pieces(vocab: usize) -> Vec<String> {
+    (0..vocab)
+        .map(|i| {
+            if i == 99 {
+                String::new()
+            } else {
+                char::from_u32('a' as u32 + (i as u32 % 26))
+                    .expect("a letter")
+                    .to_string()
+            }
+        })
+        .collect()
+}
+
+fn driver_fake() -> FakeBackend {
+    FakeBackend::new(4, 32, 128, 100, 99, driver_pieces(100))
+}
+
+/// A layout wide enough that the driver's budget clamp never binds in these
+/// tests (prompts are 3-5 tokens, budgets 3-6).
+fn driver_layout() -> RowLayout {
+    RowLayout {
+        row_width: 64,
+        window: 64,
+        pad_token: 99,
+        batch: 64,
+        ubatch: 64,
+        n_seq_max: 4,
+        shared_prefix_fanout: SharedPrefixFanout::Auto,
+        rollout_admission: RolloutAdmission::Lockstep,
+        generation_slots: 4,
+        generation_batch: 16,
+        steps_per_row: 1,
+    }
+}
+
+fn driver_scheduler(
+    backend: impl DecodeBackend + 'static,
+    admission: RolloutAdmission,
+    slots: usize,
+    queue: usize,
+) -> Scheduler<impl DecodeBackend> {
+    let mut scheduler = Scheduler::new(
+        backend,
+        driver::scheduler_options(admission, 16, slots, queue),
+    );
+    scheduler.initialize().unwrap();
+    scheduler
+}
+
+fn run_groups(
+    scheduler: &mut Scheduler<impl DecodeBackend>,
+    admission: RolloutAdmission,
+    capacity: usize,
+    groups: &[(&[i32], Vec<SamplingParams>)],
+) -> retrograd_core::Result<Vec<Vec<driver::RolloutCompletion>>> {
+    let layout = driver_layout();
+    let mut stats = RolloutStats::default();
+    driver::run_rollout_groups(scheduler, admission, &layout, capacity, groups, &mut stats)
+}
+
+#[test]
+fn driver_preserves_group_and_member_order_and_is_deterministic_per_seed() {
+    let prompt_a = vec![1, 2, 3, 4];
+    let prompt_b = vec![5, 6, 7];
+    let run = |groups: Vec<(Vec<i32>, Vec<SamplingParams>)>| {
+        let refs: Vec<(&[i32], Vec<SamplingParams>)> = groups
+            .iter()
+            .map(|(prompt, params)| (prompt.as_slice(), params.clone()))
+            .collect();
+        let mut scheduler = driver_scheduler(driver_fake(), RolloutAdmission::Lockstep, 4, 16);
+        run_groups(&mut scheduler, RolloutAdmission::Lockstep, 4, &refs).unwrap()
+    };
+    let groups = vec![
+        (
+            prompt_a.clone(),
+            vec![fake_sampling(11, 4), fake_sampling(12, 4)],
+        ),
+        (prompt_b.clone(), vec![fake_sampling(13, 4)]),
+    ];
+    let first = run(groups.clone());
+    let second = run(groups);
+    assert_eq!(first, second, "same seeds -> same tokens across runs");
+    assert_eq!(first.len(), 2);
+    assert_eq!(first[0].len(), 2);
+    assert_eq!(first[1].len(), 1);
+    assert_eq!(first[0][0].tokens.len(), 4);
+    assert!(
+        first[0][0].tokens != first[0][1].tokens,
+        "distinct seeds -> distinct token streams"
+    );
+    assert!(first[0][0].forced.iter().all(|&forced| !forced));
+
+    // Group identity follows the groups slice, not the scheduler's canonical
+    // sort: swapping the slice swaps the outputs.
+    let swapped = run(vec![
+        (prompt_b.clone(), vec![fake_sampling(13, 4)]),
+        (
+            prompt_a.clone(),
+            vec![fake_sampling(11, 4), fake_sampling(12, 4)],
+        ),
+    ]);
+    assert_eq!(swapped[0], first[1]);
+    assert_eq!(swapped[1], first[0]);
+
+    // Member identity follows the params order within a group: with the same
+    // groups present (so the scheduler assigns the same request ids), swapping
+    // the two params of group A swaps its two members' token streams.
+    let reversed = run(vec![
+        (prompt_b.clone(), vec![fake_sampling(13, 4)]),
+        (
+            prompt_a.clone(),
+            vec![fake_sampling(12, 4), fake_sampling(11, 4)],
+        ),
+    ]);
+    assert_eq!(reversed[0], first[1]);
+    assert_eq!(reversed[1][0].tokens, first[0][1].tokens);
+    assert_eq!(reversed[1][1].tokens, first[0][0].tokens);
+}
+
+#[test]
+fn lockstep_merges_identical_prompts_into_one_prefill_plus_copies() {
+    let shared = Arc::new(Mutex::new(driver_fake()));
+    let mut scheduler = driver_scheduler(
+        SharedFake(shared.clone()),
+        RolloutAdmission::Lockstep,
+        4,
+        16,
+    );
+    let prompt = vec![1, 2, 3, 4, 5];
+    let groups: Vec<(&[i32], Vec<SamplingParams>)> = vec![(
+        &prompt,
+        vec![
+            fake_sampling(21, 3),
+            fake_sampling(22, 3),
+            fake_sampling(23, 3),
+        ],
+    )];
+    let out = run_groups(&mut scheduler, RolloutAdmission::Lockstep, 4, &groups).unwrap();
+    assert_eq!(out[0].len(), 3);
+    assert!(
+        out[0]
+            .iter()
+            .all(|member| member.tokens.len() == 3 && member.forced.iter().all(|&f| !f))
+    );
+    let backend = shared.lock().unwrap();
+    // The shared prefix [0, 4) was prefilled exactly once (one 4-token
+    // non-sampling row), and every extra member got a whole-sequence copy.
+    let shared_prefills = backend
+        .steps
+        .iter()
+        .flatten()
+        .filter(|(_, n_tokens, request)| *n_tokens == 4 && request.is_none())
+        .count();
+    assert_eq!(shared_prefills, 1, "steps: {:?}", backend.steps);
+    let whole_copies = backend
+        .copies
+        .iter()
+        .filter(|(_, _, p0, p1)| *p0 == -1 && *p1 == -1)
+        .count();
+    assert_eq!(whole_copies, 2, "copies: {:?}", backend.copies);
+}
+
+#[test]
+fn continuous_refills_a_slot_freed_by_a_finished_sequence() {
+    // A two-slot pool: the third group can only run if the scheduler refills
+    // the slot a finished sequence freed.
+    let shared = Arc::new(Mutex::new(
+        FakeBackend::new(2, 32, 128, 100, 99, driver_pieces(100)).with_eog_after(2),
+    ));
+    let mut scheduler = driver_scheduler(
+        SharedFake(shared.clone()),
+        RolloutAdmission::Continuous,
+        2,
+        16,
+    );
+    // Three single-member groups on a two-slot pool: the third can only run
+    // if the scheduler refills the slot a finished sequence freed.
+    let p1 = vec![1, 2, 3];
+    let p2 = vec![4, 5, 6];
+    let p3 = vec![7, 8, 9];
+    let groups: Vec<(&[i32], Vec<SamplingParams>)> = vec![
+        (&p1, vec![fake_sampling(31, 6)]),
+        (&p2, vec![fake_sampling(32, 6)]),
+        (&p3, vec![fake_sampling(33, 6)]),
+    ];
+    let layout = driver_layout();
+    let mut stats = RolloutStats::default();
+    let out = driver::run_rollout_groups(
+        &mut scheduler,
+        RolloutAdmission::Continuous,
+        &layout,
+        2,
+        &groups,
+        &mut stats,
+    )
+    .unwrap();
+    assert_eq!(out.len(), 3);
+    for group in &out {
+        assert_eq!(
+            group[0].tokens.len(),
+            3,
+            "two sampled tokens plus the kept EOG token"
+        );
+    }
+    // The driver sampled the live count after every pump; it never exceeds
+    // the slot count, and the prefix cache served nothing (all prompts cold).
+    assert!(stats.steps > 0);
+    assert!(stats.slot_occupancy_mean(2) <= 1.0);
+    assert_eq!(stats.prefill_reuse_fraction(), 0.0);
+    let backend = shared.lock().unwrap();
+    assert!(
+        backend.steps.iter().any(|step| step.len() == 2),
+        "two sequences decoded in one step: {:?}",
+        backend.steps
+    );
+}
+
+/// A backend that forces the first sampled row of every step, the way a
+/// reasoning budget forces tokens. Everything else delegates to the fake.
+struct ForcingBackend(FakeBackend);
+
+impl DecodeBackend for ForcingBackend {
+    fn step(&mut self, rows: &[StepRow<'_>], out: &mut StepOutput) -> Result<(), InferError> {
+        let stride = rows
+            .iter()
+            .map(|row| row.n_top_logprobs as usize)
+            .max()
+            .unwrap_or(0);
+        let mut scratch = StepOutput::with_capacity(rows.len(), stride);
+        self.0.step(rows, &mut scratch)?;
+        let mut out_rows: Vec<StepOutRow> = scratch.rows().collect();
+        if let Some(first) = out_rows.first_mut() {
+            first.forced = true;
+        }
+        let mut top_ids = Vec::with_capacity(out_rows.len() * stride);
+        let mut top_logprobs = Vec::with_capacity(out_rows.len() * stride);
+        for index in 0..out_rows.len() {
+            let mut pairs: Vec<(i32, f32)> = scratch.top(index).collect();
+            while pairs.len() < stride {
+                pairs.push((0, 0.0));
+            }
+            for (id, logprob) in pairs {
+                top_ids.push(id);
+                top_logprobs.push(logprob);
+            }
+        }
+        out.fill(out_rows, stride, top_ids, top_logprobs)?;
+        Ok(())
+    }
+    fn seq_rm(&mut self, slot: i32, p0: i32, p1: i32) -> Result<(), InferError> {
+        self.0.seq_rm(slot, p0, p1)
+    }
+    fn seq_cp(&mut self, src: i32, dst: i32, p0: i32, p1: i32) -> Result<(), InferError> {
+        self.0.seq_cp(src, dst, p0, p1)
+    }
+    fn seq_pos(&self, slot: i32) -> Result<(i32, i32), InferError> {
+        self.0.seq_pos(slot)
+    }
+    fn seq_save_len(&self, slot: i32, flags: u32) -> Result<usize, InferError> {
+        self.0.seq_save_len(slot, flags)
+    }
+    fn seq_save_into(
+        &mut self,
+        slot: i32,
+        flags: u32,
+        buffer: &mut [u8],
+    ) -> Result<usize, InferError> {
+        self.0.seq_save_into(slot, flags, buffer)
+    }
+    fn seq_load(&mut self, slot: i32, flags: u32, data: &[u8]) -> Result<usize, InferError> {
+        self.0.seq_load(slot, flags, data)
+    }
+    fn kv_unified(&self) -> Result<bool, InferError> {
+        self.0.kv_unified()
+    }
+    fn weights_version(&self) -> Result<u64, InferError> {
+        self.0.weights_version()
+    }
+    fn model_fingerprint(&self) -> Result<u64, InferError> {
+        self.0.model_fingerprint()
+    }
+    fn is_hybrid(&self) -> Result<bool, InferError> {
+        self.0.is_hybrid()
+    }
+    fn memory(&self) -> Result<retrograd_engine::EngineMemory, InferError> {
+        self.0.memory()
+    }
+    fn request_free(&mut self, request: i32) -> Result<(), InferError> {
+        self.0.request_free(request)
+    }
+    fn is_eog_token(&self, token: i32) -> Result<bool, InferError> {
+        self.0.is_eog_token(token)
+    }
+    fn detokenize_bytes(&self, tokens: &[i32]) -> Result<Vec<u8>, InferError> {
+        self.0.detokenize_bytes(tokens)
+    }
+    fn context_size(&self) -> Result<u32, InferError> {
+        self.0.context_size()
+    }
+    fn vocab_size(&self) -> Result<u32, InferError> {
+        self.0.vocab_size()
+    }
+}
+
+#[test]
+fn a_forced_token_is_refused_with_the_batched_generators_message() {
+    let mut scheduler = driver_scheduler(
+        ForcingBackend(driver_fake()),
+        RolloutAdmission::Lockstep,
+        4,
+        16,
+    );
+    let prompt = vec![1, 2, 3];
+    let groups: Vec<(&[i32], Vec<SamplingParams>)> = vec![(&prompt, vec![fake_sampling(41, 3)])];
+    let error = run_groups(&mut scheduler, RolloutAdmission::Lockstep, 4, &groups).unwrap_err();
+    assert!(error.is_user_error(), "{error}");
+    assert!(
+        error.to_string().contains(
+            "the reasoning budget forced tokens into a generation whose caller cannot mask them; \
+             use generate_sampled_continuous"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_impossible_prompt_is_an_outcome_error_not_a_hang() {
+    let mut scheduler = driver_scheduler(driver_fake(), RolloutAdmission::Lockstep, 4, 16);
+    // The fake's per-sequence context is 32 positions, so a 40-token prompt
+    // can never be admitted: admission refuses it with an error event, which
+    // the driver surfaces as an error of the call.
+    let prompt = vec![7; 40];
+    let groups: Vec<(&[i32], Vec<SamplingParams>)> = vec![(&prompt, vec![fake_sampling(51, 4)])];
+    let error = run_groups(&mut scheduler, RolloutAdmission::Lockstep, 4, &groups).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("leaves no room to generate in the per-sequence context"),
+        "{error}"
+    );
+    assert!(error.is_user_error(), "{error}");
 }

@@ -56,6 +56,7 @@ pub(super) fn build_baseline(
         groups_sampled,
         judge_tally,
         scoring_stats,
+        rollout_stats,
         timing,
     } = batch;
     let loss_denominator = state.loss_denominator;
@@ -315,6 +316,7 @@ pub(super) fn build_baseline(
             entropy,
             trained_tokens,
             scoring_stats,
+            rollout_stats,
             reference_seconds,
             timing,
         },
