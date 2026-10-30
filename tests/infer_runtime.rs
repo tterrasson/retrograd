@@ -183,11 +183,11 @@ fn n_greater_than_one_request_matches_generate_batch_bit_for_bit() {
     request.sampling = sampling.iter().copied().map(Into::into).collect();
     let stream = handle.submit(request).expect("submit");
     let events: Vec<Event> = stream.collect();
-    for index in 0..3 {
+    for (index, reference) in reference.iter().enumerate() {
         let (tokens, logprobs, _forced, reason) = summarize(&events, index);
-        assert_eq!(tokens, reference[index].tokens, "member {index}: tokens");
+        assert_eq!(tokens, reference.tokens, "member {index}: tokens");
         assert_eq!(
-            logprobs, reference[index].logprobs,
+            logprobs, reference.logprobs,
             "member {index}: logprobs bit for bit"
         );
         assert_eq!(reason, Some(FinishReason::MaxTokens));

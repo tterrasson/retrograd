@@ -62,10 +62,16 @@ fn chat_prompt() -> retrograd_openai::GenerationRequest {
 
 fn completion_text(engine: &Engine, tokens: &[i32], unparse_special: bool) -> String {
     let mut end = tokens.len();
-    while end > 0 && engine.is_eog_token(tokens[end - 1]).unwrap() {
+    while end > 0
+        && engine
+            .is_eog_token(tokens[end - 1])
+            .expect("token is in the vocabulary")
+    {
         end -= 1;
     }
-    engine.detokenize(&tokens[..end], unparse_special).unwrap()
+    engine
+        .detokenize(&tokens[..end], unparse_special)
+        .expect("generated tokens detokenize")
 }
 
 fn session() -> Session {

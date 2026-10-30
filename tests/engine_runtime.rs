@@ -173,7 +173,7 @@ fn engine_generate_matches_trainer_bit_for_bit() {
         engine.vocab_size().unwrap() as usize
     );
     assert_eq!(
-        engine.context_size().unwrap() as u32,
+        engine.context_size().unwrap(),
         train.n_ctx * train.effective_generation_concurrency(),
         "the engine context must match the trainer's generation context width"
     );
@@ -378,7 +378,7 @@ fn engine_large_token_budgets_are_bounded_by_the_context() {
     let prompt = vec![1; 252];
     let mut unlimited = params(2);
     unlimited.max_new_tokens = u32::MAX;
-    let mut bounded = unlimited.clone();
+    let mut bounded = unlimited;
     bounded.max_new_tokens = 4;
     let expected = engine.generate(&prompt, &bounded).unwrap();
     let actual = engine.generate(&prompt, &unlimited).unwrap();
@@ -386,14 +386,14 @@ fn engine_large_token_budgets_are_bounded_by_the_context() {
     assert_eq!(actual.logprobs, expected.logprobs);
     for length in [252, 250] {
         let prompt = &prompt[..length];
-        let mut bounded = unlimited.clone();
+        let mut bounded = unlimited;
         // The test prompt lengths are below the 256-cell context.
         bounded.max_new_tokens = u32::try_from(256 - length).unwrap();
         let expected = engine
             .generate_sampled_continuous(&[(prompt, bounded)])
             .unwrap();
         let actual = engine
-            .generate_sampled_continuous(&[(prompt, unlimited.clone())])
+            .generate_sampled_continuous(&[(prompt, unlimited)])
             .unwrap();
         assert_eq!(actual, expected);
     }
@@ -527,6 +527,8 @@ impl LoopRow {
     }
 }
 
+type StepGeneration = (Vec<SampledRow>, Vec<Vec<f32>>);
+
 /// The trivial loop: prefill every prompt through `step` (chunked by `n_batch`,
 /// shared prompts decoded once and copied with `seq_cp`), then one step per
 /// wave over all live rows in canonical order, until EOG, budget or context.
@@ -535,7 +537,7 @@ fn step_generate<M: StepApi>(
     model: &mut M,
     sequences: &[(&[i32], SamplingParams)],
     n_batch: usize,
-) -> Result<(Vec<SampledRow>, Vec<Vec<f32>>), M::Error> {
+) -> Result<StepGeneration, M::Error> {
     let n_ctx_seq = model.context_size()?;
     let order = canonical_order(sequences);
     let mut out = StepOutput::with_capacity(sequences.len(), 0);
