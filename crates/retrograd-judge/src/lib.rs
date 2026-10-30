@@ -29,6 +29,10 @@ pub mod eval;
 pub mod process;
 pub mod render;
 pub mod ruler;
+/// The seam between the RULER protocol and whatever executes its requests:
+/// [`JudgeTransport`] is synchronous and mutable by design, so an in-process
+/// transport can borrow the model instead of being captured by the judge.
+pub mod transport;
 
 pub use command::CommandReward;
 pub use eval::{EvalReport, Fixture, evaluate, parse_fixtures};
@@ -36,9 +40,9 @@ pub use process::{REWARD_PROTOCOL_VERSION, RewardProcess, RewardProcessError};
 pub use render::JudgeContext;
 pub use render::compact::CompactionConfig;
 pub use render::prompt::{Aggregation, DEFAULT_PAIRWISE_RUBRIC, DEFAULT_RUBRIC};
-#[cfg(feature = "http")]
-pub use ruler::RulerJudge;
-pub use ruler::{JudgeStrategy, RulerConfig, RulerStats};
+pub use ruler::{JudgeCacheMode, RULER_PROTOCOL_VERSION, RulerJudge, RulerStats};
+pub use ruler::{JudgeStrategy, RulerConfig};
+pub use transport::{JudgeReply, JudgeRequest, JudgeTransport, JudgeTransportError};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Score {
@@ -84,7 +88,7 @@ impl JudgeBackend for JudgeConfig {
             Self::Ruler { config } => {
                 let mut config = (**config).clone();
                 config.cache_path = config.cache_path.as_deref().map(&resolve);
-                Arc::new(RulerJudge::new(config)?)
+                Arc::new(RulerJudge::with_http(config)?)
             }
             // The configuration is right and the build is not, which is the one
             // sentence a missing transport has to say (same shape as

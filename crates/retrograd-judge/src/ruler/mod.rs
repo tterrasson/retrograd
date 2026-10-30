@@ -1,65 +1,92 @@
-// Everything below is what only the judge itself uses. Its transport is behind
-// `http`, so a build whose rewards are all commands links none of it - and the
-// re-exported declarations (`RulerConfig`, `JudgeStrategy`) stay available to a
-// configuration parser. Every import here is therefore gated, including the
-// ones a `use` at the top of the file would make look unconditional.
-#[cfg(feature = "http")]
-use futures_util::future::join_all;
-#[cfg(feature = "http")]
+//! The RULER protocol, separated from its transport.
+//!
+//! Everything in this module is pure protocol: render a group into
+//! [`JudgeRequest`]s, execute them through whatever [`JudgeTransport`] the
+//! caller binds, parse the replies into [`Score`]s. The crate's `http` feature
+//! only adds one transport (an OpenAI-compatible endpoint) plus the blocking adapter that
+//! drives it for the async API; the protocol itself - rendering, budgeting,
+//! compaction, chunking, pairwise aggregation, the verdict cache and the
+//! `judge/*` metrics - compiles and runs without it, so an in-process judge
+//! links neither `reqwest` nor `rustls`.
+//!
+//! Execution is organized in *waves*: compaction is one wave of summary
+//! requests, the verdict is another (one request per chunk, one per pair), and
+//! a transport runs a wave's requests concurrently, bounded by its own
+//! configuration. A request that fails - transport error or unparsable answer -
+//! is retried on its own, with a degraded response format, exactly as the HTTP
+//! path always did.
+
 use std::collections::HashMap;
-#[cfg(feature = "http")]
 use std::fs::{File, OpenOptions};
-#[cfg(feature = "http")]
 use std::io::{BufRead, BufReader, Write};
-#[cfg(feature = "http")]
 use std::path::PathBuf;
-#[cfg(feature = "http")]
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(feature = "http")]
 use std::sync::{Arc, Mutex, OnceLock};
-#[cfg(feature = "http")]
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "http")]
-use async_trait::async_trait;
-#[cfg(feature = "http")]
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "http")]
-use crate::render::compact::CompactionConfig;
-#[cfg(feature = "http")]
-use retrograd_agent_core::{Error, Result};
-
-#[cfg(feature = "http")]
 use retrograd_agent_core::trajectory::TrajectoryGroup;
+use retrograd_agent_core::{Error, Result};
+use retrograd_metrics::MetricValue;
 
 #[cfg(feature = "http")]
-use crate::client::OpenAiClient;
-#[cfg(feature = "http")]
+use crate::RewardBackend;
+use crate::Score;
 use crate::render::compact;
-#[cfg(feature = "http")]
 use crate::render::prompt::{self, DEFAULT_PAIRWISE_RUBRIC, DEFAULT_RUBRIC, RenderedGroup};
-#[cfg(feature = "http")]
-use crate::{RewardBackend, Score};
-#[cfg(feature = "http")]
-use retrograd_llm_client::Purpose;
+use crate::transport::{JudgeRequest, JudgeTransport, JudgeTransportError};
 
+#[cfg(feature = "http")]
+mod http;
+#[cfg(feature = "http")]
+pub use http::HttpJudgeTransport;
+
+mod chunked;
+mod listwise;
+mod pairwise;
+
+#[cfg(test)]
+use crate::render::compact::CompactionConfig;
+#[cfg(test)]
+use crate::transport::JudgeReply;
 #[cfg(test)]
 use retrograd_spec::judge::{Aggregation, JudgeContext};
 pub use retrograd_spec::judge::{JudgeStrategy, RulerConfig};
+
+/// Version of the render/parse protocol, mixed into every cache key: a cached
+/// verdict written by an older prompt or parser must not be read as today's.
+pub const RULER_PROTOCOL_VERSION: u32 = 1;
+
+/// How much of the verdict cache a judge uses.
+///
+/// The default is the historical behaviour (memory plus the on-disk JSONL
+/// file) for a judge whose weights do not move - an HTTP endpoint. A judge
+/// whose weights *do* move (the in-process policy, a snapshot that is refreshed)
+/// must not read a verdict produced under other weights, so it drops the disk
+/// cache by default and keys what it keeps on a weights fingerprint.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum JudgeCacheMode {
+    /// In-memory plus the on-disk JSONL cache file.
+    #[default]
+    Persistent,
+    /// In-memory only: verdicts are reusable while the weights that produced
+    /// them are loaded, and nothing is written to disk.
+    Memory,
+    /// No cache at all.
+    Disabled,
+}
 
 /// The rubric a rendered group is judged against.
 ///
 /// It reads a `RenderedGroup`, which is this crate's rendering and not part of
 /// the schema - so it is added to the declaration here rather than moved with
 /// it.
-#[cfg(feature = "http")]
 trait Rubrics {
     fn listwise_rubric<'a>(&'a self, rendered: &'a RenderedGroup) -> &'a str;
     fn pairwise_rubric(&self, rendered: &RenderedGroup) -> String;
 }
 
-#[cfg(feature = "http")]
 impl Rubrics for RulerConfig {
     /// The rubric a request should carry. A scenario that declares its own wins
     /// over the run-wide one: task-specific criteria are worth far more than a
@@ -88,7 +115,6 @@ impl Rubrics for RulerConfig {
     }
 }
 
-#[cfg(feature = "http")]
 #[derive(Default)]
 struct Stats {
     requests: AtomicU64,
@@ -130,7 +156,6 @@ pub struct RulerStats {
     pub requests_per_group: f32,
 }
 
-#[cfg(feature = "http")]
 /// One cached judge response. Verdicts and compaction summaries share the file:
 /// they share a model, a determinism requirement and a lifetime, and two files
 /// would be two things to keep in step.
@@ -143,59 +168,246 @@ struct CacheRow {
     text: Option<String>,
 }
 
-#[cfg(feature = "http")]
-mod chunked;
-#[cfg(feature = "http")]
-mod listwise;
-#[cfg(feature = "http")]
-mod pairwise;
-
-#[cfg(feature = "http")]
-pub struct RulerJudge {
+/// The protocol state a judge carries from one group to the next: the
+/// configuration, the verdict caches and the counters. Shared with the HTTP
+/// blocking jobs through an `Arc`, which is why the caches are behind mutexes
+/// and the counters atomics.
+struct RulerCore {
     config: RulerConfig,
-    client: OpenAiClient,
-    semaphore: Arc<tokio::sync::Semaphore>,
+    /// Mixed into every cache key in place of the model name when the judge is
+    /// not an endpoint: the transport identity, the weights fingerprint, the
+    /// sampling parameters, the protocol version. Behind a mutex because an
+    /// in-process judge re-keys its cache when its snapshot is refreshed.
+    cache_identity: Mutex<String>,
+    cache_mode: JudgeCacheMode,
     cache: Mutex<HashMap<String, Vec<Score>>>,
     text_cache: Mutex<HashMap<String, String>>,
     stats: Stats,
 }
 
-#[cfg(feature = "http")]
+/// A RULER judge: the protocol, plus an optional bound transport.
+///
+/// Built with [`RulerJudge::new`], the judge is transport-agnostic and scores
+/// groups through [`RulerJudge::score_group_via`], the transport being passed
+/// at execution time - an in-process transport borrows the model mutably, so
+/// it cannot live inside the judge. Built with `RulerJudge::with_http` (the
+/// `http` feature), the OpenAI-compatible transport is bound and driven by a
+/// blocking job, which is what keeps the async
+/// [`crate::RewardBackend`] API free of any nested runtime.
+pub struct RulerJudge {
+    core: Arc<RulerCore>,
+    #[cfg(feature = "http")]
+    http: Option<http::HttpHandle>,
+}
+
 impl RulerJudge {
+    /// Builds the protocol only: no transport is bound, and the transport
+    /// fields of the configuration (`base_url`, `api_key_env`) are not checked,
+    /// since there is no endpoint to check them for. Groups are scored with
+    /// [`RulerJudge::score_group_via`].
+    ///
+    /// The transport is passed at execution time rather than captured here.
     pub fn new(config: RulerConfig) -> Result<Self> {
-        config.validate()?;
+        Self::build(config, JudgeCacheMode::Persistent, None)
+    }
+
+    /// Same, with an explicit cache policy and cache-key identity. An
+    /// in-process judge whose weights move uses this to keep its cache keyed on
+    /// the weights fingerprint (or to disable it).
+    pub fn with_cache(config: RulerConfig, mode: JudgeCacheMode, identity: String) -> Result<Self> {
+        Self::build(config, mode, Some(identity))
+    }
+
+    fn build(
+        config: RulerConfig,
+        cache_mode: JudgeCacheMode,
+        identity: Option<String>,
+    ) -> Result<Self> {
+        config.validate_protocol()?;
+        let (cache, text_cache) = if cache_mode == JudgeCacheMode::Persistent {
+            load_cache(config.cache_path.as_ref())?
+        } else {
+            Caches::default()
+        };
+        let identity = serde_json::json!([
+            identity.unwrap_or_else(|| format!("{}|{}", config.base_url, config.model)),
+            config.temperature,
+            RULER_PROTOCOL_VERSION,
+        ])
+        .to_string();
+        Ok(Self {
+            core: Arc::new(RulerCore {
+                config,
+                cache_identity: Mutex::new(identity),
+                cache_mode,
+                cache: Mutex::new(cache),
+                text_cache: Mutex::new(text_cache),
+                stats: Stats::default(),
+            }),
+            #[cfg(feature = "http")]
+            http: None,
+        })
+    }
+
+    /// Binds the OpenAI-compatible HTTP transport, reading the API key from
+    /// the configured environment variable. Blocking jobs drive its requests;
+    /// the judge answers the async [`crate::RewardBackend`] API directly.
+    #[cfg(feature = "http")]
+    pub fn with_http(config: RulerConfig) -> Result<Self> {
         let api_key = std::env::var(&config.api_key_env).map_err(|_| {
             Error::invalid(format!(
                 "RULER API key environment variable '{}' is not set",
                 config.api_key_env
             ))
         })?;
-        Self::with_api_key(config, api_key)
+        Self::with_http_api_key(config, api_key)
     }
 
-    /// Builds a judge with an explicit key. Intended for embedders and tests
-    /// that already manage secrets outside serialized configuration.
+    /// Builds a judge with an explicit key, bound to the HTTP transport.
+    /// Intended for embedders and tests that already manage secrets outside
+    /// serialized configuration.
+    #[cfg(feature = "http")]
     pub fn with_api_key(config: RulerConfig, api_key: String) -> Result<Self> {
+        Self::with_http_api_key(config, api_key)
+    }
+
+    #[cfg(feature = "http")]
+    fn with_http_api_key(config: RulerConfig, api_key: String) -> Result<Self> {
         config.validate()?;
-        let client = OpenAiClient::new(
-            &config.base_url,
-            api_key,
-            Duration::from_secs(config.timeout_secs),
-            8 * 1024 * 1024,
-            Purpose::Judge,
-        )?;
-        let (cache, text_cache) = load_cache(config.cache_path.as_ref())?;
-        Ok(Self {
-            semaphore: Arc::new(tokio::sync::Semaphore::new(config.max_concurrency)),
-            config,
-            client,
-            cache: Mutex::new(cache),
-            text_cache: Mutex::new(text_cache),
-            stats: Stats::default(),
-        })
+        let core = Self::build(config.clone(), JudgeCacheMode::Persistent, None)?.core;
+        let http = Some(http::HttpHandle::new(Arc::clone(&core), &config, api_key)?);
+        Ok(Self { core, http })
+    }
+
+    /// Scores one group through `transport`: render, execute the waves, parse.
+    ///
+    /// This is the whole execution phase, and the transport is its only
+    /// parameter: nothing here knows or cares whether the requests went over
+    /// HTTP or through an in-process model.
+    pub fn score_group_via(
+        &self,
+        transport: &mut dyn JudgeTransport,
+        group: &TrajectoryGroup,
+    ) -> Result<Vec<Score>> {
+        self.core.score_group_via(transport, group)
+    }
+
+    /// Scores one group over the bound HTTP transport, from an async context.
+    ///
+    /// The work runs on Tokio's blocking pool, so the calling executor is
+    /// never blocked and no runtime is nested inside it.
+    #[cfg(feature = "http")]
+    pub async fn score_group(&self, group: &TrajectoryGroup) -> Result<Vec<Score>> {
+        match &self.http {
+            Some(handle) => handle.score_group(group).await,
+            None => Err(Error::invalid(
+                "this judge has no transport bound: score it with score_group_via and an \
+                 explicit transport",
+            )),
+        }
     }
 
     pub fn stats(&self) -> RulerStats {
+        self.core.stats()
+    }
+
+    /// Re-keys the verdict cache. An in-process judge whose weights moved
+    /// (a refreshed snapshot) calls this so no verdict written under the old
+    /// weights is ever read back.
+    pub fn set_cache_identity(&self, identity: String) {
+        let identity = serde_json::json!([
+            identity,
+            self.core.config.temperature,
+            RULER_PROTOCOL_VERSION,
+        ])
+        .to_string();
+        let mut current = self
+            .core
+            .cache_identity
+            .lock()
+            .expect("judge cache identity lock");
+        if *current != identity {
+            *current = identity;
+            self.core
+                .cache
+                .lock()
+                .expect("judge score cache lock")
+                .clear();
+            self.core
+                .text_cache
+                .lock()
+                .expect("judge text cache lock")
+                .clear();
+        }
+    }
+
+    pub fn metric_values(&self) -> Vec<MetricValue> {
+        self.core.metric_values()
+    }
+}
+
+#[cfg(feature = "http")]
+#[async_trait::async_trait]
+impl RewardBackend for RulerJudge {
+    async fn score_group(&self, group: &TrajectoryGroup) -> Result<Vec<Score>> {
+        RulerJudge::score_group(self, group).await
+    }
+
+    fn metric_values(&self) -> Vec<MetricValue> {
+        self.core.metric_values()
+    }
+}
+
+impl RulerCore {
+    fn cache_identity(&self) -> String {
+        self.cache_identity
+            .lock()
+            .expect("judge cache identity lock")
+            .clone()
+    }
+
+    fn score_group_via(
+        &self,
+        transport: &mut dyn JudgeTransport,
+        group: &TrajectoryGroup,
+    ) -> Result<Vec<Score>> {
+        let mut rendered = prompt::render_group(group, &self.config.context)?;
+        self.stats.groups.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .rendered_chars
+            .fetch_add(rendered.stats.rendered_chars as u64, Ordering::Relaxed);
+        self.stats
+            .elided_chars
+            .fetch_add(rendered.stats.elided_chars as u64, Ordering::Relaxed);
+        self.compact_group_via(transport, &mut rendered)?;
+        match self.config.strategy {
+            JudgeStrategy::Listwise => self.score_listwise_via(transport, &rendered),
+            JudgeStrategy::Auto => {
+                let total =
+                    prompt::request_overhead(self.config.listwise_rubric(&rendered), &rendered)
+                        + rendered
+                            .trajectories
+                            .iter()
+                            .map(|trajectory| trajectory.chars)
+                            .sum::<usize>();
+                if total <= self.config.context.max_request_chars {
+                    self.score_listwise_via(transport, &rendered)
+                } else {
+                    self.score_chunked_via(transport, &rendered, true)
+                }
+            }
+            JudgeStrategy::Chunked { anchor } => {
+                self.score_chunked_via(transport, &rendered, anchor)
+            }
+            JudgeStrategy::Pairwise {
+                max_pairs,
+                both_orders,
+                aggregation,
+            } => self.score_pairwise_via(transport, &rendered, max_pairs, both_orders, aggregation),
+        }
+    }
+
+    fn stats(&self) -> RulerStats {
         let requests = self.stats.requests.load(Ordering::Relaxed);
         let latency = self.stats.latency_micros.load(Ordering::Relaxed);
         let groups = self.stats.groups.load(Ordering::Relaxed);
@@ -237,122 +449,164 @@ impl RulerJudge {
         }
     }
 
-    /// Sends one prompt and parses it with `parse`, retrying on a malformed
-    /// response. Every attempt states the schema in the prompt; the second one
-    /// also drops the JSON-schema *request format*, which some
-    /// OpenAI-compatible endpoints reject outright.
-    pub(super) async fn request<T>(
-        &self,
-        prompt: &str,
-        schema: serde_json::Value,
-        schema_name: &str,
-        parse: impl Fn(&str) -> Result<T>,
-    ) -> Result<T> {
-        self.request_at(self.config.temperature, prompt, schema, schema_name, parse)
-            .await
+    fn metric_values(&self) -> Vec<MetricValue> {
+        let stats = self.stats();
+        [
+            ("judge/latency_ms_mean", stats.latency_ms_mean),
+            ("judge/retry_count", stats.retries as f32),
+            ("judge/requests_per_group", stats.requests_per_group),
+            ("judge/prompt_chars_max", stats.prompt_chars_max as f32),
+            ("judge/elided_fraction", stats.elided_fraction),
+            ("judge/compacted_fraction", stats.compacted_fraction),
+            ("judge/position_disagreement", stats.position_disagreement),
+            (
+                "judge/cache_hit_fraction",
+                if stats.requests + stats.cache_hits == 0 {
+                    0.0
+                } else {
+                    stats.cache_hits as f32 / (stats.requests + stats.cache_hits) as f32
+                },
+            ),
+        ]
+        .into_iter()
+        .map(|(name, value)| MetricValue {
+            name: name.into(),
+            value,
+        })
+        .collect()
     }
 
-    /// Same request, with the sampling temperature stated explicitly.
+    /// Sends `requests` as one wave and parses each reply with
+    /// `parse(request_index, request, content)`, retrying the requests that
+    /// fail - transport error or unparsable answer - on their own, with a
+    /// degraded response format, exactly as the HTTP path always did.
     ///
-    /// Verdicts use whatever the configuration asks for; compaction does not get
-    /// that choice (see [`Self::summarise`]).
-    async fn request_at<T>(
+    /// Returns one result per request, in request order.
+    fn complete_wave<T>(
         &self,
-        temperature: Option<f32>,
-        prompt: &str,
-        schema: serde_json::Value,
-        schema_name: &str,
-        parse: impl Fn(&str) -> Result<T>,
-    ) -> Result<T> {
-        let _permit = self
-            .semaphore
-            .acquire()
-            .await
-            .map_err(|_| Error::Reward("judge semaphore closed".into()))?;
-        let chars = prompt.chars().count() as u64;
-        self.stats
-            .prompt_chars_max
-            .fetch_max(chars, Ordering::Relaxed);
+        transport: &mut dyn JudgeTransport,
+        requests: Vec<JudgeRequest>,
+        parse: impl Fn(usize, &JudgeRequest, &str) -> Result<T>,
+    ) -> Vec<Result<T>> {
         let started = Instant::now();
-        let mut last_error = None;
-        // The schema is stated in the prompt, not only in `response_format`: an
-        // endpoint that renders that field into prompt text has nothing to say
-        // about a bare `json_object` and prints "any object", so a judge never
-        // told about `winner` and `explanation` answers with field names of its
-        // own invention, `parse` rejects it, and every retry burns on the same
-        // failure. In the text the shape survives whatever the transport drops.
-        //
-        // The callers key their cache on `prompt` alone, before this suffix, so
-        // rewording it does not invalidate a single cached verdict.
-        let shape = format!(
-            "\n\nAnswer with a single JSON object matching this schema exactly, and nothing \
-             else - no prose, no markdown fence:\n{schema}"
-        );
-        for attempt in 0..=self.config.max_retries {
-            if attempt > 0 {
-                self.stats.retries.fetch_add(1, Ordering::Relaxed);
+        let count = requests.len();
+        let mut attempts = vec![0_u32; count];
+        let mut results: Vec<Option<Result<T>>> = (0..count).map(|_| None).collect();
+        let mut pending: Vec<usize> = (0..count).collect();
+        while !pending.is_empty() {
+            let wave: Vec<JudgeRequest> = pending
+                .iter()
+                .map(|&index| self.wire_request(&requests[index], attempts[index]))
+                .collect();
+            for request in &wave {
+                let chars = request.prompt.chars().count() as u64;
+                self.stats
+                    .prompt_chars_max
+                    .fetch_max(chars, Ordering::Relaxed);
+            }
+            let replies = transport.complete(&wave);
+            if replies.len() != wave.len() {
+                for &index in &pending {
+                    results[index] = Some(Err(JudgeTransportError::Arity {
+                        requested: wave.len(),
+                        returned: replies.len(),
+                    }
+                    .into()));
+                }
+                break;
+            }
+            let mut retry = Vec::new();
+            for (slot, reply) in replies.into_iter().enumerate() {
+                let index = pending[slot];
+                let outcome = match reply {
+                    Ok(reply) => parse(index, &requests[index], &reply.content),
+                    Err(error) => Err(Error::from(error)),
+                };
+                match outcome {
+                    Ok(value) => results[index] = Some(Ok(value)),
+                    Err(error) => {
+                        if attempts[index] >= self.config.max_retries {
+                            results[index] = Some(Err(error));
+                        } else {
+                            attempts[index] += 1;
+                            self.stats.retries.fetch_add(1, Ordering::Relaxed);
+                            retry.push(index);
+                        }
+                    }
+                }
+            }
+            // All failures in this wave back off together; sleeping once
+            // per failed request would multiply the delay by the wave size.
+            if let Some(attempt) = retry.iter().map(|&index| attempts[index]).max() {
                 let backoff = 100_u64
                     .saturating_mul(1_u64 << attempt.min(8))
-                    .saturating_add((attempt as u64 * 37) % 53);
-                tokio::time::sleep(Duration::from_millis(backoff)).await;
+                    .saturating_add((u64::from(attempt) * 37) % 53);
+                std::thread::sleep(Duration::from_millis(backoff));
             }
-            // Structured decoding first, then the widest format the OpenAI
-            // protocol has: an endpoint that rejects `json_schema` outright gets
-            // a second chance at answering. That degradation is about the
-            // transport only - `shape` above carries the schema either way.
-            let response_format = if attempt == 0 {
-                serde_json::json!({
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": schema_name,
-                        "strict": true,
-                        "schema": schema
-                    }
-                })
-            } else {
-                serde_json::json!({"type": "json_object"})
-            };
-            let mut payload = serde_json::json!({
-                "model": self.config.model,
-                "messages": [{"role": "user", "content": format!("{prompt}{shape}")}],
-                "response_format": response_format
-            });
-            if let Some(temperature) = temperature {
-                payload["temperature"] = serde_json::json!(temperature);
-            }
-            match self
-                .client
-                .chat_completion(&payload)
-                .await
-                .and_then(|completion| parse(&completion.content))
-            {
-                Ok(parsed) => {
-                    self.record_request(started);
-                    return Ok(parsed);
-                }
-                Err(error) => last_error = Some(error),
-            }
+            pending = retry;
         }
-        self.record_request(started);
-        Err(last_error.unwrap_or_else(|| Error::Reward("judge failed without an error".into())))
-    }
-
-    pub(super) fn record_request(&self, started: Instant) {
-        self.stats.requests.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .requests
+            .fetch_add(count as u64, Ordering::Relaxed);
         self.stats.latency_micros.fetch_add(
             started.elapsed().as_micros().min(u64::MAX as u128) as u64,
             Ordering::Relaxed,
         );
+        results
+            .into_iter()
+            .map(|result| result.expect("every request ends with a result"))
+            .collect()
     }
 
-    /// Summarises the middle of every member, or of none of them.
+    /// The request as the transport sees it: the protocol states the schema in
+    /// the prompt text - not only in `response_format`, because an endpoint
+    /// that renders that field into prompt text has nothing to say about a bare
+    /// `json_object` and prints "any object" - and asks for structured output
+    /// first, degrading to the widest format on retries.
+    ///
+    /// The cache keys on `request.prompt` *before* this suffix, so rewording it
+    /// does not invalidate a single cached verdict.
+    fn wire_request(&self, request: &JudgeRequest, attempt: u32) -> JudgeRequest {
+        let mut wire = request.clone();
+        let shape = format!(
+            "\n\nAnswer with a single JSON object matching this schema exactly, and nothing \
+             else - no prose, no markdown fence:\n{}",
+            request.schema
+        );
+        wire.prompt = format!("{}{shape}", request.prompt);
+        // Structured decoding first, then the widest format the OpenAI
+        // protocol has: an endpoint that rejects `json_schema` outright gets
+        // a second chance at answering. That degradation is about the
+        // transport only - `shape` above carries the schema either way.
+        wire.response_format = Some(if attempt == 0 {
+            serde_json::json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": request.schema_name,
+                    "strict": true,
+                    "schema": request.schema
+                }
+            })
+        } else {
+            serde_json::json!({"type": "json_object"})
+        });
+        wire
+    }
+
+    /// Summarises the middle of every member, or of none of them, in one wave
+    /// through the same transport as the verdicts - a local judge must not hide
+    /// an HTTP call in its compaction.
     ///
     /// The decision is taken once from the group's longest member, and the same
     /// budget is applied to all: a member compacted harder than its siblings
     /// would be handicapped for a reason that has nothing to do with what it
     /// did, and that handicap would land directly in the GRPO advantage. A
     /// member whose middle is empty simply costs no request.
-    async fn compact_group(&self, rendered: &mut prompt::RenderedGroup) -> Result<()> {
+    fn compact_group_via(
+        &self,
+        transport: &mut dyn JudgeTransport,
+        rendered: &mut prompt::RenderedGroup,
+    ) -> Result<()> {
         let Some(config) = &self.config.compaction else {
             return Ok(());
         };
@@ -364,29 +618,75 @@ impl RulerJudge {
         if !compact::plan_group(config, &sizes) {
             return Ok(());
         }
-        let summaries = join_all(rendered.trajectories.iter().map(|trajectory| {
+        // One entry per member: (trajectory index, range, cache key, cached summary).
+        let mut members: Vec<(usize, std::ops::Range<usize>, String, Option<String>)> = Vec::new();
+        for (index, trajectory) in rendered.trajectories.iter().enumerate() {
             let range = config.middle(trajectory.messages.len());
-            async move {
-                if range.is_empty() {
-                    return Ok(None);
-                }
-                self.summarise(config, &trajectory.messages[range])
-                    .await
-                    .map(Some)
-            }
-        }))
-        .await;
-        for (trajectory, summary) in rendered.trajectories.iter_mut().zip(summaries) {
-            // A failed summary is not a failed group: that member keeps its full
-            // transcript, which is more context than its siblings rather than
-            // less, and the request budget is the only thing that suffers.
-            let Some(summary) = summary.unwrap_or_else(|error| {
-                tracing::warn!("compacting a judge transcript failed: {error}");
-                None
-            }) else {
+            if range.is_empty() {
                 continue;
-            };
-            let range = config.middle(trajectory.messages.len());
+            }
+            let prompt = compact::compaction_prompt(config, &trajectory.messages[range.clone()])?;
+            let key = cache_key(&self.cache_identity(), &prompt);
+            let cached = self.cached_text(&key);
+            members.push((index, range, key, cached));
+        }
+        // The wave carries only the members without a cached summary; a failed
+        // summary is not a failed group: that member keeps its full transcript,
+        // which is more context than its siblings rather than less, and the
+        // request budget is the only thing that suffers.
+        let unsent: Vec<usize> = members
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, _, _, cached))| cached.is_none())
+            .map(|(position, _)| position)
+            .collect();
+        let requests: Vec<JudgeRequest> = unsent
+            .iter()
+            .map(|&position| {
+                let (index, range, _, _) = &members[position];
+                let prompt = compact::compaction_prompt(
+                    config,
+                    &rendered.trajectories[*index].messages[range.clone()],
+                )
+                .expect("the prompt was built once above for the same range");
+                // A summary is never a verdict: temperature 0, whatever the
+                // judge samples its verdicts at.
+                JudgeRequest::structured(
+                    prompt,
+                    compact::compaction_schema(),
+                    "ruler_summary",
+                    Some(0.0),
+                )
+            })
+            .collect();
+        if !requests.is_empty() {
+            let results = self.complete_wave(transport, requests, |_, _, content| {
+                compact::parse_compaction(content)
+            });
+            for (&position, result) in unsent.iter().zip(results) {
+                let (_, _, key, cached) = &mut members[position];
+                match result {
+                    Ok(summary) => {
+                        // The budget is advisory for the model and enforced here,
+                        // so one verbose summary cannot undo the budgeting the
+                        // whole pipeline exists for.
+                        let (summary, _) = crate::render::elide(
+                            &summary,
+                            config.target_chars,
+                            self.config.context.head_ratio,
+                        );
+                        self.store_text(key.clone(), &summary)?;
+                        *cached = Some(summary);
+                    }
+                    Err(error) => {
+                        tracing::warn!("compacting a judge transcript failed: {error}");
+                    }
+                }
+            }
+        }
+        for (index, range, _, summary) in members {
+            let Some(summary) = summary else { continue };
+            let trajectory = &mut rendered.trajectories[index];
             let before = trajectory
                 .messages
                 .iter()
@@ -410,49 +710,10 @@ impl RulerJudge {
         Ok(())
     }
 
-    /// One summary request, deterministic and cached by content hash: the same
-    /// transcript must compact to the same text on a replay, otherwise the
-    /// verdict cache below never hits again.
-    ///
-    /// The temperature is forced to zero here rather than inherited from
-    /// [`RulerConfig::temperature`], and the cache is not what makes this true:
-    /// a cache makes the *second* summary stable, while the first one is what
-    /// ends up in the prompt every member is judged from. Two runs without a
-    /// shared cache would otherwise compact the same transcripts differently,
-    /// and produce different rewards from identical trajectories. A judge
-    /// configured to sample its verdicts is free to do so; summarising is not a
-    /// verdict.
-    async fn summarise(
-        &self,
-        config: &CompactionConfig,
-        messages: &[crate::render::JudgeMessage],
-    ) -> Result<String> {
-        let prompt = compact::compaction_prompt(config, messages)?;
-        let key = cache_key(&self.config.model, &prompt);
-        if let Some(summary) = self.cached_text(&key) {
-            return Ok(summary);
+    fn cached(&self, key: &str) -> Option<Vec<Score>> {
+        if self.cache_mode == JudgeCacheMode::Disabled {
+            return None;
         }
-        let summary = self
-            .request_at(
-                Some(0.0),
-                &prompt,
-                compact::compaction_schema(),
-                "ruler_summary",
-                compact::parse_compaction,
-            )
-            .await?;
-        // The budget is advisory for the model and enforced here, so one verbose
-        // summary cannot undo the budgeting the whole pipeline exists for.
-        let (summary, _) = crate::render::elide(
-            &summary,
-            config.target_chars,
-            self.config.context.head_ratio,
-        );
-        self.store_text(key, &summary)?;
-        Ok(summary)
-    }
-
-    pub(super) fn cached(&self, key: &str) -> Option<Vec<Score>> {
         let hit = self
             .cache
             .lock()
@@ -465,22 +726,31 @@ impl RulerJudge {
         hit
     }
 
-    pub(super) fn store(&self, key: String, scores: &[Score]) -> Result<()> {
+    fn store(&self, key: String, scores: &[Score]) -> Result<()> {
+        if self.cache_mode == JudgeCacheMode::Disabled {
+            return Ok(());
+        }
+        if self.cache_mode == JudgeCacheMode::Persistent {
+            append_cache(
+                self.config.cache_path.as_ref(),
+                CacheRow {
+                    key: key.clone(),
+                    scores: Some(scores.to_vec()),
+                    text: None,
+                },
+            )?;
+        }
         self.cache
             .lock()
             .expect("judge score cache lock")
-            .insert(key.clone(), scores.to_vec());
-        append_cache(
-            self.config.cache_path.as_ref(),
-            CacheRow {
-                key,
-                scores: Some(scores.to_vec()),
-                text: None,
-            },
-        )
+            .insert(key, scores.to_vec());
+        Ok(())
     }
 
     fn cached_text(&self, key: &str) -> Option<String> {
+        if self.cache_mode == JudgeCacheMode::Disabled {
+            return None;
+        }
         let hit = self
             .text_cache
             .lock()
@@ -494,105 +764,42 @@ impl RulerJudge {
     }
 
     fn store_text(&self, key: String, text: &str) -> Result<()> {
+        if self.cache_mode == JudgeCacheMode::Disabled {
+            return Ok(());
+        }
+        if self.cache_mode == JudgeCacheMode::Persistent {
+            append_cache(
+                self.config.cache_path.as_ref(),
+                CacheRow {
+                    key: key.clone(),
+                    scores: None,
+                    text: Some(text.to_owned()),
+                },
+            )?;
+        }
         self.text_cache
             .lock()
             .expect("judge text cache lock")
-            .insert(key.clone(), text.to_owned());
-        append_cache(
-            self.config.cache_path.as_ref(),
-            CacheRow {
-                key,
-                scores: None,
-                text: Some(text.to_owned()),
-            },
-        )
+            .insert(key, text.to_owned());
+        Ok(())
     }
 }
 
-#[cfg(feature = "http")]
-#[async_trait]
-impl RewardBackend for RulerJudge {
-    async fn score_group(&self, group: &TrajectoryGroup) -> Result<Vec<Score>> {
-        let mut rendered = prompt::render_group(group, &self.config.context)?;
-        self.stats.groups.fetch_add(1, Ordering::Relaxed);
-        self.stats
-            .rendered_chars
-            .fetch_add(rendered.stats.rendered_chars as u64, Ordering::Relaxed);
-        self.stats
-            .elided_chars
-            .fetch_add(rendered.stats.elided_chars as u64, Ordering::Relaxed);
-        self.compact_group(&mut rendered).await?;
-        match self.config.strategy {
-            JudgeStrategy::Listwise => self.score_listwise(&rendered).await,
-            JudgeStrategy::Auto => {
-                let total =
-                    prompt::request_overhead(self.config.listwise_rubric(&rendered), &rendered)
-                        + rendered
-                            .trajectories
-                            .iter()
-                            .map(|trajectory| trajectory.chars)
-                            .sum::<usize>();
-                if total <= self.config.context.max_request_chars {
-                    self.score_listwise(&rendered).await
-                } else {
-                    self.score_chunked(&rendered, true).await
-                }
-            }
-            JudgeStrategy::Chunked { anchor } => self.score_chunked(&rendered, anchor).await,
-            JudgeStrategy::Pairwise {
-                max_pairs,
-                both_orders,
-                aggregation,
-            } => {
-                self.score_pairwise(&rendered, max_pairs, both_orders, aggregation)
-                    .await
-            }
-        }
-    }
-
-    fn metric_values(&self) -> Vec<retrograd_metrics::MetricValue> {
-        let stats = self.stats();
-        [
-            ("judge/latency_ms_mean", stats.latency_ms_mean),
-            ("judge/retry_count", stats.retries as f32),
-            ("judge/requests_per_group", stats.requests_per_group),
-            ("judge/prompt_chars_max", stats.prompt_chars_max as f32),
-            ("judge/elided_fraction", stats.elided_fraction),
-            ("judge/compacted_fraction", stats.compacted_fraction),
-            ("judge/position_disagreement", stats.position_disagreement),
-            (
-                "judge/cache_hit_fraction",
-                if stats.requests + stats.cache_hits == 0 {
-                    0.0
-                } else {
-                    stats.cache_hits as f32 / (stats.requests + stats.cache_hits) as f32
-                },
-            ),
-        ]
-        .into_iter()
-        .map(|(name, value)| retrograd_metrics::MetricValue {
-            name: name.into(),
-            value,
-        })
-        .collect()
-    }
-}
-
-#[cfg(feature = "http")]
-pub(super) fn cache_key(model: &str, prompt: &str) -> String {
+/// The cache key of one request: the judge identity (model, and for an
+/// in-process judge the weights fingerprint and sampling parameters) plus the
+/// prompt, hashed together.
+pub(crate) fn cache_key(identity: &str, prompt: &str) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in model.bytes().chain([0]).chain(prompt.bytes()) {
+    for byte in identity.bytes().chain([0]).chain(prompt.bytes()) {
         hash ^= byte as u64;
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{hash:016x}")
 }
 
-#[cfg(feature = "http")]
 type Caches = (HashMap<String, Vec<Score>>, HashMap<String, String>);
 
 /// A failure of the on-disk verdict cache, naming the operation that hit it.
-#[cfg(feature = "http")]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum JudgeCacheError {
     #[error("{op}: {source}")]
@@ -613,14 +820,12 @@ pub(crate) enum JudgeCacheError {
 
 /// The cache belongs to the reward backend, so a cache that cannot be read or
 /// written is a reward failure.
-#[cfg(feature = "http")]
 impl From<JudgeCacheError> for Error {
     fn from(error: JudgeCacheError) -> Self {
         Error::Reward(error.to_string())
     }
 }
 
-#[cfg(feature = "http")]
 fn load_cache(path: Option<&PathBuf>) -> Result<Caches> {
     let mut caches: Caches = (HashMap::new(), HashMap::new());
     let Some(path) = path else {
@@ -658,7 +863,6 @@ fn load_cache(path: Option<&PathBuf>) -> Result<Caches> {
     Ok(caches)
 }
 
-#[cfg(feature = "http")]
 fn append_cache(path: Option<&PathBuf>, row: CacheRow) -> Result<()> {
     static CACHE_FILE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     let Some(path) = path else {
@@ -680,35 +884,43 @@ fn append_cache(path: Option<&PathBuf>, row: CacheRow) -> Result<()> {
         .map_err(|error| Error::Reward(format!("write judge cache row: {error}")))
 }
 
-#[cfg(feature = "http")]
 #[cfg(test)]
 mod tests {
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::sync::mpsc;
-
     use super::*;
     use retrograd_agent_core::trajectory::{Message, Role, Trajectory};
 
-    /// A cache failure reaches the agent stack as a reward failure, with the
-    /// operation that hit it still in the message.
-    #[test]
-    fn a_cache_failure_is_a_reward_error_that_names_the_operation() {
-        let error: Error = JudgeCacheError::Io {
-            op: "open judge cache",
-            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+    type TransportResult = std::result::Result<JudgeReply, JudgeTransportError>;
+
+    /// A transport that answers from a queue of canned replies, recording the
+    /// prompts it was sent.
+    struct FakeTransport {
+        replies: std::collections::VecDeque<TransportResult>,
+        prompts: Vec<String>,
+    }
+
+    impl FakeTransport {
+        fn new(replies: Vec<TransportResult>) -> Self {
+            Self {
+                replies: replies.into(),
+                prompts: Vec::new(),
+            }
         }
-        .into();
-        assert!(matches!(error, Error::Reward(_)), "{error:?}");
-        assert_eq!(
-            error.to_string(),
-            "reward backend error: open judge cache: permission denied"
-        );
-        let empty: Error = JudgeCacheError::EmptyRow { key: "k".into() }.into();
-        assert_eq!(
-            empty.to_string(),
-            "reward backend error: judge cache row 'k' carries neither scores nor a summary"
-        );
+    }
+
+    impl JudgeTransport for FakeTransport {
+        fn complete(&mut self, requests: &[JudgeRequest]) -> Vec<TransportResult> {
+            for request in requests {
+                self.prompts.push(request.prompt.clone());
+            }
+            requests
+                .iter()
+                .map(|_| {
+                    self.replies
+                        .pop_front()
+                        .expect("the fake transport was given a reply per request")
+                })
+                .collect()
+        }
     }
 
     fn trajectory(answer: &str) -> Trajectory {
@@ -754,284 +966,165 @@ mod tests {
         serde_json::json!({ "scores": scores }).to_string()
     }
 
-    fn config(address: std::net::SocketAddr) -> RulerConfig {
+    fn reply(content: &str) -> TransportResult {
+        Ok(JudgeReply {
+            content: content.to_owned(),
+        })
+    }
+
+    /// The configuration a transport-agnostic judge is built with: the
+    /// transport fields are placeholders, they are validated only when a
+    /// transport is bound.
+    fn local_config() -> RulerConfig {
         RulerConfig {
-            base_url: format!("http://{address}/v1"),
-            model: "mock".into(),
-            timeout_secs: 5,
-            max_retries: 1,
-            max_concurrency: 4,
+            base_url: String::new(),
+            model: "local".into(),
+            api_key_env: String::new(),
+            strategy: JudgeStrategy::Listwise,
+            max_retries: 0,
             ..Default::default()
         }
     }
 
-    /// Serves one canned `content` per connection, in order, and reports the
-    /// request bodies it saw.
-    ///
-    /// Order is only meaningful for requests the judge sends one after the
-    /// other: concurrent ones reach `accept` in whatever order their
-    /// connections land, and are answered through [`serve_by`] instead.
-    fn serve(contents: Vec<String>) -> (std::net::SocketAddr, mpsc::Receiver<String>) {
-        let count = contents.len();
-        let contents = std::sync::Mutex::new(contents.into_iter());
-        serve_by(count, move |_| contents.lock().unwrap().next().unwrap())
-    }
-
-    /// Serves `count` connections, each answered with the `content` that
-    /// `respond` picks from the request body.
-    fn serve_by(
-        count: usize,
-        respond: impl Fn(&str) -> String + Send + 'static,
-    ) -> (std::net::SocketAddr, mpsc::Receiver<String>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            for _ in 0..count {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    return;
-                };
-                let mut request = Vec::new();
-                let mut buffer = [0_u8; 8192];
-                loop {
-                    let read = match stream.read(&mut buffer) {
-                        Ok(0) | Err(_) => break,
-                        Ok(read) => read,
-                    };
-                    request.extend_from_slice(&buffer[..read]);
-                    let text = String::from_utf8_lossy(&request);
-                    if let Some(index) = text.find("\r\n\r\n") {
-                        let length = text
-                            .to_ascii_lowercase()
-                            .split("content-length:")
-                            .nth(1)
-                            .and_then(|rest| rest.split("\r\n").next())
-                            .and_then(|value| value.trim().parse::<usize>().ok())
-                            .unwrap_or(0);
-                        if request.len() >= index + 4 + length {
-                            break;
-                        }
-                    }
-                }
-                let text = String::from_utf8_lossy(&request).to_string();
-                let body = text
-                    .split_once("\r\n\r\n")
-                    .map(|(_, body)| body.to_owned())
-                    .unwrap_or_default();
-                let content = respond(&body);
-                tx.send(body).ok();
-                let payload = serde_json::json!({
-                    "choices": [{"message": {"content": content}}]
-                })
-                .to_string();
-                write!(
-                    stream,
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    payload.len(),
-                    payload
-                )
-                .ok();
-            }
-        });
-        (address, rx)
-    }
-
-    #[tokio::test]
-    async fn malformed_response_is_retried_then_accepted() {
-        let (address, _requests) = serve(vec![
-            "not JSON".to_owned(),
-            scores_json(&[(0, "ok", 0.75), (1, "ok", 0.25)]),
-        ]);
-        let judge = RulerJudge::with_api_key(
-            RulerConfig {
-                strategy: JudgeStrategy::Listwise,
-                ..config(address)
-            },
-            "test-key".into(),
-        )
+    #[test]
+    fn a_group_is_scored_through_any_transport_render_transport_parse() {
+        let judge = RulerJudge::new(RulerConfig {
+            timeout_secs: 0,
+            max_concurrency: 0,
+            ..local_config()
+        })
         .unwrap();
-        let scores = judge.score_group(&group(&["a", "b"])).await.unwrap();
-        assert_eq!(scores[0].value, 0.75);
-        assert_eq!(judge.stats().retries, 1);
-    }
-
-    #[tokio::test]
-    async fn an_unresponsive_endpoint_times_out_instead_of_hanging() {
-        // Accept the connection and never answer: without a timeout the whole
-        // update would block on one group forever.
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let (stop_tx, stop_rx) = mpsc::channel::<()>();
-        let server = std::thread::spawn(move || {
-            let mut held = Vec::new();
-            listener.set_nonblocking(true).expect("nonblocking");
-            while stop_rx.try_recv().is_err() {
-                if let Ok((stream, _)) = listener.accept() {
-                    held.push(stream);
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        });
-        let judge = RulerJudge::with_api_key(
-            RulerConfig {
-                timeout_secs: 1,
-                max_retries: 0,
-                strategy: JudgeStrategy::Listwise,
-                ..config(address)
-            },
-            "test-key".into(),
-        )
-        .unwrap();
-        let error = judge.score_group(&group(&["a", "b"])).await.unwrap_err();
-        stop_tx.send(()).ok();
-        server.join().unwrap();
-        assert!(
-            error.to_string().to_lowercase().contains("time"),
-            "expected a timeout error, got: {error}"
-        );
-    }
-
-    #[tokio::test]
-    async fn auto_falls_back_to_chunking_when_the_group_overruns_the_budget() {
-        // Two chunks of two, the second also carrying the anchor. Prompt ids are
-        // *presentation* positions, not trajectory indices: for group 1 the
-        // permutation leaves chunk 0 as `[0, 1]` and presents chunk 0 + anchor
-        // as `[2, 0, 3]`. So the second response scores trajectory 2 at 0.1, the
-        // anchor at 0.2 and trajectory 3 at 0.3 - and the anchor's own chunk
-        // scored it 0.5, shifting the second chunk by +0.3. The two chunks are
-        // requested concurrently, so each answer is picked by the chunk it is
-        // about: only the second one shows trajectory 2.
-        let (address, requests) = serve_by(2, |body| {
-            if body.contains("x2") {
-                scores_json(&[(0, "third", 0.1), (1, "anchor", 0.2), (2, "fourth", 0.3)])
-            } else {
-                scores_json(&[(0, "anchor", 0.5), (1, "second", 0.6)])
-            }
-        });
-        // Distinct answers: identical ones would be absorbed by the shared
-        // prefix and cost nothing, so nothing would need chunking.
-        let answers = (0..4)
-            .map(|index| format!("{}{index}", "x".repeat(400)))
-            .collect::<Vec<_>>();
-        let judge = RulerJudge::with_api_key(
-            RulerConfig {
-                context: JudgeContext {
-                    max_request_chars: 1_200,
-                    max_trajectory_chars: 1_000,
-                    max_message_chars: 1_000,
-                    head_ratio: 0.5,
-                    include_env_state: true,
-                },
-                ..config(address)
-            },
-            "test-key".into(),
-        )
-        .unwrap();
-        let answers = answers.iter().map(String::as_str).collect::<Vec<_>>();
-        let scores = judge.score_group(&group(&answers)).await.unwrap();
-        assert_eq!(scores.len(), 4);
-        assert!(scores.iter().all(|score| score.valid), "{scores:?}");
-        assert_eq!(scores[0].value, 0.5);
-        assert_eq!(scores[1].value, 0.6);
-        // Second chunk shifted by 0.5 - 0.2, and each score landed back on the
-        // trajectory it was about rather than on the position it was shown in.
-        assert!((scores[2].value - 0.4).abs() < 1e-6, "{:?}", scores[2]);
-        assert_eq!(scores[2].explanation.as_deref(), Some("third"));
-        assert!((scores[3].value - 0.6).abs() < 1e-6, "{:?}", scores[3]);
-        assert_eq!(scores[3].explanation.as_deref(), Some("fourth"));
-        let bodies: Vec<String> = requests.try_iter().collect();
-        assert_eq!(bodies.len(), 2, "expected exactly two judge requests");
-        assert_eq!(judge.stats().requests_per_group, 2.0);
-    }
-
-    #[tokio::test]
-    async fn pairwise_aggregates_win_rates_and_survives_one_failed_comparison() {
-        // Ring schedule over three trajectories: (0,1), (1,2), (2,0), compared
-        // concurrently - so the verdict is picked by the pair a request shows,
-        // and it is (2,0) that fails.
-        let (address, _requests) = serve_by(3, |body| {
-            if body.contains("alpha") && body.contains("beta") {
-                r#"{"winner":"a","explanation":"0>1"}"#.to_owned()
-            } else if body.contains("beta") && body.contains("gamma") {
-                r#"{"winner":"a","explanation":"1>2"}"#.to_owned()
-            } else {
-                "unparseable".to_owned()
-            }
-        });
-        let judge = RulerJudge::with_api_key(
-            RulerConfig {
-                strategy: JudgeStrategy::Pairwise {
-                    max_pairs: Some(3),
-                    // One order only: this test is about aggregation surviving a
-                    // failed comparison, not about position bias.
-                    both_orders: false,
-                    aggregation: Aggregation::WinRate,
-                },
-                max_retries: 0,
-                ..config(address)
-            },
-            "test-key".into(),
-        )
-        .unwrap();
+        let mut transport = FakeTransport::new(vec![reply(&scores_json(&[
+            (0, "ok", 0.75),
+            (1, "ok", 0.25),
+        ]))]);
         let scores = judge
-            .score_group(&group(&["alpha", "beta", "gamma"]))
-            .await
+            .score_group_via(&mut transport, &group(&["a", "b"]))
             .unwrap();
-        // 0 won its only completed match, 1 won one of two, 2 lost its only one.
-        assert_eq!(scores[0].value, 1.0);
-        assert_eq!(scores[1].value, 0.5);
-        assert_eq!(scores[2].value, 0.0);
-        assert!(scores.iter().all(|score| score.valid));
+        assert_eq!(scores[0].value, 0.75);
+        assert_eq!(scores[1].value, 0.25);
+        // The transport saw the prompt with the schema stated in the text.
+        assert_eq!(transport.prompts.len(), 1);
+        assert!(transport.prompts[0].contains("Answer with a single JSON object"));
+        assert!(transport.prompts[0].contains("\"scores\""));
+        assert_eq!(judge.stats().requests, 1);
     }
 
-    #[tokio::test]
-    async fn a_pair_the_judge_answers_by_position_becomes_a_tie() {
-        // Two trajectories, one pair, judged in both orders. The judge answers
-        // "a" whichever way round it is asked: it is reading the position.
-        let (address, requests) = serve(vec![
-            r#"{"winner":"a","explanation":"first looks better"}"#.to_owned(),
-            r#"{"winner":"a","explanation":"first looks better"}"#.to_owned(),
+    #[test]
+    fn a_malformed_reply_is_retried_with_a_degraded_format_then_accepted() {
+        let mut config = local_config();
+        config.max_retries = 1;
+        let judge = RulerJudge::new(config).unwrap();
+        let mut transport = FakeTransport::new(vec![
+            reply("not JSON"),
+            reply(&scores_json(&[(0, "ok", 0.4), (1, "ok", 0.6)])),
         ]);
-        let judge = RulerJudge::with_api_key(
-            RulerConfig {
-                strategy: JudgeStrategy::Pairwise {
-                    max_pairs: None,
-                    both_orders: true,
-                    aggregation: Aggregation::WinRate,
-                },
-                max_retries: 0,
-                ..config(address)
-            },
-            "test-key".into(),
+        let scores = judge
+            .score_group_via(&mut transport, &group(&["a", "b"]))
+            .unwrap();
+        assert_eq!(scores[1].value, 0.6);
+        assert_eq!(judge.stats().retries, 1);
+        assert_eq!(judge.stats().requests, 1);
+        // The retry asked for the widest format instead of a strict schema.
+        assert!(transport.prompts[1].contains("Answer with a single JSON object"));
+    }
+
+    #[test]
+    fn a_transport_error_is_a_retryable_request_failure() {
+        let mut config = local_config();
+        config.max_retries = 0;
+        let judge = RulerJudge::new(config).unwrap();
+        let mut transport =
+            FakeTransport::new(vec![Err(JudgeTransportError::Failed("boom".into()))]);
+        let error = judge
+            .score_group_via(&mut transport, &group(&["a", "b"]))
+            .unwrap_err();
+        assert!(error.to_string().contains("boom"), "{error}");
+    }
+
+    #[test]
+    fn a_cached_verdict_is_reused_without_touching_the_transport() {
+        let judge = RulerJudge::new(local_config()).unwrap();
+        let mut transport = FakeTransport::new(vec![reply(&scores_json(&[
+            (0, "ok", 0.75),
+            (1, "ok", 0.25),
+        ]))]);
+        let first = judge
+            .score_group_via(&mut transport, &group(&["a", "b"]))
+            .unwrap();
+        // The transport is empty now: a second scoring can only come from the cache.
+        let second = judge
+            .score_group_via(&mut transport, &group(&["a", "b"]))
+            .unwrap();
+        assert_eq!(first[0].value, second[0].value);
+        assert_eq!(judge.stats().requests, 1);
+        assert_eq!(judge.stats().cache_hits, 1);
+    }
+
+    #[test]
+    fn a_disabled_cache_never_reads_nor_writes() {
+        let judge = RulerJudge::with_cache(
+            local_config(),
+            JudgeCacheMode::Disabled,
+            "local:policy".into(),
         )
         .unwrap();
-        let scores = judge.score_group(&group(&["a", "b"])).await.unwrap();
-        assert_eq!(scores[0].value, 0.5);
-        assert_eq!(scores[1].value, 0.5);
-        assert!(
-            scores[0]
-                .explanation
-                .as_deref()
-                .unwrap()
-                .contains("order-dependent")
-        );
-        let stats = judge.stats();
-        assert_eq!(stats.position_disagreement, 1.0);
-        // Two requests for one pair: the cost `both_orders` buys the number with.
-        assert_eq!(requests.try_iter().count(), 2);
-        assert_eq!(stats.requests, 2);
+        let mut transport = FakeTransport::new(vec![
+            reply(&scores_json(&[(0, "ok", 0.75), (1, "ok", 0.25)])),
+            reply(&scores_json(&[(0, "ok", 0.75), (1, "ok", 0.25)])),
+        ]);
+        judge
+            .score_group_via(&mut transport, &group(&["a", "b"]))
+            .unwrap();
+        judge
+            .score_group_via(&mut transport, &group(&["a", "b"]))
+            .unwrap();
+        // Both scorings hit the transport: nothing was cached.
+        assert_eq!(transport.prompts.len(), 2);
+        assert_eq!(judge.stats().cache_hits, 0);
     }
 
-    #[tokio::test]
-    async fn compaction_applies_to_every_member_of_the_group_or_to_none() {
-        // One long member and one short one. Both get compacted - a summary
-        // judged against a full transcript would hand the difference to GRPO as
-        // if it were performance.
-        let (address, requests) = serve(vec![
-            r#"{"summary":"they poked at it"}"#.to_owned(),
-            r#"{"summary":"they poked at it"}"#.to_owned(),
-            scores_json(&[(0, "ok", 0.4), (1, "ok", 0.6)]),
+    #[test]
+    fn the_cache_identity_separates_judges_that_share_a_prompt() {
+        // Two judges, two identities, same prompt: the second must not read the
+        // first's verdict. This is what a weights fingerprint buys an
+        // in-process judge.
+        let first =
+            RulerJudge::with_cache(local_config(), JudgeCacheMode::Memory, "v1".into()).unwrap();
+        let second =
+            RulerJudge::with_cache(local_config(), JudgeCacheMode::Memory, "v2".into()).unwrap();
+        let mut transport = FakeTransport::new(vec![
+            reply(&scores_json(&[(0, "ok", 0.75), (1, "ok", 0.25)])),
+            reply(&scores_json(&[(0, "ok", 0.1), (1, "ok", 0.9)])),
         ]);
+        let a = first
+            .score_group_via(&mut transport, &group(&["a", "b"]))
+            .unwrap();
+        let b = second
+            .score_group_via(&mut transport, &group(&["a", "b"]))
+            .unwrap();
+        assert_eq!(a[0].value, 0.75);
+        assert_eq!(b[0].value, 0.1);
+        // And the same judge under a new identity does not read the old one.
+        let third =
+            RulerJudge::with_cache(local_config(), JudgeCacheMode::Memory, "v3".into()).unwrap();
+        let mut transport =
+            FakeTransport::new(vec![reply(&scores_json(&[(0, "ok", 0.5), (1, "ok", 0.5)]))]);
+        let c = third
+            .score_group_via(&mut transport, &group(&["a", "b"]))
+            .unwrap();
+        assert_eq!(c[0].value, 0.5);
+    }
+
+    #[test]
+    fn compaction_goes_through_the_same_transport_not_a_hidden_call() {
+        let mut config = local_config();
+        config.compaction = Some(CompactionConfig {
+            trigger_chars: 500,
+            target_chars: 200,
+            keep_last: 2,
+        });
+        let judge = RulerJudge::new(config).unwrap();
         let long = |answer: &str| {
             let mut trajectory = trajectory(answer);
             for turn in 0..8 {
@@ -1050,149 +1143,83 @@ mod tests {
             scenario_id: "s".into(),
             trajectories: vec![long("a"), long("b")],
         };
-        let judge = RulerJudge::with_api_key(
-            RulerConfig {
-                strategy: JudgeStrategy::Listwise,
-                max_retries: 0,
-                compaction: Some(crate::render::compact::CompactionConfig {
-                    trigger_chars: 500,
-                    target_chars: 200,
-                    keep_last: 2,
-                }),
-                ..config(address)
-            },
-            "test-key".into(),
-        )
-        .unwrap();
-        let scores = judge.score_group(&group).await.unwrap();
+        let mut transport = FakeTransport::new(vec![
+            reply(r#"{"summary":"they poked at it"}"#),
+            reply(r#"{"summary":"they poked at it"}"#),
+            reply(&scores_json(&[(0, "ok", 0.4), (1, "ok", 0.6)])),
+        ]);
+        let scores = judge.score_group_via(&mut transport, &group).unwrap();
         assert_eq!(scores.len(), 2);
-        let bodies: Vec<String> = requests.try_iter().collect();
-        // Two summary requests - one per member - then one scoring request.
-        assert_eq!(bodies.len(), 3, "{bodies:?}");
-        let scoring = bodies.last().unwrap();
-        assert_eq!(scoring.matches("messages summarised").count(), 2);
-        assert!(!scoring.contains("middle-3"), "middle turns survived");
-        // The opening and the closing turns are never summarised away.
-        assert!(scoring.contains("done"));
+        // Two summary requests - one wave - then the verdict: all through the
+        // one transport, and the summaries at temperature 0.
+        assert_eq!(transport.prompts.len(), 3);
+        assert!(transport.prompts[0].contains("Summarise the middle"));
         assert!(judge.stats().compacted_fraction > 0.0);
     }
 
-    /// Compaction is part of the prompt every member is judged from, so it is
-    /// held to a stricter rule than the verdict: temperature 0, whatever the
-    /// judge is configured to sample its verdicts at, and whether or not the
-    /// configuration states a temperature at all. Leaving the field out is not
-    /// equivalent - the provider then picks its own default, which is not zero.
-    #[tokio::test]
-    async fn a_summary_is_requested_at_temperature_zero_whatever_the_judge_samples_at() {
-        for temperature in [Some(0.7), None] {
-            let (address, requests) = serve(vec![
-                r#"{"summary":"they poked at it"}"#.to_owned(),
-                r#"{"summary":"they poked at it"}"#.to_owned(),
-                scores_json(&[(0, "ok", 0.4), (1, "ok", 0.6)]),
-            ]);
-            let long = |answer: &str| {
-                let mut trajectory = trajectory(answer);
-                for turn in 0..8 {
-                    trajectory.messages.push(Message::text(
-                        Role::Assistant,
-                        format!("middle-{turn} {}", "y".repeat(200)),
-                    ));
-                }
-                trajectory
-                    .messages
-                    .push(Message::text(Role::Assistant, "done"));
-                trajectory
-            };
-            let judge = RulerJudge::with_api_key(
-                RulerConfig {
-                    strategy: JudgeStrategy::Listwise,
-                    max_retries: 0,
-                    temperature,
-                    compaction: Some(crate::render::compact::CompactionConfig {
-                        trigger_chars: 500,
-                        target_chars: 200,
-                        keep_last: 2,
-                    }),
-                    ..config(address)
-                },
-                "test-key".into(),
-            )
+    #[test]
+    fn pairwise_runs_its_whole_schedule_through_one_transport() {
+        let mut config = local_config();
+        config.strategy = JudgeStrategy::Pairwise {
+            max_pairs: None,
+            both_orders: false,
+            aggregation: Aggregation::WinRate,
+        };
+        let judge = RulerJudge::new(config).unwrap();
+        let mut transport = FakeTransport::new(vec![
+            reply(r#"{"winner":"a","explanation":"0>1"}"#),
+            reply(r#"{"winner":"a","explanation":"1>2"}"#),
+            reply(r#"{"winner":"b","explanation":"2>0"}"#),
+        ]);
+        let scores = judge
+            .score_group_via(&mut transport, &group(&["alpha", "beta", "gamma"]))
             .unwrap();
-            judge
-                .score_group(&TrajectoryGroup {
-                    group_id: 1,
-                    scenario_id: "s".into(),
-                    trajectories: vec![long("a"), long("b")],
-                })
-                .await
-                .unwrap();
+        // Ring (0,1), (1,2), (2,0): 0 won both its matches, 1 won one of two,
+        // 2 lost both.
+        assert_eq!(scores[0].value, 1.0);
+        assert_eq!(scores[1].value, 0.5);
+        assert_eq!(scores[2].value, 0.0);
+        assert_eq!(transport.prompts.len(), 3);
+        assert_eq!(judge.stats().requests, 3);
+    }
 
-            let bodies: Vec<serde_json::Value> = requests
-                .try_iter()
-                .map(|body| serde_json::from_str(&body).expect("a JSON payload"))
-                .collect();
-            let (summaries, verdict) = bodies.split_at(2);
-            for summary in summaries {
-                assert_eq!(
-                    summary["temperature"],
-                    serde_json::json!(0.0),
-                    "{temperature:?}: a summary must be requested at temperature 0"
-                );
+    #[test]
+    fn a_transport_that_returns_the_wrong_arity_fails_the_wave() {
+        struct ShortTransport;
+        impl JudgeTransport for ShortTransport {
+            fn complete(&mut self, requests: &[JudgeRequest]) -> Vec<TransportResult> {
+                (0..requests.len().saturating_sub(1))
+                    .map(|_| reply("{}"))
+                    .collect()
             }
-            // The verdict keeps what the operator asked for, including nothing.
-            assert_eq!(
-                verdict[0].get("temperature").cloned(),
-                temperature.map(|value| serde_json::json!(value))
-            );
         }
+        let judge = RulerJudge::new(local_config()).unwrap();
+        let mut transport = ShortTransport;
+        let error = judge
+            .score_group_via(&mut transport, &group(&["a", "b"]))
+            .unwrap_err();
+        assert!(error.to_string().contains("replies for"), "{error}");
     }
 
-    #[tokio::test]
-    async fn a_group_under_the_trigger_is_never_summarised() {
-        let (address, requests) = serve(vec![scores_json(&[(0, "ok", 0.4), (1, "ok", 0.6)])]);
-        let judge = RulerJudge::with_api_key(
-            RulerConfig {
-                strategy: JudgeStrategy::Listwise,
-                compaction: Some(crate::render::compact::CompactionConfig::default()),
-                ..config(address)
-            },
-            "test-key".into(),
-        )
-        .unwrap();
-        judge.score_group(&group(&["a", "b"])).await.unwrap();
+    /// A cache failure reaches the agent stack as a reward failure, with the
+    /// operation that hit it still in the message.
+    #[test]
+    fn a_cache_failure_is_a_reward_error_that_names_the_operation() {
+        let error: Error = JudgeCacheError::Io {
+            op: "open judge cache",
+            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        }
+        .into();
+        assert!(matches!(error, Error::Reward(_)), "{error:?}");
         assert_eq!(
-            requests.try_iter().count(),
-            1,
-            "a short group paid for a summary"
+            error.to_string(),
+            "reward backend error: open judge cache: permission denied"
         );
-        assert_eq!(judge.stats().compacted_fraction, 0.0);
-    }
-
-    #[tokio::test]
-    async fn a_cached_verdict_is_reused_without_a_request() {
-        let (address, _requests) =
-            serve(vec![r#"{"winner":"b","explanation":"b wins"}"#.to_owned()]);
-        let judge = RulerJudge::with_api_key(
-            RulerConfig {
-                strategy: JudgeStrategy::Pairwise {
-                    max_pairs: None,
-                    both_orders: false,
-                    aggregation: Aggregation::WinRate,
-                },
-                ..config(address)
-            },
-            "test-key".into(),
-        )
-        .unwrap();
-        let group = group(&["a", "b"]);
-        let first = judge.score_group(&group).await.unwrap();
-        // The single server response is consumed; a second call can only pass
-        // from the cache.
-        let second = judge.score_group(&group).await.unwrap();
-        assert_eq!(first[1].value, 1.0);
-        assert_eq!(first[1].value, second[1].value);
-        assert_eq!(judge.stats().requests, 1);
-        assert_eq!(judge.stats().cache_hits, 1);
+        let empty: Error = JudgeCacheError::EmptyRow { key: "k".into() }.into();
+        assert_eq!(
+            empty.to_string(),
+            "reward backend error: judge cache row 'k' carries neither scores nor a summary"
+        );
     }
 
     #[test]
@@ -1262,35 +1289,77 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_cache_stores_leave_complete_jsonl_rows() {
+    fn nonpersistent_modes_ignore_an_existing_invalid_disk_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("cache.jsonl");
+        std::fs::write(&path, "not JSON").unwrap();
+        for mode in [JudgeCacheMode::Memory, JudgeCacheMode::Disabled] {
+            let config = RulerConfig {
+                cache_path: Some(path.clone()),
+                ..local_config()
+            };
+            let judge = RulerJudge::with_cache(config, mode, "local".into()).unwrap();
+            assert!(judge.core.cache.lock().unwrap().is_empty());
+            assert!(judge.core.text_cache.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_failed_disk_write_is_not_reused_as_a_successful_verdict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = RulerConfig {
+            cache_path: Some(tmp.path().join("missing/cache.jsonl")),
+            ..local_config()
+        };
+        let judge = RulerJudge::new(config).unwrap();
+        let content = scores_json(&[(0, "ok", 0.75), (1, "ok", 0.25)]);
+        let mut transport = FakeTransport::new(vec![reply(&content), reply(&content)]);
+        for _ in 0..2 {
+            assert!(
+                judge
+                    .score_group_via(&mut transport, &group(&["a", "b"]))
+                    .is_err()
+            );
+        }
+        assert_eq!(transport.prompts.len(), 2);
+        assert!(judge.core.cache.lock().unwrap().is_empty());
+        assert!(judge.core.store_text("summary".into(), "text").is_err());
+        assert!(judge.core.cached_text("summary").is_none());
+    }
+
+    #[test]
+    fn changing_the_identity_evicts_previous_in_memory_verdicts() {
+        let judge =
+            RulerJudge::with_cache(local_config(), JudgeCacheMode::Memory, "v1".into()).unwrap();
+        judge.core.store("key".into(), &[]).unwrap();
+        judge.core.store_text("summary".into(), "text").unwrap();
+        judge.set_cache_identity("v1".into());
+        assert!(judge.core.cached("key").is_some());
+        judge.set_cache_identity("v2".into());
+        assert!(judge.core.cached("key").is_none());
+        assert!(judge.core.cached_text("summary").is_none());
+    }
+
+    #[test]
+    fn a_memory_only_cache_still_shares_nothing_with_the_disk() {
         let tmp = tempfile::tempdir().expect("create temp dir");
         let path = tmp.path().join("cache.jsonl");
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let mut judge_config = config(listener.local_addr().unwrap());
-        judge_config.cache_path = Some(path.clone());
-        let judge = Arc::new(RulerJudge::with_api_key(judge_config, "test".into()).unwrap());
-        let threads = (0..16)
-            .map(|index| {
-                let judge = judge.clone();
-                std::thread::spawn(move || {
-                    judge
-                        .store(
-                            format!("key-{index}"),
-                            &[Score {
-                                value: index as f32,
-                                valid: true,
-                                explanation: Some("x".repeat(1024)),
-                                error: None,
-                            }],
-                        )
-                        .unwrap();
-                })
-            })
-            .collect::<Vec<_>>();
-        for thread in threads {
-            thread.join().unwrap();
-        }
-        let (scores, _) = load_cache(Some(&path)).unwrap();
-        assert_eq!(scores.len(), 16);
+        let mut config = local_config();
+        config.cache_path = Some(path.clone());
+        let judge = RulerJudge::with_cache(config, JudgeCacheMode::Memory, "local".into()).unwrap();
+        let mut transport = FakeTransport::new(vec![
+            reply(&scores_json(&[(0, "ok", 0.75), (1, "ok", 0.25)])),
+            reply(&scores_json(&[(0, "ok", 0.75), (1, "ok", 0.25)])),
+        ]);
+        judge
+            .score_group_via(&mut transport, &group(&["a", "b"]))
+            .unwrap();
+        // Served from memory on the second call...
+        judge
+            .score_group_via(&mut transport, &group(&["a", "b"]))
+            .unwrap();
+        assert_eq!(judge.stats().cache_hits, 1);
+        // ...but nothing was written to disk.
+        assert!(!path.exists());
     }
 }

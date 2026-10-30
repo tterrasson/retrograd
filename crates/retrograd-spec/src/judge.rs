@@ -271,6 +271,13 @@ impl RulerConfig {
                 "RULER concurrency and timeout must be greater than zero",
             ));
         }
+        self.validate_protocol()
+    }
+
+    /// Validates everything except the transport fields (`base_url`, `model`,
+    /// `api_key_env`): the parts a judge whose requests do not go over HTTP
+    /// still has to get right - budgets, strategy, compaction, sampling.
+    pub fn validate_protocol(&self) -> Result<()> {
         if self
             .temperature
             .is_some_and(|value| !value.is_finite() || value < 0.0)

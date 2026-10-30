@@ -4,18 +4,19 @@ use retrograd_agent_core::Result;
 
 use crate::Score;
 use crate::render::prompt::{self, RenderedGroup};
+use crate::transport::JudgeTransport;
 
-use super::Rubrics;
-use super::RulerJudge;
+use super::{Rubrics, RulerCore};
 
-impl RulerJudge {
+impl RulerCore {
     /// Splits the group into chunks that fit `max_request_chars` and scores each
-    /// one. With `anchor`, the group's first trajectory joins every chunk it is
-    /// not already in, and each chunk is shifted so that anchor lands on the
-    /// same value everywhere - without it, scores from different requests are
-    /// not on a common scale (see [`prompt::align_to_anchor`]).
-    pub(super) async fn score_chunked(
+    /// one, as a single wave. With `anchor`, the group's first trajectory joins
+    /// every chunk it is not already in, and each chunk is shifted so that anchor
+    /// lands on the same value everywhere - without it, scores from different
+    /// requests are not on a common scale (see [`prompt::align_to_anchor`]).
+    pub(super) fn score_chunked_via(
         &self,
+        transport: &mut dyn JudgeTransport,
         rendered: &RenderedGroup,
         anchor: bool,
     ) -> Result<Vec<Score>> {
@@ -37,7 +38,7 @@ impl RulerJudge {
             2,
         );
         if chunks.len() <= 1 {
-            return self.score_listwise(rendered).await;
+            return self.score_listwise_via(transport, rendered);
         }
 
         // The chunk that already contains trajectory 0 owns the reference scale;
@@ -60,13 +61,12 @@ impl RulerJudge {
         // The request index is the chunk index, so two chunks of the same group
         // get different presentation orders and a member's position is not
         // decided by which chunk it landed in.
-        let results = futures_util::future::join_all(
-            selections
-                .iter()
-                .enumerate()
-                .map(|(index, selection)| self.score_selection(rendered, selection, index as u64)),
-        )
-        .await;
+        let planned = selections
+            .iter()
+            .enumerate()
+            .map(|(index, selection)| self.plan_selection(rendered, selection, index as u64))
+            .collect::<Result<Vec<_>>>()?;
+        let results = self.run_selections(transport, planned);
 
         let mut output = vec![
             Score {
