@@ -486,7 +486,9 @@ mod stats;
 pub mod step;
 mod trainer;
 
-pub use engine::{Engine, EngineError, engine_config_from_train_config, generation_batch};
+pub use engine::{
+    Engine, EngineError, PoolingType, engine_config_from_train_config, generation_batch,
+};
 pub use grammar::{grammar_from_gbnf, grammar_from_json_schema, json_object_grammar};
 pub use packed::PackedSequenceBatch;
 pub use probe::*;

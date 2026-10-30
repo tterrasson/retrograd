@@ -1133,4 +1133,131 @@ extern "C" int retro_engine_model_fingerprint(retro_engine * engine, uint64_t * 
     });
 }
 
+extern "C" int retro_engine_pooling_type(retro_engine * engine, int32_t * out_pooling) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state || !out_pooling) {
+            if (state) set_error("out_pooling is required");
+            return -1;
+        }
+        *out_pooling = static_cast<int32_t>(llama_pooling_type(state->ctx.get()));
+        return 0;
+    });
+}
+
+extern "C" int retro_engine_embed(
+        retro_engine * engine,
+        const int32_t * tokens,
+        size_t n_tokens,
+        float * out_features,
+        size_t n_embd_max,
+        size_t * out_n_embd) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        if (!out_n_embd) {
+            set_error("out_n_embd is required");
+            return -1;
+        }
+        llama_context * ctx = state->ctx.get();
+        const size_t n_embd = llama_pooling_type(ctx) == LLAMA_POOLING_TYPE_RANK
+                ? llama_model_n_cls_out(state->model.get())
+                : static_cast<size_t>(llama_model_n_embd_out(state->model.get()));
+        *out_n_embd = n_embd;
+        if (!out_features) {
+            // Size query only: no decode.
+            if (n_embd == 0) {
+                set_error("model reports no output embedding width");
+                return -1;
+            }
+            return 0;
+        }
+        if (!tokens || n_tokens == 0) {
+            set_error("embedding extraction requires tokens");
+            return RETRO_EMBED_INVALID_INPUT;
+        }
+        const size_t n_ctx = llama_n_ctx(ctx);
+        if (n_tokens > n_ctx) {
+            std::ostringstream message;
+            message << "sequence of " << n_tokens << " tokens exceeds context " << n_ctx;
+            set_error(message.str());
+            return RETRO_EMBED_INVALID_INPUT;
+        }
+        gen_core core = engine_core(*state);
+        if (!core.validate_tokens(tokens, n_tokens)) {
+            return RETRO_EMBED_INVALID_INPUT;
+        }
+        // A model that declares no pooling is a plain causal chat model: no
+        // embedding is invented for it by averaging hidden states.
+        if (llama_pooling_type(ctx) == LLAMA_POOLING_TYPE_NONE) {
+            set_error("the model declares no pooling (a causal chat model): embeddings are not "
+                      "served for it");
+            return RETRO_EMBED_NO_POOLING;
+        }
+        if (n_embd == 0) {
+            set_error("model reports no output embedding width");
+            return -1;
+        }
+        if (n_embd_max < n_embd) {
+            set_error("out_features buffer is too small");
+            return -1;
+        }
+        // The pooled output is computed over the whole sequence, so the input
+        // must fit one physical batch.
+        const uint32_t n_batch = std::min(llama_n_batch(ctx), llama_n_ubatch(ctx));
+        if (n_tokens > n_batch) {
+            std::ostringstream message;
+            message << "the input is " << n_tokens << " tokens, but a pooled embedding needs "
+                    << "the whole sequence in one batch of " << n_batch << "; shorten the input";
+            set_error(message.str());
+            return RETRO_EMBED_INVALID_INPUT;
+        }
+        // The embedding graph differs from the decode graph: apply the active
+        // adapter, clear the KV (and with it the prefix cache) on every exit
+        // path, and restore the plain-logits configuration afterwards.
+        if (!apply_active_adapter(*state)) {
+            return -1;
+        }
+        struct embedding_guard {
+            engine_state & state;
+            ~embedding_guard() {
+                forget_engine_kv(state);
+                llama_set_embeddings(state.ctx.get(), false);
+            }
+        } cleanup { *state };
+        llama_set_embeddings(ctx, true);
+        forget_engine_kv(*state);
+        int status = 0;
+        {
+            gen_detail::batch_guard guard(static_cast<int32_t>(n_tokens));
+            llama_batch & batch = guard.batch;
+            batch.n_tokens = static_cast<int32_t>(n_tokens);
+            for (size_t i = 0; i < n_tokens; ++i) {
+                batch.token[i] = tokens[i];
+                batch.pos[i] = static_cast<llama_pos>(i);
+                batch.n_seq_id[i] = 1;
+                batch.seq_id[i][0] = 0;
+                // Embeddings mode outputs every token regardless; no logits.
+                batch.logits[i] = 0;
+            }
+            if (llama_decode(ctx, batch) != 0) {
+                set_error("llama_decode failed during embedding extraction");
+                status = -1;
+            }
+        }
+        if (status == 0) {
+            const float * emb = llama_get_embeddings_seq(ctx, 0);
+            if (!emb) {
+                set_error("the decode produced no pooled embedding");
+                status = -1;
+            } else {
+                std::memcpy(out_features, emb, n_embd * sizeof(float));
+            }
+        }
+        return status;
+    });
+}
+
 } // namespace retro

@@ -10,9 +10,12 @@
 
 mod adapter;
 mod chat;
+mod embed;
 mod generate;
 mod score;
 mod step;
+
+pub use embed::PoolingType;
 
 use std::ffi::CString;
 use std::mem::size_of;

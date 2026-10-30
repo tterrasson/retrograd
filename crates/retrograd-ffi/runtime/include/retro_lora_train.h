@@ -2555,6 +2555,29 @@ int retro_engine_model_fingerprint(retro_engine * engine, uint64_t * out_fingerp
 // is limited to exact boundaries.
 int retro_engine_is_hybrid(retro_engine * engine, bool * out_is_hybrid);
 
+// Embeddings on the engine's context. retro_engine_pooling_type reports the
+// model's declared pooling (llama_pooling_type: 0 = none, 1 = mean, 2 = cls,
+// 3 = last, 4 = rank). retro_engine_embed decodes the whole token sequence in
+// one batch with embeddings enabled and writes the pooled sequence embedding
+// (n_embd_out floats, or n_cls_out for rank pooling) to out_features. A model that declares no pooling - a
+// plain causal chat model - returns RETRO_EMBED_NO_POOLING: no embedding is
+// invented for it by averaging. The call is prefill-only and shares no KV with
+// generation: it clears the KV (and with it the prefix cache, via the weights
+// version bump) before and after, and restores the plain-logits graph.
+#define RETRO_EMBED_NO_POOLING (-3)
+#define RETRO_EMBED_INVALID_INPUT (-4)
+int retro_engine_pooling_type(retro_engine * engine, int32_t * out_pooling);
+// With out_features == NULL, only out_n_embd is filled (size query, no
+// decode). Otherwise the pooled embedding (n_embd_out floats) is written and
+// *out_n_embd reports the width.
+int retro_engine_embed(
+    retro_engine * engine,
+    const int32_t * tokens,
+    size_t n_tokens,
+    float * out_features,
+    size_t n_embd_max,
+    size_t * out_n_embd);
+
 const char * retro_last_error(void);
 
 #ifdef __cplusplus

@@ -619,6 +619,15 @@ pub struct RetroGrammar {
 /// express the requested tool-call grammar mode.
 pub const RETRO_TOOL_GRAMMAR_UNAVAILABLE: c_int = -2;
 
+/// Mirror of `RETRO_EMBED_NO_POOLING`: the model declares no pooling (a causal
+/// chat model), so `retro_engine_embed` refuses rather than inventing an
+/// embedding.
+pub const RETRO_EMBED_NO_POOLING: c_int = -3;
+
+/// Mirror of `RETRO_EMBED_INVALID_INPUT`: invalid tokens or an input that
+/// exceeds the embedding context or micro-batch capacity.
+pub const RETRO_EMBED_INVALID_INPUT: c_int = -4;
+
 /// Mirror of `retro_sampling_params_v2`: extended sampling parameters for v2
 /// step rows. See the published header for the field contracts and the pinned
 /// transformation order.
@@ -1996,6 +2005,22 @@ unsafe extern "C" {
 
     /// Mirror of `retro_engine_is_hybrid`.
     pub fn retro_engine_is_hybrid(engine: *mut RetroEngine, out_is_hybrid: *mut bool) -> c_int;
+
+    /// Mirror of `retro_engine_pooling_type`: the model's declared pooling
+    /// (`llama_pooling_type`: 0 = none, 1 = mean, 2 = cls, 3 = last, 4 = rank).
+    pub fn retro_engine_pooling_type(engine: *mut RetroEngine, out_pooling: *mut i32) -> c_int;
+
+    /// Mirror of `retro_engine_embed`: the pooled embedding of one token
+    /// sequence, or `RETRO_EMBED_NO_POOLING` when the model declares no pooling.
+    /// With a null `out_features`, only `out_n_embd` is filled (size query).
+    pub fn retro_engine_embed(
+        engine: *mut RetroEngine,
+        tokens: *const i32,
+        n_tokens: usize,
+        out_features: *mut f32,
+        n_embd_max: usize,
+        out_n_embd: *mut usize,
+    ) -> c_int;
 
     pub fn retro_last_error() -> *const c_char;
 }

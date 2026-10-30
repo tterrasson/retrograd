@@ -1087,3 +1087,86 @@ fn v2_step_reports_the_truncated_distribution_and_releases_grammars() {
     );
     engine.request_free(70).unwrap();
 }
+
+/// Exercise the embedding graph on tiny deterministic weights, including the
+/// physical micro-batch bound and restoration of generation after extraction.
+#[test]
+fn pooled_embeddings_are_deterministic_and_restore_generation() {
+    let _guard = serialize_models();
+    let dir = tempfile::tempdir().unwrap();
+    let model_path = dir.path().join("pooled.gguf");
+    let generator =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/gen-tiny-fixture.py");
+    let script = r#"
+import importlib.util
+import sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("fixture", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+original = m.metadata
+m.metadata = lambda kind: original(kind) + [
+    ("qwen2.pooling_type", m.T_UINT32, m.scalar(m.T_UINT32, 3))]
+Path(sys.argv[2]).write_bytes(m.build(m.GGML_TYPE_F32))
+"#;
+    assert!(
+        std::process::Command::new("python3")
+            .arg("-c")
+            .arg(script)
+            .arg(generator)
+            .arg(&model_path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let config = EngineConfig {
+        n_ctx: 64,
+        n_batch: 32,
+        n_ubatch: 16,
+        n_seq_max: 1,
+        device: Device::Cpu,
+        threads: 2,
+        ..EngineConfig::default()
+    };
+    let mut engine = Engine::new(&model_path, &config).unwrap();
+    assert!(engine.supports_embeddings().unwrap());
+    let tokens = engine.tokenize_text("hi").unwrap();
+    let before = engine.generate(&tokens, &params(42)).unwrap();
+    let embedding = engine.embed(&tokens).unwrap();
+    assert_eq!(embedding.len(), 64);
+    assert_eq!(embedding, engine.embed(&tokens).unwrap());
+    assert!(embedding.iter().all(|value| value.is_finite()));
+    assert!(embedding.iter().any(|value| *value != 0.0));
+    let too_long = vec![tokens[0]; 17];
+    assert!(matches!(
+        engine.embed(&too_long),
+        Err(EngineError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        engine.embed(&[-1]),
+        Err(EngineError::InvalidArgument(_))
+    ));
+    let after = engine.generate(&tokens, &params(42)).unwrap();
+    assert_eq!(before.tokens, after.tokens);
+    assert_eq!(before.logprobs, after.logprobs);
+}
+
+#[test]
+fn a_causal_model_without_pooling_refuses_embeddings() {
+    let _guard = serialize_models();
+    let Some(path) = common::tiny_model_path_if_available() else {
+        return;
+    };
+    let config = engine_config(&train_config());
+    let mut engine = Engine::new(&path, &config).unwrap();
+    assert!(!engine.supports_embeddings().unwrap());
+    let tokens = engine.tokenize_text("hi").unwrap();
+    assert!(matches!(
+        engine.embed(&tokens),
+        Err(EngineError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        engine.embed(&[]),
+        Err(EngineError::InvalidArgument(_))
+    ));
+}
