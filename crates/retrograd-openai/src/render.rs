@@ -15,13 +15,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use retrograd_agent::TemplateToolCallParser;
-use retrograd_agent::chat;
-use retrograd_agent::rendering::{
+use retrograd_agent_core::TemplateToolCallParser;
+use retrograd_agent_core::chat;
+use retrograd_agent_core::parser::{HermesToolCallParser, ToolCallParser};
+use retrograd_agent_core::rendering::{
     ToolRendering, inject_tool_instructions, observation_message, resolve_tool_rendering_with,
 };
-use retrograd_agent::tools::{HermesToolCallParser, ToolCallParser, ToolResult};
-use retrograd_agent::trajectory::{Message, Role};
+use retrograd_agent_core::tools::ToolResult;
+use retrograd_agent_core::trajectory::{Message, Role};
 use retrograd_core::{Result as CoreResult, SamplingParams};
 use retrograd_engine::Trainer;
 
@@ -29,10 +30,11 @@ use crate::convert::ChatPrompt;
 use crate::error::OpenAiError;
 use crate::wire::{FinishReason, FunctionOut, ToolCallOut, Usage};
 
-/// The part of a model a chat request needs. [`Trainer`] is the one that
-/// matters; the trait is what lets the whole request path run in the fast lane
-/// against [`crate::testing::FakeModel`].
-pub trait ChatModel {
+/// The read-only model queries prompt rendering needs: the same ones a serving
+/// backend ([`crate::backend::ServeBackend`]) answers on the thread that owns
+/// the weights. [`ChatModel`] adds sampling on top for the callers that sample
+/// in place - a live run's trainer.
+pub trait PromptModel {
     fn supports_native_tools(&self) -> CoreResult<bool>;
     /// The parser the model's template yields for this catalog, if any.
     fn tool_call_parser(&self, tools_json: &str) -> CoreResult<Option<String>>;
@@ -41,6 +43,31 @@ pub trait ChatModel {
     fn format_chat(&self, messages_json: &str, tools_json: Option<&str>) -> CoreResult<String>;
     fn tokenize(&self, text: &str) -> CoreResult<Vec<i32>>;
     fn context_size(&self) -> CoreResult<usize>;
+}
+
+/// A boxed prompt model is a prompt model.
+impl<T: PromptModel + ?Sized> PromptModel for Box<T> {
+    fn supports_native_tools(&self) -> CoreResult<bool> {
+        (**self).supports_native_tools()
+    }
+    fn tool_call_parser(&self, tools_json: &str) -> CoreResult<Option<String>> {
+        (**self).tool_call_parser(tools_json)
+    }
+    fn format_chat(&self, messages_json: &str, tools_json: Option<&str>) -> CoreResult<String> {
+        (**self).format_chat(messages_json, tools_json)
+    }
+    fn tokenize(&self, text: &str) -> CoreResult<Vec<i32>> {
+        (**self).tokenize(text)
+    }
+    fn context_size(&self) -> CoreResult<usize> {
+        (**self).context_size()
+    }
+}
+
+/// The part of a model a chat request needs. [`Trainer`] is the one that
+/// matters; the trait is what lets the whole request path run in the fast lane
+/// against [`crate::testing::FakeModel`].
+pub trait ChatModel: PromptModel {
     /// Samples a completion, from the model the run started from when `base`
     /// is set: the adapter disabled, never the run's anchor.
     fn sample(
@@ -53,7 +80,7 @@ pub trait ChatModel {
     fn is_eog(&self, token: i32) -> CoreResult<bool>;
 }
 
-impl ChatModel for Trainer {
+impl PromptModel for Trainer {
     fn supports_native_tools(&self) -> CoreResult<bool> {
         self.chat_template_supports_tools()
     }
@@ -73,7 +100,9 @@ impl ChatModel for Trainer {
     fn context_size(&self) -> CoreResult<usize> {
         Trainer::context_size(self)
     }
+}
 
+impl ChatModel for Trainer {
     fn sample(
         &mut self,
         prompt: &[i32],
@@ -102,7 +131,7 @@ impl ChatModel for Trainer {
 pub struct ParserCache(HashMap<String, Option<String>>);
 
 impl ParserCache {
-    fn parser(&mut self, model: &dyn ChatModel, tools_json: &str) -> CoreResult<Option<String>> {
+    fn parser(&mut self, model: &dyn PromptModel, tools_json: &str) -> CoreResult<Option<String>> {
         if let Some(parser) = self.0.get(tools_json) {
             return Ok(parser.clone());
         }
@@ -124,14 +153,25 @@ pub struct Sampled {
     pub reader: Option<Arc<dyn ToolCallParser>>,
 }
 
-/// Renders, samples and detokenizes one request. Runs on the thread that owns
-/// the model.
-pub fn complete(
-    model: &mut dyn ChatModel,
+/// What rendering a conversation produced: the prompt tokens, the tool-call
+/// reader the rendering chose, and whether special tokens must survive
+/// detokenization for that reader to work.
+pub struct Rendered {
+    pub tokens: Vec<i32>,
+    pub reader: Option<Arc<dyn ToolCallParser>>,
+    pub unparse_special: bool,
+}
+
+/// Renders one conversation into the prompt the model is asked: the tools
+/// decision, the template, the tokens, and the context bound. Runs wherever the
+/// model lives - on the serving session's thread for a
+/// [`crate::backend::ServeBackend`], on a live run's thread for a
+/// [`Trainer`].
+pub fn render_prompt(
+    model: &dyn PromptModel,
     prompt: &ChatPrompt,
-    base: bool,
     parsers: &mut ParserCache,
-) -> Result<Sampled, OpenAiError> {
+) -> Result<Rendered, OpenAiError> {
     let tools_json = match prompt.tools.is_empty() {
         true => None,
         false => Some(chat::template_tools(&prompt.tools)?),
@@ -198,6 +238,35 @@ pub fn complete(
             context,
         ));
     }
+    let reader: Option<Arc<dyn ToolCallParser>> = match &rendering {
+        ToolRendering::None => None,
+        ToolRendering::Native { parser, .. } => Some(parser.clone()),
+        ToolRendering::Prompt { .. } => Some(Arc::new(HermesToolCallParser)),
+    };
+    // A template-derived parser matches the model's own call delimiters, and
+    // those are control tokens: they have to survive detokenization for it to
+    // read anything. Every other reader wants the text a person reads.
+    let unparse_special = matches!(rendering, ToolRendering::Native { .. });
+    Ok(Rendered {
+        tokens,
+        reader,
+        unparse_special,
+    })
+}
+
+/// Renders, samples and detokenizes one request. Runs on the thread that owns
+/// the model.
+pub fn complete(
+    model: &mut dyn ChatModel,
+    prompt: &ChatPrompt,
+    base: bool,
+    parsers: &mut ParserCache,
+) -> Result<Sampled, OpenAiError> {
+    let Rendered {
+        tokens,
+        reader,
+        unparse_special,
+    } = render_prompt(model, prompt, parsers)?;
 
     let mut sampled = model.sample(&tokens, &prompt.sampling, base)?;
     let completion_tokens = sampled.len();
@@ -208,15 +277,6 @@ pub fn complete(
         sampled.pop();
         stopped_at_eog = true;
     }
-    let reader: Option<Arc<dyn ToolCallParser>> = match &rendering {
-        ToolRendering::None => None,
-        ToolRendering::Native { parser, .. } => Some(parser.clone()),
-        ToolRendering::Prompt { .. } => Some(Arc::new(HermesToolCallParser)),
-    };
-    // A template-derived parser matches the model's own call delimiters, and
-    // those are control tokens: they have to survive detokenization for it to
-    // read anything. Every other reader wants the text a person reads.
-    let unparse_special = matches!(rendering, ToolRendering::Native { .. }) && reader.is_some();
     Ok(Sampled {
         text: model.detokenize(&sampled, unparse_special)?,
         prompt_tokens: tokens.len(),

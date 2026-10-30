@@ -23,6 +23,7 @@ fn spec(adapter: Option<&str>) -> WeightsSpec {
         adapter: adapter.map(Into::into),
         n_ctx: 4096,
         device: Device::Cpu,
+        n_seq_max: None,
         chat_template_variables: None,
     }
 }

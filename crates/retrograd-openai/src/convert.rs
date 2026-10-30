@@ -7,8 +7,8 @@
 //! `metadata`, `store` - are dropped, because the clients that send them send
 //! them on every request.
 
-use retrograd_agent::tools::{ToolCall, ToolSpec};
-use retrograd_agent::trajectory::{Message, Role};
+use retrograd_agent_core::tools::{ToolCall, ToolSpec};
+use retrograd_agent_core::trajectory::{Message, Role};
 use retrograd_core::SamplingParams;
 use serde_json::Value;
 

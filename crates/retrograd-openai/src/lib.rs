@@ -13,6 +13,7 @@
 //! is evaluated on the prompt format it was trained on.
 
 pub mod auth;
+pub mod backend;
 pub mod convert;
 pub mod error;
 pub mod render;
@@ -36,11 +37,15 @@ use http::HeaderValue;
 use retrograd_engine::Trainer;
 use tokio::sync::oneshot;
 
+pub use backend::{EngineLoader, Loader, ServeBackend, ServingBackend, adapter_name};
 pub use convert::{ChatPrompt, Prepared, prepare};
 pub use error::{ErrorType, OpenAiEnvelope, OpenAiError};
-pub use render::{ChatModel, Completion, ParserCache, Sampled, complete, finish};
+pub use render::{
+    ChatModel, Completion, ParserCache, PromptModel, Rendered, Sampled, complete, finish,
+    render_prompt,
+};
 pub use session::{
-    DeviceLease, Lease, Loader, Session, SessionOptions, TrainerLoader, Unshared, WeightsSpec,
+    DeviceLease, EngineStats, Lease, ServingJob, Session, SessionOptions, Unshared, WeightsSpec,
 };
 pub use wire::{ChatCompletionRequest, ModelCard, ModelList};
 

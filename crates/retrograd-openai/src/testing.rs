@@ -4,19 +4,27 @@
 //! Byte-level: a token is a byte, the reply is fixed, and end of generation is
 //! the token `-1`. That is enough to drive every branch between the request and
 //! the response - rendering, context bound, stop, finish reason, parsing -
-//! without a device.
+//! without a device. The fake serves through a
+//! [`FakeBackend`](retrograd_infer::FakeBackend) scripted with the reply, so the
+//! whole session path (scheduler, event stream, collection) is exercised.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use retrograd_core::{Result as CoreResult, SamplingParams};
+use retrograd_engine::{EngineMemory, StepOutput, StepRow};
+use retrograd_infer::{AdmissionMode, DecodeBackend, FakeBackend, InferError, SchedulerOptions};
 
+use crate::backend::{Loader, ServeBackend, ServingBackend};
 use crate::error::OpenAiError;
-use crate::render::ChatModel;
-use crate::session::{Loader, WeightsSpec};
+use crate::render::{ChatModel, PromptModel};
+use crate::session::WeightsSpec;
 
 /// The end-of-generation token of [`FakeModel`].
 pub const EOG: i32 = -1;
+
+/// The fake's vocabulary: one token per byte.
+const VOCAB: u32 = 256;
 
 /// Answers every prompt with the same reply, byte for byte.
 pub struct FakeModel {
@@ -56,7 +64,7 @@ impl FakeModel {
     }
 }
 
-impl ChatModel for FakeModel {
+impl PromptModel for FakeModel {
     fn supports_native_tools(&self) -> CoreResult<bool> {
         Ok(false)
     }
@@ -81,7 +89,9 @@ impl ChatModel for FakeModel {
     fn context_size(&self) -> CoreResult<usize> {
         Ok(self.context)
     }
+}
 
+impl ChatModel for FakeModel {
     fn sample(
         &mut self,
         prompt: &[i32],
@@ -131,7 +141,123 @@ impl ChatModel for FakeModel {
     }
 }
 
-/// Loads a [`FakeModel`] for any spec, and remembers what it was asked to load.
+/// A [`ServeBackend`] over a scripted [`FakeBackend`]: the decode side answers
+/// the scripted reply, the prompt-rendering side is a [`FakeModel`].
+pub struct FakeServing {
+    model: FakeModel,
+    backend: FakeBackend,
+}
+
+impl FakeServing {
+    fn new(reply: &str) -> Self {
+        let mut script: Vec<i32> = reply.bytes().map(i32::from).collect();
+        script.push(EOG);
+        let pieces: Vec<String> = (0..=u8::MAX)
+            .map(|byte| char::from(byte).to_string())
+            .collect();
+        let n_ctx_seq = 1_u32 << 16;
+        Self {
+            model: FakeModel::new(reply),
+            backend: FakeBackend::new(4, n_ctx_seq, u64::from(n_ctx_seq) * 4, VOCAB, EOG, pieces)
+                .with_script(script),
+        }
+    }
+}
+
+impl DecodeBackend for FakeServing {
+    fn step(&mut self, rows: &[StepRow<'_>], out: &mut StepOutput) -> Result<(), InferError> {
+        self.backend.step(rows, out)
+    }
+    fn seq_rm(&mut self, slot: i32, p0: i32, p1: i32) -> Result<(), InferError> {
+        self.backend.seq_rm(slot, p0, p1)
+    }
+    fn seq_cp(&mut self, src: i32, dst: i32, p0: i32, p1: i32) -> Result<(), InferError> {
+        self.backend.seq_cp(src, dst, p0, p1)
+    }
+    fn seq_pos(&self, slot: i32) -> Result<(i32, i32), InferError> {
+        self.backend.seq_pos(slot)
+    }
+    fn seq_save_len(&self, slot: i32, flags: u32) -> Result<usize, InferError> {
+        self.backend.seq_save_len(slot, flags)
+    }
+    fn seq_save_into(
+        &mut self,
+        slot: i32,
+        flags: u32,
+        buffer: &mut [u8],
+    ) -> Result<usize, InferError> {
+        self.backend.seq_save_into(slot, flags, buffer)
+    }
+    fn seq_load(&mut self, slot: i32, flags: u32, data: &[u8]) -> Result<usize, InferError> {
+        self.backend.seq_load(slot, flags, data)
+    }
+    fn kv_unified(&self) -> Result<bool, InferError> {
+        self.backend.kv_unified()
+    }
+    fn weights_version(&self) -> Result<u64, InferError> {
+        self.backend.weights_version()
+    }
+    fn model_fingerprint(&self) -> Result<u64, InferError> {
+        self.backend.model_fingerprint()
+    }
+    fn is_hybrid(&self) -> Result<bool, InferError> {
+        self.backend.is_hybrid()
+    }
+    fn memory(&self) -> Result<EngineMemory, InferError> {
+        self.backend.memory()
+    }
+    fn request_free(&mut self, request: i32) -> Result<(), InferError> {
+        self.backend.request_free(request)
+    }
+    fn is_eog_token(&self, token: i32) -> Result<bool, InferError> {
+        self.backend.is_eog_token(token)
+    }
+    fn detokenize_bytes(
+        &self,
+        tokens: &[i32],
+        unparse_special: bool,
+    ) -> Result<Vec<u8>, InferError> {
+        self.backend.detokenize_bytes(tokens, unparse_special)
+    }
+    fn context_size(&self) -> Result<u32, InferError> {
+        self.backend.context_size()
+    }
+    fn vocab_size(&self) -> Result<u32, InferError> {
+        self.backend.vocab_size()
+    }
+    fn load_adapter(&mut self, name: &str, path: &std::path::Path) -> Result<(), InferError> {
+        self.backend.load_adapter(name, path)
+    }
+    fn activate_adapter(&mut self, name: Option<&str>) -> Result<(), InferError> {
+        self.backend.activate_adapter(name)
+    }
+    fn active_adapter(&self) -> Result<Option<String>, InferError> {
+        self.backend.active_adapter()
+    }
+}
+
+impl PromptModel for FakeServing {
+    fn supports_native_tools(&self) -> CoreResult<bool> {
+        PromptModel::supports_native_tools(&self.model)
+    }
+    fn tool_call_parser(&self, tools_json: &str) -> CoreResult<Option<String>> {
+        PromptModel::tool_call_parser(&self.model, tools_json)
+    }
+    fn format_chat(&self, messages_json: &str, tools_json: Option<&str>) -> CoreResult<String> {
+        PromptModel::format_chat(&self.model, messages_json, tools_json)
+    }
+    fn tokenize(&self, text: &str) -> CoreResult<Vec<i32>> {
+        PromptModel::tokenize(&self.model, text)
+    }
+    fn context_size(&self) -> CoreResult<usize> {
+        PromptModel::context_size(&self.model)
+    }
+}
+
+impl ServeBackend for FakeServing {}
+
+/// Loads a [`FakeServing`] for any spec, and remembers what it was asked to
+/// load.
 #[derive(Clone)]
 pub struct FakeLoader {
     reply: String,
@@ -164,12 +290,24 @@ impl Default for FakeLoader {
 }
 
 impl Loader for FakeLoader {
-    fn load(&self, spec: &WeightsSpec) -> Result<Box<dyn ChatModel>, OpenAiError> {
+    fn load(
+        &self,
+        spec: &WeightsSpec,
+        queue: usize,
+        admission: AdmissionMode,
+    ) -> Result<ServingBackend, OpenAiError> {
         self.loads.fetch_add(1, Ordering::SeqCst);
         self.specs
             .lock()
             .expect("fake loader lock")
             .push(spec.clone());
-        Ok(Box::new(FakeModel::new(self.reply.clone())))
+        Ok(ServingBackend {
+            backend: Box::new(FakeServing::new(&self.reply)),
+            scheduler: SchedulerOptions {
+                mode: admission,
+                queue_capacity: queue.max(1),
+                ..SchedulerOptions::default()
+            },
+        })
     }
 }

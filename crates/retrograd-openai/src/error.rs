@@ -187,11 +187,37 @@ impl From<retrograd_core::Error> for OpenAiError {
     }
 }
 
-/// The agent's errors reach this one through the applicative façade, which
+/// The agent-core errors reach this one through the applicative façade, which
 /// already decides what is the caller's fault.
-impl From<retrograd_agent::Error> for OpenAiError {
-    fn from(error: retrograd_agent::Error) -> Self {
+impl From<retrograd_agent_core::Error> for OpenAiError {
+    fn from(error: retrograd_agent_core::Error) -> Self {
         retrograd_core::Error::from(error).into()
+    }
+}
+
+/// The engine's errors reach this one through the applicative façade.
+impl From<retrograd_engine::EngineError> for OpenAiError {
+    fn from(error: retrograd_engine::EngineError) -> Self {
+        retrograd_core::Error::from(error).into()
+    }
+}
+
+/// The inference policy's errors, translated where the policy's structured
+/// variants decide the status code: a full KV pool or admission queue is a
+/// capacity condition (503 + `Retry-After`), never a caller mistake.
+impl From<retrograd_infer::InferError> for OpenAiError {
+    fn from(error: retrograd_infer::InferError) -> Self {
+        use retrograd_infer::InferError;
+        match error {
+            InferError::KvFull { .. } => Self::busy("kv_full", error.to_string(), 1),
+            InferError::QueueFull { .. } => Self::busy("queue_full", error.to_string(), 1),
+            InferError::InvalidArgument(_) => Self::invalid(error.to_string()),
+            InferError::Overflow(_) | InferError::Failed(_) | InferError::Cancelled => {
+                Self::internal(error.to_string())
+            }
+            InferError::Backend(error) => retrograd_core::Error::from(error).into(),
+            InferError::Core(error) => error.into(),
+        }
     }
 }
 

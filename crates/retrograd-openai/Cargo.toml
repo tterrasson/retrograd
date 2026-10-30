@@ -15,10 +15,13 @@ axum.workspace = true
 futures-util.workspace = true
 http.workspace = true
 # The rendering and the parsers the rollouts use, so what is served is what is
-# trained. Neither MCP nor the HTTP environment: nothing here runs a tool.
-retrograd-agent.workspace = true
+# trained - from `retrograd-agent-core`, not `retrograd-agent`: nothing here
+# runs a tool, an environment or a judge, and the agent crate would drag all
+# of them (MCP, containers, the trainer) into this one.
+retrograd-agent-core = { workspace = true, features = ["template-parser"] }
 retrograd-core.workspace = true
 retrograd-engine.workspace = true
+retrograd-infer.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
