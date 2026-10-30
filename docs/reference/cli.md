@@ -65,9 +65,18 @@ retrograd serve CONFIG.toml [--adapter ADAPTER.gguf | --checkpoint DIR/best.stat
                 [--api-key KEY] [--model-name NAME]
 ```
 
-Serves the model through the OpenAI API (`/v1/chat/completions`,
-`/v1/models`), so any OpenAI client - the `openai` SDK, lm-eval's
-`local-chat-completions`, Open WebUI, inspect - can query it:
+Serves the model through the OpenAI API, so any OpenAI client - the `openai`
+SDK, lm-eval's `local-chat-completions` and `local-completions`, Open WebUI,
+inspect - can query it:
+
+| Route | What it serves |
+|---|---|
+| `GET /v1/models` | the served ids, plus a `capabilities` extension on the list object |
+| `POST /v1/chat/completions` | chat, tools, streaming |
+| `POST /v1/responses` | the Responses API, stored or not (`store: false`) |
+| `GET`/`DELETE /v1/responses/{id}`, `GET /v1/responses/{id}/input_items` | the stored responses |
+| `POST /v1/completions` | legacy raw-prompt completions, no chat template |
+| `POST /v1/embeddings` | pooled embeddings, `float` or `base64` (little-endian `float32`) |
 
 ```bash
 retrograd serve run.toml --model-name tuned
@@ -84,11 +93,32 @@ switch between the two.
 The prompt is rendered and parsed with the code the agentic rollouts use:
 `tools` reach the model through its own chat template when it has a tool
 format (otherwise through the system prompt), and calls come back as
-`tool_calls`. `stream: true` is supported; the answer arrives in one piece once
-generated. `temperature: 0` is greedy. `tool_choice: "none"` leaves the
-catalog out of the prompt. `n > 1`, `logprobs`, penalties, `response_format`
-other than text, `tool_choice: "required"` and `parallel_tool_calls: false`
-beside tools are refused with a 400 naming the field.
+`tool_calls`. `stream: true` streams one chunk per stable delta; a client that
+disconnects frees its slot at the next step. `temperature: 0` is greedy.
+`tool_choice: "none"` leaves the catalog out of the prompt.
+
+Sampling accepts `top_p`, `top_k`, `min_p`, the repeat/frequency/presence
+penalties, `logit_bias`, `seed`, `stop` and `n` (at most 128). `logprobs` and
+`top_logprobs` (at most 20) describe the distribution the token was drawn
+from, after every transformation. `response_format` (`json_object`, or
+`json_schema` within the supported subset - an unsupported keyword is refused
+with its path), `tool_choice: "required"`, a forced function and
+`parallel_tool_calls: false` constrain decoding with a grammar; no call is
+ever removed after the fact. What stays unsupported (audio, non-text
+modalities, Responses `background`, `truncation`, hosted tools, encrypted
+reasoning) is refused with a 400 naming the field.
+
+Responses are stored by default in a bounded in-memory store (1024 responses,
+64 MiB, chains up to 64 deep), so `previous_response_id` continues a
+conversation; an evicted or unknown id answers 404. A stored turn also keeps
+its KV pinned in the prefix cache until the turn that continues it, so that
+turn prefills only what is new - reported as
+`usage.input_tokens_details.cached_tokens` (`prompt_tokens_details` in chat).
+This is a hint, not a guarantee: pins are bounded (a quarter of the slots,
+five minutes) and released first when an admission needs the room.
+`reasoning.effort` maps to a local reasoning budget (`none` 0, `minimal` 256,
+`low` 1024, `medium` 4096, `high` 16384, `xhigh` 65536, `max` unlimited),
+not to a hosted model's effort.
 
 Binding anything but a loopback address requires `--api-key`, which clients
 send as `Authorization: Bearer KEY`.
@@ -98,7 +128,10 @@ weights while the run trains, its final adapter afterwards), `RUN_ID@final`,
 `RUN_ID@best`, `RUN_ID@step-N`, `RUN_ID@latest` and `RUN_ID@base`. A live run
 answers at its next progress callback. Its `[serving]` section sets `enabled`,
 `idle_seconds` (default 300), `device_wait_seconds` (default 0: a load refused
-while a run holds the device), `queue` (8) and `max_body_bytes` (4 MiB).
+while a run holds the device), `queue` (8), `max_body_bytes` (4 MiB),
+`responses_store_dir` (a file store instead of the in-memory one) and
+`responses_store_ttl_seconds` (default 86400). A live run serves chat and
+Responses with a buffered stream, one choice and no logprobs.
 
 ## `inspect`
 
