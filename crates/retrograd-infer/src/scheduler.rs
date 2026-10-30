@@ -23,14 +23,39 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::{Duration, Instant};
 
-use retrograd_core::SamplingParams;
+use retrograd_core::{RolloutAdmission, SamplingParams};
 use retrograd_engine::{StepOutRow, StepOutput, StepRow};
 
 use crate::backend::DecodeBackend;
 use crate::detok::Detokenizer;
 use crate::error::InferError;
 use crate::kv::{KvCacheKey, KvStats, PinId, PrefixTree};
-use crate::request::{Event, FinishReason, Request, TokenEvent};
+use crate::request::{Event, EventStream, FinishReason, Request, TokenEvent};
+
+/// Consecutive pumps without progress after which a synchronous driver gives
+/// up: every admissible request is admitted, refused or retired within a few
+/// iterations, so a long run of empty ones is a stuck queue, not a slow one.
+pub(crate) const MAX_STALLED_PUMPS: usize = 1024;
+
+/// Counts consecutive pumps that made no progress (see [`Scheduler::pump`]).
+#[derive(Default)]
+pub(crate) struct StallGuard(usize);
+
+impl StallGuard {
+    pub(crate) fn observe(&mut self, progressed: bool) -> Result<(), InferError> {
+        if progressed {
+            self.0 = 0;
+            return Ok(());
+        }
+        self.0 += 1;
+        if self.0 > MAX_STALLED_PUMPS {
+            return Err(InferError::Failed(
+                "the scheduler made no progress with requests still queued".into(),
+            ));
+        }
+        Ok(())
+    }
+}
 
 /// How queued requests are admitted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +66,15 @@ pub enum AdmissionMode {
     Lockstep,
     /// A slot freed at step N is refilled at step N+1 from the queue (FIFO).
     Continuous,
+}
+
+impl From<RolloutAdmission> for AdmissionMode {
+    fn from(admission: RolloutAdmission) -> Self {
+        match admission {
+            RolloutAdmission::Lockstep => Self::Lockstep,
+            RolloutAdmission::Continuous => Self::Continuous,
+        }
+    }
 }
 
 /// The scheduler's knobs.
@@ -340,14 +374,12 @@ impl<B: DecodeBackend> Scheduler<B> {
         }
     }
 
-    /// The actor's main loop, on the thread that owns the backend.
-    pub(crate) fn run(
-        &mut self,
-        inbox: Receiver<Envelope>,
-        shutdown: Arc<AtomicBool>,
-    ) -> Result<(), InferError> {
-        // The scheduler owns placement: start from empty slots, so residue
-        // left by earlier batched generation calls cannot eat the budget.
+    /// One-time pool setup: reads the pool geometry and clears every slot,
+    /// so residue left by earlier batched generation calls cannot eat the
+    /// budget. Both the actor loop and the synchronous driver (see
+    /// [`Scheduler::submit`]) call this once before their first step.
+    pub fn initialize(&mut self) -> Result<(), InferError> {
+        // The scheduler owns placement: start from empty slots.
         let memory = self.backend.memory()?;
         if memory.n_slots > i32::MAX as u32 {
             return Err(InferError::Overflow(
@@ -358,6 +390,93 @@ impl<B: DecodeBackend> Scheduler<B> {
         for slot in 0..self.n_slots {
             self.backend.seq_rm(slot as i32, -1, -1)?;
         }
+        Ok(())
+    }
+
+    /// Submits one request without the actor, on the thread that owns the
+    /// backend: the returned stream behaves exactly like the actor's (drop =
+    /// cancellation at the next step). Refused with [`InferError::QueueFull`]
+    /// when the admission queue is full - a capacity condition, not a caller
+    /// error. See [`crate::run_requests`] for the common batch shape.
+    pub fn submit(&mut self, request: Request) -> Result<EventStream, InferError> {
+        request.validate()?;
+        if self.queue.len() >= self.options.queue_capacity {
+            return Err(InferError::QueueFull {
+                capacity: self.options.queue_capacity,
+            });
+        }
+        // A local caller drains the stream while pumping; the bound only has
+        // to cover what one step can produce for this request.
+        let capacity = self.options.event_capacity.max(request.n() + 2);
+        let (events, rx) = mpsc::sync_channel(capacity);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.enqueue(Queued {
+            request,
+            events,
+            cancelled: cancelled.clone(),
+            permit: None,
+        });
+        Ok(EventStream::new(rx, cancelled))
+    }
+
+    /// Requests waiting for admission.
+    pub fn queued_len(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// The admission queue capacity [`Scheduler::submit`] enforces.
+    pub fn queue_capacity(&self) -> usize {
+        self.options.queue_capacity
+    }
+
+    /// Live (admitted, not finished) sequences.
+    pub fn live_len(&self) -> usize {
+        self.live
+            .iter()
+            .flat_map(|group| &group.members)
+            .filter(|member| member.live)
+            .count()
+    }
+
+    /// Whether no request is queued and none is live.
+    pub fn is_idle(&self) -> bool {
+        self.queue.is_empty() && self.live.is_empty()
+    }
+
+    /// Runs one scheduler iteration: remove cancelled sequences, admit,
+    /// compose and execute one step, emit, remove finished sequences. Returns
+    /// whether the iteration made progress - executed a step, admitted,
+    /// refused or retired a request. A failed step fails every live request
+    /// and is returned.
+    pub fn pump(&mut self) -> Result<bool, InferError> {
+        let before = (self.queue.len(), self.live_len());
+        match self.step_once() {
+            Ok(stepped) => Ok(stepped || (self.queue.len(), self.live_len()) != before),
+            Err(error) => {
+                self.fail_all(&error);
+                Err(error)
+            }
+        }
+    }
+
+    /// Pumps until no request is queued or live. Guarded against a stuck
+    /// queue: after 1024 consecutive iterations without progress the
+    /// scheduler reports a failure instead of spinning.
+    pub fn run_until_idle(&mut self) -> Result<(), InferError> {
+        let mut stall = StallGuard::default();
+        while !self.is_idle() {
+            stall.observe(self.pump()?)?;
+        }
+        Ok(())
+    }
+
+    /// The actor's main loop, on the thread that owns the backend.
+    pub(crate) fn run(
+        &mut self,
+        inbox: Receiver<Envelope>,
+        shutdown: Arc<AtomicBool>,
+    ) -> Result<(), InferError> {
+        self.initialize()?;
         let mut draining = false;
         loop {
             // Pull pending envelopes while the admission queue has room: a
@@ -403,22 +522,22 @@ impl<B: DecodeBackend> Scheduler<B> {
                 }
                 continue;
             }
-            if let Err(error) = self.step_once() {
-                self.fail_all(&error);
-            }
+            // A failure has already been reported to every live request.
+            let _ = self.pump();
         }
     }
 
     /// One scheduler iteration: remove cancelled sequences, admit, compose
-    /// and execute one step, emit, remove finished sequences.
-    fn step_once(&mut self) -> Result<(), InferError> {
+    /// and execute one step, emit, remove finished sequences. Returns whether
+    /// a step was executed.
+    fn step_once(&mut self) -> Result<bool, InferError> {
         self.queue
             .retain(|queued| !queued.cancelled.load(AtomicOrdering::SeqCst));
         self.remove_cancelled()?;
         self.admit()?;
         self.advance_phases()?;
         if self.live.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         let (rows, kinds, total_tokens) = Self::compose(
             &self.live,
@@ -429,7 +548,7 @@ impl<B: DecodeBackend> Scheduler<B> {
             &mut self.prefill_turn,
         )?;
         if rows.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         if let Err(error) = self.backend.step(&rows, &mut self.out) {
             // A failed step may have made a prefix of the submitted tokens
@@ -476,7 +595,7 @@ impl<B: DecodeBackend> Scheduler<B> {
         }
         self.live
             .retain(|group| group.members.iter().any(|member| member.live));
-        Ok(())
+        Ok(true)
     }
 
     /// Composes the next step's plan: decode rows first (one token per live

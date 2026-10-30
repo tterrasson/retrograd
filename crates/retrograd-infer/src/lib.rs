@@ -29,6 +29,7 @@ mod fake;
 mod kv;
 mod request;
 mod scheduler;
+mod sync;
 
 pub use actor::{ActorHandle, ActorOptions};
 pub use backend::{DecodeBackend, TrainerBackend};
@@ -38,3 +39,4 @@ pub use fake::{FakeBackend, SharedFake, sampling as fake_sampling};
 pub use kv::{KvCacheKey, KvStats, PinId};
 pub use request::{Event, EventStream, FinishReason, Poll, Request, TokenEvent};
 pub use scheduler::{AdmissionMode, Scheduler, SchedulerOptions};
+pub use sync::{Completion, RequestOutcome, run_requests, run_requests_with};
