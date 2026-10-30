@@ -34,6 +34,27 @@ impl Trainer {
         }
     }
 
+    /// Renders tokens back to their raw piece bytes, with no UTF-8 decoding,
+    /// for a caller that detokenizes incrementally and splits characters
+    /// itself; see [`Engine::detokenize_bytes`](crate::Engine::detokenize_bytes).
+    pub fn detokenize_bytes(&self, tokens: &[i32], unparse_special: bool) -> Result<Vec<u8>> {
+        let size_hint = tokens.len().saturating_mul(16).max(64);
+        // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
+        unsafe {
+            read_bytes_sized(size_hint, |buffer, n_buffer, out| {
+                ffi::retro_trainer_detokenize(
+                    self.raw.as_ptr(),
+                    tokens.as_ptr(),
+                    tokens.len(),
+                    unparse_special,
+                    buffer,
+                    n_buffer,
+                    out,
+                )
+            })
+        }
+    }
+
     /// Tokenizes a complete text, prepending BOS. Compare
     /// [`Trainer::tokenize_fragment`] for a piece meant to be appended to an
     /// existing stream.

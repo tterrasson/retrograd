@@ -219,6 +219,64 @@ impl StepOutput {
         Ok(())
     }
 
+    /// Records a step's outputs into the reused buffers, for a backend
+    /// implemented in Rust (a fake in tests): the FFI entry points fill the
+    /// same buffers through the C ABI instead. `top_ids`/`top_logprobs` are
+    /// the row-major arrays of `rows.len() * stride` entries that
+    /// [`StepOutput::top`] reads back.
+    pub fn fill(
+        &mut self,
+        rows: Vec<StepOutRow>,
+        stride: usize,
+        top_ids: Vec<i32>,
+        top_logprobs: Vec<f32>,
+    ) -> Result<(), EngineError> {
+        let n_rows = rows.len();
+        let needed = n_rows
+            .checked_mul(stride)
+            .ok_or_else(|| EngineError::Overflow("step output shape overflows usize".into()))?;
+        if top_ids.len() != needed || top_logprobs.len() != needed {
+            return Err(EngineError::invalid(
+                "fill top arrays must hold rows.len() * stride entries",
+            ));
+        }
+        // Validate every row before changing the last successful output.
+        for row in &rows {
+            u32::try_from(row.n_top)
+                .map_err(|_| EngineError::Overflow("n_top overflows u32".into()))?;
+            if row.n_top > stride {
+                return Err(EngineError::invalid("n_top exceeds the top-array stride"));
+            }
+        }
+        // Grow-only, like `ensure`: in steady state this reuses the buffers.
+        if self.rows.len() < n_rows {
+            self.rows.resize(n_rows, ffi::RetroStepOutRow::default());
+        }
+        if self.ffi_rows.len() < n_rows {
+            self.ffi_rows.resize(n_rows, ffi::RetroStepRow::default());
+        }
+        if self.top_ids.len() < needed {
+            self.top_ids.resize(needed, 0);
+            self.top_logprobs.resize(needed, 0.0);
+        }
+        self.n_top_stride = stride;
+        for (index, row) in rows.iter().enumerate() {
+            self.rows[index] = ffi::RetroStepOutRow {
+                struct_size: size_of::<ffi::RetroStepOutRow>() as u32,
+                token: row.token,
+                logprob: row.logprob,
+                // Checked for every row before mutating any buffer above.
+                n_top: row.n_top as u32,
+                forced: u8::from(row.forced),
+                sampled: u8::from(row.sampled),
+            };
+        }
+        self.top_ids[..needed].copy_from_slice(&top_ids);
+        self.top_logprobs[..needed].copy_from_slice(&top_logprobs);
+        self.n_rows = n_rows;
+        Ok(())
+    }
+
     /// The output row of step row `index` in the latest successful call.
     /// Panics if `index` is outside that call's rows.
     pub fn row(&self, index: usize) -> StepOutRow {
@@ -397,6 +455,75 @@ mod tests {
         out.ensure(1, 2).unwrap();
         assert_eq!(out.rows.len(), 2);
         assert_eq!(out.n_top_stride, 8);
+    }
+
+    #[test]
+    fn fill_records_outputs_for_a_rust_side_backend() {
+        let mut out = StepOutput::with_capacity(2, 2);
+        let rows = vec![
+            StepOutRow {
+                token: 7,
+                logprob: -0.5,
+                forced: false,
+                sampled: true,
+                n_top: 2,
+            },
+            StepOutRow {
+                token: 8,
+                logprob: -1.0,
+                forced: true,
+                sampled: true,
+                n_top: 1,
+            },
+        ];
+        out.fill(rows, 2, vec![1, 2, 3, 4], vec![-0.1, -0.2, -0.3, -0.4])
+            .unwrap();
+        assert_eq!(out.rows().count(), 2);
+        assert_eq!(out.row(0).token, 7);
+        assert!(!out.row(0).forced);
+        assert!(out.row(1).forced);
+        assert_eq!(out.top(0).collect::<Vec<_>>(), vec![(1, -0.1), (2, -0.2)]);
+        assert_eq!(out.top(1).collect::<Vec<_>>(), vec![(3, -0.3)]);
+        // A second fill of the same shape reuses the buffers.
+        let rows_ptr = out.rows.as_ptr();
+        out.fill(
+            vec![StepOutRow {
+                token: 9,
+                logprob: -2.0,
+                forced: false,
+                sampled: true,
+                n_top: 0,
+            }],
+            2,
+            vec![0, 0],
+            vec![0.0, 0.0],
+        )
+        .unwrap();
+        assert_eq!(out.rows.as_ptr(), rows_ptr);
+        assert_eq!(out.rows().count(), 1);
+        assert_eq!(out.row(0).token, 9);
+        // Mismatched top arrays are refused, and a failed fill exposes nothing.
+        assert!(out.fill(vec![], 2, vec![0], vec![]).is_err());
+        assert_eq!(out.rows().count(), 1);
+    }
+
+    #[test]
+    fn fill_rejects_rows_wider_than_the_stride_without_changing_previous_outputs() {
+        let mut out = StepOutput::with_capacity(1, 0);
+        let row = StepOutRow {
+            token: 7,
+            sampled: true,
+            ..StepOutRow::default()
+        };
+        out.fill(vec![row], 0, vec![], vec![]).unwrap();
+        let invalid = StepOutRow {
+            token: 9,
+            n_top: 2,
+            ..row
+        };
+        assert!(out.fill(vec![invalid], 1, vec![1], vec![-0.1]).is_err());
+        assert_eq!(out.row(0), row);
+        assert_eq!(out.top(0).count(), 0);
     }
 
     #[test]

@@ -569,6 +569,24 @@ unsafe fn read_string_sized_lossy<F>(size_hint: usize, mut call: F) -> Result<St
 where
     F: FnMut(*mut c_char, usize, *mut usize) -> i32,
 {
+    // SAFETY: forwarded to the caller, whose `call` this is.
+    Ok(string_from_runtime_lossy(unsafe {
+        read_bytes_sized(size_hint, &mut call)
+    }?))
+}
+
+/// Like [`read_string_sized_lossy`], but keeps the runtime's bytes as they
+/// are: no UTF-8 decoding. A streaming caller that accumulates token pieces
+/// splits characters itself, and decoding each piece alone would replace a
+/// partial trailing character with U+FFFD.
+///
+/// # Safety
+///
+/// Same obligation as [`read_string_sized_lossy`].
+unsafe fn read_bytes_sized<F>(size_hint: usize, mut call: F) -> Result<Vec<u8>>
+where
+    F: FnMut(*mut c_char, usize, *mut usize) -> i32,
+{
     let capacity = size_hint.max(1);
     let mut needed = 0_usize;
     let mut buffer = Vec::<u8>::with_capacity(capacity);
@@ -581,16 +599,14 @@ where
         }
         // SAFETY: the caller's obligation, and `needed` fits the allocation.
         unsafe { buffer.set_len(needed) };
-        return Ok(string_from_runtime_lossy(buffer));
+        return Ok(buffer);
     }
     if code != -2 {
         return Err(runtime_error());
     }
     // -2 reports the required size in `needed`.
     // SAFETY: forwarded to the caller, whose `call` this is.
-    Ok(string_from_runtime_lossy(unsafe {
-        read_bytes_exact(needed, &mut call)
-    }?))
+    Ok(unsafe { read_bytes_exact(needed, &mut call)? })
 }
 
 /// # Safety
@@ -1044,6 +1060,31 @@ mod tests {
         let message = holed.validate().unwrap_err().to_string();
         assert!(message.contains("sequence 0"), "{message}");
         assert!(message.contains("first hole at 1"), "{message}");
+    }
+
+    #[test]
+    fn raw_detokenization_preserves_partial_utf8_with_and_without_a_retry() {
+        let piece = b"ok\xf0\x9f";
+        for hint in [1, 64] {
+            let mut calls = 0;
+            // SAFETY: the closure initializes every reported byte and its NUL
+            // on success, and only reports the required size on -2.
+            let bytes = unsafe {
+                read_bytes_sized(hint, |buffer, capacity, needed| {
+                    calls += 1;
+                    *needed = piece.len();
+                    if capacity <= piece.len() {
+                        return -2;
+                    }
+                    std::ptr::copy_nonoverlapping(piece.as_ptr(), buffer.cast(), piece.len());
+                    *buffer.add(piece.len()) = 0;
+                    0
+                })
+            }
+            .unwrap();
+            assert_eq!(bytes, piece);
+            assert_eq!(calls, if hint == 1 { 2 } else { 1 });
+        }
     }
 
     #[test]

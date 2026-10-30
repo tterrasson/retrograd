@@ -20,8 +20,8 @@ use retrograd_core::{EngineConfig, Generation, MemoryReport, SamplingParams};
 use retrograd_ffi as ffi;
 
 use crate::{
-    GenerationStats, SampledRow, ffi_out_vec, nul_error, path_to_cstring, read_string_sized_lossy,
-    runtime_error, sampling_params_to_ffi,
+    GenerationStats, SampledRow, ffi_out_vec, nul_error, path_to_cstring, read_bytes_sized,
+    read_string_sized_lossy, runtime_error, sampling_params_to_ffi,
 };
 
 /// Errors of the inference engine. Converted into
@@ -296,6 +296,33 @@ impl Engine {
         // SAFETY: the `Engine` invariant holds and all borrowed arguments live through this synchronous call.
         Ok(unsafe {
             read_string_sized_lossy(size_hint, |buffer, n_buffer, out| {
+                ffi::retro_engine_detokenize(
+                    self.raw.as_ptr(),
+                    tokens.as_ptr(),
+                    tokens.len(),
+                    unparse_special,
+                    buffer,
+                    n_buffer,
+                    out,
+                )
+            })?
+        })
+    }
+
+    /// Renders tokens back to their raw piece bytes, with no UTF-8 decoding:
+    /// a piece may end mid-character, and a streaming caller that
+    /// detokenizes token by token accumulates the bytes and splits characters
+    /// itself - decoding each piece alone would replace the partial trailing
+    /// character with U+FFFD.
+    pub fn detokenize_bytes(
+        &self,
+        tokens: &[i32],
+        unparse_special: bool,
+    ) -> std::result::Result<Vec<u8>, EngineError> {
+        let size_hint = tokens.len().saturating_mul(16).max(64);
+        // SAFETY: the `Engine` invariant holds and all borrowed arguments live through this synchronous call.
+        Ok(unsafe {
+            read_bytes_sized(size_hint, |buffer, n_buffer, out| {
                 ffi::retro_engine_detokenize(
                     self.raw.as_ptr(),
                     tokens.as_ptr(),
