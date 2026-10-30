@@ -1,14 +1,26 @@
 //! A completion as the `chat.completion.chunk` events a streaming client reads.
 //!
-//! The runtime returns a generation whole, so a stream is the whole answer cut
-//! into the events the protocol expects, in the order it expects them: the
-//! role, the text, one event per call - a call may arrive in a single delta -,
-//! the finish reason, the usage when asked for. Until the answer exists the
-//! connection carries keep-alive comments, which is what keeps a proxy from
-//! cutting a request a live run takes an iteration to answer.
+//! Two ways to cut one answer into the events the protocol expects. A buffered
+//! answer - the whole text exists - is sliced by [`chunks`], in the order the
+//! protocol expects: the role, the text, one event per call, the finish
+//! reason, the usage when asked for. A live answer - decoded piece by piece on
+//! the serving session's thread - is cut by [`Chunker`] as the pieces arrive:
+//! one chunk per stable text delta, the arguments of a call as deltas once
+//! the parser recognized it. Until the answer exists the connection carries
+//! keep-alive comments, which is what keeps a proxy from cutting a request a
+//! live run takes an iteration to answer.
 
-use crate::chat::wire::{ChatCompletionChunk, ChunkChoice, Delta, ToolCallDelta};
+use std::sync::Arc;
+
+use retrograd_agent_core::parser::ToolCallParser;
+use retrograd_infer::FinishReason;
+
+use crate::chat::wire::{
+    ChatCompletionChunk, ChunkChoice, Delta, FinishReason as WireFinishReason, FunctionOut,
+    ToolCallDelta, ToolCallOut, Usage,
+};
 use crate::render::Completion;
+use crate::stream::{StreamDelta, StreamParser};
 
 /// What every chunk of one answer repeats.
 #[derive(Clone, Debug)]
@@ -80,12 +92,175 @@ pub fn chunks(
     chunks
 }
 
+/// Cuts a live generation into chunks as it is decoded. The role chunk goes out
+/// as soon as the request is admitted - the first byte a client can measure -
+/// and every later chunk carries one stable delta: a piece of prose, or a piece
+/// of a recognized call's arguments. Nothing already sent is ever revised: the
+/// [`StreamParser`] holds back whatever could still change.
+pub struct Chunker {
+    meta: Meta,
+    parser: Option<StreamParser>,
+    include_usage: bool,
+    prompt_tokens: u64,
+    /// Token events seen, end-of-generation included when one ended it.
+    tokens: u64,
+    /// Whether any call was streamed, which decides the finish reason.
+    saw_call: bool,
+}
+
+impl Chunker {
+    /// `reader` is the tool-call parser the rendering chose, if any.
+    pub fn new(
+        meta: Meta,
+        reader: Option<Arc<dyn ToolCallParser>>,
+        prompt_tokens: usize,
+        include_usage: bool,
+    ) -> Self {
+        Self {
+            meta,
+            parser: reader.map(StreamParser::new),
+            include_usage,
+            // Widening: token counts of one request.
+            prompt_tokens: prompt_tokens as u64,
+            tokens: 0,
+            saw_call: false,
+        }
+    }
+
+    /// The chunk carrying the role, sent once before the first delta.
+    pub fn role(&self) -> ChatCompletionChunk {
+        self.chunk(
+            Delta {
+                role: Some("assistant"),
+                ..Delta::default()
+            },
+            None,
+        )
+    }
+
+    /// One decoded token: its text is fed to the parser and the stable deltas
+    /// come out as chunks. `text` may be empty (a partial UTF-8 sequence or a
+    /// possible stop prefix held back by the detokenizer).
+    pub fn token(&mut self, text: &str) -> Vec<ChatCompletionChunk> {
+        self.tokens += 1;
+        let deltas = match self.parser.as_mut() {
+            Some(parser) => parser.push(text),
+            None => match text.is_empty() {
+                true => Vec::new(),
+                false => vec![StreamDelta::Content(text.to_owned())],
+            },
+        };
+        self.deltas(deltas)
+    }
+
+    /// The completion ended: `tail` is the text the detokenizer held back (it
+    /// turned out not to be a stop), the final full parse flushes whatever the
+    /// partial reads held, and the finish reason and usage close the stream.
+    pub fn end(&mut self, reason: FinishReason, tail: &str) -> Vec<ChatCompletionChunk> {
+        let deltas = match self.parser.as_mut() {
+            Some(parser) => {
+                let mut deltas = parser.push(tail);
+                deltas.extend(parser.finish());
+                deltas
+            }
+            None => match tail.is_empty() {
+                true => Vec::new(),
+                false => vec![StreamDelta::Content(tail.to_owned())],
+            },
+        };
+        let mut chunks = self.deltas(deltas);
+        let finish_reason = match (self.saw_call, reason) {
+            (true, _) => WireFinishReason::ToolCalls,
+            (false, FinishReason::Eog | FinishReason::Stop) => WireFinishReason::Stop,
+            (false, _) => WireFinishReason::Length,
+        };
+        chunks.push(self.chunk(Delta::default(), Some(finish_reason)));
+        if self.include_usage {
+            chunks.push(ChatCompletionChunk {
+                choices: Vec::new(),
+                usage: Some(Some(Usage {
+                    prompt_tokens: self.prompt_tokens,
+                    completion_tokens: self.tokens,
+                    total_tokens: self.prompt_tokens + self.tokens,
+                })),
+                ..self.chunk(Delta::default(), None)
+            });
+        }
+        chunks
+    }
+
+    fn deltas(&mut self, deltas: Vec<StreamDelta>) -> Vec<ChatCompletionChunk> {
+        deltas
+            .into_iter()
+            .map(|delta| match delta {
+                StreamDelta::Content(text) => self.chunk(
+                    Delta {
+                        content: Some(text),
+                        ..Delta::default()
+                    },
+                    None,
+                ),
+                StreamDelta::Call { index, id, name } => {
+                    self.saw_call = true;
+                    self.call_chunk(index, id, name, String::new())
+                }
+                StreamDelta::CallArguments { index, delta } => {
+                    self.saw_call = true;
+                    self.call_chunk(index, String::new(), String::new(), delta)
+                }
+            })
+            .collect()
+    }
+
+    fn call_chunk(
+        &self,
+        index: usize,
+        id: String,
+        name: String,
+        arguments: String,
+    ) -> ChatCompletionChunk {
+        // Bounded by the calls of one turn.
+        let index = u32::try_from(index).unwrap_or(u32::MAX);
+        self.chunk(
+            Delta {
+                tool_calls: vec![ToolCallDelta {
+                    index,
+                    call: ToolCallOut {
+                        id,
+                        kind: "function",
+                        function: FunctionOut { name, arguments },
+                    },
+                }],
+                ..Delta::default()
+            },
+            None,
+        )
+    }
+
+    fn chunk(&self, delta: Delta, finish_reason: Option<WireFinishReason>) -> ChatCompletionChunk {
+        let pending_usage = self.include_usage.then_some(None);
+        ChatCompletionChunk {
+            id: self.meta.id.clone(),
+            object: "chat.completion.chunk",
+            created: self.meta.created,
+            model: self.meta.model.clone(),
+            system_fingerprint: self.meta.system_fingerprint.clone(),
+            choices: vec![ChunkChoice {
+                index: 0,
+                delta,
+                finish_reason,
+            }],
+            usage: pending_usage,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::chat::wire::{FinishReason, FunctionOut, ToolCallOut, Usage};
+    use crate::chat::wire::{FinishReason, ToolCallOut};
 
     fn meta() -> Meta {
         Meta {

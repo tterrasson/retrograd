@@ -239,15 +239,14 @@ impl Session {
         self.submit(spec, None).await.map(|_| ())
     }
 
-    /// Answers one request with the weights `spec` names.
+    /// Answers one request with the weights `spec` names: the request is
+    /// submitted, its event stream drained whole, and the answer read back.
     pub async fn complete(
         &self,
         spec: WeightsSpec,
         request: GenerationRequest,
     ) -> Result<Sampled, OpenAiError> {
-        let job = self.submit(spec, Some(request)).await?.ok_or_else(|| {
-            OpenAiError::internal("the serving thread answered without a request")
-        })?;
+        let job = self.open(spec, request).await?;
         let prompt_tokens = job.prompt_tokens;
         let reader = job.reader;
         let collected = tokio::task::spawn_blocking(move || collect(job.stream))
@@ -260,6 +259,20 @@ impl Session {
             stopped_at_eog: collected.stopped,
             reader,
         })
+    }
+
+    /// Submits one request with the weights `spec` names and hands back its
+    /// live event stream, for a caller that streams the answer while the
+    /// session thread decodes it. Dropping [`ServingJob::stream`] cancels the
+    /// request: the scheduler removes it at its next step and returns its slot.
+    pub async fn open(
+        &self,
+        spec: WeightsSpec,
+        request: GenerationRequest,
+    ) -> Result<ServingJob, OpenAiError> {
+        self.submit(spec, Some(request))
+            .await?
+            .ok_or_else(|| OpenAiError::internal("the serving thread answered without a request"))
     }
 
     /// The weights currently loaded, if any.
@@ -709,5 +722,46 @@ mod tests {
         assert_eq!(sampled.text, "hello");
         assert!(!sampled.stopped_at_eog);
         assert_eq!(sampled.completion_tokens, 5);
+    }
+
+    /// Dropping an open stream - a client that went away - cancels the request:
+    /// the scheduler removes it at its next step and the slot goes back, long
+    /// before the endless answer would have finished.
+    #[tokio::test]
+    async fn dropping_an_open_stream_cancels_the_request_and_returns_its_slot() {
+        let (loader, fake) = FakeLoader::shared_endless("x".repeat(64));
+        let session = Session::new(
+            Arc::new(loader),
+            Arc::new(Unshared),
+            SessionOptions::default(),
+        )
+        .unwrap();
+        let mut endless = request();
+        endless.sampling.max_new_tokens = 60_000;
+        let job = session.open(spec(None), endless).await.unwrap();
+        // Wait until the request is admitted and decoding.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !session.stats().await.is_some_and(|stats| stats.live == 1) {
+            assert!(Instant::now() < deadline, "the request was never admitted");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        drop(job.stream);
+        // The slot is returned at the next step.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while fake.lock().removed.is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "the cancelled request kept its slot"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while session.stats().await.is_some_and(|stats| stats.live != 0) {
+            assert!(
+                Instant::now() < deadline,
+                "the scheduler still counts the request"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 }

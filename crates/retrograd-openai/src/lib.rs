@@ -24,6 +24,7 @@ pub mod error;
 pub mod render;
 pub mod request;
 pub mod session;
+pub mod stream;
 pub mod testing;
 
 use std::sync::Arc;

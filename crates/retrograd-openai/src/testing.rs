@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex};
 
 use retrograd_core::{Result as CoreResult, SamplingParams};
 use retrograd_engine::{EngineMemory, StepOutput, StepRow};
-use retrograd_infer::{AdmissionMode, DecodeBackend, FakeBackend, InferError, SchedulerOptions};
+use retrograd_infer::{
+    AdmissionMode, DecodeBackend, FakeBackend, InferError, SchedulerOptions, SharedFake,
+};
 
 use crate::backend::{Loader, ServeBackend, ServingBackend};
 use crate::error::OpenAiError;
@@ -142,25 +144,44 @@ impl ChatModel for FakeModel {
 }
 
 /// A [`ServeBackend`] over a scripted [`FakeBackend`]: the decode side answers
-/// the scripted reply, the prompt-rendering side is a [`FakeModel`].
+/// the scripted reply, the prompt-rendering side is a [`FakeModel`]. The
+/// backend is shared, so a test can inspect its slot journal.
 pub struct FakeServing {
     model: FakeModel,
-    backend: FakeBackend,
+    backend: SharedFake,
 }
 
 impl FakeServing {
-    fn new(reply: &str) -> Self {
+    fn build(reply: &str, with_eog: bool) -> (Self, SharedFake) {
         let mut script: Vec<i32> = reply.bytes().map(i32::from).collect();
-        script.push(EOG);
+        if with_eog {
+            script.push(EOG);
+        }
         let pieces: Vec<String> = (0..=u8::MAX)
             .map(|byte| char::from(byte).to_string())
             .collect();
         let n_ctx_seq = 1_u32 << 16;
-        Self {
-            model: FakeModel::new(reply),
-            backend: FakeBackend::new(4, n_ctx_seq, u64::from(n_ctx_seq) * 4, VOCAB, EOG, pieces)
+        let backend = SharedFake::new(
+            FakeBackend::new(4, n_ctx_seq, u64::from(n_ctx_seq) * 4, VOCAB, EOG, pieces)
                 .with_script(script),
-        }
+        );
+        (
+            Self {
+                model: FakeModel::new(reply),
+                backend: SharedFake(backend.0.clone()),
+            },
+            backend,
+        )
+    }
+
+    fn new(reply: &str) -> Self {
+        Self::build(reply, true).0
+    }
+
+    /// One whose script carries no end-of-generation token: the answer only
+    /// stops by its budget, the context, or cancellation.
+    fn endless(reply: &str) -> (Self, SharedFake) {
+        Self::build(reply, false)
     }
 }
 
@@ -258,11 +279,27 @@ impl ServeBackend for FakeServing {}
 
 /// Loads a [`FakeServing`] for any spec, and remembers what it was asked to
 /// load.
-#[derive(Clone)]
 pub struct FakeLoader {
     reply: String,
     loads: Arc<AtomicUsize>,
     specs: Arc<Mutex<Vec<WeightsSpec>>>,
+    /// A backend built up front and reused by every load, so a test can inspect
+    /// its slot journal across reloads.
+    shared: Option<SharedFake>,
+}
+
+impl Clone for FakeLoader {
+    fn clone(&self) -> Self {
+        Self {
+            reply: self.reply.clone(),
+            loads: self.loads.clone(),
+            specs: self.specs.clone(),
+            shared: self
+                .shared
+                .as_ref()
+                .map(|shared| SharedFake(shared.0.clone())),
+        }
+    }
 }
 
 impl FakeLoader {
@@ -271,7 +308,22 @@ impl FakeLoader {
             reply: reply.into(),
             loads: Arc::default(),
             specs: Arc::default(),
+            shared: None,
         }
+    }
+
+    /// A loader whose answer never ends on its own, returning the shared
+    /// backend whose journal says which slots were returned.
+    pub fn shared_endless(reply: impl Into<String>) -> (Self, SharedFake) {
+        let reply = reply.into();
+        let (serving, shared) = FakeServing::endless(&reply);
+        let loader = Self {
+            reply,
+            loads: Arc::default(),
+            specs: Arc::default(),
+            shared: Some(SharedFake(serving.backend.0.clone())),
+        };
+        (loader, shared)
     }
 
     pub fn loads(&self) -> usize {
@@ -301,8 +353,15 @@ impl Loader for FakeLoader {
             .lock()
             .expect("fake loader lock")
             .push(spec.clone());
+        let backend: Box<dyn ServeBackend> = match &self.shared {
+            Some(shared) => Box::new(FakeServing {
+                model: FakeModel::new(&self.reply),
+                backend: SharedFake(shared.0.clone()),
+            }),
+            None => Box::new(FakeServing::new(&self.reply)),
+        };
         Ok(ServingBackend {
-            backend: Box::new(FakeServing::new(&self.reply)),
+            backend,
             scheduler: SchedulerOptions {
                 mode: admission,
                 queue_capacity: queue.max(1),

@@ -136,6 +136,9 @@ pub struct AssistantMessage {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ToolCallOut {
+    /// Empty on a streamed arguments-only delta, where the header went out
+    /// with the call's first chunk; omitted then.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub id: String,
     #[serde(rename = "type")]
     pub kind: &'static str,
@@ -144,8 +147,11 @@ pub struct ToolCallOut {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct FunctionOut {
+    /// Empty on a streamed arguments-only delta; omitted then.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
-    /// Always a string: the JSON of the arguments, as the contract has it.
+    /// Always a string: the JSON of the arguments, as the contract has it. On
+    /// a streamed delta, the piece that just arrived.
     pub arguments: String,
 }
 

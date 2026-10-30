@@ -28,14 +28,16 @@ fn spec(adapter: Option<&str>) -> WeightsSpec {
     }
 }
 
-fn router_with(reply: &str) -> (Router, FakeLoader) {
+fn router_with(reply: &str) -> (Router, FakeLoader, Arc<Session>) {
     let loader = FakeLoader::new(reply);
-    let session = Session::new(
-        Arc::new(loader.clone()),
-        Arc::new(Unshared),
-        SessionOptions::default(),
-    )
-    .expect("session");
+    let session = Arc::new(
+        Session::new(
+            Arc::new(loader.clone()),
+            Arc::new(Unshared),
+            SessionOptions::default(),
+        )
+        .expect("session"),
+    );
     let source = SingleModel {
         name: "tuned".into(),
         spec: spec(Some("tuned.gguf")),
@@ -46,12 +48,12 @@ fn router_with(reply: &str) -> (Router, FakeLoader) {
         "/v1",
         retrograd_openai::router(Endpoint {
             source: Arc::new(source),
-            session: Arc::new(session),
+            session: session.clone(),
             timeout: Duration::from_secs(30),
             enabled: true,
         }),
     );
-    (router, loader)
+    (router, loader, session)
 }
 
 async fn send(router: &Router, request: Request<Body>) -> (StatusCode, http::HeaderMap, Vec<u8>) {
@@ -137,7 +139,7 @@ fn open_webui() -> Value {
 
 #[tokio::test]
 async fn models_are_listed_and_looked_up_in_the_openai_shape() {
-    let (router, _) = router_with("hi");
+    let (router, _, _) = router_with("hi");
     let (status, body) = get(&router, "/v1/models").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["object"], "list");
@@ -163,7 +165,7 @@ async fn models_are_listed_and_looked_up_in_the_openai_shape() {
 
 #[tokio::test]
 async fn a_python_sdk_request_gets_a_chat_completion() {
-    let (router, loader) = router_with("Hello!");
+    let (router, loader, _) = router_with("Hello!");
     let (status, _, body) = post(&router, python_sdk()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["object"], "chat.completion");
@@ -183,7 +185,7 @@ async fn a_python_sdk_request_gets_a_chat_completion() {
 
 #[tokio::test]
 async fn an_lm_eval_request_is_greedy_and_stops_where_it_was_told() {
-    let (router, _) = router_with("4\nQuestion: next");
+    let (router, _, _) = router_with("4\nQuestion: next");
     let (status, _, body) = post(&router, lm_eval()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["choices"][0]["message"]["content"], "4\n");
@@ -192,7 +194,7 @@ async fn an_lm_eval_request_is_greedy_and_stops_where_it_was_told() {
 
 #[tokio::test]
 async fn the_base_is_served_under_its_own_id() {
-    let (router, loader) = router_with("plain");
+    let (router, loader, _) = router_with("plain");
     let mut request = python_sdk();
     request["model"] = json!("base");
     let (status, _, body) = post(&router, request).await;
@@ -201,9 +203,12 @@ async fn the_base_is_served_under_its_own_id() {
     assert_eq!(loader.specs(), [spec(None)]);
 }
 
+/// A streamed answer is cut live, one chunk per decoded piece: the role
+/// first, then a content chunk per token, the finish reason, and the usage
+/// when asked for.
 #[tokio::test]
-async fn an_open_webui_stream_is_role_content_finish_usage_done() {
-    let (router, _) = router_with("streamed");
+async fn an_open_webui_stream_is_role_content_deltas_finish_usage_done() {
+    let (router, _, _) = router_with("streamed");
     let (status, headers, body) = send(
         &router,
         Request::post("/v1/chat/completions")
@@ -230,9 +235,23 @@ async fn an_open_webui_stream_is_role_content_finish_usage_done() {
         .map(|event| serde_json::from_str::<Value>(event).unwrap())
         .collect::<Vec<_>>();
     assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
-    assert_eq!(chunks[1]["choices"][0]["delta"]["content"], "streamed");
-    assert_eq!(chunks[2]["choices"][0]["finish_reason"], "stop");
-    assert!(chunks[3]["usage"]["total_tokens"].as_u64().unwrap() > 0);
+    // One content chunk per decoded piece, not the whole answer in one.
+    let content: String = chunks
+        .iter()
+        .filter_map(|chunk| chunk["choices"][0]["delta"]["content"].as_str())
+        .collect();
+    assert_eq!(content, "streamed");
+    assert!(
+        chunks.len() > 3,
+        "the answer arrived in more than one chunk: {text}"
+    );
+    let finish = chunks
+        .iter()
+        .find(|chunk| chunk["choices"][0]["finish_reason"].is_string())
+        .expect("a finish chunk");
+    assert_eq!(finish["choices"][0]["finish_reason"], "stop");
+    let usage = chunks.last().expect("a usage chunk");
+    assert!(usage["usage"]["total_tokens"].as_u64().unwrap() > 0);
     let ids = chunks
         .iter()
         .map(|chunk| chunk["id"].as_str().unwrap().to_owned())
@@ -240,9 +259,202 @@ async fn an_open_webui_stream_is_role_content_finish_usage_done() {
     assert_eq!(ids.len(), 1, "one id for every chunk of one answer");
 }
 
+/// A tool call is streamed as a header then argument deltas, once the parser
+/// recognized the call - and the concatenated deltas are the whole arguments.
+#[tokio::test]
+async fn a_tool_call_is_streamed_as_header_then_argument_deltas() {
+    let arguments = r#"{"name":"move","arguments":{"direction":"left"}}"#;
+    let reply = format!("<tool_call>{arguments}</tool_call>");
+    let (router, _, _) = router_with(&reply);
+    let mut request = open_webui();
+    request["tools"] = json!([{"type": "function", "function": {"name": "move"}}]);
+    let (status, _, body) = send(
+        &router,
+        Request::post("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(request.to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(body).unwrap();
+    let events = text
+        .split("\n\n")
+        .filter_map(|event| event.strip_prefix("data: "))
+        .collect::<Vec<_>>();
+    assert_eq!(events.last(), Some(&"[DONE]"), "{text}");
+    let chunks = events[..events.len() - 1]
+        .iter()
+        .map(|event| serde_json::from_str::<Value>(event).unwrap())
+        .collect::<Vec<_>>();
+    let calls: Vec<&Value> = chunks
+        .iter()
+        .flat_map(|chunk| {
+            chunk["choices"][0]["delta"]["tool_calls"]
+                .as_array()
+                .into_iter()
+                .flatten()
+        })
+        .collect();
+    assert!(!calls.is_empty(), "no tool_calls delta: {text}");
+    let header = calls
+        .iter()
+        .find(|call| call["function"]["name"].as_str().is_some())
+        .expect("a header delta with the name");
+    assert_eq!(header["function"]["name"], "move");
+    assert_eq!(header["index"], 0);
+    let streamed_arguments: String = calls
+        .iter()
+        .filter_map(|call| call["function"]["arguments"].as_str())
+        .collect();
+    assert_eq!(
+        serde_json::from_str::<Value>(&streamed_arguments).unwrap(),
+        json!({"direction": "left"})
+    );
+    assert_eq!(header["id"], "call_0");
+    let finish = chunks
+        .iter()
+        .find(|chunk| chunk["choices"][0]["finish_reason"].is_string())
+        .expect("a finish chunk");
+    assert_eq!(finish["choices"][0]["finish_reason"], "tool_calls");
+}
+
+/// A client that disconnects mid-stream cancels the request in the session:
+/// its slot is freed instead of decoding the whole answer.
+#[tokio::test]
+async fn a_disconnected_stream_frees_the_slot() {
+    let reply = "x".repeat(60_000);
+    // An endless answer needs no end-of-generation token: the request would
+    // only stop at its budget, so freeing the slot early is what is tested.
+    let (loader, fake) = retrograd_openai::testing::FakeLoader::shared_endless(&reply);
+    let session = Arc::new(
+        Session::new(
+            Arc::new(loader),
+            Arc::new(Unshared),
+            SessionOptions::default(),
+        )
+        .expect("session"),
+    );
+    let source = SingleModel {
+        name: "tuned".into(),
+        spec: spec(None),
+        base: None,
+        created: 1,
+    };
+    let router = Router::new().nest(
+        "/v1",
+        retrograd_openai::router(Endpoint {
+            source: Arc::new(source),
+            session: session.clone(),
+            timeout: Duration::from_secs(30),
+            enabled: true,
+        }),
+    );
+    let mut request = open_webui();
+    request["model"] = json!("tuned");
+    request["max_tokens"] = json!(60_000);
+    let response = router
+        .clone()
+        .oneshot(
+            Request::post("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .expect("a response");
+    assert_eq!(response.status(), StatusCode::OK);
+    // Read the first event - the role chunk - then go away.
+    let mut body = response.into_body();
+    let first = http_body_util::BodyExt::frame(&mut body)
+        .await
+        .expect("a first frame")
+        .expect("a data frame");
+    let first = String::from_utf8(first.into_data().unwrap().to_vec()).unwrap();
+    assert!(first.contains("\"role\":\"assistant\""), "{first}");
+    drop(body);
+    // The slot is returned at the scheduler's next step.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while fake.lock().removed.is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the disconnected request kept its slot"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// A deadline closes the HTTP stream even if the backend is still blocked
+/// producing its next token; waiting for the forwarder would hang the body.
+#[tokio::test]
+async fn a_stream_timeout_does_not_wait_for_a_blocked_backend() {
+    let (loader, fake) = FakeLoader::shared_endless("x".repeat(64));
+    let session = Arc::new(
+        Session::new(
+            Arc::new(loader),
+            Arc::new(Unshared),
+            SessionOptions::default(),
+        )
+        .unwrap(),
+    );
+    let router = retrograd_openai::router(Endpoint {
+        source: Arc::new(SingleModel {
+            name: "tuned".into(),
+            spec: spec(None),
+            base: None,
+            created: 1,
+        }),
+        session,
+        timeout: Duration::from_millis(200),
+        enabled: true,
+    });
+    let mut request = open_webui();
+    request["max_tokens"] = json!(60_000);
+    let response = router
+        .oneshot(
+            Request::post("/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut body = response.into_body();
+    let first = body.frame().await.unwrap().unwrap();
+    assert!(
+        String::from_utf8(first.into_data().unwrap().to_vec())
+            .unwrap()
+            .contains("\"role\":\"assistant\"")
+    );
+
+    // Hold the fake backend on another thread while the HTTP deadline runs.
+    let (locked, ready) = tokio::sync::oneshot::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    let blocker = std::thread::spawn(move || {
+        let _guard = fake.lock();
+        let _ = locked.send(());
+        let _ = wait.recv();
+    });
+    ready.await.unwrap();
+    let collected = tokio::time::timeout(Duration::from_secs(2), body.collect()).await;
+    // Release the backend before asserting, including on a regression.
+    release.send(()).unwrap();
+    blocker.join().unwrap();
+    let text = String::from_utf8(
+        collected
+            .expect("the response deadline closed the body")
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(text.contains("timeout"), "{text}");
+    assert!(text.contains("data: [DONE]"), "{text}");
+}
+
 #[tokio::test]
 async fn a_failure_after_the_stream_opened_is_an_error_event() {
-    let (router, _) = router_with("x");
+    let (router, _, _) = router_with("x");
     let mut request = open_webui();
     // Resolved before the stream opens, validated before the stream opens:
     // only something the model itself refuses is left for an in-stream error.
@@ -268,7 +480,7 @@ async fn a_failure_after_the_stream_opened_is_an_error_event() {
 
 #[tokio::test]
 async fn refusals_are_openai_envelopes_with_the_field_named() {
-    let (router, _) = router_with("x");
+    let (router, _, _) = router_with("x");
     let mut request = python_sdk();
     request["logprobs"] = json!(true);
     let (status, _, body) = post(&router, request).await;
@@ -295,7 +507,7 @@ async fn refusals_are_openai_envelopes_with_the_field_named() {
 
 #[tokio::test]
 async fn an_unreadable_call_is_reported_beside_a_successful_answer() {
-    let (router, _) = router_with("<tool_call>{broken</tool_call>");
+    let (router, _, _) = router_with("<tool_call>{broken</tool_call>");
     let mut request = python_sdk();
     request["tools"] = json!([{"type": "function", "function": {"name": "move"}}]);
     let (status, headers, body) = post(&router, request).await;
