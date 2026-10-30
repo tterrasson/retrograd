@@ -1830,6 +1830,7 @@ dependencies = [
  "retrograd-dataset",
  "retrograd-engine",
  "retrograd-ffi",
+ "retrograd-infer",
  "retrograd-memory",
  "retrograd-metrics",
  "retrograd-openai",
