@@ -122,6 +122,11 @@ pub struct ObservedRollout {
     pub reward: Option<f32>,
     pub reward_raw: Option<f32>,
     pub judge_term: Option<f32>,
+    /// The judge's raw verdict in [0, 1], before its weight: `judge_term`
+    /// divided by the weight that produced it is this value, but the weight
+    /// may be zero, and a zero term must not hide that a verdict existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judge_verdict: Option<f32>,
     pub advantage: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub advantage_min: Option<f32>,
@@ -142,6 +147,10 @@ pub struct ObservedRollout {
 pub enum RolloutContent {
     Completion {
         completion: String,
+        /// The judge's own words about this completion, when it produced any
+        /// (a generating strategy; a scoring one has none to give).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        judge_explanation: Option<String>,
     },
     Conversation {
         /// After the scenario prefix when `prefix` is true, whole otherwise.

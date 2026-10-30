@@ -24,7 +24,7 @@ use super::observe::{GrpoSlots, grpo_rollouts, observed_prompts, outcome};
 use super::rollout::prompts::Prompt;
 use super::rollout::{
     EpochBatch, EpochState, GroupJudge, GrpoObjective, GrpoStepParams, JudgeGroup, JudgeTally,
-    RewardRow, Rollout, RowLayout, SchedulerHorizon, TokenStats, WeightedStepScratch,
+    JudgeVerdict, RewardRow, Rollout, RowLayout, SchedulerHorizon, TokenStats, WeightedStepScratch,
     check_policy_divergence, is_truncated, mean_std, read_prompts, reward_process, run_grpo_epoch,
     sample_rollout_groups_continuous, score, score_rows, score_train_mask_group, tokenize_prompts,
 };

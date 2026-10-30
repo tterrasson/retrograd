@@ -209,6 +209,10 @@ Self-judging risks reward hacking: the judge and the policy share weights. Keep
 `base`) over `policy`, and watch `judge/position_disagreement`. See
 `examples/smoke_tiny_grpo_self_judge.toml` for a runnable CPU example.
 
+The verdict itself (`judge_verdict`) and, for a generating strategy, the
+judge's explanation (`judge_explanation`) are recorded per trajectory in
+`observe.jsonl` — see [Observing rollouts](./observe).
+
 The judge only affects training; held-out evaluation uses the reward program.
 
 ## Speed and memory

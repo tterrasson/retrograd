@@ -44,6 +44,21 @@ pub struct JudgeGroup<'a> {
     pub completions: &'a [String],
 }
 
+/// One rollout's judge output, when the judge scored its group: the raw
+/// verdict in [0, 1] and, for a generating strategy, the judge's own words.
+/// Carried whole - not folded into `judge_term` - because a zero weight must
+/// not hide that a verdict existed, and the explanation is what a reader of
+/// `observe.jsonl` needs to see why the verdict is what it is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JudgeVerdict {
+    pub value: f32,
+    pub explanation: Option<String>,
+}
+
+/// The metadata key under which the scoring layer writes the judge's
+/// explanation on a trajectory (same key the agentic loop reads back).
+pub(crate) const JUDGE_EXPLANATION: &str = "judge_explanation";
+
 /// A judge, its transport, and the policy for a group it could not score.
 ///
 /// The transport is either the HTTP backend behind `[grpo.judge]`'s
@@ -166,12 +181,14 @@ impl GroupJudge {
 
     /// Scores every group, in one request each when the strategy is listwise.
     ///
-    /// Returns one entry per completion, flattened in group order: `Some(score)`
-    /// in [0, 1], or `None` for every member of a group the judge failed on and
-    /// the policy dropped. What was scored and what was lost is accumulated into
-    /// `tally`, which is what carries both the failure threshold and the metrics:
-    /// an update judges one batch per sampling wave, and neither a threshold
-    /// nor a fraction means anything measured on one wave of several.
+    /// Returns one entry per completion, flattened in group order:
+    /// `Some(JudgeVerdict)` with the raw verdict in [0, 1] and the judge's
+    /// explanation when it gave one, or `None` for every member of a group the
+    /// judge failed on and the policy dropped. What was scored and what was
+    /// lost is accumulated into `tally`, which is what carries both the
+    /// failure threshold and the metrics: an update judges one batch per
+    /// sampling wave, and neither a threshold nor a fraction means anything
+    /// measured on one wave of several.
     ///
     /// `trainer` is the model the local transport serves the requests with; the
     /// HTTP backend ignores it.
@@ -180,7 +197,7 @@ impl GroupJudge {
         trainer: &mut Trainer,
         groups: &[JudgeGroup<'_>],
         tally: &mut JudgeTally,
-    ) -> Result<Vec<Option<f32>>> {
+    ) -> Result<Vec<Option<JudgeVerdict>>> {
         let mut trajectory_groups = groups
             .iter()
             .map(trajectory_group)
@@ -212,12 +229,31 @@ impl GroupJudge {
                 local.score_groups(trainer, &mut trajectory_groups, failure, 1.0, false)?
             }
         };
-        let scores = trajectory_groups
+        // The scoring layer wrote the verdict into `reward` and the
+        // explanation into the trajectory's metadata; read both back before
+        // the trajectory groups are dropped.
+        let verdicts = trajectory_groups
             .iter()
-            .flat_map(|group| group.trajectories.iter().map(|member| member.reward))
+            .flat_map(|group| {
+                group.trajectories.iter().map(|member| {
+                    member.reward.map(|value| JudgeVerdict {
+                        value,
+                        explanation: member
+                            .metadata
+                            .get(JUDGE_EXPLANATION)
+                            .and_then(|entry| entry.as_str())
+                            .map(str::to_string),
+                    })
+                })
+            })
             .collect::<Vec<_>>();
-        tally.merge(&metrics, scores.iter().filter_map(|score| *score));
-        Ok(scores)
+        tally.merge(
+            &metrics,
+            verdicts
+                .iter()
+                .filter_map(|verdict| verdict.as_ref().map(|verdict| verdict.value)),
+        );
+        Ok(verdicts)
     }
 
     /// Refreshes the local judge's frozen snapshot at an update boundary, when

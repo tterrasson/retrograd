@@ -9,6 +9,7 @@ use retrograd_observe::{
     ObservedPrompt, ObservedRollout, OutcomeEntry, RolloutContent, SkipReason,
 };
 
+use super::rollout::JudgeVerdict;
 use super::rollout::is_truncated;
 use super::rollout::prompts::Prompt;
 
@@ -45,6 +46,8 @@ pub(crate) struct GrpoSlots<'a> {
     /// Before it.
     pub raw_rewards: &'a [f32],
     pub judge_terms: &'a [f32],
+    /// The raw verdicts (and explanations) behind the terms, same order.
+    pub judge_verdicts: &'a [Option<JudgeVerdict>],
     pub judged: &'a [bool],
     pub advantages: &'a [f32],
     /// The effective mask the epochs use.
@@ -82,6 +85,9 @@ pub(crate) fn grpo_rollouts(slots: GrpoSlots<'_>) -> Vec<ObservedRollout> {
                 reward: Some(slots.rewards[index]),
                 reward_raw: Some(slots.raw_rewards[index]),
                 judge_term: Some(slots.judge_terms[index]),
+                judge_verdict: slots.judge_verdicts[index]
+                    .as_ref()
+                    .map(|verdict| verdict.value),
                 advantage: Some(slots.advantages[index]),
                 advantage_min: None,
                 advantage_max: None,
@@ -92,7 +98,12 @@ pub(crate) fn grpo_rollouts(slots: GrpoSlots<'_>) -> Vec<ObservedRollout> {
                     slots.mask_truncated && truncated,
                     slots.judged[index],
                 ),
-                content: RolloutContent::Completion { completion },
+                content: RolloutContent::Completion {
+                    completion,
+                    judge_explanation: slots.judge_verdicts[index]
+                        .as_ref()
+                        .and_then(|verdict| verdict.explanation.clone()),
+                },
             }
         })
         .collect()
@@ -143,13 +154,17 @@ pub(crate) fn ppo_rollouts(slots: PpoSlots<'_>) -> Vec<ObservedRollout> {
                 reward: Some(slots.rewards[index]),
                 reward_raw: Some(slots.rewards[index]),
                 judge_term: None,
+                judge_verdict: None,
                 advantage: (!tokens.is_empty()).then(|| (sum / tokens.len() as f64) as f32),
                 advantage_min: spread.then_some(low),
                 advantage_max: spread.then_some(high),
                 eligible: Some(true),
                 trained: None,
                 skip_reason: None,
-                content: RolloutContent::Completion { completion },
+                content: RolloutContent::Completion {
+                    completion,
+                    judge_explanation: None,
+                },
             }
         })
         .collect()
@@ -186,6 +201,15 @@ mod tests {
             rewards: &[0.5, 1.0, 0.0, 0.0],
             raw_rewards: &[1.0, 1.0, 0.0, 0.0],
             judge_terms: &[0.0, 0.0, 0.0, 0.0],
+            judge_verdicts: &[
+                Some(JudgeVerdict {
+                    value: 0.8,
+                    explanation: Some("clear".into()),
+                }),
+                None,
+                None,
+                None,
+            ],
             judged: &[true, true, false, false],
             advantages: &[0.0, 0.0, 0.0, 0.0],
             live: &[false, false, false, false],
@@ -216,6 +240,19 @@ mod tests {
         assert_eq!(rollouts[3].prompt, "p:9");
         assert_eq!(rollouts[3].seed, 13);
         assert_eq!(rollouts[3].update, 3);
+        // The verdict and the explanation ride with the rollout.
+        assert_eq!(rollouts[0].judge_verdict, Some(0.8));
+        assert_eq!(rollouts[1].judge_verdict, None);
+        match &rollouts[0].content {
+            RolloutContent::Completion {
+                completion,
+                judge_explanation,
+            } => {
+                assert_eq!(completion, "a");
+                assert_eq!(judge_explanation.as_deref(), Some("clear"));
+            }
+            other => panic!("expected a completion, got {other:?}"),
+        }
     }
 
     #[test]
@@ -232,6 +269,10 @@ mod tests {
             rewards: &[1.0],
             raw_rewards: &[1.0],
             judge_terms: &[0.25],
+            judge_verdicts: &[Some(JudgeVerdict {
+                value: 0.5,
+                explanation: None,
+            })],
             judged: &[true],
             advantages: &[0.5],
             live: &[true],
@@ -243,6 +284,7 @@ mod tests {
         // Truncated but not masked: it trains.
         assert!(rollout.truncated);
         assert_eq!(rollout.judge_term, Some(0.25));
+        assert_eq!(rollout.judge_verdict, Some(0.5));
     }
 
     #[test]

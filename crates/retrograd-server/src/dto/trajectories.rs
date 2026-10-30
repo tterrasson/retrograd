@@ -398,7 +398,10 @@ impl From<retrograd_observe::reader::RolloutRecord> for MemberDetail {
 
         let summary = MemberSummary::from(record.entry);
         match record.text {
-            RolloutText::Completion(completion) => Self {
+            // The judge's explanation of a single-turn completion stays in
+            // the observe record (and is cut there like every text); the API
+            // surface for it is the agentic `conversation.judge_explanation`.
+            RolloutText::Completion { completion, .. } => Self {
                 summary,
                 completion: Some(completion),
                 conversation: None,

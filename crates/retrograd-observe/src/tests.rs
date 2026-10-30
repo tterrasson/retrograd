@@ -56,6 +56,7 @@ fn rollout(update: u32, member: usize, prompt: &str) -> ObservedRollout {
         reward: Some(1.0),
         reward_raw: Some(1.0),
         judge_term: Some(0.0),
+        judge_verdict: None,
         advantage: Some(0.5),
         advantage_min: None,
         advantage_max: None,
@@ -64,6 +65,7 @@ fn rollout(update: u32, member: usize, prompt: &str) -> ObservedRollout {
         skip_reason: None,
         content: RolloutContent::Completion {
             completion: "answer".into(),
+            judge_explanation: None,
         },
     }
 }
@@ -191,7 +193,13 @@ fn records_are_complete_ordered_and_read_back() {
     let trained: Vec<Option<bool>> = groups[0].members.iter().map(|m| m.trained).collect();
     assert_eq!(trained, [Some(true), None]);
     let texts = index.rollouts(2, Some(0), None).unwrap();
-    assert_eq!(texts[0].text, RolloutText::Completion("answer".into()));
+    assert_eq!(
+        texts[0].text,
+        RolloutText::Completion {
+            completion: "answer".into(),
+            judge_explanation: None,
+        }
+    );
     assert_eq!(
         index.prompt(0, "p:0").unwrap().unwrap().messages[0].content,
         "question"

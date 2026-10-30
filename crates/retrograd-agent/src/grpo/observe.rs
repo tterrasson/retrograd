@@ -139,6 +139,9 @@ pub(super) fn draft(
         reward: None,
         reward_raw: trajectory.reward.map(|_| trajectory.total_reward()),
         judge_term: None,
+        // Filled by `judged` for the groups the judge scored: there the
+        // trajectory's reward *is* the verdict.
+        judge_verdict: None,
         advantage: None,
         advantage_min: None,
         advantage_max: None,
@@ -210,6 +213,9 @@ impl<'a> UpdateExport<'a> {
                     continue;
                 };
                 draft.reward_raw = trajectory.reward.map(|_| trajectory.total_reward());
+                // These groups went to the judge, so the reward written on
+                // the trajectory is its verdict.
+                draft.judge_verdict = trajectory.reward;
                 if let RolloutContent::Conversation {
                     terminal_reward_raw,
                     judge_explanation: explanation,
@@ -578,5 +584,8 @@ mod tests {
         assert_eq!(judge_explanation.as_deref(), Some("fine"));
         assert_eq!(*terminal_reward_raw, Some(0.75));
         assert!(!metadata.contains_key(JUDGE_EXPLANATION));
+        // The verdict itself is recorded on the rollout too.
+        assert_eq!(batch.rollouts[0].judge_verdict, None);
+        assert_eq!(batch.rollouts[1].judge_verdict, Some(0.75));
     }
 }

@@ -113,6 +113,7 @@ fn rollouts(update: u32, groups: usize) -> ObserveBatch {
                 reward: Some(member as f32),
                 reward_raw: Some(member as f32),
                 judge_term: None,
+                judge_verdict: None,
                 advantage: Some(if member == 0 { -1.0 } else { 1.0 }),
                 advantage_min: None,
                 advantage_max: None,

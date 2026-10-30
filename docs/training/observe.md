@@ -77,11 +77,18 @@ identifiers. Updates are numbered from 1.
 A few fields worth knowing:
 
 - `reward` is the value used for training. For GRPO, `reward_raw` is the value
-  before `overlong_penalty` and `judge_term` the judge's share.
+  before `overlong_penalty` and `judge_term` the judge's share. `judge_verdict`
+  is the judge's raw verdict in [0, 1], before its weight — `judge_term` is
+  `judge_verdict × judge_weight`, and a zero weight still leaves the verdict
+  visible. For agentic runs, where the judge's verdict *is* the reward,
+  `judge_verdict` repeats it.
 - `skip_reason` is one of `truncated`, `zero_signal`, `judge_dropped`,
   `unscored` or `update_skipped`.
 - `trained` is `true` only once an `outcome` record confirms it, `false` for a
   member that was excluded, and `null` if the run stopped before confirming.
-- Agentic rollouts also carry `step_rewards`, `terminal_reward_raw` and
-  `judge_explanation`. Trajectories that crashed are not recorded; they are
-  counted in the `agent/*` metrics.
+- `judge_explanation` carries the judge's own words about a rollout when it
+  produced any: on `conversation` records (agentic runs) and on `completion`
+  records alike (single-turn GRPO with a generating strategy; the
+  `pointwise_logprob` strategy scores without generating and has none to
+  give). Trajectories that crashed are not recorded; they are counted in the
+  `agent/*` metrics.

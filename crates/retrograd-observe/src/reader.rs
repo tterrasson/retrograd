@@ -114,6 +114,8 @@ pub struct MemberEntry {
     pub reward: Option<f32>,
     pub reward_raw: Option<f32>,
     pub judge_term: Option<f32>,
+    /// The judge's raw verdict in [0, 1], when the group was judged.
+    pub judge_verdict: Option<f32>,
     pub advantage: Option<f32>,
     pub advantage_min: Option<f32>,
     pub advantage_max: Option<f32>,
@@ -181,7 +183,11 @@ pub struct StepReward {
 /// What a rollout said.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RolloutText {
-    Completion(String),
+    Completion {
+        completion: String,
+        /// The judge's explanation of this completion, when it gave one.
+        judge_explanation: Option<String>,
+    },
     Conversation {
         /// After the scenario prefix when `prefix` is true.
         messages: Vec<Message>,
@@ -249,6 +255,8 @@ struct IndexLine {
     reward_raw: Option<f32>,
     #[serde(default)]
     judge_term: Option<f32>,
+    #[serde(default)]
+    judge_verdict: Option<f32>,
     #[serde(default)]
     advantage: Option<f32>,
     #[serde(default)]
@@ -538,6 +546,7 @@ impl ObserveIndex {
                     reward: record.reward,
                     reward_raw: record.reward_raw,
                     judge_term: record.judge_term,
+                    judge_verdict: record.judge_verdict,
                     advantage: record.advantage,
                     advantage_min: record.advantage_min,
                     advantage_max: record.advantage_max,
@@ -694,7 +703,10 @@ impl ObserveIndex {
             }
             let full: RolloutLine = self.read(&mut file, *line)?;
             let text = match (full.completion, full.messages) {
-                (Some(completion), _) => RolloutText::Completion(completion),
+                (Some(completion), _) => RolloutText::Completion {
+                    completion,
+                    judge_explanation: full.judge_explanation,
+                },
                 (None, messages) => RolloutText::Conversation {
                     messages: messages.unwrap_or_default(),
                     prefix: full.prefix,
@@ -913,7 +925,44 @@ mod tests {
         assert_eq!(prompt.messages[0].content, "q");
         let rollouts = index.rollouts(1, Some(0), Some(1)).expect("read");
         assert_eq!(rollouts.len(), 1);
-        assert_eq!(rollouts[0].text, RolloutText::Completion("answer 1".into()));
+        assert_eq!(
+            rollouts[0].text,
+            RolloutText::Completion {
+                completion: "answer 1".into(),
+                judge_explanation: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_completion_carries_the_verdict_and_the_judge_explanation() {
+        let mut log = Log::new("verdict");
+        log.batch(0, vec![run(None)])
+            .batch(
+                0,
+                vec![(
+                    "rollout",
+                    json!({"update": 1, "group": 0, "member": 0, "prompt": "p:0",
+                           "seed": 7, "tokens": 12, "truncated": false, "reward": 0.9,
+                           "reward_raw": 0.8, "judge_term": 0.1, "judge_verdict": 0.5,
+                           "advantage": null, "eligible": null, "trained": null,
+                           "skip_reason": null,
+                           "completion": "answer", "judge_explanation": "clear and short"}),
+                )],
+            )
+            .write();
+        let index = ObserveIndex::open(log.dir.path()).expect("index");
+        let (_, groups) = index.update(1).expect("update");
+        assert_eq!(groups[0].members[0].judge_verdict, Some(0.5));
+        assert_eq!(groups[0].members[0].judge_term, Some(0.1));
+        let rollouts = index.rollouts(1, Some(0), Some(0)).expect("read");
+        assert_eq!(
+            rollouts[0].text,
+            RolloutText::Completion {
+                completion: "answer".into(),
+                judge_explanation: Some("clear and short".into()),
+            }
+        );
     }
 
     #[test]

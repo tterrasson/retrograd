@@ -31,6 +31,11 @@ pub(super) struct TrainingBatch {
     /// judge deliberately (there is no group to rank), so the two are different
     /// quantities until this splits them apart.
     pub(super) judge_terms: Vec<f32>,
+    /// The raw verdicts behind `judge_terms` (same length and order), with
+    /// the judge's explanation when it gave one. `None` where no verdict
+    /// applied: a group not sent (every weight zero) or dropped. Carried for
+    /// the observe export and the verdict/verifiable guardrail series.
+    pub(super) judge_verdicts: Vec<Option<JudgeVerdict>>,
     /// Whether each rollout's reward carries the judge term the others carry.
     /// All true without a judge, and all true with one until it fails a group:
     /// a reward missing that term is not on the batch's scale, so the members
@@ -120,6 +125,7 @@ pub(super) fn assemble_batch(
         /// Rides with `rewards` so a group held aside as padding keeps its
         /// reward decomposition intact.
         judge_terms: Vec<f32>,
+        judge_verdicts: Vec<Option<JudgeVerdict>>,
         prompt_slot: usize,
         judged: bool,
     }
@@ -129,6 +135,7 @@ pub(super) fn assemble_batch(
     let mut member_seeds = Vec::with_capacity(rollouts_per_update);
     let mut rewards: Vec<f32> = Vec::with_capacity(rollouts_per_update);
     let mut judge_terms: Vec<f32> = Vec::with_capacity(rollouts_per_update);
+    let mut judge_verdicts: Vec<Option<JudgeVerdict>> = Vec::with_capacity(rollouts_per_update);
     // Whether each rollout's reward carries the judge term the others carry.
     // All true without a judge, and all true with one until it fails a
     // group: a reward missing that term is not on the batch's scale, so the
@@ -245,83 +252,88 @@ pub(super) fn assemble_batch(
         // the baseline and the epochs below, rather than trained on a scale
         // no other group shares.
         let judge_started = Instant::now();
-        let (round_rewards, round_judge_terms, round_judged) = match judge.as_mut() {
-            Some(judge) => {
-                let weights = round_rows
-                    .iter()
-                    .map(|row| row.judge_weight.unwrap_or(judge.weight()))
-                    .collect::<Vec<_>>();
-                // A group whose every member weighs the verdict at zero is
-                // not sent: there is nothing for an opinion to change, so
-                // paying for one - and letting a judge outage cost the group
-                // or the run - would be spending the update's failure budget
-                // on an answer nobody would have read.
-                let asked = weights
-                    .chunks(config.group_size)
-                    .map(|group| group.iter().any(|weight| *weight > 0.0))
-                    .collect::<Vec<_>>();
-                let groups = candidates
-                    .iter()
-                    .zip(&asked)
-                    .filter(|(_, asked)| **asked)
-                    .map(|(candidate, _)| JudgeGroup {
-                        group_id: candidate.prompt_slot as u64,
-                        prompt: &prompts[candidate.prompt_slot],
-                        completions: &candidate.completions,
-                    })
-                    .collect::<Vec<_>>();
-                let mut scored = if groups.is_empty() {
-                    Vec::new()
-                } else {
-                    judge.score(trainer, &groups, &mut judge_tally)?
-                }
-                .into_iter();
-                // Back to one entry per rollout of the round. A group that
-                // was not sent counts as judged - its reward is complete
-                // without a verdict - and contributes none.
-                let mut verdicts = Vec::with_capacity(round_rows.len());
-                let mut judged = Vec::with_capacity(asked.len());
-                for asked in &asked {
-                    let members = (0..config.group_size)
-                        .map(|_| {
-                            if *asked {
-                                scored.next().flatten()
-                            } else {
-                                None
-                            }
+        let (round_rewards, round_judge_terms, round_judge_verdicts, round_judged) =
+            match judge.as_mut() {
+                Some(judge) => {
+                    let weights = round_rows
+                        .iter()
+                        .map(|row| row.judge_weight.unwrap_or(judge.weight()))
+                        .collect::<Vec<_>>();
+                    // A group whose every member weighs the verdict at zero is
+                    // not sent: there is nothing for an opinion to change, so
+                    // paying for one - and letting a judge outage cost the group
+                    // or the run - would be spending the update's failure budget
+                    // on an answer nobody would have read.
+                    let asked = weights
+                        .chunks(config.group_size)
+                        .map(|group| group.iter().any(|weight| *weight > 0.0))
+                        .collect::<Vec<_>>();
+                    let groups = candidates
+                        .iter()
+                        .zip(&asked)
+                        .filter(|(_, asked)| **asked)
+                        .map(|(candidate, _)| JudgeGroup {
+                            group_id: candidate.prompt_slot as u64,
+                            prompt: &prompts[candidate.prompt_slot],
+                            completions: &candidate.completions,
                         })
                         .collect::<Vec<_>>();
-                    judged.push(!*asked || members.iter().all(Option::is_some));
-                    verdicts.extend(members);
+                    let mut scored = if groups.is_empty() {
+                        Vec::new()
+                    } else {
+                        judge.score(trainer, &groups, &mut judge_tally)?
+                    }
+                    .into_iter();
+                    // Back to one entry per rollout of the round. A group that
+                    // was not sent counts as judged - its reward is complete
+                    // without a verdict - and contributes none.
+                    let mut verdicts = Vec::with_capacity(round_rows.len());
+                    let mut judged = Vec::with_capacity(asked.len());
+                    for asked in &asked {
+                        let members = (0..config.group_size)
+                            .map(|_| {
+                                if *asked {
+                                    scored.next().flatten()
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        judged.push(!*asked || members.iter().all(Option::is_some));
+                        verdicts.extend(members);
+                    }
+                    // The judge term is kept apart rather than folded in and
+                    // forgotten: it is the only place the two halves of a reward
+                    // are still separable, and `reward/judge_mean` is what makes
+                    // `reward/mean` comparable with the judge-free evaluation.
+                    let terms = weights
+                        .iter()
+                        .zip(&verdicts)
+                        .map(|(weight, verdict)| {
+                            verdict.as_ref().map_or(0.0, |verdict| verdict.value) * weight
+                        })
+                        .collect::<Vec<_>>();
+                    let blended = round_rows
+                        .iter()
+                        .zip(&terms)
+                        .map(|(row, term)| row.reward + term)
+                        .collect::<Vec<_>>();
+                    (blended, terms, verdicts, judged)
                 }
-                // The judge term is kept apart rather than folded in and
-                // forgotten: it is the only place the two halves of a reward
-                // are still separable, and `reward/judge_mean` is what makes
-                // `reward/mean` comparable with the judge-free evaluation.
-                let terms = weights
-                    .iter()
-                    .zip(&verdicts)
-                    .map(|(weight, verdict)| verdict.unwrap_or(0.0) * weight)
-                    .collect::<Vec<_>>();
-                let blended = round_rows
-                    .iter()
-                    .zip(&terms)
-                    .map(|(row, term)| row.reward + term)
-                    .collect::<Vec<_>>();
-                (blended, terms, judged)
-            }
-            None => (
-                round_rows.iter().map(|row| row.reward).collect::<Vec<_>>(),
-                vec![0.0; round_rows.len()],
-                vec![true; candidates.len()],
-            ),
-        };
+                None => (
+                    round_rows.iter().map(|row| row.reward).collect::<Vec<_>>(),
+                    vec![0.0; round_rows.len()],
+                    vec![None; round_rows.len()],
+                    vec![true; candidates.len()],
+                ),
+            };
         judge_seconds += judge_started.elapsed().as_secs_f32();
 
         let mut offset = 0_usize;
         for (candidate, judged) in candidates.into_iter().zip(round_judged) {
             let group_rewards = &round_rewards[offset..offset + config.group_size];
             let group_judge_terms = &round_judge_terms[offset..offset + config.group_size];
+            let group_judge_verdicts = &round_judge_verdicts[offset..offset + config.group_size];
             offset += config.group_size;
             // Without dynamic sampling every group is kept; zero-signal
             // groups are marked dead later by `group_advantages`. With it,
@@ -350,6 +362,7 @@ pub(super) fn assemble_batch(
                 rollouts.extend(candidate.rollouts);
                 rewards.extend_from_slice(group_rewards);
                 judge_terms.extend_from_slice(group_judge_terms);
+                judge_verdicts.extend_from_slice(group_judge_verdicts);
                 judged_groups.extend(std::iter::repeat_n(judged, config.group_size));
             } else {
                 spare.push(SpareGroup {
@@ -358,6 +371,7 @@ pub(super) fn assemble_batch(
                     seeds: candidate.seeds,
                     rewards: group_rewards.to_vec(),
                     judge_terms: group_judge_terms.to_vec(),
+                    judge_verdicts: group_judge_verdicts.to_vec(),
                     prompt_slot: candidate.prompt_slot,
                     judged,
                 });
@@ -384,6 +398,7 @@ pub(super) fn assemble_batch(
             rollouts.extend(group.rollouts);
             rewards.extend(group.rewards);
             judge_terms.extend(group.judge_terms);
+            judge_verdicts.extend(group.judge_verdicts);
         }
     }
     // Behavior-policy logprobs for the assembled batch, teacher-forced under
@@ -409,6 +424,7 @@ pub(super) fn assemble_batch(
         member_seeds,
         rewards,
         judge_terms,
+        judge_verdicts,
         judged_groups,
         groups_sampled,
         judge_tally,

@@ -32,7 +32,7 @@ pub(crate) mod weights;
 mod tests;
 
 pub(crate) use driver::RolloutStats;
-pub use judge::{GroupJudge, JudgeGroup, JudgeTally};
+pub use judge::{GroupJudge, JudgeGroup, JudgeTally, JudgeVerdict};
 pub use local_judge::{
     JudgeModel, LocalJudge, LocalJudgeTransport, ScheduledJudgeModel, SnapshotJudge, WavePlan,
     plan_wave,
