@@ -464,3 +464,11 @@ are required; `count` (`24`), `batch_size` (`12`), `min_difficulty` /
 `[<section>.judge.compaction]`, optional: summarize the middle of long
 transcripts with the judge model. `trigger_chars`, `target_chars` and
 `keep_last` are required.
+
+`[<section>.judge.local]`, the in-process transport (exclusive with
+`base_url`/`model`): `weights` (`snapshot` by default; also `base`,
+`reference`, `policy`), `refresh_every` (`20`, snapshot only),
+`snapshot_dir` (beside the document by default), `max_new_tokens` (`1024`,
+the judge's own generation budget, separate from the rollouts'). In-process
+generation runs through the same step-wise scheduler as the rollouts, on the
+training thread; a `snapshot` judge keeps its own frozen engine.

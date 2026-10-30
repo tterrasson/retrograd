@@ -186,6 +186,15 @@ max_new_tokens = 1024             # the judge's own generation budget
   run: the planner charges it to the device memory budget. Its verdict cache
   is memory-only and re-keyed on the snapshot fingerprint at each refresh;
   `policy` disables the cache entirely, since the weights move under it.
+- The judge's requests go through the same step-wise scheduler
+  (`retrograd-infer`) as the rollouts: one weights selection per update, so
+  the judge's batch is homogeneous, no weight update can interleave with a
+  judge request, and a listwise group is judged only once complete. `base`
+  uses the run's own engine; `reference` uses the attached anchor when one
+  exists, otherwise the base; `snapshot` keeps its separate engine. The
+  scheduler never mixes adapters in one step. Sharing one
+  batch between different adapters (e.g. `policy` next to rollouts) needs
+  per-line multi-LoRA, which does not exist yet.
 - `strategy = { mode = "pointwise_logprob" }` skips generation entirely: each
   answer is scored by the log-probability the judge model puts on `yes` vs
   `no` after a fixed question. Deterministic, and local-only — an

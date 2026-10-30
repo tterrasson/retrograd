@@ -85,6 +85,10 @@ impl Trainer {
                 n_batch: training.n_batch,
                 n_ubatch: training.n_ubatch,
                 n_seq_max: training.n_seq_max,
+                generation_concurrency: training.generation_concurrency,
+                generation_batch: training.generation_batch,
+                fast_generation_context: training.fast_generation_context,
+                generation_kv_dtype: training.generation_kv_dtype,
                 threads: training.threads,
                 kv_dtype: training.kv_dtype,
                 ..TrainConfig::default()

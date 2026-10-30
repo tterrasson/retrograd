@@ -34,7 +34,8 @@ mod tests;
 pub(crate) use driver::RolloutStats;
 pub use judge::{GroupJudge, JudgeGroup, JudgeTally};
 pub use local_judge::{
-    JudgeModel, LocalJudge, LocalJudgeTransport, SnapshotJudge, WavePlan, plan_wave,
+    JudgeModel, LocalJudge, LocalJudgeTransport, ScheduledJudgeModel, SnapshotJudge, WavePlan,
+    plan_wave,
 };
 pub(crate) use packing::WeightedStepScratch;
 pub use prompts::Prompt;

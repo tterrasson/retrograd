@@ -5,16 +5,24 @@
 //! This is what makes self-judging possible: pointing an HTTP judge at the
 //! served run deadlocks, because the request waits on the training thread
 //! while that thread waits on the request. Here the judge's requests are
-//! rendered with the model's own chat template, tokenized, sampled through
-//! [`Trainer::generate_sampled_continuous_v2`] under the selected weights, and
-//! detokenized - all on the thread that owns the [`Trainer`].
+//! rendered with the model's own chat template, tokenized, sampled under the
+//! selected weights and detokenized - all on the thread that owns the
+//! [`Trainer`].
+//!
+//! Generation goes through the step-wise scheduler
+//! ([`retrograd_infer::Scheduler`]) on the same decode backend the rollouts
+//! use ([`ScheduledJudgeModel`]): the judge's requests are admitted, packed
+//! and prefix-cached exactly like rollout requests, bounded by the same slot
+//! and token budgets, on the trainer's own thread and with no weight update
+//! able to interleave. A `snapshot` judge keeps its separate engine - the
+//! scheduler is then built over that engine, not over the run's.
 //!
 //! The pieces are kept apart on purpose. [`JudgeModel`] is the model surface
-//! the transport drives (implemented by [`Trainer`], faked in tests);
-//! [`plan_wave`] is the pure batching decision; [`SnapshotJudge`] owns the
-//! frozen copy of the weights a `snapshot` judge reads; [`LocalJudge`] wires
-//! them into the protocol and applies the same failure policy as the HTTP
-//! path.
+//! the transport drives (implemented by [`Trainer`] and by
+//! [`TrainerBackend`], faked in tests); [`plan_wave`] is the pure batching
+//! decision; [`SnapshotJudge`] owns the frozen copy of the weights a
+//! `snapshot` judge reads; [`LocalJudge`] wires them into the protocol and
+//! applies the same failure policy as the HTTP path.
 
 use std::path::{Path, PathBuf};
 
@@ -22,12 +30,18 @@ use retrograd_agent_core::config::JudgeFailurePolicy;
 use retrograd_agent_core::trajectory::TrajectoryGroup;
 use retrograd_core::{Error, Result, SamplingParams, SamplingParamsV2, TrainConfig};
 use retrograd_engine::{JudgeWeights, Trainer};
+use retrograd_infer::{
+    DecodeBackend, Request, Scheduler, SchedulerOptions, TrainerBackend, run_requests_with,
+};
 use retrograd_judge::{
     JudgeBatchMetrics, JudgeCacheMode, JudgeReply, JudgeRequest, JudgeTransport,
     JudgeTransportError, RULER_PROTOCOL_VERSION, RulerConfig, RulerJudge, ScoreRequest,
     apply_group_scores,
 };
 use retrograd_metrics::MetricValue;
+
+use super::driver::scheduler_options;
+use super::sampling::RowLayout;
 
 /// The model surface the local transport drives. `Trainer` implements it; a
 /// fake implements it in tests, which is how the transport is exercised
@@ -109,6 +123,123 @@ impl JudgeModel for Trainer {
 
     fn context_size(&self) -> Result<usize> {
         Trainer::context_size(self)
+    }
+}
+
+/// A `&mut Trainer` as a [`JudgeModel`]: the text and scoring surface of the
+/// model the scheduler drives, reached through the scheduler's backend.
+impl JudgeModel for TrainerBackend<'_> {
+    fn render_chat_text(&mut self, prompt: &str) -> Result<String> {
+        JudgeModel::render_chat_text(self.0, prompt)
+    }
+
+    fn tokenize_text(&self, text: &str) -> Result<Vec<i32>> {
+        JudgeModel::tokenize_text(self.0, text)
+    }
+
+    fn generate(&mut self, sequences: &[(&[i32], SamplingParamsV2)]) -> Result<Vec<Vec<i32>>> {
+        JudgeModel::generate(self.0, sequences)
+    }
+
+    fn score_next_logprobs(&mut self, prompt: &[i32], targets: &[i32]) -> Result<Vec<f32>> {
+        JudgeModel::score_next_logprobs(self.0, prompt, targets)
+    }
+
+    fn detokenize(&self, tokens: &[i32]) -> Result<String> {
+        JudgeModel::detokenize(self.0, tokens)
+    }
+
+    fn context_size(&self) -> Result<usize> {
+        JudgeModel::context_size(self.0)
+    }
+}
+
+/// A [`JudgeModel`] whose generations go through the step-wise scheduler
+/// ([`retrograd_infer::Scheduler`]) on the same decode backend the rollouts
+/// use, instead of one batched FFI generator call per wave: the judge's
+/// requests are admitted, packed and prefix-cached exactly like rollout
+/// requests, under the same slot and token budgets, on the backend's own
+/// thread.
+///
+/// Everything but `generate` is delegated to the backend's model surface
+/// (render, tokenize, detokenize, scoring). `generate` submits one
+/// single-completion request per sequence and returns the sampled tokens in
+/// request order; a request the pool cannot admit comes back as that
+/// request's error, never as a hang. Forced reasoning tokens are kept - the
+/// judge reads its own forced markers - unlike the rollout driver, which
+/// refuses them.
+pub struct ScheduledJudgeModel<B: DecodeBackend> {
+    scheduler: Scheduler<B>,
+}
+
+impl<B: DecodeBackend> ScheduledJudgeModel<B> {
+    /// Builds the scheduler over `backend` and initializes it, which clears
+    /// every pool slot once - matching the batched generators, which clear
+    /// the generation context on entry.
+    pub fn new(backend: B, options: SchedulerOptions) -> Result<Self> {
+        let mut scheduler = Scheduler::new(backend, options);
+        scheduler.initialize()?;
+        Ok(Self { scheduler })
+    }
+
+    pub fn scheduler(&self) -> &Scheduler<B> {
+        &self.scheduler
+    }
+}
+
+impl<B> JudgeModel for ScheduledJudgeModel<B>
+where
+    B: DecodeBackend + JudgeModel,
+{
+    fn render_chat_text(&mut self, prompt: &str) -> Result<String> {
+        self.scheduler.backend_mut().render_chat_text(prompt)
+    }
+
+    fn tokenize_text(&self, text: &str) -> Result<Vec<i32>> {
+        self.scheduler.backend().tokenize_text(text)
+    }
+
+    fn generate(&mut self, sequences: &[(&[i32], SamplingParamsV2)]) -> Result<Vec<Vec<i32>>> {
+        if sequences.is_empty() {
+            return Ok(Vec::new());
+        }
+        let requests: Vec<Request> = sequences
+            .iter()
+            .map(|(prompt, params)| Request::single((*prompt).to_vec(), params.clone()))
+            .collect();
+        let outcomes = run_requests_with(&mut self.scheduler, requests, |_| {})?;
+        outcomes
+            .into_iter()
+            .map(|outcome| {
+                if let Some(error) = &outcome.error {
+                    return Err(Error::runtime(format!("the judge request failed: {error}")));
+                }
+                match outcome.completions.as_slice() {
+                    // Forced tokens stay in: the judge reads them as part of
+                    // its answer, it trains on none of them.
+                    [single] => Ok(single.tokens.clone()),
+                    _ => Err(Error::runtime(
+                        "a single-completion judge request returned no completion",
+                    )),
+                }
+            })
+            .collect()
+    }
+
+    fn score_next_logprobs(&mut self, prompt: &[i32], targets: &[i32]) -> Result<Vec<f32>> {
+        self.scheduler
+            .backend_mut()
+            .score_next_logprobs(prompt, targets)
+    }
+
+    fn detokenize(&self, tokens: &[i32]) -> Result<String> {
+        self.scheduler.backend().detokenize(tokens)
+    }
+
+    fn context_size(&self) -> Result<usize> {
+        // The generation pool's per-sequence limit - what the scheduler can
+        // actually reserve - not the training context's row width.
+        Ok(DecodeBackend::context_size(self.scheduler.backend())? as usize)
     }
 }
 
@@ -581,6 +712,9 @@ pub struct LocalJudge {
     batch_len: usize,
     judge_reasoning_budget: Option<u32>,
     model_fingerprint: String,
+    /// The run's training geometry, kept to size the judge's scheduler (slot
+    /// count, generation batch, admission mode) exactly like the rollouts'.
+    training: TrainConfig,
     /// Whether the strategy is `pointwise_logprob`, whose labels are verified
     /// once against the model's template before the first group is scored.
     pointwise: bool,
@@ -671,6 +805,7 @@ impl LocalJudge {
             batch_len,
             judge_reasoning_budget,
             model_fingerprint,
+            training: training.clone(),
             pointwise,
             labels_verified: false,
         })
@@ -751,24 +886,59 @@ impl LocalJudge {
         let max_new_tokens = self.max_new_tokens;
         let batch_len = self.batch_len;
         let weights = self.weights;
+        let budget = self.judge_reasoning_budget;
+        let training = &self.training;
+        let pointwise = self.pointwise;
+        // One weights selection for the whole judging session, not one per
+        // group: before multi-LoRA a scheduler batch is homogeneous (one step
+        // never mixes adapters), so every request of the update runs under the
+        // same weights - `base` included - and the snapshot's version is
+        // immutable for the whole update. The scheduler lives and dies inside
+        // this call, on the trainer's own thread, so no weight update can
+        // interleave with a judge request.
+        let snapshot_engine = self.snapshot.as_mut().map(SnapshotJudge::engine);
         // The protocol speaks the agent façade; the training loop speaks the
         // core one, and the two convert at this boundary with the class kept.
-        let mut results: Vec<
-            std::result::Result<Vec<retrograd_judge::Score>, retrograd_agent_core::Error>,
-        > = Vec::with_capacity(groups.len());
-        for group in groups.iter() {
-            let snapshot_engine = self.snapshot.as_mut().map(SnapshotJudge::engine);
-            let result = trainer.with_weights(weights, snapshot_engine, |model| {
-                model.with_reasoning_budget(self.judge_reasoning_budget, |model| {
+        let results = trainer.with_weights(weights, snapshot_engine, |model| {
+            model.with_reasoning_budget(budget, |model| {
+                // Label scoring uses the training context, not the generation
+                // pool. Keep its own context limit and avoid initializing a
+                // scheduler for a strategy that never generates.
+                if pointwise {
                     let mut transport =
                         LocalJudgeTransport::new(model, sampling, max_new_tokens, batch_len);
-                    judge
-                        .score_group_via(&mut transport, group)
-                        .map_err(retrograd_core::Error::from)
-                })
-            });
-            results.push(result.map_err(retrograd_agent_core::Error::from));
-        }
+                    return Ok(groups
+                        .iter()
+                        .map(|group| judge.score_group_via(&mut transport, group))
+                        .collect::<Vec<_>>());
+                }
+                // The judge's requests go through the same step-wise
+                // scheduler as the rollouts, over the same backend (the
+                // run's trainer for policy/base/reference, the snapshot's
+                // own engine for `snapshot`), sized like the rollouts':
+                // same slots, same generation batch, same admission mode.
+                let layout = RowLayout::resolve(model, training)?;
+                let options = scheduler_options(
+                    layout.rollout_admission,
+                    layout.generation_batch,
+                    layout.generation_slots,
+                    layout.generation_slots,
+                );
+                let mut model = ScheduledJudgeModel::new(TrainerBackend(model), options)?;
+                // A listwise group is judged only once complete: each
+                // group's waves are submitted in turn, and within a wave
+                // freed slots are refilled from the queue.
+                let mut results: Vec<
+                    std::result::Result<Vec<retrograd_judge::Score>, retrograd_agent_core::Error>,
+                > = Vec::with_capacity(groups.len());
+                for group in groups.iter() {
+                    let mut transport =
+                        LocalJudgeTransport::new(&mut model, sampling, max_new_tokens, batch_len);
+                    results.push(judge.score_group_via(&mut transport, group));
+                }
+                Ok::<_, Error>(results)
+            })
+        })?;
         apply_group_scores(
             groups,
             results,
@@ -1219,4 +1389,261 @@ mod pointwise_tests {
         // One scoring request per trajectory.
         assert_eq!(model.scored.len(), 2);
     }
+}
+
+#[cfg(test)]
+mod scheduled_tests {
+    //! The judge's generation path through the step-wise scheduler: same
+    //! backend, same admission as the rollouts, one request per sequence, on
+    //! the backend's own thread - exercised on a fake pool, no model.
+
+    use std::path::Path;
+    use std::time::Duration;
+
+    use retrograd_engine::{EngineMemory, StepOutput, StepRow};
+    use retrograd_infer::{
+        AdmissionMode, DecodeBackend, FakeBackend, InferError, SchedulerOptions, fake_sampling_v2,
+    };
+
+    use super::*;
+
+    fn pieces(vocab: usize) -> Vec<String> {
+        (0..vocab)
+            .map(|index| {
+                char::from_u32('a' as u32 + (index as u32 % 26))
+                    .expect("a letter")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// A `FakeBackend` that is also a [`JudgeModel`]: the text surface is
+    /// canned, and the batched generator refuses loudly - the scheduled model
+    /// must drive the scheduler, never that fallback.
+    struct FakeJudgeBackend {
+        fake: FakeBackend,
+        prompts: Vec<String>,
+        batched_called: bool,
+    }
+
+    impl FakeJudgeBackend {
+        fn new() -> Self {
+            Self::with_ctx(32, 128)
+        }
+
+        fn with_ctx(n_ctx_seq: u32, cells_total: u64) -> Self {
+            Self {
+                fake: FakeBackend::new(4, n_ctx_seq, cells_total, 100, 99, pieces(100)),
+                prompts: Vec::new(),
+                batched_called: false,
+            }
+        }
+    }
+
+    impl DecodeBackend for FakeJudgeBackend {
+        fn step(
+            &mut self,
+            rows: &[StepRow<'_>],
+            out: &mut StepOutput,
+        ) -> std::result::Result<(), InferError> {
+            self.fake.step(rows, out)
+        }
+        fn seq_rm(&mut self, slot: i32, p0: i32, p1: i32) -> std::result::Result<(), InferError> {
+            self.fake.seq_rm(slot, p0, p1)
+        }
+        fn seq_cp(
+            &mut self,
+            src: i32,
+            dst: i32,
+            p0: i32,
+            p1: i32,
+        ) -> std::result::Result<(), InferError> {
+            self.fake.seq_cp(src, dst, p0, p1)
+        }
+        fn seq_pos(&self, slot: i32) -> std::result::Result<(i32, i32), InferError> {
+            self.fake.seq_pos(slot)
+        }
+        fn seq_save_len(&self, slot: i32, flags: u32) -> std::result::Result<usize, InferError> {
+            self.fake.seq_save_len(slot, flags)
+        }
+        fn seq_save_into(
+            &mut self,
+            slot: i32,
+            flags: u32,
+            buffer: &mut [u8],
+        ) -> std::result::Result<usize, InferError> {
+            self.fake.seq_save_into(slot, flags, buffer)
+        }
+        fn seq_load(
+            &mut self,
+            slot: i32,
+            flags: u32,
+            data: &[u8],
+        ) -> std::result::Result<usize, InferError> {
+            self.fake.seq_load(slot, flags, data)
+        }
+        fn kv_unified(&self) -> std::result::Result<bool, InferError> {
+            self.fake.kv_unified()
+        }
+        fn weights_version(&self) -> std::result::Result<u64, InferError> {
+            self.fake.weights_version()
+        }
+        fn model_fingerprint(&self) -> std::result::Result<u64, InferError> {
+            self.fake.model_fingerprint()
+        }
+        fn is_hybrid(&self) -> std::result::Result<bool, InferError> {
+            self.fake.is_hybrid()
+        }
+        fn memory(&self) -> std::result::Result<EngineMemory, InferError> {
+            self.fake.memory()
+        }
+        fn request_free(&mut self, request: i32) -> std::result::Result<(), InferError> {
+            self.fake.request_free(request)
+        }
+        fn is_eog_token(&self, token: i32) -> std::result::Result<bool, InferError> {
+            self.fake.is_eog_token(token)
+        }
+        fn detokenize_bytes(
+            &self,
+            tokens: &[i32],
+            unparse_special: bool,
+        ) -> std::result::Result<Vec<u8>, InferError> {
+            self.fake.detokenize_bytes(tokens, unparse_special)
+        }
+        fn context_size(&self) -> std::result::Result<u32, InferError> {
+            self.fake.context_size()
+        }
+        fn vocab_size(&self) -> std::result::Result<u32, InferError> {
+            self.fake.vocab_size()
+        }
+        fn load_adapter(&mut self, name: &str, path: &Path) -> std::result::Result<(), InferError> {
+            self.fake.load_adapter(name, path)
+        }
+        fn activate_adapter(&mut self, name: Option<&str>) -> std::result::Result<(), InferError> {
+            self.fake.activate_adapter(name)
+        }
+        fn active_adapter(&self) -> std::result::Result<Option<String>, InferError> {
+            self.fake.active_adapter()
+        }
+    }
+
+    impl JudgeModel for FakeJudgeBackend {
+        fn render_chat_text(&mut self, prompt: &str) -> Result<String> {
+            self.prompts.push(prompt.to_owned());
+            Ok(format!("<chat>{prompt} "))
+        }
+        fn tokenize_text(&self, text: &str) -> Result<Vec<i32>> {
+            Ok(vec![0_i32; text.split_whitespace().count().max(1)])
+        }
+        fn generate(&mut self, _: &[(&[i32], SamplingParamsV2)]) -> Result<Vec<Vec<i32>>> {
+            self.batched_called = true;
+            Err(Error::runtime(
+                "the batched generator must not be called behind the scheduler",
+            ))
+        }
+        fn score_next_logprobs(&mut self, _: &[i32], targets: &[i32]) -> Result<Vec<f32>> {
+            Ok(vec![0.0; targets.len()])
+        }
+        fn detokenize(&self, _tokens: &[i32]) -> Result<String> {
+            // The listwise verdict format the protocol parses.
+            Ok(r#"{"scores":[{"trajectory_id":0,"explanation":"e","score":0.8},{"trajectory_id":1,"explanation":"e","score":0.2}]}"#.to_owned())
+        }
+        fn context_size(&self) -> Result<usize> {
+            Ok(DecodeBackend::context_size(&self.fake)? as usize)
+        }
+    }
+
+    fn options() -> SchedulerOptions {
+        SchedulerOptions {
+            mode: AdmissionMode::Lockstep,
+            n_batch: 16,
+            queue_capacity: 8,
+            event_capacity: 8,
+            slow_client_timeout: Duration::ZERO,
+            ..SchedulerOptions::default()
+        }
+    }
+
+    #[test]
+    fn judge_generation_runs_through_the_scheduler_in_request_order() {
+        let mut model = ScheduledJudgeModel::new(FakeJudgeBackend::new(), options()).unwrap();
+        // The text surface delegates to the backend's model.
+        let rendered = model.render_chat_text("judge this").unwrap();
+        assert_eq!(rendered, "<chat>judge this ");
+        let prompt = model.tokenize_text(&rendered).unwrap();
+        assert!(!prompt.is_empty());
+        assert_eq!(
+            model.context_size().unwrap(),
+            DecodeBackend::context_size(&model.scheduler().backend().fake).unwrap() as usize
+        );
+        let params = [fake_sampling_v2(1, 4), fake_sampling_v2(2, 6)];
+        let sequences: Vec<(&[i32], SamplingParamsV2)> = params
+            .iter()
+            .map(|params| (prompt.as_slice(), params.clone()))
+            .collect();
+        let rows = model.generate(&sequences).unwrap();
+        // One completion per sequence, in request order, sized by each
+        // request's own budget.
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].len(), 4);
+        assert_eq!(rows[1].len(), 6);
+        // The requests went through the scheduler (steps recorded, both
+        // request ids seen), and the batched generator was never called.
+        let backend = model.scheduler().backend();
+        assert!(!backend.batched_called);
+        assert!(!backend.fake.steps.is_empty());
+        assert_eq!(backend.fake.request_order.len(), 2);
+    }
+
+    #[test]
+    fn an_unreservable_judge_prompt_fails_the_call_instead_of_hanging() {
+        let mut model = ScheduledJudgeModel::new(FakeJudgeBackend::new(), options()).unwrap();
+        // n_ctx_seq is 32: a 40-token prompt can never be reserved.
+        let good = vec![1_i32; 4];
+        let bad = vec![1_i32; 40];
+        let params = fake_sampling_v2(9, 3);
+        let sequences: Vec<(&[i32], SamplingParamsV2)> =
+            vec![(good.as_slice(), params.clone()), (bad.as_slice(), params)];
+        let error = model.generate(&sequences).unwrap_err();
+        assert!(
+            error.to_string().contains("judge request failed"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_transport_drives_the_scheduled_model_end_to_end() {
+        // The full path a local judge takes: render through the template,
+        // plan the wave, generate through the scheduler, detokenize.
+        let judge = RulerJudge::new(RulerConfig {
+            strategy: JudgeStrategy::Listwise,
+            max_retries: 0,
+            ..RulerConfig {
+                base_url: String::new(),
+                model: "local".into(),
+                ..Default::default()
+            }
+        })
+        .unwrap();
+        // A wide pool: the rendered RULER prompt is ~50 tokens.
+        let mut model =
+            ScheduledJudgeModel::new(FakeJudgeBackend::with_ctx(256, 1024), options()).unwrap();
+        let scores = judge
+            .score_group_via(
+                &mut LocalJudgeTransport::new(&mut model, sampling(), 8, 4),
+                &group(),
+            )
+            .unwrap();
+        assert_eq!(scores.len(), 2);
+        assert!(scores.iter().all(|score| score.valid));
+        let backend = model.scheduler().backend();
+        assert!(!backend.batched_called);
+        assert!(!backend.fake.steps.is_empty());
+        // The judge prompt was rendered through the template exactly once.
+        assert_eq!(backend.prompts.len(), 1);
+        assert!(backend.prompts[0].contains("question"));
+    }
+
+    use super::tests::{group, sampling};
+    use retrograd_judge::JudgeStrategy;
 }

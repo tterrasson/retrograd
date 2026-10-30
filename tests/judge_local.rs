@@ -205,16 +205,40 @@ fn a_local_judge_scores_a_group_on_the_cpu_fixture() {
     lora.seed = 7;
     trainer.create_lora(&lora).expect("create the adapter");
 
-    for strategy in [JudgeStrategy::Listwise, JudgeStrategy::PointwiseLogprob] {
-        let mut judge = LocalJudge::new(
-            local_ruler(strategy),
+    let snapshot_dir = common::scratch("judge-scheduler-snapshot");
+    for (strategy, weights, local_weights) in [
+        (
+            JudgeStrategy::Listwise,
             JudgeWeights::Base,
+            LocalJudgeWeights::Base,
+        ),
+        (
+            JudgeStrategy::PointwiseLogprob,
+            JudgeWeights::Base,
+            LocalJudgeWeights::Base,
+        ),
+        (
+            JudgeStrategy::Listwise,
+            JudgeWeights::Policy,
+            LocalJudgeWeights::Policy,
+        ),
+        (
+            JudgeStrategy::Listwise,
+            JudgeWeights::Snapshot,
+            LocalJudgeWeights::Snapshot,
+        ),
+    ] {
+        let mut ruler = local_ruler(strategy);
+        ruler.local.as_mut().unwrap().weights = local_weights;
+        let mut judge = LocalJudge::new(
+            ruler,
+            weights,
             sampling(),
             128,
             2,
             &model,
             &training,
-            None,
+            Some(snapshot_dir.path().to_path_buf()),
             20,
             None,
         )
@@ -231,7 +255,7 @@ fn a_local_judge_scores_a_group_on_the_cpu_fixture() {
             .expect("score the group");
         assert_eq!(
             metrics.counts.scored_groups, 1,
-            "{strategy:?}; last error: {:?}; dropped: {}",
+            "{strategy:?}/{weights:?}; last error: {:?}; dropped: {}",
             metrics.last_error, metrics.counts.dropped_groups
         );
         let rewards: Vec<Option<f32>> = groups[0]
@@ -248,4 +272,55 @@ fn a_local_judge_scores_a_group_on_the_cpu_fixture() {
             );
         }
     }
+}
+
+#[test]
+fn a_reference_judge_uses_the_configured_generation_pool() {
+    let _guard = serialize_models();
+    let Some(model) = common::model_path_if_available() else {
+        return;
+    };
+    let training = TrainConfig {
+        generation_concurrency: 1,
+        generation_batch: 32,
+        ..config()
+    };
+    let mut trainer = Trainer::new(&model, training.clone()).expect("load policy");
+    trainer
+        .attach_reference(&model, &training, None)
+        .expect("attach reference");
+    let policy_pool = trainer.memory().expect("policy pool");
+    trainer
+        .with_weights(JudgeWeights::Reference, None, |reference| {
+            let pool = reference.memory()?;
+            assert_eq!(pool.n_slots, policy_pool.n_slots);
+            assert_eq!(pool.cells_total, policy_pool.cells_total);
+            Ok(())
+        })
+        .unwrap();
+    let mut ruler = local_ruler(JudgeStrategy::Listwise);
+    ruler.local.as_mut().unwrap().weights = LocalJudgeWeights::Reference;
+    let mut judge = LocalJudge::new(
+        ruler,
+        JudgeWeights::Reference,
+        sampling(),
+        128,
+        1,
+        &model,
+        &training,
+        None,
+        20,
+        None,
+    )
+    .expect("build reference judge");
+    let metrics = judge
+        .score_groups(
+            &mut trainer,
+            &mut [group()],
+            JudgeFailurePolicy::DropGroup,
+            1.0,
+            false,
+        )
+        .expect("score through the reference scheduler");
+    assert_eq!(metrics.counts.scored_groups, 1, "{:?}", metrics.last_error);
 }
