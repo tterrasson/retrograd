@@ -2,6 +2,7 @@
 
 use retrograd_metrics::MetricValue;
 
+use crate::policy::RolloutStatsSnapshot;
 use crate::rollout::RolloutFailures;
 use crate::trajectory::{Role, TrajectoryGroup};
 
@@ -149,6 +150,58 @@ impl AgentMetricTotals {
     }
 }
 
+/// The `rollout/*` series of one update, computed from the scheduler's
+/// rollout stats drained around the update's rollouts: `before` resets the
+/// per-update accumulators, `after` carries them, and only the prefix-cache
+/// counters (cumulative) are differenced.
+///
+/// - `rollout/slot_occupancy_mean`: mean `live_len / n_slots` over the
+///   scheduler's steps - how full the generation pool was while it ran.
+/// - `rollout/prefill_reuse_fraction`: `1 - prefilled/prompt` over the prompt
+///   cells the update's waves asked for - the share the prefix tree served
+///   from a resident or swapped-out prefix instead of a fresh prefill (the
+///   KV-retention win of the persistent scheduler).
+/// - `rollout/tool_wait_covered_fraction`: the share of the wall time
+///   trajectories spent waiting on a tool/environment during which at least
+///   one other sequence was decoding. Wall-clock accrual happens at scheduler
+///   pump granularity, so this is an approximation of the true overlap.
+pub(super) fn rollout_metric_values(
+    before: &RolloutStatsSnapshot,
+    after: &RolloutStatsSnapshot,
+) -> Vec<MetricValue> {
+    let slot_occupancy_mean = match after.steps {
+        0 => 0.0,
+        steps => after.occupancy_sum as f64 / steps as f64 / after.n_slots.max(1) as f64,
+    };
+    let prompt_cells = after.kv.prompt_cells.saturating_sub(before.kv.prompt_cells);
+    let prefilled_cells = after
+        .kv
+        .prefilled_cells
+        .saturating_sub(before.kv.prefilled_cells);
+    let prefill_reuse_fraction = match prompt_cells {
+        0 => 0.0,
+        cells => 1.0 - prefilled_cells as f64 / cells as f64,
+    };
+    let tool_wait_covered_fraction = match after.tool_wait_seconds > 0.0 {
+        true => (after.tool_wait_covered_seconds / after.tool_wait_seconds).clamp(0.0, 1.0),
+        false => 0.0,
+    };
+    vec![
+        MetricValue {
+            name: "rollout/slot_occupancy_mean".into(),
+            value: slot_occupancy_mean as f32,
+        },
+        MetricValue {
+            name: "rollout/prefill_reuse_fraction".into(),
+            value: prefill_reuse_fraction as f32,
+        },
+        MetricValue {
+            name: "rollout/tool_wait_covered_fraction".into(),
+            value: tool_wait_covered_fraction as f32,
+        },
+    ]
+}
+
 /// `attempted` counts every rollout the update asked for, including the ones
 /// that never produced a trajectory: the failure fractions are meaningless
 /// against a denominator that already excludes the failures. The other
@@ -220,5 +273,54 @@ mod tests {
             });
         }
         assert!((value(&[checked]) - 1.0 / 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_rollout_series_come_from_the_drained_scheduler_stats() {
+        use retrograd_infer::KvStats;
+
+        let before = RolloutStatsSnapshot {
+            kv: KvStats {
+                prompt_cells: 100,
+                prefilled_cells: 90,
+                ..KvStats::default()
+            },
+            ..RolloutStatsSnapshot::default()
+        };
+        let after = RolloutStatsSnapshot {
+            steps: 10,
+            occupancy_sum: 30,
+            n_slots: 4,
+            tool_wait_seconds: 2.0,
+            tool_wait_covered_seconds: 0.5,
+            kv: KvStats {
+                prompt_cells: 300,
+                prefilled_cells: 150,
+                ..KvStats::default()
+            },
+        };
+        let values = rollout_metric_values(&before, &after);
+        let value = |name: &str| {
+            values
+                .iter()
+                .find(|metric| metric.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"))
+                .value
+        };
+        // (30 / 10 steps) / 4 slots.
+        assert!((value("rollout/slot_occupancy_mean") - 0.75).abs() < 1e-6);
+        // 1 - (150-90)/(300-100) = 1 - 60/200 = 0.7.
+        assert!((value("rollout/prefill_reuse_fraction") - 0.7).abs() < 1e-6);
+        assert!((value("rollout/tool_wait_covered_fraction") - 0.25).abs() < 1e-6);
+
+        // An update with no steps, no prompt cells and no wait reports zeros,
+        // not NaN.
+        let empty = rollout_metric_values(
+            &RolloutStatsSnapshot::default(),
+            &RolloutStatsSnapshot::default(),
+        );
+        for metric in empty {
+            assert_eq!(metric.value, 0.0, "{}", metric.name);
+        }
     }
 }

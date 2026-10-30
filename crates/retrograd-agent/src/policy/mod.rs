@@ -1,3 +1,15 @@
+//! The policy the rollout engine talks to, and the actors that serve it.
+//!
+//! Two actors share this module: [`PolicyActor`] owns a `Trainer` (for an
+//! agentic training run) and [`EnginePolicyActor`] owns an [`Engine`] (for a
+//! generation-only collection). Both drive generation through a persistent
+//! step-wise scheduler - see [`driver`] - instead of the batched
+//! `generate_sampled_continuous` per turn, so a trajectory's KV survives its
+//! own turns in the scheduler's prefix tree instead of being re-prefilled
+//! from scratch every turn.
+
+mod driver;
+
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -13,10 +25,15 @@ use crate::trajectory::Message;
 use crate::{Error, Result};
 use retrograd_core::{SamplingParams, TrainConfig, TrainMetrics};
 use retrograd_dataset::chat_template::{Framing, TurnSentinels};
-use retrograd_engine::{GenerationStats, SampledRow, Trainer};
+use retrograd_engine::{Engine, EngineError, GenerationStats, SampledRow, Trainer};
 use retrograd_training::Progress;
 use retrograd_training::batch::{
     BatchObservation, GrpoBatchParams, TrainSequence, train_grpo_batch_observed,
+};
+
+pub use driver::RolloutStatsSnapshot;
+pub(crate) use driver::{
+    SchedulerDriver, SharedEngine, SharedTrainer, infer_error, scheduler_options,
 };
 
 #[derive(Clone, Debug)]
@@ -187,6 +204,14 @@ pub trait Policy: Send + Sync {
         }
         Ok(scores)
     }
+
+    /// Tells the backend that a rollout started (or stopped) waiting on a
+    /// tool/environment, so decode time can be attributed against tool waits
+    /// (`rollout/tool_wait_covered_fraction`). The default is a no-op for
+    /// backends that do not track it.
+    async fn note_tool_wait(&self, _waiting: bool) -> Result<()> {
+        Ok(())
+    }
 }
 
 fn exactly_one(mut generations: Vec<PolicyGeneration>) -> Result<PolicyGeneration> {
@@ -202,7 +227,7 @@ fn exactly_one(mut generations: Vec<PolicyGeneration>) -> Result<PolicyGeneratio
 enum PolicyRequest {
     /// Already-serialized JSON: the conversion is a pure function of the
     /// messages (`crate::chat`), so it happens on the caller's side rather than
-    /// on the single thread that owns the trainer. `tools_json` is `None` when
+    /// on the single thread that owns the model. `tools_json` is `None` when
     /// the catalog must not reach the template.
     RenderChatFraming {
         messages_json: String,
@@ -214,11 +239,20 @@ enum PolicyRequest {
     SupportsNativeTools {
         reply: oneshot::Sender<Result<bool>>,
     },
-    /// The runtime's lifetime prefix-reuse counters. Read on the trainer's own
+    /// The runtime's lifetime prefix-reuse counters. Read on the model's own
     /// thread like everything else here, and differenced by the caller around a
     /// rollout phase.
     GenerationStats {
         reply: oneshot::Sender<Result<GenerationStats>>,
+    },
+    /// The scheduler's rollout accumulators (slot occupancy, tool-wait windows,
+    /// prefix-cache counters), drained per update.
+    RolloutStats {
+        reply: oneshot::Sender<Result<RolloutStatsSnapshot>>,
+    },
+    /// One rollout started or stopped waiting on a tool/environment.
+    ToolWait {
+        waiting: bool,
     },
     /// Answers with the *serialized* parser rather than a built one: the blob
     /// is what crosses the channel, and the handle wraps it on the caller's
@@ -306,6 +340,22 @@ impl PolicyHandle {
     pub async fn generation_stats(&self) -> Result<GenerationStats> {
         self.request(|reply| PolicyRequest::GenerationStats { reply })
             .await
+    }
+
+    /// The scheduler's rollout accumulators, drained on read: slot occupancy
+    /// per step, tool-wait windows and the cumulative prefix-cache counters.
+    pub async fn rollout_stats(&self) -> Result<RolloutStatsSnapshot> {
+        self.request(|reply| PolicyRequest::RolloutStats { reply })
+            .await
+    }
+
+    /// Records a tool/environment wait on the actor, for
+    /// `rollout/tool_wait_covered_fraction`.
+    pub async fn note_tool_wait(&self, waiting: bool) -> Result<()> {
+        self.tx
+            .send(PolicyRequest::ToolWait { waiting })
+            .await
+            .map_err(|_| Error::PolicyStopped)
     }
 
     /// `observation` receives the selection before the epochs and the
@@ -412,6 +462,40 @@ impl Policy for PolicyHandle {
         self.request(|reply| PolicyRequest::ScoreMaskedBatch { sequences, reply })
             .await
     }
+
+    async fn note_tool_wait(&self, waiting: bool) -> Result<()> {
+        PolicyHandle::note_tool_wait(self, waiting).await
+    }
+}
+
+/// The model-side operations a generation wave needs around the decode itself:
+/// the render and capability probes serviced inside the coalescing window,
+/// finishing a sampled row, and driving the wave.
+trait WaveHost {
+    fn render_framing(
+        &self,
+        messages_json: &str,
+        tools_json: Option<&str>,
+        sentinels: &[TurnSentinels],
+        add_assistant: bool,
+    ) -> Result<RenderedFraming>;
+    fn supports_native_tools(&self) -> Result<bool>;
+    fn generation_stats(&self) -> Result<GenerationStats>;
+    fn tool_call_parser(&self, tools_json: Option<&str>) -> Result<Option<String>>;
+    /// Drives one coalesced wave to completion, one row per sequence.
+    fn run_wave(&mut self, sequences: Vec<(Vec<i32>, SamplingParams)>) -> Result<Vec<SampledRow>>;
+    fn finish_generation(&mut self, row: SampledRow) -> Result<PolicyGeneration>;
+    fn drain_rollout_stats(&mut self) -> Result<RolloutStatsSnapshot>;
+    fn note_tool_wait(&mut self, waiting: bool);
+    /// Parks the actor while the model is lent out (trainer actor only; the
+    /// engine actor drains the handshake as a no-op).
+    async fn lend(&mut self, ready: oneshot::Sender<()>, done: oneshot::Receiver<()>);
+}
+
+/// Maps an engine error into the agent facade through the core facade, so the
+/// variant survives the crossing.
+fn engine_error(error: EngineError) -> Error {
+    Error::Core(error.into())
 }
 
 /// Local-task actor around `Trainer`. `Trainer` never crosses an OS-thread
@@ -473,12 +557,38 @@ fn render_framing(
     sentinels: &[TurnSentinels],
     add_assistant: bool,
 ) -> Result<RenderedFraming> {
-    let rendered = trainer.format_chat_messages(messages_json, tools_json, add_assistant)?;
+    let rendered = trainer
+        .format_chat_messages(messages_json, tools_json, add_assistant)
+        .map_err(Error::from)?;
     let framing = crate::chat::split_turns(&rendered, sentinels)?;
     let tail = match framing.turns.is_empty() {
-        true => trainer.tokenize_text(&framing.tail),
-        false => trainer.tokenize_fragment(&framing.tail),
-    }?;
+        true => trainer.tokenize_text(&framing.tail).map_err(Error::from)?,
+        false => trainer
+            .tokenize_fragment(&framing.tail)
+            .map_err(Error::from)?,
+    };
+    Ok(RenderedFraming { framing, tail })
+}
+
+/// The engine's counterpart of [`render_framing`]: identical rendering, over
+/// the engine's own chat-template entry points.
+fn engine_render_framing(
+    engine: &Engine,
+    messages_json: &str,
+    tools_json: Option<&str>,
+    sentinels: &[TurnSentinels],
+    add_assistant: bool,
+) -> Result<RenderedFraming> {
+    let rendered = engine
+        .format_chat_messages(messages_json, tools_json, add_assistant)
+        .map_err(engine_error)?;
+    let framing = crate::chat::split_turns(&rendered, sentinels)?;
+    let tail = match framing.turns.is_empty() {
+        true => engine.tokenize_text(&framing.tail).map_err(engine_error)?,
+        false => engine
+            .tokenize_fragment(&framing.tail)
+            .map_err(engine_error)?,
+    };
     Ok(RenderedFraming { framing, tail })
 }
 
@@ -505,15 +615,21 @@ fn tool_call_parse_end(tokens_len: usize, stopped_at_eog: bool) -> usize {
     }
 }
 
-/// Detokenizes a sampled row and decides whether it stopped on its own.
-fn finish_generation(trainer: &mut Trainer, row: SampledRow) -> Result<PolicyGeneration> {
+/// The shared body of `finish_generation` over either model handle: detokenize
+/// a sampled row with special tokens kept (the text is read back by a
+/// tool-call parser) and decide whether it stopped on its own.
+fn finish_generation_parts(
+    row: SampledRow,
+    is_eog: impl Fn(i32) -> Result<bool>,
+    detokenize: impl Fn(&[i32]) -> Result<String>,
+) -> Result<PolicyGeneration> {
     let SampledRow { tokens, forced } = row;
     let forced = match forced.contains(&true) {
         true => forced,
         false => Vec::new(),
     };
     let stopped_at_eog = match tokens.last() {
-        Some(&last) => trainer.is_eog_token(last)?,
+        Some(&last) => is_eog(last)?,
         None => false,
     };
     // `true`: this text is read back by a tool-call parser, and a model's own
@@ -522,13 +638,31 @@ fn finish_generation(trainer: &mut Trainer, row: SampledRow) -> Result<PolicyGen
     // what makes a syntactically perfect call unparseable (see
     // `Trainer::detokenize`).
     let parse_end = tool_call_parse_end(tokens.len(), stopped_at_eog);
-    let text = trainer.detokenize(&tokens[..parse_end], true)?;
+    let text = detokenize(&tokens[..parse_end])?;
     Ok(PolicyGeneration {
         tokens,
         text,
         stopped_at_eog,
         forced,
     })
+}
+
+/// Detokenizes a sampled row and decides whether it stopped on its own.
+fn finish_generation(trainer: &mut Trainer, row: SampledRow) -> Result<PolicyGeneration> {
+    finish_generation_parts(
+        row,
+        |token| trainer.is_eog_token(token).map_err(Error::from),
+        |tokens| trainer.detokenize(tokens, true).map_err(Error::from),
+    )
+}
+
+/// The engine's counterpart of [`finish_generation`].
+fn engine_finish_generation(engine: &Engine, row: SampledRow) -> Result<PolicyGeneration> {
+    finish_generation_parts(
+        row,
+        |token| engine.is_eog_token(token).map_err(engine_error),
+        |tokens| engine.detokenize(tokens, true).map_err(engine_error),
+    )
 }
 
 /// The policy task panicked or was cancelled. The cause is kept as text because
@@ -649,11 +783,11 @@ impl QueuedGeneration {
         }
     }
 
-    fn send_rows(self, trainer: &mut Trainer, rows: &mut VecDeque<SampledRow>) {
+    fn send_rows<H: WaveHost>(self, host: &mut H, rows: &mut VecDeque<SampledRow>) {
         let result = take_rows(self.len(), rows).and_then(|taken| {
             taken
                 .into_iter()
-                .map(|row| finish_generation(trainer, row))
+                .map(|row| host.finish_generation(row))
                 .collect()
         });
         match self {
@@ -664,8 +798,8 @@ impl QueuedGeneration {
     }
 }
 
-async fn collect_generation_wave(
-    trainer: &mut Trainer,
+async fn collect_generation_wave<H: WaveHost>(
+    host: &mut H,
     rx: &mut mpsc::Receiver<PolicyRequest>,
     deferred: &mut VecDeque<PolicyRequest>,
     first: QueuedGeneration,
@@ -700,8 +834,7 @@ async fn collect_generation_wave(
                 add_assistant,
                 reply,
             }) => {
-                let _ = reply.send(render_framing(
-                    trainer,
+                let _ = reply.send(host.render_framing(
                     &messages_json,
                     tools_json.as_deref(),
                     &sentinels,
@@ -709,36 +842,33 @@ async fn collect_generation_wave(
                 ));
             }
             Queued::Other(PolicyRequest::SupportsNativeTools { reply }) => {
-                let _ = reply.send(trainer.chat_template_supports_tools().map_err(Error::from));
+                let _ = reply.send(host.supports_native_tools());
             }
             Queued::Other(PolicyRequest::GenerationStats { reply }) => {
-                let _ = reply.send(trainer.generation_stats().map_err(Error::from));
+                let _ = reply.send(host.generation_stats());
             }
             Queued::Other(PolicyRequest::ToolCallParser { tools_json, reply }) => {
-                let _ = reply.send(
-                    trainer
-                        .tool_call_parser(tools_json.as_deref())
-                        .map_err(Error::from),
-                );
+                let _ = reply.send(host.tool_call_parser(tools_json.as_deref()));
             }
             Queued::Other(other) => deferred.push_back(other),
         }
     }
-    run_generation_wave(trainer, queued);
+    run_generation_wave(host, queued);
 }
 
 /// Coalesces generation requests which different rollout groups made ready in
-/// the same scheduling wave. Heterogeneous prompts go through the continuous
-/// runtime, which still detects and copies shared prefixes.
-fn run_generation_wave(trainer: &mut Trainer, queued: Vec<QueuedGeneration>) {
+/// the same scheduling wave, then drives the wave through the persistent
+/// scheduler.
+///
+/// Every wave goes through one submission batch, a shared prompt included: the
+/// scheduler's lockstep admission recognizes identical prompts and merges them
+/// into one prefill plus `seq_cp` group, exactly the way the batched
+/// continuous generator decodes them, so the outputs are bit-identical to it
+/// per wave. What the scheduler adds on top is the prefix tree: finished
+/// sequences stay resident as dormant slots, so the next turn of the same
+/// trajectory copies its own prefix instead of re-prefilling it.
+fn run_generation_wave<H: WaveHost>(host: &mut H, queued: Vec<QueuedGeneration>) {
     let expected = queued.iter().map(QueuedGeneration::len).sum::<usize>();
-    // Every wave goes through the continuous path, a shared prompt included. The
-    // runtime recognizes rows with an identical prompt and decodes that prompt
-    // once, so the shared path would save nothing there; what it would cost is
-    // the prefix cache. It clears the generation context on entry and on exit,
-    // and a turn-0 wave arriving while other groups are mid-trajectory would
-    // evict every prefix they hold - and leave its own group's turn 0 for turn
-    // 1 to decode again.
     let sequences = queued
         .iter()
         .flat_map(|request| match request {
@@ -746,15 +876,15 @@ fn run_generation_wave(trainer: &mut Trainer, queued: Vec<QueuedGeneration>) {
                 prompt, sampling, ..
             } => sampling
                 .iter()
-                .map(|params| (prompt.as_slice(), *params))
+                .map(|params| (prompt.clone(), *params))
                 .collect::<Vec<_>>(),
             QueuedGeneration::Continuous { requests, .. } => requests
                 .iter()
-                .map(|(prompt, params)| (prompt.as_slice(), *params))
+                .map(|(prompt, params)| (prompt.clone(), *params))
                 .collect::<Vec<_>>(),
         })
         .collect::<Vec<_>>();
-    let generated = trainer.generate_sampled_continuous(&sequences);
+    let generated = host.run_wave(sequences);
     let mut rows = match generated {
         Ok(rows) if rows.len() == expected => VecDeque::from(rows),
         Ok(rows) => {
@@ -768,7 +898,6 @@ fn run_generation_wave(trainer: &mut Trainer, queued: Vec<QueuedGeneration>) {
             return;
         }
         Err(error) => {
-            let error = Error::from(error);
             for request in queued {
                 request.send_error(&error);
             }
@@ -776,7 +905,7 @@ fn run_generation_wave(trainer: &mut Trainer, queued: Vec<QueuedGeneration>) {
         }
     };
     for request in queued {
-        request.send_rows(trainer, &mut rows);
+        request.send_rows(host, &mut rows);
     }
 }
 
@@ -850,160 +979,329 @@ fn score_masked_batch(
         .collect())
 }
 
+/// The actor-side host around a `Trainer`: direct model calls go through the
+/// shared cell, generation waves through the persistent scheduler that also
+/// borrows the cell as its decode backend.
+struct TrainerHost {
+    trainer: Rc<RefCell<Option<Trainer>>>,
+    lent: Rc<RefCell<Option<Trainer>>>,
+    driver: SchedulerDriver<SharedTrainer>,
+}
+
+impl TrainerHost {
+    fn with_trainer<T>(&self, f: impl FnOnce(&mut Trainer) -> Result<T>) -> Result<T> {
+        let mut cell = self.trainer.borrow_mut();
+        let trainer = cell.as_mut().ok_or(Error::PolicyStopped)?;
+        f(trainer)
+    }
+}
+
+impl WaveHost for TrainerHost {
+    fn render_framing(
+        &self,
+        messages_json: &str,
+        tools_json: Option<&str>,
+        sentinels: &[TurnSentinels],
+        add_assistant: bool,
+    ) -> Result<RenderedFraming> {
+        self.with_trainer(|t| {
+            render_framing(t, messages_json, tools_json, sentinels, add_assistant)
+        })
+    }
+
+    fn supports_native_tools(&self) -> Result<bool> {
+        self.with_trainer(|t| t.chat_template_supports_tools().map_err(Error::from))
+    }
+
+    fn generation_stats(&self) -> Result<GenerationStats> {
+        self.with_trainer(|t| t.generation_stats().map_err(Error::from))
+    }
+
+    fn tool_call_parser(&self, tools_json: Option<&str>) -> Result<Option<String>> {
+        self.with_trainer(|t| t.tool_call_parser(tools_json).map_err(Error::from))
+    }
+
+    fn run_wave(&mut self, sequences: Vec<(Vec<i32>, SamplingParams)>) -> Result<Vec<SampledRow>> {
+        self.driver.run_wave(sequences)
+    }
+
+    fn finish_generation(&mut self, row: SampledRow) -> Result<PolicyGeneration> {
+        self.with_trainer(|t| finish_generation(t, row))
+    }
+
+    fn drain_rollout_stats(&mut self) -> Result<RolloutStatsSnapshot> {
+        Ok(self.driver.drain_stats())
+    }
+
+    fn note_tool_wait(&mut self, waiting: bool) {
+        self.driver.note_tool_wait(waiting);
+    }
+
+    async fn lend(&mut self, ready: oneshot::Sender<()>, done: oneshot::Receiver<()>) {
+        // Move the trainer out of the shared cell into the lent slot; the
+        // scheduler's backend reads the same cell, and no scheduler call
+        // happens while the borrower holds it (the actor is parked on `done`).
+        if let Some(trainer) = self.trainer.borrow_mut().take() {
+            self.lent.borrow_mut().replace(trainer);
+        }
+        if ready.send(()).is_ok() {
+            let _ = done.await;
+        }
+        if let Some(trainer) = self.lent.borrow_mut().take() {
+            self.trainer.borrow_mut().replace(trainer);
+        }
+    }
+}
+
+/// The actor-side host around an `Engine`, for generation-only runs.
+struct EngineHost {
+    engine: Rc<RefCell<Option<Engine>>>,
+    invalidations: Rc<std::cell::Cell<u64>>,
+    driver: SchedulerDriver<SharedEngine>,
+}
+
+impl EngineHost {
+    fn with_engine<T>(&self, f: impl FnOnce(&mut Engine) -> Result<T>) -> Result<T> {
+        let mut cell = self.engine.borrow_mut();
+        let engine = cell.as_mut().ok_or(Error::PolicyStopped)?;
+        f(engine)
+    }
+
+    /// Scores one trajectory, teacher-forced, through the engine's step-wise
+    /// API. The scorer reclaims a pool slot directly, which the engine runtime
+    /// does not report as a weights change, so the prefix cache is invalidated
+    /// by hand afterwards: the scheduler drops its tree on the next admission
+    /// instead of copying from a reclaimed slot.
+    fn score_masked(&mut self, tokens: &[i32], train_mask: &[bool]) -> Result<Vec<f32>> {
+        let result = self.with_engine(|e| {
+            e.score_masked_tokens(tokens, train_mask)
+                .map_err(engine_error)
+        });
+        self.invalidations
+            .set(self.invalidations.get().wrapping_add(1));
+        result
+    }
+}
+
+impl WaveHost for EngineHost {
+    fn render_framing(
+        &self,
+        messages_json: &str,
+        tools_json: Option<&str>,
+        sentinels: &[TurnSentinels],
+        add_assistant: bool,
+    ) -> Result<RenderedFraming> {
+        self.with_engine(|e| {
+            engine_render_framing(e, messages_json, tools_json, sentinels, add_assistant)
+        })
+    }
+
+    fn supports_native_tools(&self) -> Result<bool> {
+        self.with_engine(|e| e.chat_template_supports_tools().map_err(engine_error))
+    }
+
+    fn generation_stats(&self) -> Result<GenerationStats> {
+        self.with_engine(|e| e.generation_stats().map_err(engine_error))
+    }
+
+    fn tool_call_parser(&self, tools_json: Option<&str>) -> Result<Option<String>> {
+        self.with_engine(|e| e.tool_call_parser(tools_json).map_err(engine_error))
+    }
+
+    fn run_wave(&mut self, sequences: Vec<(Vec<i32>, SamplingParams)>) -> Result<Vec<SampledRow>> {
+        self.driver.run_wave(sequences)
+    }
+
+    fn finish_generation(&mut self, row: SampledRow) -> Result<PolicyGeneration> {
+        self.with_engine(|e| engine_finish_generation(e, row))
+    }
+
+    fn drain_rollout_stats(&mut self) -> Result<RolloutStatsSnapshot> {
+        Ok(self.driver.drain_stats())
+    }
+
+    fn note_tool_wait(&mut self, waiting: bool) {
+        self.driver.note_tool_wait(waiting);
+    }
+
+    async fn lend(&mut self, ready: oneshot::Sender<()>, done: oneshot::Receiver<()>) {
+        // Nothing lends an engine out: drain the handshake and carry on.
+        let _ = ready.send(());
+        let _ = done.await;
+    }
+}
+
+/// Serves one actor's requests against its host: the shared handler for both
+/// the trainer and the engine actor. Model-specific requests (scoring,
+/// training, lending) go to `model_specific`.
+async fn serve_requests<H: WaveHost>(
+    host: &mut H,
+    rx: &mut mpsc::Receiver<PolicyRequest>,
+    deferred: &mut VecDeque<PolicyRequest>,
+    sequence_capacity: usize,
+    mut model_specific: impl FnMut(&mut H, PolicyRequest),
+) {
+    loop {
+        let request = match deferred.pop_front() {
+            Some(request) => Some(request),
+            None => rx.recv().await,
+        };
+        let Some(request) = request else { break };
+        match request {
+            PolicyRequest::RenderChatFraming {
+                messages_json,
+                tools_json,
+                sentinels,
+                add_assistant,
+                reply,
+            } => {
+                let _ = reply.send(host.render_framing(
+                    &messages_json,
+                    tools_json.as_deref(),
+                    &sentinels,
+                    add_assistant,
+                ));
+            }
+            PolicyRequest::SupportsNativeTools { reply } => {
+                let _ = reply.send(host.supports_native_tools());
+            }
+            PolicyRequest::GenerationStats { reply } => {
+                let _ = reply.send(host.generation_stats());
+            }
+            PolicyRequest::RolloutStats { reply } => {
+                let _ = reply.send(host.drain_rollout_stats());
+            }
+            PolicyRequest::ToolWait { waiting } => host.note_tool_wait(waiting),
+            PolicyRequest::Lend { ready, done } => host.lend(ready, done).await,
+            PolicyRequest::ToolCallParser { tools_json, reply } => {
+                let _ = reply.send(host.tool_call_parser(tools_json.as_deref()));
+            }
+            PolicyRequest::GenerateShared {
+                prompt,
+                sampling,
+                reply,
+            } => {
+                // Logprob-free sampling: `score_masked` re-scores the
+                // assembled trajectory exactly, so rollout-time
+                // logprobs would be thrown away.
+                collect_generation_wave(
+                    host,
+                    rx,
+                    deferred,
+                    QueuedGeneration::Shared {
+                        prompt,
+                        sampling,
+                        reply,
+                    },
+                    sequence_capacity,
+                )
+                .await;
+            }
+            PolicyRequest::GenerateContinuous { requests, reply } => {
+                collect_generation_wave(
+                    host,
+                    rx,
+                    deferred,
+                    QueuedGeneration::Continuous { requests, reply },
+                    sequence_capacity,
+                )
+                .await;
+            }
+            PolicyRequest::Shutdown { reply } => {
+                let _ = reply.send(());
+                break;
+            }
+            other => model_specific(host, other),
+        }
+    }
+}
+
 impl PolicyActor {
     /// `sequence_capacity` is the number of rollout sequences the trainer can
-    /// decode concurrently - `TrainConfig::generation_concurrency`, resolved to
-    /// `n_seq_max` when left at zero. It is not derivable from `Trainer`, which
-    /// does not retain its config, so the caller supplies it and the engine
-    /// chunks its batches accordingly.
-    pub fn spawn_local(
-        trainer: Trainer,
-        capacity: usize,
-        sequence_capacity: usize,
-        scoring_capacity: usize,
-    ) -> Result<Self> {
+    /// decode concurrently - `TrainConfig::effective_generation_concurrency`,
+    /// resolved to `n_seq_max` when left at zero - and the wave window bounds
+    /// every coalesced batch by it. The scheduler's admission mode comes from
+    /// `training.rollout_admission`: `Lockstep` (the default) admits a wave only
+    /// when idle, in the canonical order the batched continuous generator uses,
+    /// so per-wave outputs reproduce it bit for bit; `Continuous` refills a
+    /// freed slot at the next step.
+    pub fn spawn_local(trainer: Trainer, capacity: usize, training: &TrainConfig) -> Result<Self> {
         if capacity == 0 {
             return Err(Error::invalid(
                 "policy actor channel capacity must be greater than zero",
             ));
         }
-        if sequence_capacity == 0 {
-            return Err(Error::invalid(
-                "policy actor sequence capacity must be greater than zero",
-            ));
-        }
-        if scoring_capacity == 0 {
-            return Err(Error::invalid(
-                "policy actor scoring capacity must be greater than zero",
-            ));
-        }
+        let sequence_capacity =
+            usize::try_from(training.effective_generation_concurrency().max(1)).unwrap_or(1);
+        let scoring_capacity = usize::try_from(training.n_seq_max.max(1)).unwrap_or(1);
+        let vocab = u32::try_from(trainer.vocab_size()?).map_err(|_| {
+            Error::Core(retrograd_core::Error::overflow(
+                "the model's vocabulary exceeds u32",
+            ))
+        })?;
+        let options = scheduler_options(training, vocab);
+        let trainer_cell = Rc::new(RefCell::new(Some(trainer)));
+        let driver = SchedulerDriver::new(SharedTrainer(Rc::clone(&trainer_cell)), options)
+            .map_err(infer_error)?;
         let (tx, mut rx) = mpsc::channel(capacity);
-        let returned = Rc::new(RefCell::new(None));
+        let returned: Rc<RefCell<Option<Trainer>>> = Rc::new(RefCell::new(None));
         let task_returned = Rc::clone(&returned);
         let lent: Rc<RefCell<Option<Trainer>>> = Rc::new(RefCell::new(None));
         let task_lent = Rc::clone(&lent);
         let task = tokio::task::spawn_local(async move {
-            let mut trainer = trainer;
+            let mut host = TrainerHost {
+                trainer: trainer_cell,
+                lent: task_lent,
+                driver,
+            };
             let mut deferred = VecDeque::new();
-            loop {
-                let request = match deferred.pop_front() {
-                    Some(request) => Some(request),
-                    None => rx.recv().await,
-                };
-                let Some(request) = request else { break };
-                match request {
-                    PolicyRequest::RenderChatFraming {
-                        messages_json,
-                        tools_json,
-                        sentinels,
-                        add_assistant,
-                        reply,
-                    } => {
-                        let _ = reply.send(render_framing(
-                            &trainer,
-                            &messages_json,
-                            tools_json.as_deref(),
-                            &sentinels,
-                            add_assistant,
-                        ));
-                    }
-                    PolicyRequest::SupportsNativeTools { reply } => {
-                        let _ =
-                            reply.send(trainer.chat_template_supports_tools().map_err(Error::from));
-                    }
-                    PolicyRequest::GenerationStats { reply } => {
-                        let _ = reply.send(trainer.generation_stats().map_err(Error::from));
-                    }
-                    PolicyRequest::ToolCallParser { tools_json, reply } => {
-                        let _ = reply.send(
-                            trainer
-                                .tool_call_parser(tools_json.as_deref())
-                                .map_err(Error::from),
-                        );
-                    }
-                    PolicyRequest::GenerateShared {
-                        prompt,
-                        sampling,
-                        reply,
-                    } => {
-                        // Logprob-free sampling: `score_masked` re-scores the
-                        // assembled trajectory exactly, so rollout-time
-                        // logprobs would be thrown away.
-                        collect_generation_wave(
-                            &mut trainer,
-                            &mut rx,
-                            &mut deferred,
-                            QueuedGeneration::Shared {
-                                prompt,
-                                sampling,
-                                reply,
-                            },
-                            sequence_capacity,
-                        )
-                        .await;
-                    }
-                    PolicyRequest::GenerateContinuous { requests, reply } => {
-                        collect_generation_wave(
-                            &mut trainer,
-                            &mut rx,
-                            &mut deferred,
-                            QueuedGeneration::Continuous { requests, reply },
-                            sequence_capacity,
-                        )
-                        .await;
-                    }
+            serve_requests(
+                &mut host,
+                &mut rx,
+                &mut deferred,
+                sequence_capacity,
+                |host, request| match request {
                     PolicyRequest::ScoreMasked {
                         tokens,
                         train_mask,
                         reply,
                     } => {
-                        let result = trainer
-                            .score_masked_tokens(&tokens, &train_mask)
-                            .map_err(Error::from);
+                        let result = host.with_trainer(|t| {
+                            t.score_masked_tokens(&tokens, &train_mask)
+                                .map_err(Error::from)
+                        });
                         let _ = reply.send(result);
                     }
                     PolicyRequest::ScoreMaskedBatch { sequences, reply } => {
-                        let _ = reply.send(score_masked_batch(
-                            &mut trainer,
-                            &sequences,
-                            scoring_capacity,
-                        ));
+                        let result = host
+                            .with_trainer(|t| score_masked_batch(t, &sequences, scoring_capacity));
+                        let _ = reply.send(result);
                     }
                     PolicyRequest::TrainBatch { job, reply } => {
                         let mut progress = Vec::new();
-                        let result = train_grpo_batch_observed(
-                            &mut trainer,
-                            &job.sequences,
-                            &job.params,
-                            &job.training,
-                            job.observation.as_ref(),
-                            &mut |value| progress.push(value),
-                        )
-                        .map(|metrics| (metrics, progress))
-                        .map_err(Error::from);
+                        let result = host.with_trainer(|t| {
+                            train_grpo_batch_observed(
+                                t,
+                                &job.sequences,
+                                &job.params,
+                                &job.training,
+                                job.observation.as_ref(),
+                                &mut |value| progress.push(value),
+                            )
+                            .map(|metrics| (metrics, progress))
+                            .map_err(Error::from)
+                        });
                         let _ = reply.send(result);
                     }
-                    PolicyRequest::Lend { ready, done } => {
-                        task_lent.borrow_mut().replace(trainer);
-                        if ready.send(()).is_ok() {
-                            let _ = done.await;
-                        }
-                        match task_lent.borrow_mut().take() {
-                            Some(returned) => trainer = returned,
-                            // The borrower was dropped mid-job and the trainer
-                            // went with it. Leave without filling the return
-                            // slot, so `into_trainer` reports the loss instead
-                            // of the actor serving requests with no trainer.
-                            None => return,
-                        }
-                    }
-                    PolicyRequest::Shutdown { reply } => {
-                        let _ = reply.send(());
-                        break;
-                    }
-                }
-            }
-            task_returned.borrow_mut().replace(trainer);
+                    // `serve_requests` answers every other request itself.
+                    _ => {}
+                },
+            )
+            .await;
+            // The trainer is only here if the loop ended on its own (the
+            // channel closed) or through Shutdown; either way it goes back to
+            // the caller, unless a borrower dropped it mid-job.
+            *task_returned.borrow_mut() = host.trainer.borrow_mut().take();
         });
         Ok(Self {
             handle: PolicyHandle {
@@ -1033,6 +1331,113 @@ impl PolicyActor {
     }
 
     pub async fn into_trainer(self) -> Result<Trainer> {
+        let (reply, receive) = oneshot::channel();
+        self.handle
+            .tx
+            .send(PolicyRequest::Shutdown { reply })
+            .await
+            .map_err(|_| Error::PolicyStopped)?;
+        receive.await.map_err(|_| Error::PolicyStopped)?;
+        self.task.await.map_err(policy_task_failed)?;
+        self.returned
+            .borrow_mut()
+            .take()
+            .ok_or(Error::PolicyStopped)
+    }
+}
+
+/// Local-task actor around an `Engine`, for the generation-only runs (`collect`
+/// against a local model). Same shape as [`PolicyActor`]: the engine stays on
+/// the thread that created it, and generation waves go through a persistent
+/// scheduler over the engine, keeping each trajectory's KV across turns.
+pub struct EnginePolicyActor {
+    handle: PolicyHandle,
+    returned: Rc<RefCell<Option<Engine>>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl EnginePolicyActor {
+    /// See [`PolicyActor::spawn_local`] for the capacities and the admission
+    /// mode; both derive from `training` the same way.
+    pub fn spawn_local(engine: Engine, capacity: usize, training: &TrainConfig) -> Result<Self> {
+        if capacity == 0 {
+            return Err(Error::invalid(
+                "policy actor channel capacity must be greater than zero",
+            ));
+        }
+        let sequence_capacity =
+            usize::try_from(training.effective_generation_concurrency().max(1)).unwrap_or(1);
+        let vocab = engine.vocab_size().map_err(engine_error)?;
+        let options = scheduler_options(training, vocab);
+        let engine_cell = Rc::new(RefCell::new(Some(engine)));
+        let invalidations = Rc::new(std::cell::Cell::new(0_u64));
+        let backend = SharedEngine {
+            engine: Rc::clone(&engine_cell),
+            invalidations: Rc::clone(&invalidations),
+        };
+        let driver = SchedulerDriver::new(backend, options).map_err(infer_error)?;
+        let (tx, mut rx) = mpsc::channel(capacity);
+        let returned: Rc<RefCell<Option<Engine>>> = Rc::new(RefCell::new(None));
+        let task_returned = Rc::clone(&returned);
+        let task = tokio::task::spawn_local(async move {
+            let mut host = EngineHost {
+                engine: engine_cell,
+                invalidations,
+                driver,
+            };
+            let mut deferred = VecDeque::new();
+            serve_requests(
+                &mut host,
+                &mut rx,
+                &mut deferred,
+                sequence_capacity,
+                |host, request| match request {
+                    PolicyRequest::ScoreMasked {
+                        tokens,
+                        train_mask,
+                        reply,
+                    } => {
+                        let result = host.score_masked(&tokens, &train_mask);
+                        let _ = reply.send(result);
+                    }
+                    PolicyRequest::ScoreMaskedBatch { sequences, reply } => {
+                        // No shared-prefix scorer on the engine: one
+                        // teacher-forced pass per trajectory.
+                        let result = sequences
+                            .iter()
+                            .map(|(tokens, train_mask)| host.score_masked(tokens, train_mask))
+                            .collect();
+                        let _ = reply.send(result);
+                    }
+                    // A generation-only policy cannot train.
+                    PolicyRequest::TrainBatch { reply, .. } => {
+                        let _ = reply.send(Err(Error::PolicyGeneration(
+                            "an engine-backed policy cannot run an optimizer step".into(),
+                        )));
+                    }
+                    // `serve_requests` answers every other request itself.
+                    _ => {}
+                },
+            )
+            .await;
+            *task_returned.borrow_mut() = host.engine.borrow_mut().take();
+        });
+        Ok(Self {
+            handle: PolicyHandle {
+                tx,
+                sequence_capacity,
+            },
+            returned,
+            task,
+        })
+    }
+
+    pub fn handle(&self) -> PolicyHandle {
+        self.handle.clone()
+    }
+
+    /// Shuts the actor down and gives the engine back.
+    pub async fn into_engine(self) -> Result<Engine> {
         let (reply, receive) = oneshot::channel();
         self.handle
             .tx

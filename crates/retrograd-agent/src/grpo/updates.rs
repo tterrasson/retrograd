@@ -14,7 +14,7 @@ use retrograd_training::Progress;
 use retrograd_training::batch::{BatchObservation, GrpoBatchParams};
 
 use super::evaluate::evaluate_scenarios;
-use super::metrics::{AgentMetricTotals, ratio_or_zero};
+use super::metrics::{AgentMetricTotals, ratio_or_zero, rollout_metric_values};
 use super::observe::{UpdateExport, draft};
 use super::selection::{
     DropBreakdown, UpdateFate, check_dropped_fraction, reasoning_truncation_warning,
@@ -318,8 +318,11 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
         let rollout_started = Instant::now();
         // Lifetime counters, differenced around this update's rollouts: the
         // reuse a whole run accumulated says nothing about whether *this* update
-        // paid for its prefixes.
+        // paid for its prefixes. The scheduler's rollout accumulators are
+        // drained the same way: the `before` snapshot resets them, the `after`
+        // one carries this update's occupancy and tool-wait windows.
         let generation_before = policy.generation_stats().await?;
+        let rollout_stats_before = policy.rollout_stats().await?;
         let selected = (0..config.scenarios_per_update).map(|offset| {
             let scenario = scenario_at(offset);
             let seed = config
@@ -343,6 +346,7 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
             .await
             .into_iter()
             .collect::<Result<Vec<_>>>()?;
+        let rollout_stats_after = policy.rollout_stats().await?;
         let Collected {
             attempted,
             failures,
@@ -394,7 +398,14 @@ pub(super) async fn run_updates(loop_: UpdateLoop<'_, '_, '_>) -> Result<TrainMe
                 normalization_warned = true;
             }
         }
-        let agent_metrics = metric_totals.values(attempted, failures);
+        let mut agent_metrics = metric_totals.values(attempted, failures);
+        // The scheduler's own view of the same rollouts: pool occupancy, the
+        // prefix-reuse fraction (the KV retained across turns) and how much of
+        // the tool-wait wall time overlapped with decoding.
+        agent_metrics.extend(rollout_metric_values(
+            &rollout_stats_before,
+            &rollout_stats_after,
+        ));
         breakdown.failed = failures.total();
         // The judge's own cap is disabled: truncated, failed and unscored
         // members all cost the same trainable trajectory, so the fraction that

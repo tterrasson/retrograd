@@ -14,6 +14,9 @@ retrograd-core.workspace = true
 retrograd-dataset.workspace = true
 retrograd-engine.workspace = true
 retrograd-env = { workspace = true, features = ["local-sandbox"] }
+# The step-wise scheduler the policy actor drives rollouts through. The
+# dependency direction is agent -> infer: the infer chain forbids infer -> agent.
+retrograd-infer.workspace = true
 retrograd-judge.workspace = true
 # `collect --api`: a remote model generating the traces a collection keeps.
 retrograd-llm-client.workspace = true

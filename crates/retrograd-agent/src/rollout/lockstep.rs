@@ -256,6 +256,9 @@ impl RolloutEngine {
             // Environments of different members are independent and I/O-bound,
             // so they step concurrently; the calls *within* one member stay
             // ordered, because a stateful environment sequences its own steps.
+            // While they run, every member of the turn is waiting on its tool
+            // or environment - the window `rollout/tool_wait_covered_fraction`
+            // attributes against other trajectories' decoding.
             let mut stepping = Vec::with_capacity(pending.len());
             let mut cursor = 0;
             for (index, environment) in environments.iter_mut().enumerate() {
@@ -268,7 +271,9 @@ impl RolloutEngine {
                 stepping.push(step_environment(environment.as_mut(), &pending[cursor].1));
                 cursor += 1;
             }
+            self.policy.note_tool_wait(true).await?;
             let turns = before_deadline(deadline, join_all(stepping)).await;
+            self.policy.note_tool_wait(false).await?;
             let Some(turns) = turns else {
                 // Cancelled mid-step: no observation came back, so these members
                 // end on the action they had already emitted.
