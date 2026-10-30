@@ -25,40 +25,57 @@ use retrograd_agent_core::config::JudgeFailurePolicy;
 use retrograd_agent_core::trajectory::{Message, Role, Trajectory, TrajectoryGroup};
 use retrograd_config::GrpoJudge;
 use retrograd_core::{Error, Result};
+use retrograd_engine::Trainer;
 use retrograd_judge::{JudgeBackend, JudgeBatchCounts, RewardBackend};
 use retrograd_metrics::MetricValue;
 
+use super::local_judge::LocalJudge;
 use super::prompts::Prompt;
 
 /// One prompt and the completions sampled from it, as the judge will see them.
-pub(crate) struct JudgeGroup<'a> {
+pub struct JudgeGroup<'a> {
     /// Half the presentation-permutation seed. The *prompt's* index in the
     /// dataset, not the group's position in the update: the permutation is what
     /// the request text depends on, so keying it on the prompt is what lets the
     /// verdict cache hit when the same prompt comes round again.
-    pub(crate) group_id: u64,
-    pub(crate) prompt: &'a Prompt,
-    pub(crate) completions: &'a [String],
+    pub group_id: u64,
+    pub prompt: &'a Prompt,
+    pub completions: &'a [String],
 }
 
-/// A judge, its runtime, and the policy for a group it could not score.
+/// A judge, its transport, and the policy for a group it could not score.
+///
+/// The transport is either the HTTP backend behind `[grpo.judge]`'s
+/// `base_url` (driven through the runtime this struct owns, on the training
+/// thread) or an in-process [`LocalJudge`] that runs on the `Trainer` passed
+/// to [`GroupJudge::score`] - which is what self-judging needs: the judge's
+/// requests are served by the same thread that is waiting for them.
 ///
 /// `max_dropped_fraction` is deliberately not here: it is a property of an
 /// update, and an update judges one batch per sampling wave. It lives with the
 /// counts it is applied to, in `JudgeTally::check`.
-pub(crate) struct GroupJudge {
-    backend: Arc<dyn RewardBackend>,
-    runtime: tokio::runtime::Runtime,
+pub struct GroupJudge {
+    backend: Backend,
+    runtime: Option<tokio::runtime::Runtime>,
     failure: JudgeFailurePolicy,
     weight: f32,
 }
 
+enum Backend {
+    Http(Arc<dyn RewardBackend>),
+    /// Boxed: a `LocalJudge` carries the protocol core, the sampling state and
+    /// the optional snapshot engine, and this enum sits inside every run state.
+    Local(Box<LocalJudge>),
+}
+
 impl GroupJudge {
-    pub(crate) fn new(config: &GrpoJudge) -> Result<Self> {
-        let backend = config
-            .config
-            .build(std::path::Path::to_path_buf)
-            .map_err(|error| Error::config(format!("build the GRPO judge: {error}")))?;
+    pub fn new(config: &GrpoJudge) -> Result<Self> {
+        let backend = Backend::Http(
+            config
+                .config
+                .build(std::path::Path::to_path_buf)
+                .map_err(|error| Error::config(format!("build the GRPO judge: {error}")))?,
+        );
         // Owned rather than borrowed from the caller: training runs on a plain
         // thread with no ambient runtime, and the judge is the only thing in
         // this crate that awaits anything.
@@ -68,14 +85,31 @@ impl GroupJudge {
             .map_err(|error| Error::runtime(format!("start the judge runtime: {error}")))?;
         Ok(Self {
             backend,
-            runtime,
+            runtime: Some(runtime),
             failure: config.failure,
             weight: config.weight,
         })
     }
 
+    /// A judge executed in process, on the `Trainer` handed to
+    /// [`GroupJudge::score`]. Used by callers that select the local transport
+    /// programmatically.
+    pub fn local(local: LocalJudge, failure: JudgeFailurePolicy, weight: f32) -> Result<Self> {
+        if !weight.is_finite() || weight < 0.0 {
+            return Err(Error::invalid(
+                "judge weight must be finite and non-negative",
+            ));
+        }
+        Ok(Self {
+            backend: Backend::Local(Box::new(local)),
+            runtime: None,
+            failure,
+            weight,
+        })
+    }
+
     /// Default weight of a verdict, for a reward line that states none.
-    pub(crate) fn weight(&self) -> f32 {
+    pub fn weight(&self) -> f32 {
         self.weight
     }
 
@@ -87,8 +121,12 @@ impl GroupJudge {
     /// `tally`, which is what carries both the failure threshold and the metrics:
     /// an update judges one batch per sampling wave, and neither a threshold
     /// nor a fraction means anything measured on one wave of several.
-    pub(crate) fn score(
-        &self,
+    ///
+    /// `trainer` is the model the local transport serves the requests with; the
+    /// HTTP backend ignores it.
+    pub fn score(
+        &mut self,
+        trainer: &mut Trainer,
         groups: &[JudgeGroup<'_>],
         tally: &mut JudgeTally,
     ) -> Result<Vec<Option<f32>>> {
@@ -96,21 +134,33 @@ impl GroupJudge {
             .iter()
             .map(trajectory_group)
             .collect::<Result<Vec<_>>>()?;
-        let metrics = self.runtime.block_on(retrograd_judge::score_groups(
-            Arc::clone(&self.backend),
-            &mut trajectory_groups,
-            self.failure,
-            // Never trips here: the threshold is the update's, and this is
-            // one of its waves. `tally.check` applies it once the update has
-            // stopped judging. `JudgeFailurePolicy::Fail` is unaffected,
-            // it stops on the first bad group, wherever that group is.
-            1.0,
-            // Never dropped here: a group every member of which the judge
-            // scored alike is already dropped by `group_advantages`, which
-            // sees the *blended* reward and can tell a tie the verifiable
-            // part broke from a real one.
-            false,
-        ))?;
+        let failure = self.failure;
+        let metrics = match &mut self.backend {
+            Backend::Http(backend) => {
+                let runtime = self
+                    .runtime
+                    .as_ref()
+                    .expect("the HTTP backend owns its runtime");
+                runtime.block_on(retrograd_judge::score_groups(
+                    Arc::clone(backend),
+                    &mut trajectory_groups,
+                    failure,
+                    // Never trips here: the threshold is the update's, and this is
+                    // one of its waves. `tally.check` applies it once the update has
+                    // stopped judging. `JudgeFailurePolicy::Fail` is unaffected,
+                    // it stops on the first bad group, wherever that group is.
+                    1.0,
+                    // Never dropped here: a group every member of which the judge
+                    // scored alike is already dropped by `group_advantages`, which
+                    // sees the *blended* reward and can tell a tie the verifiable
+                    // part broke from a real one.
+                    false,
+                ))?
+            }
+            Backend::Local(local) => {
+                local.score_groups(trainer, &mut trajectory_groups, failure, 1.0, false)?
+            }
+        };
         let scores = trajectory_groups
             .iter()
             .flat_map(|group| group.trajectories.iter().map(|member| member.reward))
@@ -119,8 +169,20 @@ impl GroupJudge {
         Ok(scores)
     }
 
-    pub(crate) fn metric_values(&self) -> Vec<MetricValue> {
-        self.backend.metric_values()
+    /// Refreshes the local judge's frozen snapshot at an update boundary, when
+    /// it has one. No-op for the HTTP backend.
+    pub fn refresh_snapshot(&mut self, trainer: &mut Trainer, update: u32) -> Result<()> {
+        if let Backend::Local(local) = &mut self.backend {
+            local.maybe_refresh_snapshot(update, trainer)?;
+        }
+        Ok(())
+    }
+
+    pub fn metric_values(&self) -> Vec<MetricValue> {
+        match &self.backend {
+            Backend::Http(backend) => backend.metric_values(),
+            Backend::Local(local) => local.metric_values(),
+        }
     }
 }
 
@@ -191,7 +253,7 @@ pub(super) fn trajectory_group(group: &JudgeGroup<'_>) -> Result<TrajectoryGroup
 /// the last wave - the smallest, the one that completed the batch - would be the
 /// one the series described.
 #[derive(Default)]
-pub(crate) struct JudgeTally {
+pub struct JudgeTally {
     counts: JudgeBatchCounts,
     /// Every verdict the update actually obtained, for the mean and the spread.
     values: Vec<f32>,

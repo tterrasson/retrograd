@@ -646,6 +646,11 @@ pub fn run_resumed(
     let mut final_metrics = TrainMetrics::default();
     let mut scratch = WeightedStepScratch::new(&state.layout);
     for update in state.start_update..config.updates {
+        // Freeze before collection, only when another update will use it.
+        // Every wave within the update then reads the same immutable weights.
+        if let Some(judge) = state.judge.as_mut() {
+            judge.refresh_snapshot(trainer, update)?;
+        }
         // Effective KL coefficient for this update: base * linear-warmup *
         // adaptive multiplier. With no `kl_schedule` this is just
         // `config.kl_coefficient`. When the base coefficient is zero, the

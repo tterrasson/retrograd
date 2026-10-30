@@ -102,7 +102,7 @@ pub(super) fn assemble_batch(
     let layout = state.layout;
     let loss_denominator = state.loss_denominator;
     let rollouts_per_update = state.rollouts_per_update;
-    let judge = state.judge.as_ref();
+    let judge = &mut state.judge;
     let prompts = &state.prompts;
     let prompt_rows = &state.prompt_rows;
     let reward = &mut state.reward;
@@ -225,7 +225,7 @@ pub(super) fn assemble_batch(
                 .iter()
                 .map(move |completion| (prompt_list[slot].reward_text(), completion.as_str()))
         });
-        let round_rows = match &judge {
+        let round_rows = match judge.as_mut() {
             Some(_) => score_rows(reward, pairs)?,
             // No judge: the scalar path, which refuses a `judge_weight`
             // instead of dropping one silently on the floor.
@@ -245,7 +245,7 @@ pub(super) fn assemble_batch(
         // the baseline and the epochs below, rather than trained on a scale
         // no other group shares.
         let judge_started = Instant::now();
-        let (round_rewards, round_judge_terms, round_judged) = match &judge {
+        let (round_rewards, round_judge_terms, round_judged) = match judge.as_mut() {
             Some(judge) => {
                 let weights = round_rows
                     .iter()
@@ -273,7 +273,7 @@ pub(super) fn assemble_batch(
                 let mut scored = if groups.is_empty() {
                     Vec::new()
                 } else {
-                    judge.score(&groups, &mut judge_tally)?
+                    judge.score(trainer, &groups, &mut judge_tally)?
                 }
                 .into_iter();
                 // Back to one entry per rollout of the round. A group that

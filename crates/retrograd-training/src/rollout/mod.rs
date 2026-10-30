@@ -20,6 +20,7 @@
 
 pub mod driver;
 pub(crate) mod judge;
+pub mod local_judge;
 pub(crate) mod packing;
 pub(crate) mod prompts;
 pub(crate) mod reward;
@@ -31,11 +32,13 @@ pub(crate) mod weights;
 mod tests;
 
 pub(crate) use driver::RolloutStats;
-pub(crate) use judge::{GroupJudge, JudgeGroup, JudgeTally};
-pub(crate) use packing::WeightedStepScratch;
-pub(crate) use prompts::{
-    Prompt, read_eval_prompts, read_prompts, tokenize_prompt, tokenize_prompts,
+pub use judge::{GroupJudge, JudgeGroup, JudgeTally};
+pub use local_judge::{
+    JudgeModel, LocalJudge, LocalJudgeTransport, SnapshotJudge, WavePlan, plan_wave,
 };
+pub(crate) use packing::WeightedStepScratch;
+pub use prompts::Prompt;
+pub(crate) use prompts::{read_eval_prompts, read_prompts, tokenize_prompt, tokenize_prompts};
 pub(crate) use reward::{
     RewardRow, evaluate_reward_values, evaluate_rewards, evenly_spaced_subset, reward_process,
     score, score_rows,

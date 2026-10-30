@@ -468,3 +468,50 @@ fn a_quantized_anchor_scores_within_a_measured_distance_of_its_f32_twin() {
         "the two anchors produced identical scores, so the quantized one was never read"
     );
 }
+
+/// A snapshot is independent of the live adapter, can be refreshed repeatedly,
+/// and does not replace the policy's fixed KL anchor.
+#[test]
+fn judge_snapshots_refresh_without_replacing_the_reference_or_accumulating_files() {
+    use retrograd::training::rollout::SnapshotJudge;
+    use retrograd_engine::JudgeWeights;
+    let model = tiny_fixture!();
+    let _guard = common::serialize_models();
+    let tmp = common::scratch("judge-snapshot");
+    let training = config(TrainablePolicy::Lora);
+    let mut trainer = Trainer::new(&model, training.clone()).unwrap();
+    trainer
+        .create_lora(&retrograd::LoraConfig {
+            rank: 4,
+            alpha: 8.0,
+            dropout: 0.0,
+            seed: 7,
+            targets: retrograd::TargetSet::Auto,
+            dtype: retrograd::LoraDtype::F32,
+        })
+        .unwrap();
+    trainer.attach_reference(&model, &training, None).unwrap();
+    let reference = trainer.reference_fingerprint().unwrap();
+    let sequence = tokens(&trainer);
+    let mut snapshot = SnapshotJudge::new(&model, &training, 2, tmp.path()).unwrap();
+    snapshot.maybe_refresh(0, &mut trainer).unwrap();
+    let frozen = snapshot.engine().score_tokens(&sequence).unwrap();
+    assert_eq!(snapshot.version(), 1);
+    snapshot.maybe_refresh(1, &mut trainer).unwrap();
+    assert_eq!(snapshot.version(), 1);
+    let mut training_row = trainer.tokenize_text(&TEXT.repeat(8)).unwrap();
+    training_row.truncate(257);
+    trainer.train_tokens(&training_row).unwrap();
+    assert_eq!(snapshot.engine().score_tokens(&sequence).unwrap(), frozen);
+    snapshot.maybe_refresh(2, &mut trainer).unwrap();
+    assert_eq!(snapshot.version(), 2);
+    let current = trainer.score_tokens(&sequence).unwrap();
+    let refreshed = trainer
+        .with_weights(JudgeWeights::Snapshot, Some(snapshot.engine()), |engine| {
+            engine.score_tokens(&sequence)
+        })
+        .unwrap();
+    assert_eq!(refreshed, current);
+    assert_eq!(trainer.reference_fingerprint().unwrap(), reference);
+    assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
+}

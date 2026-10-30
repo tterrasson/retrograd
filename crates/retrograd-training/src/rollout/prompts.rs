@@ -10,7 +10,7 @@ use retrograd_engine::Trainer;
 use super::sampling::RowLayout;
 
 #[derive(Clone, Debug)]
-pub(crate) struct Prompt {
+pub struct Prompt {
     pub(super) conversation: ChatExample,
     reward_text: String,
     reference: Option<String>,
