@@ -13,13 +13,23 @@ use retrograd_infer::{DecodeBackend, SchedulerOptions};
 
 use crate::error::OpenAiError;
 use crate::render::PromptModel;
+use crate::request::ToolConstraint;
 use crate::session::WeightsSpec;
 
 /// A decode backend that also answers the read-only prompt-rendering queries:
 /// what the session drives through the scheduler.
-pub trait ServeBackend: DecodeBackend + PromptModel {}
+pub trait ServeBackend: DecodeBackend + PromptModel {
+    /// Sets the engine-level reasoning budget (tokens; `-1`: the model
+    /// decides). The runtime builds each request's budget machine from the
+    /// engine's plan. The serving session drains requests before changing it.
+    fn set_reasoning_budget(&mut self, budget: i32) -> CoreResult<()>;
+}
 
-impl ServeBackend for Engine {}
+impl ServeBackend for Engine {
+    fn set_reasoning_budget(&mut self, budget: i32) -> CoreResult<()> {
+        Ok(Engine::set_reasoning_budget(self, budget)?)
+    }
+}
 
 impl PromptModel for Engine {
     fn supports_native_tools(&self) -> CoreResult<bool> {
@@ -28,6 +38,19 @@ impl PromptModel for Engine {
 
     fn tool_call_parser(&self, tools_json: &str) -> CoreResult<Option<String>> {
         Ok(Engine::tool_call_parser(self, Some(tools_json))?)
+    }
+
+    fn tool_call_grammar(
+        &self,
+        tools_json: &str,
+        constraint: &ToolConstraint,
+    ) -> CoreResult<Option<String>> {
+        let (mode, forced) = match constraint {
+            ToolConstraint::Required => (0, None),
+            ToolConstraint::Forced(name) => (1, Some(name.as_str())),
+            ToolConstraint::AtMostOne => (2, None),
+        };
+        Ok(Engine::tool_call_grammar(self, tools_json, mode, forced)?)
     }
 
     fn format_chat(&self, messages_json: &str, tools_json: Option<&str>) -> CoreResult<String> {

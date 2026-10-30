@@ -17,7 +17,7 @@ use retrograd_infer::FinishReason;
 
 use crate::chat::wire::{
     ChatCompletionChunk, ChunkChoice, Delta, FinishReason as WireFinishReason, FunctionOut,
-    ToolCallDelta, ToolCallOut, Usage,
+    TokenLogprobs, ToolCallDelta, ToolCallOut, Usage,
 };
 use crate::render::Completion;
 use crate::stream::{StreamDelta, StreamParser};
@@ -31,9 +31,11 @@ pub struct Meta {
     pub system_fingerprint: String,
 }
 
-/// The chunks of one answer, `[DONE]` excluded.
+/// The chunks of one answer, `[DONE]` excluded. `index` is which choice of
+/// the request the answer is (0 unless `n > 1`).
 pub fn chunks(
     meta: &Meta,
+    index: u32,
     completion: &Completion,
     include_usage: bool,
 ) -> Vec<ChatCompletionChunk> {
@@ -46,9 +48,10 @@ pub fn chunks(
         model: meta.model.clone(),
         system_fingerprint: meta.system_fingerprint.clone(),
         choices: vec![ChunkChoice {
-            index: 0,
+            index,
             delta,
             finish_reason,
+            logprobs: None,
         }],
         usage: pending_usage,
     };
@@ -99,6 +102,9 @@ pub fn chunks(
 /// [`StreamParser`] holds back whatever could still change.
 pub struct Chunker {
     meta: Meta,
+    /// Which choice of the request this chunker streams (`n > 1` streams one
+    /// `choices` entry per index).
+    index: u32,
     parser: Option<StreamParser>,
     include_usage: bool,
     prompt_tokens: u64,
@@ -112,12 +118,14 @@ impl Chunker {
     /// `reader` is the tool-call parser the rendering chose, if any.
     pub fn new(
         meta: Meta,
+        index: u32,
         reader: Option<Arc<dyn ToolCallParser>>,
         prompt_tokens: usize,
         include_usage: bool,
     ) -> Self {
         Self {
             meta,
+            index,
             parser: reader.map(StreamParser::new),
             include_usage,
             // Widening: token counts of one request.
@@ -135,13 +143,20 @@ impl Chunker {
                 ..Delta::default()
             },
             None,
+            None,
         )
     }
 
     /// One decoded token: its text is fed to the parser and the stable deltas
     /// come out as chunks. `text` may be empty (a partial UTF-8 sequence or a
-    /// possible stop prefix held back by the detokenizer).
-    pub fn token(&mut self, text: &str) -> Vec<ChatCompletionChunk> {
+    /// possible stop prefix held back by the detokenizer). `logprobs`, when
+    /// the client asked for them, rides on the first chunk this token
+    /// produced.
+    pub fn token(
+        &mut self,
+        text: &str,
+        logprobs: Option<TokenLogprobs>,
+    ) -> Vec<ChatCompletionChunk> {
         self.tokens += 1;
         let deltas = match self.parser.as_mut() {
             Some(parser) => parser.push(text),
@@ -150,7 +165,16 @@ impl Chunker {
                 false => vec![StreamDelta::Content(text.to_owned())],
             },
         };
-        self.deltas(deltas)
+        let mut chunks = self.deltas(deltas);
+        if let Some(logprobs) = logprobs.filter(|entry| !entry.bytes.is_empty()) {
+            // A token may emit no text yet (UTF-8, stop or parser buffering).
+            // Its probability still belongs to the stream exactly once.
+            if chunks.is_empty() {
+                chunks.push(self.chunk(Delta::default(), None, None));
+            }
+            chunks[0].choices[0].logprobs = Some(logprobs);
+        }
+        chunks
     }
 
     /// The completion ended: `tail` is the text the detokenizer held back (it
@@ -170,11 +194,11 @@ impl Chunker {
         };
         let mut chunks = self.deltas(deltas);
         let finish_reason = match (self.saw_call, reason) {
-            (true, _) => WireFinishReason::ToolCalls,
+            (true, FinishReason::Eog | FinishReason::Stop) => WireFinishReason::ToolCalls,
             (false, FinishReason::Eog | FinishReason::Stop) => WireFinishReason::Stop,
-            (false, _) => WireFinishReason::Length,
+            (_, _) => WireFinishReason::Length,
         };
-        chunks.push(self.chunk(Delta::default(), Some(finish_reason)));
+        chunks.push(self.chunk(Delta::default(), Some(finish_reason), None));
         if self.include_usage {
             chunks.push(ChatCompletionChunk {
                 choices: Vec::new(),
@@ -183,7 +207,7 @@ impl Chunker {
                     completion_tokens: self.tokens,
                     total_tokens: self.prompt_tokens + self.tokens,
                 })),
-                ..self.chunk(Delta::default(), None)
+                ..self.chunk(Delta::default(), None, None)
             });
         }
         chunks
@@ -192,21 +216,25 @@ impl Chunker {
     fn deltas(&mut self, deltas: Vec<StreamDelta>) -> Vec<ChatCompletionChunk> {
         deltas
             .into_iter()
-            .map(|delta| match delta {
-                StreamDelta::Content(text) => self.chunk(
+            .filter_map(|delta| match delta {
+                StreamDelta::Content(text) => Some(self.chunk(
                     Delta {
                         content: Some(text),
                         ..Delta::default()
                     },
                     None,
-                ),
+                    None,
+                )),
+                // The chat surface does not stream the reasoning block as
+                // content; the Responses surface reads it as its own item.
+                StreamDelta::Reasoning(_) => None,
                 StreamDelta::Call { index, id, name } => {
                     self.saw_call = true;
-                    self.call_chunk(index, id, name, String::new())
+                    Some(self.call_chunk(index, id, name, String::new()))
                 }
                 StreamDelta::CallArguments { index, delta } => {
                     self.saw_call = true;
-                    self.call_chunk(index, String::new(), String::new(), delta)
+                    Some(self.call_chunk(index, String::new(), String::new(), delta))
                 }
             })
             .collect()
@@ -234,10 +262,16 @@ impl Chunker {
                 ..Delta::default()
             },
             None,
+            None,
         )
     }
 
-    fn chunk(&self, delta: Delta, finish_reason: Option<WireFinishReason>) -> ChatCompletionChunk {
+    fn chunk(
+        &self,
+        delta: Delta,
+        finish_reason: Option<WireFinishReason>,
+        logprobs: Option<TokenLogprobs>,
+    ) -> ChatCompletionChunk {
         let pending_usage = self.include_usage.then_some(None);
         ChatCompletionChunk {
             id: self.meta.id.clone(),
@@ -246,9 +280,10 @@ impl Chunker {
             model: self.meta.model.clone(),
             system_fingerprint: self.meta.system_fingerprint.clone(),
             choices: vec![ChunkChoice {
-                index: 0,
+                index: self.index,
                 delta,
                 finish_reason,
+                logprobs,
             }],
             usage: pending_usage,
         }
@@ -286,8 +321,11 @@ mod tests {
             finish_reason: FinishReason::Stop,
             usage: Usage::default(),
             parse_errors: 0,
+            logprobs: None,
+            reasoning: String::new(),
+            reasoning_tokens: 0,
         };
-        let chunks = values(&chunks(&meta(), &completion, false));
+        let chunks = values(&chunks(&meta(), 0, &completion, false));
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks[0]["object"], "chat.completion.chunk");
         assert_eq!(
@@ -327,8 +365,11 @@ mod tests {
                 total_tokens: 7,
             },
             parse_errors: 0,
+            logprobs: None,
+            reasoning: String::new(),
+            reasoning_tokens: 0,
         };
-        let chunks = values(&chunks(&meta(), &completion, true));
+        let chunks = values(&chunks(&meta(), 0, &completion, true));
         // role, two calls, finish, usage.
         assert_eq!(chunks.len(), 5);
         assert_eq!(
@@ -344,5 +385,32 @@ mod tests {
         assert_eq!(chunks[3]["usage"], Value::Null);
         assert_eq!(chunks[4]["choices"], json!([]));
         assert_eq!(chunks[4]["usage"]["total_tokens"], 7);
+    }
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+
+    #[test]
+    fn buffered_text_does_not_drop_a_tokens_logprobs() {
+        let meta = Meta {
+            id: "c".into(),
+            created: 0,
+            model: "m".into(),
+            system_fingerprint: String::new(),
+        };
+        let mut chunker = Chunker::new(meta, 0, None, 1, false);
+        let chunks = chunker.token(
+            "",
+            Some(TokenLogprobs {
+                token: "a".into(),
+                bytes: vec![b'a'],
+                logprob: -0.5,
+                top_logprobs: Vec::new(),
+            }),
+        );
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].choices[0].logprobs.is_some());
     }
 }

@@ -153,8 +153,9 @@ enum Envelope {
 
 struct Job {
     spec: WeightsSpec,
-    /// `None` loads and answers nothing.
-    prompt: Option<GenerationRequest>,
+    /// `None` loads and answers nothing. Boxed: the envelope enum is sent
+    /// through a bounded channel and the request is the large field.
+    prompt: Option<Box<GenerationRequest>>,
     reply: oneshot::Sender<Result<Option<ServingJob>, OpenAiError>>,
 }
 
@@ -163,6 +164,7 @@ struct Core {
     spec: WeightsSpec,
     scheduler: Scheduler<Box<dyn ServeBackend>>,
     parsers: ParserCache,
+    reasoning_budget: i32,
     /// Adapter names registered on the backend.
     adapters: HashSet<String>,
     /// Held, never read: dropping it is what gives the device back - after the
@@ -240,25 +242,32 @@ impl Session {
     }
 
     /// Answers one request with the weights `spec` names: the request is
-    /// submitted, its event stream drained whole, and the answer read back.
+    /// submitted, its event stream drained whole, and the answers read back -
+    /// one per choice when the request asked for `n > 1`.
     pub async fn complete(
         &self,
         spec: WeightsSpec,
         request: GenerationRequest,
-    ) -> Result<Sampled, OpenAiError> {
+    ) -> Result<Vec<Sampled>, OpenAiError> {
         let job = self.open(spec, request).await?;
         let prompt_tokens = job.prompt_tokens;
         let reader = job.reader;
-        let collected = tokio::task::spawn_blocking(move || collect(job.stream))
+        let collecting_reader = reader.clone();
+        let collected = tokio::task::spawn_blocking(move || collect(job.stream, collecting_reader))
             .await
             .map_err(|_| OpenAiError::internal("the answer collection was cancelled"))??;
-        Ok(Sampled {
-            text: collected.text,
-            prompt_tokens,
-            completion_tokens: collected.tokens,
-            stopped_at_eog: collected.stopped,
-            reader,
-        })
+        Ok(collected
+            .into_iter()
+            .map(|choice| Sampled {
+                text: choice.text,
+                prompt_tokens,
+                completion_tokens: choice.tokens,
+                stopped_at_eog: choice.stopped,
+                reader: reader.clone(),
+                logprobs: choice.wants_logprobs.then_some(choice.logprobs),
+                reasoning_tokens: choice.reasoning_tokens,
+            })
+            .collect())
     }
 
     /// Submits one request with the weights `spec` names and hands back its
@@ -315,7 +324,7 @@ impl Session {
         self.jobs
             .try_send(Envelope::Job(Job {
                 spec,
-                prompt,
+                prompt: prompt.map(Box::new),
                 reply,
             }))
             .map_err(|error| match error {
@@ -335,55 +344,124 @@ impl Session {
     }
 }
 
-/// What reading one request's event stream produced.
+/// What reading one request's event stream produced, per choice: the stream
+/// carries one completion per `index`, and every one of them must end.
 struct Collected {
     text: String,
     /// Token events seen, EOG included when one ended the completion.
     tokens: usize,
     /// Whether the completion stopped on EOG or a stop string.
     stopped: bool,
+    /// The per-token logprobs, when the request asked for them. Special
+    /// tokens (EOG) carry no piece and are not listed.
+    logprobs: Vec<render::SampledLogprob>,
+    /// Whether any logprobs were requested at all.
+    wants_logprobs: bool,
+    /// Tokens attributed to the reasoning block: a token counts when the
+    /// partial parse of the text so far grew the reasoning block.
+    reasoning_tokens: usize,
+    /// The reasoning length the partial parse last reported.
+    reasoning_seen: usize,
 }
 
-/// Drains one request's stream on a blocking thread. Chat requests carry a
-/// single completion (`index == 0`).
-fn collect(stream: EventStream) -> Result<Collected, OpenAiError> {
-    let mut text = String::new();
-    let mut tokens = 0;
-    let mut reason = None;
+/// Drains one request's stream on a blocking thread, gathering every
+/// completion (`index`) the request asked for, in index order.
+fn collect(
+    stream: EventStream,
+    reader: Option<Arc<dyn ToolCallParser>>,
+) -> Result<Vec<Collected>, OpenAiError> {
+    let mut choices: Vec<Option<Collected>> = Vec::new();
+    let mut ended: Vec<Option<FinishReason>> = Vec::new();
     for event in stream {
         match event {
             Event::Token(token) => {
-                if token.index == 0 {
-                    tokens += 1;
-                    text.push_str(&token.text);
+                while choices.len() <= token.index {
+                    choices.push(Some(Collected {
+                        text: String::new(),
+                        tokens: 0,
+                        stopped: false,
+                        logprobs: Vec::new(),
+                        wants_logprobs: token.sampled_logprob.is_some(),
+                        reasoning_tokens: 0,
+                        reasoning_seen: 0,
+                    }));
+                    ended.push(None);
+                }
+                let choice = choices[token.index].as_mut().expect("resized just above");
+                choice.tokens += 1;
+                choice.text.push_str(&token.text);
+                // Attribute this token to the reasoning block when the partial
+                // parse of the text so far grew it.
+                if let Some(reader) = &reader {
+                    let reasoning_len = reader.parse_partial(&choice.text).reasoning.len();
+                    if reasoning_len > choice.reasoning_seen {
+                        choice.reasoning_tokens += 1;
+                        choice.reasoning_seen = reasoning_len;
+                    }
+                }
+                if token.sampled_logprob.is_some() {
+                    choice.wants_logprobs = true;
+                    // EOG and other special tokens have no piece: they carry
+                    // no text, so they are not listed in the logprobs.
+                    if !token.piece.is_empty() {
+                        choice.logprobs.push(render::SampledLogprob {
+                            piece: token.piece.clone(),
+                            logprob: token.sampled_logprob.unwrap_or(0.0),
+                            top: token
+                                .top_logprobs
+                                .iter()
+                                .map(|top| (top.token, top.logprob, top.piece.clone()))
+                                .collect(),
+                        });
+                    }
                 }
             }
             Event::End {
-                index: 0,
-                reason: end,
-                text: tail,
+                index,
+                reason,
+                text,
             } => {
-                text.push_str(&tail);
-                reason = Some(end);
+                while ended.len() <= index {
+                    ended.push(None);
+                    choices.push(None);
+                }
+                if let Some(choice) = choices[index].as_mut() {
+                    choice.text.push_str(&text);
+                }
+                ended[index] = Some(reason);
             }
-            Event::End { .. } => {}
             Event::Error(error) => return Err(error.into()),
         }
     }
-    let stopped = matches!(reason, Some(FinishReason::Eog | FinishReason::Stop));
-    match reason {
-        Some(FinishReason::Cancelled) => Err(OpenAiError::internal(
-            "the request was cancelled while it waited for the device",
-        )),
-        Some(_) => Ok(Collected {
-            text,
-            tokens,
-            stopped,
-        }),
-        None => Err(OpenAiError::internal(
-            "the serving thread stopped before the request ended",
-        )),
+    let mut out = Vec::with_capacity(choices.len());
+    for (index, choice) in choices.into_iter().enumerate() {
+        let Some(mut choice) = choice else {
+            return Err(OpenAiError::internal(
+                "the serving thread stopped before the request ended",
+            ));
+        };
+        let reason = ended.get(index).copied().flatten();
+        choice.stopped = matches!(reason, Some(FinishReason::Eog | FinishReason::Stop));
+        match reason {
+            Some(FinishReason::Cancelled) => {
+                return Err(OpenAiError::internal(
+                    "the request was cancelled while it waited for the device",
+                ));
+            }
+            Some(_) => out.push(choice),
+            None => {
+                return Err(OpenAiError::internal(
+                    "the serving thread stopped before the request ended",
+                ));
+            }
+        }
     }
+    if out.is_empty() {
+        return Err(OpenAiError::internal(
+            "the serving thread stopped before the request ended",
+        ));
+    }
+    Ok(out)
 }
 
 struct Worker {
@@ -437,7 +515,7 @@ impl Worker {
                             reply,
                         } = job;
                         if !reply.is_closed() {
-                            let outcome = self.serve(&mut core, &spec, prompt);
+                            let outcome = self.serve(&mut core, &spec, prompt.map(|boxed| *boxed));
                             let _ = reply.send(outcome);
                         }
                     }
@@ -508,13 +586,27 @@ impl Worker {
         let rendered =
             render::render_prompt(core.scheduler.backend(), &request, &mut core.parsers)?;
         let prompt_tokens = rendered.tokens.len();
+        // The engine owns one budget plan. Drain the previous budget group
+        // before replacing it, and restore the default for requests omitting it.
+        let budget = request.reasoning_budget.unwrap_or(-1);
+        if budget != core.reasoning_budget {
+            core.scheduler.run_until_idle()?;
+            if let Err(error) = core.scheduler.backend_mut().set_reasoning_budget(budget) {
+                // A refused budget may already have replaced the engine plan.
+                core.scheduler
+                    .backend_mut()
+                    .set_reasoning_budget(core.reasoning_budget)?;
+                return Err(error.into());
+            }
+            core.reasoning_budget = budget;
+        }
         // `n` completions of one prompt is the `generate_batch` shape: one
-        // prefill, then one copy of the prompt per further choice.
-        let sampling =
-            vec![retrograd_core::SamplingParamsV2::from(request.sampling); request.n as usize];
+        // prefill, then one copy of the prompt per further choice. The
+        // per-choice entries (derived seeds, the grammar the rendering
+        // attached) come from the rendering.
         let request = Request {
             prompt: rendered.tokens,
-            sampling,
+            sampling: rendered.sampling,
             stop: request.stop,
             n_top_logprobs: request.logprobs.unwrap_or(0),
             logprobs: request.logprobs.is_some(),
@@ -561,6 +653,7 @@ impl Worker {
             spec: spec.clone(),
             scheduler,
             parsers: ParserCache::default(),
+            reasoning_budget: -1,
             adapters: HashSet::new(),
             _lease: lease,
         }))
@@ -712,7 +805,12 @@ mod tests {
             SessionOptions::default(),
         )
         .unwrap();
-        let sampled = session.complete(spec(None), request()).await.unwrap();
+        let sampled = session
+            .complete(spec(None), request())
+            .await
+            .unwrap()
+            .pop()
+            .expect("one choice");
         assert_eq!(sampled.text, "hello from retrograd");
         assert!(sampled.stopped_at_eog);
         // The reply plus the end-of-generation token.
@@ -720,7 +818,12 @@ mod tests {
 
         let mut short = request();
         short.sampling.max_new_tokens = 5;
-        let sampled = session.complete(spec(None), short).await.unwrap();
+        let sampled = session
+            .complete(spec(None), short)
+            .await
+            .unwrap()
+            .pop()
+            .expect("one choice");
         assert_eq!(sampled.text, "hello");
         assert!(!sampled.stopped_at_eog);
         assert_eq!(sampled.completion_tokens, 5);
@@ -765,5 +868,38 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+    }
+    #[tokio::test]
+    async fn changing_reasoning_budgets_drains_the_previous_request_and_restores_default() {
+        let (loader, _) = FakeLoader::shared_endless("x");
+        let session = Session::new(
+            Arc::new(loader.clone()),
+            Arc::new(Unshared),
+            SessionOptions::default(),
+        )
+        .unwrap();
+        let mut first = request();
+        first.reasoning_budget = Some(0);
+        first.sampling.max_new_tokens = 3;
+        let job = session.open(spec(None), first).await.unwrap();
+        let mut next = request();
+        next.sampling.max_new_tokens = 1;
+        session.complete(spec(None), next).await.unwrap();
+        let changes = loader.budget_changes();
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0], (0, 0));
+        assert_eq!(
+            changes[1],
+            (-1, 3),
+            "the first request finished before its budget was replaced"
+        );
+        let events: Vec<_> = job.stream.collect();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            Event::End {
+                reason: FinishReason::MaxTokens,
+                ..
+            }
+        )));
     }
 }

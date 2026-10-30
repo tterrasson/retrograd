@@ -85,6 +85,7 @@ timed_step run:capabilities-suite cargo test --no-default-features --features ag
   --test engine_contracts \
   --test engine_runtime \
   --test infer_runtime \
+  --test serve_runtime \
   --test rollout_scheduler \
   --test kv_projection_gradients \
   --test recurrent_families \

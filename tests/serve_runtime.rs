@@ -46,7 +46,7 @@ fn spec(fixture: &Path, adapter: Option<PathBuf>) -> WeightsSpec {
     }
 }
 
-fn chat_prompt() -> retrograd_openai::ChatPrompt {
+fn chat_prompt() -> retrograd_openai::GenerationRequest {
     prepare(
         serde_json::from_value(serde_json::json!({
             "model": "m",
@@ -57,7 +57,15 @@ fn chat_prompt() -> retrograd_openai::ChatPrompt {
         .expect("a valid request"),
     )
     .expect("the request prepares")
-    .prompt
+    .request
+}
+
+fn completion_text(engine: &Engine, tokens: &[i32], unparse_special: bool) -> String {
+    let mut end = tokens.len();
+    while end > 0 && engine.is_eog_token(tokens[end - 1]).unwrap() {
+        end -= 1;
+    }
+    engine.detokenize(&tokens[..end], unparse_special).unwrap()
 }
 
 fn session() -> Session {
@@ -75,7 +83,7 @@ fn session() -> Session {
 
 #[tokio::test]
 async fn a_served_completion_matches_the_engines_own_generation_bit_for_bit() {
-    serialize_models();
+    let _guard = serialize_models();
     let Some(fixture) = common::model_path_if_available() else {
         eprintln!("no CPU fixture; skipping");
         return;
@@ -87,19 +95,24 @@ async fn a_served_completion_matches_the_engines_own_generation_bit_for_bit() {
     let mut engine = Engine::new(&fixture, &engine_config()).expect("engine loads");
     let mut parsers = ParserCache::default();
     let rendered = render_prompt(&engine, &prompt, &mut parsers).expect("prompt renders");
-    let params = prompt.sampling;
+    let params = retrograd_core::SamplingParams {
+        temperature: prompt.sampling.temperature,
+        top_p: prompt.sampling.top_p,
+        max_new_tokens: prompt.sampling.max_new_tokens,
+        seed: prompt.sampling.seed,
+    };
     let expected = engine
         .generate(&rendered.tokens, &params)
         .expect("engine generates");
-    let expected_text = engine
-        .detokenize(&expected.tokens, false)
-        .expect("detokenize");
+    let expected_text = completion_text(&engine, &expected.tokens, rendered.unparse_special);
 
     let session = session();
     let sampled = session
         .complete(base.clone(), prompt.clone())
         .await
-        .expect("the session serves the request");
+        .expect("the session serves the request")
+        .pop()
+        .expect("one choice");
     assert_eq!(sampled.text, expected_text);
     assert_eq!(sampled.completion_tokens, expected.tokens.len());
     assert_eq!(sampled.prompt_tokens, rendered.tokens.len());
@@ -121,7 +134,7 @@ async fn a_served_completion_matches_the_engines_own_generation_bit_for_bit() {
 
 #[tokio::test]
 async fn switching_checkpoints_activates_the_adapter_without_reloading_the_base() {
-    serialize_models();
+    let _guard = serialize_models();
     let Some(fixture) = common::model_path_if_available() else {
         eprintln!("no CPU fixture; skipping");
         return;
@@ -151,18 +164,23 @@ async fn switching_checkpoints_activates_the_adapter_without_reloading_the_base(
     engine_a.load_lora(&adapter_a).expect("load A");
     let mut parsers = ParserCache::default();
     let rendered = render_prompt(&engine_a, &prompt, &mut parsers).expect("prompt renders");
-    let params = prompt.sampling;
+    let params = retrograd_core::SamplingParams {
+        temperature: prompt.sampling.temperature,
+        top_p: prompt.sampling.top_p,
+        max_new_tokens: prompt.sampling.max_new_tokens,
+        seed: prompt.sampling.seed,
+    };
     let expected_a = engine_a
         .generate(&rendered.tokens, &params)
         .expect("generate with A");
-    let expected_text_a = engine_a
-        .detokenize(&expected_a.tokens, false)
-        .expect("detok");
+    let expected_text_a = completion_text(&engine_a, &expected_a.tokens, rendered.unparse_special);
 
     let sampled_a = session
         .complete(spec(&fixture, Some(adapter_a.clone())), prompt.clone())
         .await
-        .expect("served under A");
+        .expect("served under A")
+        .pop()
+        .expect("one choice");
     assert_eq!(sampled_a.text, expected_text_a);
 
     // Switch to B: no reload of the base, the adapter is registered and
@@ -172,13 +190,13 @@ async fn switching_checkpoints_activates_the_adapter_without_reloading_the_base(
     let expected_b = engine_b
         .generate(&rendered.tokens, &params)
         .expect("generate with B");
-    let expected_text_b = engine_b
-        .detokenize(&expected_b.tokens, false)
-        .expect("detok");
+    let expected_text_b = completion_text(&engine_b, &expected_b.tokens, rendered.unparse_special);
     let sampled_b = session
         .complete(spec(&fixture, Some(adapter_b.clone())), prompt.clone())
         .await
-        .expect("served under B");
+        .expect("served under B")
+        .pop()
+        .expect("one choice");
     assert_eq!(sampled_b.text, expected_text_b, "B is the active adapter");
     let stats = session.stats().await.expect("loaded");
     assert_eq!(stats.adapters.len(), 2, "both checkpoints registered");
@@ -191,13 +209,17 @@ async fn switching_checkpoints_activates_the_adapter_without_reloading_the_base(
     let sampled_base = session
         .complete(spec(&fixture, None), prompt.clone())
         .await
-        .expect("served under the base");
+        .expect("served under the base")
+        .pop()
+        .expect("one choice");
     let mut engine_base = Engine::new(&fixture, &engine_config()).expect("engine loads");
     let expected_base = engine_base
         .generate(&rendered.tokens, &params)
         .expect("generate base");
-    let expected_text_base = engine_base
-        .detokenize(&expected_base.tokens, false)
-        .expect("detok");
+    let expected_text_base = completion_text(
+        &engine_base,
+        &expected_base.tokens,
+        rendered.unparse_special,
+    );
     assert_eq!(sampled_base.text, expected_text_base);
 }

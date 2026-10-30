@@ -14,8 +14,8 @@ pub use convert::{Prepared, prepare};
 pub use sse::Meta;
 pub use wire::{
     AssistantMessage, ChatCompletion, ChatCompletionChunk, ChatCompletionRequest, Choice,
-    ChunkChoice, Delta, FunctionOut, ModelCard, ModelList, Stop, ToolCallDelta, ToolCallOut, Usage,
-    WireMessage,
+    ChunkChoice, Delta, FunctionOut, Logprobs, ModelCard, ModelList, Stop, TokenLogprobs,
+    ToolCallDelta, ToolCallOut, TopLogprob, Usage, WireMessage,
 };
 
 use std::convert::Infallible;
@@ -76,25 +76,36 @@ async fn chat_completions(
             .into_response());
     }
     let stop = request.stop.clone();
-    let (sampled, system_fingerprint) = endpoint.sample(target, request).await?;
-    let completion = finish(sampled, &stop);
-    let parse_errors = completion.parse_errors;
-    let body = wire::ChatCompletion {
-        id,
-        object: "chat.completion",
-        created,
-        model,
-        system_fingerprint,
-        choices: vec![wire::Choice {
-            index: 0,
+    let (answers, system_fingerprint) = endpoint.sample(target, request).await?;
+    let mut choices = Vec::with_capacity(answers.len());
+    let mut usage = wire::Usage::default();
+    let mut parse_errors = 0;
+    for (index, sampled) in answers.into_iter().enumerate() {
+        let completion = finish(sampled, &stop);
+        parse_errors += completion.parse_errors;
+        usage.prompt_tokens = completion.usage.prompt_tokens;
+        usage.completion_tokens += completion.usage.completion_tokens;
+        usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
+        choices.push(wire::Choice {
+            // Bounded by the conversion (n <= 128): the narrowing is exact.
+            index: index as u32,
             message: wire::AssistantMessage {
                 role: "assistant",
                 content: completion.content,
                 tool_calls: completion.tool_calls,
             },
             finish_reason: completion.finish_reason,
-        }],
-        usage: completion.usage,
+            logprobs: completion.logprobs,
+        });
+    }
+    let body = wire::ChatCompletion {
+        id,
+        object: "chat.completion",
+        created,
+        model,
+        system_fingerprint,
+        choices,
+        usage,
     };
     let mut response = axum::Json(body).into_response();
     if parse_errors > 0 {
@@ -107,11 +118,12 @@ async fn chat_completions(
 
 impl Endpoint {
     /// Samples `request` with whatever `target` names, within the bound.
-    async fn sample(
+    /// One answer per choice when the request asked for `n > 1`.
+    pub(crate) async fn sample(
         &self,
         target: Target,
         request: GenerationRequest,
-    ) -> Result<(Sampled, String), OpenAiError> {
+    ) -> Result<(Vec<Sampled>, String), OpenAiError> {
         let work = async {
             match target {
                 Target::Cold { spec, fingerprint } => {
@@ -129,7 +141,7 @@ impl Endpoint {
                     let sampled = answer.await.map_err(|_| {
                         OpenAiError::internal("the run reported the request served, and it was not")
                     })??;
-                    Ok((sampled, fingerprint))
+                    Ok((vec![sampled], fingerprint))
                 }
             }
         };
@@ -191,11 +203,14 @@ impl Endpoint {
         let stop = request.stop.clone();
         let events = async_stream::stream! {
             match endpoint.sample(target, request).await {
-                Ok((sampled, system_fingerprint)) => {
+                Ok((answers, system_fingerprint)) => {
                     let meta = sse::Meta { id, created, model, system_fingerprint };
-                    let completion = finish(sampled, &stop);
-                    for chunk in sse::chunks(&meta, &completion, include_usage) {
-                        yield Ok::<_, Infallible>(json_event(&chunk));
+                    // A live run answers a single choice (refused otherwise).
+                    for (index, sampled) in answers.into_iter().enumerate() {
+                        let completion = finish(sampled, &stop);
+                        for chunk in sse::chunks(&meta, index as u32, &completion, include_usage) {
+                            yield Ok::<_, Infallible>(json_event(&chunk));
+                        }
                     }
                 }
                 Err(error) => {
@@ -225,6 +240,7 @@ impl Endpoint {
         include_usage: bool,
     ) -> Response {
         let endpoint = self.clone();
+        let expected = request.n as usize;
         let events = async_stream::stream! {
             let meta = sse::Meta { id, created, model, system_fingerprint: fingerprint };
             let deadline = tokio::time::Instant::now() + endpoint.timeout;
@@ -254,10 +270,17 @@ impl Endpoint {
                             }
                         }
                     });
-                    let mut chunker = sse::Chunker::new(meta, reader, prompt_tokens, include_usage);
-                    // The role goes out as soon as the request is admitted: the
-                    // first byte the client can measure.
-                    yield Ok::<_, Infallible>(json_event(&chunker.role()));
+                    // One chunker per choice (`n > 1` streams one `choices`
+                    // entry per index); the role goes out as soon as the
+                    // request is admitted: the first byte the client can
+                    // measure.
+                    let mut chunkers: std::collections::HashMap<usize, sse::Chunker> =
+                        std::collections::HashMap::new();
+                    let mut roles_sent: std::collections::HashSet<usize> =
+                        std::collections::HashSet::new();
+                    let mut ended: std::collections::HashSet<usize> =
+                        std::collections::HashSet::new();
+                    let mut completion_tokens = 0_u64;
                     loop {
                         let next = tokio::time::timeout_at(deadline, rx.recv()).await;
                         match next {
@@ -268,21 +291,54 @@ impl Endpoint {
                                 )).body()})));
                                 break;
                             }
-                            // Closing without an End event is an interruption,
-                            // not a successful answer.
+                            // Closing without every choice having ended is an
+                            // interruption, not a successful answer.
                             Ok(None) => {
-                                yield Ok(json_event(&serde_json::json!({"error": OpenAiError::internal(
-                                    "the serving thread stopped before the request ended"
-                                ).body()})));
+                                if ended.len() < expected {
+                                    yield Ok(json_event(&serde_json::json!({"error": OpenAiError::internal(
+                                        "the serving thread stopped before the request ended"
+                                    ).body()})));
+                                }
                                 break;
                             }
                             Ok(Some(event)) => match event {
-                                Event::Token(token) if token.index == 0 => {
-                                    for chunk in chunker.token(&token.text) {
-                                        yield Ok::<_, Infallible>(json_event(&chunk));
+                                Event::Token(token) => {
+                                    completion_tokens += 1;
+                                    let index = token.index;
+                                    if roles_sent.insert(index) {
+                                        let chunker = chunkers.entry(index).or_insert_with(|| {
+                                            sse::Chunker::new(
+                                                meta.clone(),
+                                                // Bounded by the conversion (n <= 128).
+                                                index as u32,
+                                                reader.clone(),
+                                                prompt_tokens,
+                                                include_usage,
+                                            )
+                                        });
+                                        yield Ok::<_, Infallible>(json_event(&chunker.role()));
+                                    }
+                                    let logprobs = token.sampled_logprob.map(|logprob| {
+                                        wire::TokenLogprobs {
+                                            token: String::from_utf8_lossy(&token.piece).into_owned(),
+                                            logprob,
+                                            bytes: token.piece.clone(),
+                                            top_logprobs: token.top_logprobs.iter().map(|top| {
+                                                wire::TopLogprob {
+                                                    token: String::from_utf8_lossy(&top.piece).into_owned(),
+                                                    logprob: top.logprob,
+                                                    bytes: top.piece.clone(),
+                                                }
+                                            }).collect(),
+                                        }
+                                    });
+                                    if let Some(chunker) = chunkers.get_mut(&index) {
+                                        for chunk in chunker.token(&token.text, logprobs) {
+                                            yield Ok::<_, Infallible>(json_event(&chunk));
+                                        }
                                     }
                                 }
-                                Event::End { index: 0, reason, text } => {
+                                Event::End { index, reason, text } => {
                                     match reason {
                                         FinishReason::Cancelled => {
                                             yield Ok(json_event(&serde_json::json!({"error": OpenAiError::internal(
@@ -290,18 +346,38 @@ impl Endpoint {
                                             ).body()})));
                                         }
                                         _ => {
-                                            for chunk in chunker.end(reason, &text) {
-                                                yield Ok::<_, Infallible>(json_event(&chunk));
+                                            ended.insert(index);
+                                            if let Some(chunker) = chunkers.get_mut(&index) {
+                                                for chunk in chunker.end(reason, &text) {
+                                                    if chunk.choices.is_empty() { continue; }
+                                                    yield Ok::<_, Infallible>(json_event(&chunk));
+                                                }
                                             }
                                         }
                                     }
-                                    break;
+                                    if ended.len() >= expected {
+                                        if include_usage {
+                                            yield Ok(json_event(&wire::ChatCompletionChunk {
+                                                id: meta.id.clone(),
+                                                object: "chat.completion.chunk",
+                                                created: meta.created,
+                                                model: meta.model.clone(),
+                                                system_fingerprint: meta.system_fingerprint.clone(),
+                                                choices: Vec::new(),
+                                                usage: Some(Some(wire::Usage {
+                                                    prompt_tokens: prompt_tokens as u64,
+                                                    completion_tokens,
+                                                    total_tokens: prompt_tokens as u64 + completion_tokens,
+                                                })),
+                                            }));
+                                        }
+                                        break;
+                                    }
                                 }
                                 Event::Error(error) => {
                                     yield Ok(json_event(&serde_json::json!({"error": OpenAiError::from(error).body()})));
                                     break;
                                 }
-                                _ => {}
                             },
                         }
                     }

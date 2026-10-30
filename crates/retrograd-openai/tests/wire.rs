@@ -482,11 +482,11 @@ async fn a_failure_after_the_stream_opened_is_an_error_event() {
 async fn refusals_are_openai_envelopes_with_the_field_named() {
     let (router, _, _) = router_with("x");
     let mut request = python_sdk();
-    request["logprobs"] = json!(true);
+    request["audio"] = json!({"voice": "alloy"});
     let (status, _, body) = post(&router, request).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["type"], "invalid_request_error");
-    assert_eq!(body["error"]["param"], "logprobs");
+    assert_eq!(body["error"]["param"], "audio");
     assert_eq!(body["error"]["code"], "unsupported_parameter");
 
     let mut request = python_sdk();
@@ -533,4 +533,168 @@ async fn a_disabled_endpoint_is_a_404_in_the_envelope() {
     let (status, body) = get(&router, "/models").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"]["type"], "not_found_error");
+}
+
+/// `response_format: json_object` is honoured: the request is accepted and
+/// the sampler was constrained (the fake answers regardless).
+#[tokio::test]
+async fn a_json_object_response_format_is_accepted() {
+    let (router, _, _) = router_with("{\"ok\": true}");
+    let mut request = python_sdk();
+    request["response_format"] = json!({"type": "json_object"});
+    let (status, _, body) = post(&router, request).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["choices"][0]["message"]["content"], "{\"ok\": true}");
+}
+
+/// An unsupported schema keyword is refused at admission with its path named.
+#[tokio::test]
+async fn a_json_schema_with_an_unsupported_keyword_is_refused_at_admission() {
+    let (router, _, _) = router_with("{}");
+    let mut request = python_sdk();
+    request["response_format"] = json!({"type": "json_schema", "json_schema": {
+        "name": "p", "schema": {"type": "object", "contains": {"type": "string"}}
+    }});
+    let (status, _, body) = post(&router, request).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body["error"]["param"], "response_format.json_schema.schema/contains",
+        "{body}"
+    );
+}
+
+/// `logprobs: true` with `top_logprobs` puts the per-token logprobs on the
+/// choice: token, logprob, bytes, and the top pairs.
+#[tokio::test]
+async fn logprobs_ride_on_the_choice_when_asked_for() {
+    let (router, _, _) = router_with("abc");
+    let mut request = python_sdk();
+    request["logprobs"] = json!(true);
+    request["top_logprobs"] = json!(3);
+    let (status, _, body) = post(&router, request).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let content = body["choices"][0]["logprobs"]["content"]
+        .as_array()
+        .unwrap();
+    assert_eq!(content.len(), 3, "one entry per sampled token: {body}");
+    assert_eq!(content[0]["token"], "a");
+    assert_eq!(content[0]["bytes"], json!([97]));
+    assert!(content[0]["logprob"].is_f64());
+    assert_eq!(content[0]["top_logprobs"].as_array().unwrap().len(), 3);
+}
+
+/// `top_logprobs` without `logprobs`, and out-of-bound values, are refused.
+#[tokio::test]
+async fn logprobs_bounds_are_enforced() {
+    let (router, _, _) = router_with("abc");
+    for (field, value) in [
+        ("top_logprobs", json!(5)),
+        ("top_logprobs", json!(21)),
+        ("n", json!(0)),
+        ("n", json!(129)),
+    ] {
+        let mut request = python_sdk();
+        request[field] = value;
+        let (status, _, body) = post(&router, request).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{field}: {body}");
+        assert_eq!(body["error"]["param"], field, "{field}: {body}");
+    }
+}
+
+/// `n: 2` answers two choices of the one prompt, indexed 0 and 1 - also when
+/// streamed, where each index keeps its own `choices` entry.
+#[tokio::test]
+async fn n_greater_than_one_answers_one_choice_per_index() {
+    let (router, _, _) = router_with("twice");
+    let mut request = python_sdk();
+    request["n"] = json!(2);
+    let (status, _, body) = post(&router, request).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let choices = body["choices"].as_array().unwrap();
+    assert_eq!(choices.len(), 2);
+    assert_eq!(choices[0]["index"], 0);
+    assert_eq!(choices[1]["index"], 1);
+    assert_eq!(choices[0]["message"]["content"], "twice");
+    assert_eq!(body["usage"]["completion_tokens"], 12);
+    assert_eq!(
+        body["usage"]["total_tokens"].as_u64().unwrap(),
+        body["usage"]["prompt_tokens"].as_u64().unwrap() + 12
+    );
+
+    let mut request = python_sdk();
+    request["n"] = json!(2);
+    request["stream"] = json!(true);
+    request["max_tokens"] = json!(1);
+    request["stream_options"] = json!({"include_usage": true});
+    let (status, headers, body) = send(
+        &router,
+        Request::post("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(request.to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/event-stream")
+    );
+    let text = String::from_utf8(body).unwrap();
+    let events: Vec<Value> = text
+        .split("\n\n")
+        .filter_map(|event| event.strip_prefix("data: "))
+        .filter(|event| *event != "[DONE]")
+        .map(|event| serde_json::from_str(event).unwrap())
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    for chunk in &events {
+        for choice in chunk["choices"].as_array().unwrap_or(&Vec::new()) {
+            seen.insert(choice["index"].as_u64().unwrap());
+        }
+    }
+    assert_eq!(seen, [0, 1].into_iter().collect(), "both choices stream");
+    let usage: Vec<_> = events
+        .iter()
+        .filter_map(|chunk| chunk.get("usage").filter(|v| !v.is_null()))
+        .collect();
+    assert_eq!(usage.len(), 1, "one aggregate usage event");
+    assert_eq!(usage[0]["completion_tokens"], 2);
+}
+
+/// `tool_choice: "required"` is accepted: the constraint is derived into a
+/// grammar at rendering time (the fake yields a permissive one).
+#[tokio::test]
+async fn tool_choice_required_is_accepted() {
+    let (router, _, _) = router_with("<tool_call>{\"name\":\"move\",\"arguments\":{}}</tool_call>");
+    let mut request = python_sdk();
+    request["tools"] = json!([{"type": "function", "function": {"name": "move"}}]);
+    request["tool_choice"] = json!("required");
+    let (status, _, body) = post(&router, request).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["choices"][0]["finish_reason"], "tool_calls");
+}
+
+/// A forced function outside the catalog is refused, field-localized; a
+/// structured output combined with tools is refused too.
+#[tokio::test]
+async fn forced_calls_and_structured_outputs_are_validated_against_the_catalog() {
+    let (router, _, _) = router_with("x");
+    let mut request = python_sdk();
+    request["tools"] = json!([{"type": "function", "function": {"name": "move"}}]);
+    request["tool_choice"] = json!({"type": "function", "function": {"name": "fly"}});
+    let (status, _, body) = post(&router, request).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body["error"]["param"], "tool_choice.function.name",
+        "{body}"
+    );
+
+    let mut request = python_sdk();
+    request["tools"] = json!([{"type": "function", "function": {"name": "move"}}]);
+    request["response_format"] = json!({"type": "json_object"});
+    let (status, _, body) = post(&router, request).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["param"], "response_format", "{body}");
 }

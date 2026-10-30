@@ -22,6 +22,7 @@ pub mod auth;
 pub mod backend;
 pub mod chat;
 pub mod error;
+pub mod grammar;
 pub mod render;
 pub mod request;
 pub mod responses;

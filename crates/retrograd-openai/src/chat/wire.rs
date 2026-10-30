@@ -24,6 +24,8 @@ pub struct ChatCompletionRequest {
     pub max_completion_tokens: Option<u64>,
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
+    pub top_k: Option<i64>,
+    pub min_p: Option<f64>,
     pub seed: Option<i64>,
     pub stop: Option<Stop>,
     pub n: Option<u64>,
@@ -31,11 +33,16 @@ pub struct ChatCompletionRequest {
     pub stream_options: Option<StreamOptions>,
     pub frequency_penalty: Option<f64>,
     pub presence_penalty: Option<f64>,
-    // Read only to be refused, or accepted in their neutral form.
+    // Local extensions of the sampling contract (documented in the API docs):
+    // the repeat penalty and the window the penalties look back over.
+    pub repeat_penalty: Option<f64>,
+    pub penalty_window: Option<u64>,
+    // Honoured, or refused with a reason when they cannot be.
     pub logprobs: Option<Value>,
     pub top_logprobs: Option<Value>,
     pub logit_bias: Option<Value>,
     pub response_format: Option<Value>,
+    // Read only to be refused: this server serves text models.
     pub audio: Option<Value>,
     pub modalities: Option<Value>,
 }
@@ -122,6 +129,38 @@ pub struct Choice {
     pub index: u32,
     pub message: AssistantMessage,
     pub finish_reason: FinishReason,
+    /// Present when the request asked for `logprobs`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<Logprobs>,
+}
+
+/// The logprobs of one completion: one entry per sampled token. The logprobs
+/// describe the post-transformation distribution (after logit_bias,
+/// penalties, grammar, top_k, min_p, temperature and top_p) - the
+/// distribution the token was actually drawn from - which is deliberately
+/// distinct from the temperature-1 policy logprobs training reports.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Logprobs {
+    pub content: Vec<TokenLogprobs>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TokenLogprobs {
+    /// The token's text (its UTF-8 piece).
+    pub token: String,
+    #[serde(serialize_with = "crate::render::serialize_logprob")]
+    pub logprob: f32,
+    /// The UTF-8 bytes of `token`.
+    pub bytes: Vec<u8>,
+    pub top_logprobs: Vec<TopLogprob>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TopLogprob {
+    pub token: String,
+    #[serde(serialize_with = "crate::render::serialize_logprob")]
+    pub logprob: f32,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -190,6 +229,9 @@ pub struct ChunkChoice {
     pub index: u32,
     pub delta: Delta,
     pub finish_reason: Option<FinishReason>,
+    /// The logprobs of the token this chunk carries, when requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<TokenLogprobs>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]

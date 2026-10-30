@@ -23,12 +23,12 @@ use retrograd_agent_core::rendering::{
 };
 use retrograd_agent_core::tools::ToolResult;
 use retrograd_agent_core::trajectory::{Message, Role};
-use retrograd_core::{Result as CoreResult, SamplingParams};
+use retrograd_core::{Result as CoreResult, SamplingParams, SamplingParamsV2};
 use retrograd_engine::Trainer;
 
-use crate::chat::wire::{FinishReason, FunctionOut, ToolCallOut, Usage};
+use crate::chat::wire::{self, FinishReason, FunctionOut, ToolCallOut, Usage};
 use crate::error::OpenAiError;
-use crate::request::GenerationRequest;
+use crate::request::{GenerationRequest, ToolConstraint};
 
 /// The read-only model queries prompt rendering needs: the same ones a serving
 /// backend ([`crate::backend::ServeBackend`]) answers on the thread that owns
@@ -38,6 +38,13 @@ pub trait PromptModel {
     fn supports_native_tools(&self) -> CoreResult<bool>;
     /// The parser the model's template yields for this catalog, if any.
     fn tool_call_parser(&self, tools_json: &str) -> CoreResult<Option<String>>;
+    /// The GBNF grammar the model's template yields for this catalog under
+    /// the requested constraint, if the template can express it.
+    fn tool_call_grammar(
+        &self,
+        tools_json: &str,
+        constraint: &ToolConstraint,
+    ) -> CoreResult<Option<String>>;
     /// The generation prompt for a conversation, through the model's own
     /// template.
     fn format_chat(&self, messages_json: &str, tools_json: Option<&str>) -> CoreResult<String>;
@@ -52,6 +59,13 @@ impl<T: PromptModel + ?Sized> PromptModel for Box<T> {
     }
     fn tool_call_parser(&self, tools_json: &str) -> CoreResult<Option<String>> {
         (**self).tool_call_parser(tools_json)
+    }
+    fn tool_call_grammar(
+        &self,
+        tools_json: &str,
+        constraint: &ToolConstraint,
+    ) -> CoreResult<Option<String>> {
+        (**self).tool_call_grammar(tools_json, constraint)
     }
     fn format_chat(&self, messages_json: &str, tools_json: Option<&str>) -> CoreResult<String> {
         (**self).format_chat(messages_json, tools_json)
@@ -87,6 +101,19 @@ impl PromptModel for Trainer {
 
     fn tool_call_parser(&self, tools_json: &str) -> CoreResult<Option<String>> {
         Trainer::tool_call_parser(self, Some(tools_json))
+    }
+
+    fn tool_call_grammar(
+        &self,
+        tools_json: &str,
+        constraint: &ToolConstraint,
+    ) -> CoreResult<Option<String>> {
+        let (mode, forced) = match constraint {
+            ToolConstraint::Required => (0, None),
+            ToolConstraint::Forced(name) => (1, Some(name.as_str())),
+            ToolConstraint::AtMostOne => (2, None),
+        };
+        Trainer::tool_call_grammar(self, tools_json, mode, forced)
     }
 
     fn format_chat(&self, messages_json: &str, tools_json: Option<&str>) -> CoreResult<String> {
@@ -151,15 +178,33 @@ pub struct Sampled {
     /// The parser the rendering chose, or `None` when there were no tools or
     /// the client asked for none to be read back.
     pub reader: Option<Arc<dyn ToolCallParser>>,
+    /// The per-token logprobs the client asked for, when it did: one entry
+    /// per sampled token, in order.
+    pub logprobs: Option<Vec<SampledLogprob>>,
+    /// How many sampled tokens the parser attributed to the reasoning block.
+    pub reasoning_tokens: usize,
+}
+
+/// One sampled token's logprob entry: the UTF-8 bytes of its piece, its
+/// logprob under the post-transformation distribution, and the top pairs of
+/// the same position.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SampledLogprob {
+    pub piece: Vec<u8>,
+    pub logprob: f32,
+    pub top: Vec<(i32, f32, Vec<u8>)>,
 }
 
 /// What rendering a conversation produced: the prompt tokens, the tool-call
-/// reader the rendering chose, and whether special tokens must survive
-/// detokenization for that reader to work.
+/// reader the rendering chose, whether special tokens must survive
+/// detokenization for that reader to work, and the per-choice sampling
+/// parameters (one prefill, one copy per choice; a tool constraint or a
+/// `response_format` grammar attached where the rendering decided it).
 pub struct Rendered {
     pub tokens: Vec<i32>,
     pub reader: Option<Arc<dyn ToolCallParser>>,
     pub unparse_special: bool,
+    pub sampling: Vec<SamplingParamsV2>,
 }
 
 /// Renders one conversation into the prompt the model is asked: the tools
@@ -238,37 +283,113 @@ pub fn render_prompt(
             context,
         ));
     }
-    let reader: Option<Arc<dyn ToolCallParser>> = match &rendering {
-        ToolRendering::None => None,
-        ToolRendering::Native { parser, .. } => Some(parser.clone()),
-        ToolRendering::Prompt { .. } => Some(Arc::new(HermesToolCallParser)),
+    let reader: Option<Arc<dyn ToolCallParser>> = if request.sampling.grammar_gbnf.is_some() {
+        // Structured output constrains the emitted bytes directly; a template
+        // parser may otherwise treat them as an implicitly opened thought.
+        None
+    } else {
+        match &rendering {
+            ToolRendering::None => parsers
+                .parser(model, "[]")?
+                .map(|blob| Arc::new(TemplateToolCallParser::new(blob)) as Arc<dyn ToolCallParser>),
+            ToolRendering::Native { parser, .. } => Some(parser.clone()),
+            ToolRendering::Prompt { .. } => Some(Arc::new(HermesToolCallParser)),
+        }
     };
     // A template-derived parser matches the model's own call delimiters, and
     // those are control tokens: they have to survive detokenization for it to
     // read anything. Every other reader wants the text a person reads.
-    let unparse_special = matches!(rendering, ToolRendering::Native { .. });
+    let unparse_special = matches!(rendering, ToolRendering::Native { .. })
+        || matches!(rendering, ToolRendering::None) && reader.is_some();
+    // One sampling entry per choice: same parameters, a derived seed, so the
+    // choices differ instead of repeating one sample `n` times.
+    let mut sampling: Vec<SamplingParamsV2> = (0..request.n.max(1))
+        .map(|index| request.sampling.for_choice(index))
+        .collect();
+    // A tool constraint becomes a grammar derived from the template's own
+    // call format - the only way to force or limit calls without deleting
+    // them after the fact. It is mutually exclusive with a `response_format`
+    // grammar (refused at conversion), so it simply replaces it here.
+    if let (Some(constraint), Some(tools_json)) = (&request.tool_constraint, &tools_json) {
+        let grammar = model.tool_call_grammar(tools_json, constraint)?;
+        let Some(gbnf) = grammar else {
+            return Err(OpenAiError::unsupported(
+                "tool_choice",
+                "the model's chat template cannot express this tool constraint as a grammar; \
+                 send \"auto\" or omit it",
+            ));
+        };
+        let gbnf: Arc<str> = gbnf.into();
+        for params in &mut sampling {
+            params.grammar_gbnf = Some(gbnf.clone());
+        }
+    }
     Ok(Rendered {
         tokens,
         reader,
         unparse_special,
+        sampling,
     })
 }
 
 /// Renders, samples and detokenizes one request. Runs on the thread that owns
 /// the model.
+///
+/// The live-run path samples through the rollout generator, which is the v1
+/// contract (temperature + top_p): a request asking for extended sampling or
+/// for several choices is refused here rather than silently narrowed.
 pub fn complete(
     model: &mut dyn ChatModel,
     request: &GenerationRequest,
     base: bool,
     parsers: &mut ParserCache,
 ) -> Result<Sampled, OpenAiError> {
+    if request.n > 1 {
+        return Err(OpenAiError::unsupported(
+            "n",
+            "a live run answers one choice per request; `n > 1` is served by the weights on disk",
+        ));
+    }
+    if request.tool_constraint.is_some() {
+        return Err(OpenAiError::unsupported(
+            "tool_choice",
+            "constrained tool calls are served by the weights on disk",
+        ));
+    }
+    if request.reasoning_budget.is_some() {
+        return Err(OpenAiError::unsupported(
+            "reasoning.effort",
+            "per-request reasoning budgets are served by the weights on disk",
+        ));
+    }
+    if !request.sampling.is_v1() {
+        return Err(OpenAiError::unsupported(
+            "sampling",
+            "a live run samples with its rollout parameters (temperature, top_p); extended \
+             sampling is served by the weights on disk",
+        ));
+    }
+    if request.logprobs.is_some() {
+        return Err(OpenAiError::unsupported(
+            "logprobs",
+            "a live run answers from its rollout generator, which does not report token \
+             logprobs; logprobs are served by the weights on disk",
+        ));
+    }
     let Rendered {
         tokens,
         reader,
         unparse_special,
+        ..
     } = render_prompt(model, request, parsers)?;
 
-    let mut sampled = model.sample(&tokens, &request.sampling, base)?;
+    let rollout = SamplingParams {
+        temperature: request.sampling.temperature,
+        top_p: request.sampling.top_p,
+        max_new_tokens: request.sampling.max_new_tokens,
+        seed: request.sampling.seed,
+    };
+    let mut sampled = model.sample(&tokens, &rollout, base)?;
     let completion_tokens = sampled.len();
     let mut stopped_at_eog = false;
     while let Some(&last) = sampled.last()
@@ -283,6 +404,8 @@ pub fn complete(
         completion_tokens,
         stopped_at_eog,
         reader,
+        logprobs: None,
+        reasoning_tokens: 0,
     })
 }
 
@@ -297,18 +420,30 @@ pub struct Completion {
     /// Calls the parser could not read. The raw text stays the content, as a
     /// rollout keeps it; the count is reported beside the answer.
     pub parse_errors: usize,
+    /// The logprobs of the sampled tokens, when the request asked for them.
+    pub logprobs: Option<wire::Logprobs>,
+    /// The reasoning block the parser split out of the turn, tags removed;
+    /// empty when the turn did not reason or no parser was chosen.
+    pub reasoning: String,
+    /// How many sampled tokens the parser attributed to that block.
+    pub reasoning_tokens: usize,
 }
 
 /// Reads the answer out of what was sampled: stop sequences first, then the
 /// calls. Runs off the model's thread.
 pub fn finish(sampled: Sampled, stop: &[String]) -> Completion {
     let (text, truncated) = truncate_at_stop(&sampled.text, stop);
-    let (content, calls, parse_errors) = match &sampled.reader {
+    let (content, calls, parse_errors, reasoning) = match &sampled.reader {
         Some(reader) => {
             let parsed = reader.parse(text);
-            (parsed.content, parsed.tool_calls, parsed.parse_errors.len())
+            (
+                parsed.content,
+                parsed.tool_calls,
+                parsed.parse_errors.len(),
+                parsed.reasoning,
+            )
         }
-        None => (text.to_owned(), Vec::new(), 0),
+        None => (text.to_owned(), Vec::new(), 0, String::new()),
     };
     let tool_calls = calls
         .into_iter()
@@ -325,10 +460,10 @@ pub fn finish(sampled: Sampled, stop: &[String]) -> Completion {
             },
         })
         .collect::<Vec<_>>();
-    let finish_reason = match (tool_calls.is_empty(), sampled.stopped_at_eog || truncated) {
-        (false, _) => FinishReason::ToolCalls,
+    let finish_reason = match (sampled.stopped_at_eog || truncated, tool_calls.is_empty()) {
+        (false, _) => FinishReason::Length,
+        (true, false) => FinishReason::ToolCalls,
         (true, true) => FinishReason::Stop,
-        (true, false) => FinishReason::Length,
     };
     let content = match (tool_calls.is_empty(), content.trim().is_empty()) {
         (false, true) => None,
@@ -347,6 +482,27 @@ pub fn finish(sampled: Sampled, stop: &[String]) -> Completion {
             total_tokens: prompt_tokens + completion_tokens,
         },
         parse_errors,
+        reasoning,
+        reasoning_tokens: sampled.reasoning_tokens,
+        logprobs: sampled.logprobs.map(|entries| wire::Logprobs {
+            content: entries
+                .into_iter()
+                .map(|entry| wire::TokenLogprobs {
+                    token: String::from_utf8_lossy(&entry.piece).into_owned(),
+                    logprob: entry.logprob,
+                    bytes: entry.piece,
+                    top_logprobs: entry
+                        .top
+                        .into_iter()
+                        .map(|(_, logprob, piece)| wire::TopLogprob {
+                            token: String::from_utf8_lossy(&piece).into_owned(),
+                            logprob,
+                            bytes: piece,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }),
     }
 }
 
@@ -361,6 +517,15 @@ fn truncate_at_stop<'a>(text: &'a str, stop: &[String]) -> (&'a str, bool) {
         Some(at) => (&text[..at], true),
         None => (text, false),
     }
+}
+
+/// Zero-mass tokens have logprob -infinity. JSON has no infinity; the wire
+/// contract uses the low-probability sentinel instead of serializing null.
+pub(crate) fn serialize_logprob<S: serde::Serializer>(
+    value: &f32,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_f32(if value.is_finite() { *value } else { -9999.0 })
 }
 
 #[cfg(test)]

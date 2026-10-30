@@ -75,6 +75,17 @@ impl PromptModel for FakeModel {
         Ok(None)
     }
 
+    fn tool_call_grammar(
+        &self,
+        _tools_json: &str,
+        _constraint: &crate::request::ToolConstraint,
+    ) -> CoreResult<Option<String>> {
+        // The fake has no template: a constrained tool call is answered with
+        // a permissive grammar, and the contract tests assert the constraint
+        // was requested, not the grammar's content.
+        Ok(Some("root ::= tool-call\ntool-call ::= \"x\"".to_owned()))
+    }
+
     fn format_chat(&self, messages_json: &str, tools_json: Option<&str>) -> CoreResult<String> {
         // `&self`, like the trainer's: the prompt comes back to `sample` as
         // tokens, and that is where it is recorded.
@@ -149,6 +160,7 @@ impl ChatModel for FakeModel {
 pub struct FakeServing {
     model: FakeModel,
     backend: SharedFake,
+    budget_changes: Arc<Mutex<Vec<(i32, usize)>>>,
 }
 
 impl FakeServing {
@@ -169,6 +181,7 @@ impl FakeServing {
             Self {
                 model: FakeModel::new(reply),
                 backend: SharedFake(backend.0.clone()),
+                budget_changes: Arc::default(),
             },
             backend,
         )
@@ -264,6 +277,13 @@ impl PromptModel for FakeServing {
     fn tool_call_parser(&self, tools_json: &str) -> CoreResult<Option<String>> {
         PromptModel::tool_call_parser(&self.model, tools_json)
     }
+    fn tool_call_grammar(
+        &self,
+        tools_json: &str,
+        constraint: &crate::request::ToolConstraint,
+    ) -> CoreResult<Option<String>> {
+        PromptModel::tool_call_grammar(&self.model, tools_json, constraint)
+    }
     fn format_chat(&self, messages_json: &str, tools_json: Option<&str>) -> CoreResult<String> {
         PromptModel::format_chat(&self.model, messages_json, tools_json)
     }
@@ -275,7 +295,25 @@ impl PromptModel for FakeServing {
     }
 }
 
-impl ServeBackend for FakeServing {}
+impl ServeBackend for FakeServing {
+    fn set_reasoning_budget(&mut self, budget: i32) -> CoreResult<()> {
+        let sampled = self
+            .backend
+            .0
+            .lock()
+            .expect("fake backend lock")
+            .steps
+            .iter()
+            .flatten()
+            .filter(|(_, _, request)| request.is_some())
+            .count();
+        self.budget_changes
+            .lock()
+            .expect("fake budget lock")
+            .push((budget, sampled));
+        Ok(())
+    }
+}
 
 /// Loads a [`FakeServing`] for any spec, and remembers what it was asked to
 /// load.
@@ -286,6 +324,7 @@ pub struct FakeLoader {
     /// A backend built up front and reused by every load, so a test can inspect
     /// its slot journal across reloads.
     shared: Option<SharedFake>,
+    budget_changes: Arc<Mutex<Vec<(i32, usize)>>>,
 }
 
 impl Clone for FakeLoader {
@@ -294,6 +333,7 @@ impl Clone for FakeLoader {
             reply: self.reply.clone(),
             loads: self.loads.clone(),
             specs: self.specs.clone(),
+            budget_changes: self.budget_changes.clone(),
             shared: self
                 .shared
                 .as_ref()
@@ -308,6 +348,7 @@ impl FakeLoader {
             reply: reply.into(),
             loads: Arc::default(),
             specs: Arc::default(),
+            budget_changes: Arc::default(),
             shared: None,
         }
     }
@@ -321,9 +362,17 @@ impl FakeLoader {
             reply,
             loads: Arc::default(),
             specs: Arc::default(),
+            budget_changes: Arc::default(),
             shared: Some(SharedFake(serving.backend.0.clone())),
         };
         (loader, shared)
+    }
+
+    pub fn budget_changes(&self) -> Vec<(i32, usize)> {
+        self.budget_changes
+            .lock()
+            .expect("fake budget lock")
+            .clone()
     }
 
     pub fn loads(&self) -> usize {
@@ -357,8 +406,13 @@ impl Loader for FakeLoader {
             Some(shared) => Box::new(FakeServing {
                 model: FakeModel::new(&self.reply),
                 backend: SharedFake(shared.0.clone()),
+                budget_changes: self.budget_changes.clone(),
             }),
-            None => Box::new(FakeServing::new(&self.reply)),
+            None => {
+                let mut backend = FakeServing::new(&self.reply);
+                backend.budget_changes = self.budget_changes.clone();
+                Box::new(backend)
+            }
         };
         Ok(ServingBackend {
             backend,

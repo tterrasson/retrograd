@@ -16,6 +16,9 @@ use retrograd_agent_core::parser::{PartialAssistant, ToolCallParser};
 pub enum StreamDelta {
     /// Prose newly safe to send.
     Content(String),
+    /// A reasoning block grew by this piece (the parser split it out of the
+    /// content, tags removed).
+    Reasoning(String),
     /// A call was recognized: its id and name, to send once as a header.
     Call {
         index: usize,
@@ -33,6 +36,10 @@ pub struct StreamParser {
     text: String,
     /// The content already sent, as the parser spelled it.
     sent: String,
+    /// The reasoning already sent, as the parser spelled it.
+    sent_reasoning: String,
+    /// The reasoning length of the last parse, for token attribution.
+    last_reasoning_len: usize,
     calls: Vec<CallSent>,
 }
 
@@ -48,8 +55,16 @@ impl StreamParser {
             reader,
             text: String::new(),
             sent: String::new(),
+            sent_reasoning: String::new(),
+            last_reasoning_len: 0,
             calls: Vec::new(),
         }
+    }
+
+    /// The reasoning length of the last parse (0 before the first): a token
+    /// whose arrival grew it is a reasoning token.
+    pub fn parsed_reasoning_len(&self) -> usize {
+        self.last_reasoning_len
     }
 
     /// Feeds one decoded piece and returns what is now safe to send.
@@ -81,6 +96,22 @@ impl StreamParser {
                 parsed.content[self.sent.len()..safe].to_owned(),
             ));
             self.sent = parsed.content[..safe].to_owned();
+        }
+        // The reasoning block is diffed the same way: prefix-stable, with the
+        // same ambiguous trailing tag held back until the end.
+        self.last_reasoning_len = parsed.reasoning.len();
+        let held_reasoning = match final_ {
+            true => 0,
+            false => open_tag_len(&parsed.reasoning),
+        };
+        let safe_reasoning = parsed.reasoning.len().saturating_sub(held_reasoning);
+        if parsed.reasoning.starts_with(self.sent_reasoning.as_str())
+            && safe_reasoning > self.sent_reasoning.len()
+        {
+            out.push(StreamDelta::Reasoning(
+                parsed.reasoning[self.sent_reasoning.len()..safe_reasoning].to_owned(),
+            ));
+            self.sent_reasoning = parsed.reasoning[..safe_reasoning].to_owned();
         }
         // A partial parse that revises a prefix already sent sends nothing: the
         // buffer is kept and the final parse reconciles.

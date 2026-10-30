@@ -9,12 +9,13 @@
 
 use retrograd_agent_core::tools::{ToolCall, ToolSpec};
 use retrograd_agent_core::trajectory::{Message, Role};
-use retrograd_core::SamplingParams;
+use retrograd_core::SamplingParamsV2;
 use serde_json::Value;
 
 use crate::chat::wire::{ChatCompletionRequest, Content, Stop, WireMessage, WireTool};
 use crate::error::OpenAiError;
-use crate::request::GenerationRequest;
+use crate::grammar::response_format_grammar;
+use crate::request::{GenerationRequest, ToolConstraint};
 
 pub const DEFAULT_MAX_TOKENS: u32 = 512;
 pub const DEFAULT_TEMPERATURE: f32 = 0.7;
@@ -29,6 +30,18 @@ pub const GREEDY_TEMPERATURE: f32 = 1e-4;
 pub const GREEDY_TOP_P: f32 = 1e-6;
 /// OpenAI's own bound on `stop`.
 const MAX_STOP: usize = 4;
+/// How many completions of one prompt one request may ask for. The scheduler
+/// gives each choice its own slot of the pool, so the bound is a contract,
+/// not a capacity: a request beyond it is refused, not queued.
+const MAX_N: u64 = 128;
+/// OpenAI's own bound on `top_logprobs`.
+pub(crate) const MAX_TOP_LOGPROBS: u64 = 20;
+/// OpenAI's own bounds on the penalties.
+const PENALTY_RANGE: std::ops::RangeInclusive<f64> = -2.0..=2.0;
+/// OpenAI's own bounds on a logit bias.
+const LOGIT_BIAS_RANGE: std::ops::RangeInclusive<f64> = -100.0..=100.0;
+/// Cap on the entries of one `logit_bias`, mirroring the runtime's.
+const MAX_LOGIT_BIAS: usize = 4096;
 
 /// A validated request: which id to serve, and the common
 /// [`GenerationRequest`] the surface translated the wire body into.
@@ -64,40 +77,78 @@ pub fn prepare(request: ChatCompletionRequest) -> Result<Prepared, OpenAiError> 
         .enumerate()
         .map(|(index, tool)| convert_tool(index, tool))
         .collect::<Result<Vec<_>, _>>()?;
-    let tools = match offers_tools(request.tool_choice.as_ref())? {
+    let choice = request.tool_choice.as_ref();
+    let constraint = tool_constraint(choice, &tools)?;
+    // `tool_choice: "none"` offers no catalog: with no constrained decoding,
+    // a catalog in the prompt is only an invitation to call.
+    let tools = match offers_tools(choice) {
         true => tools,
         false => Vec::new(),
     };
-    // `true` is what an unconstrained sampler does anyway; `false` would need
-    // the decoding to stop after one call, and cutting the extra calls off
-    // afterwards would answer with a turn the model did not write.
-    if request.parallel_tool_calls == Some(false) && !tools.is_empty() {
+    // `parallel_tool_calls: false` limits the calls to one through the
+    // template's own grammar - never by cutting extra calls off afterwards,
+    // which would answer with a turn the model did not write.
+    let constraint = match (request.parallel_tool_calls, constraint) {
+        (Some(false), Some(_)) => {
+            return Err(OpenAiError::unsupported(
+                "parallel_tool_calls",
+                "cannot combine `parallel_tool_calls: false` with a `tool_choice` constraint; \
+                 send one of them",
+            ));
+        }
+        (Some(false), None) if !tools.is_empty() => Some(ToolConstraint::AtMostOne),
+        (Some(false), None) => None,
+        (_, existing) => existing,
+    };
+    let grammar = match request.response_format.as_ref() {
+        Some(format) => response_format_grammar(format)?,
+        None => None,
+    };
+    // A structured output and a tool constraint are two grammars over the
+    // same tokens: refusing the combination is the only honest answer, since
+    // one constraint cannot be derived from the other.
+    if grammar.is_some() && (constraint.is_some() || !tools.is_empty()) {
         return Err(OpenAiError::unsupported(
-            "parallel_tool_calls",
-            "`parallel_tool_calls: false` needs constrained decoding; send true or omit it",
+            "response_format",
+            "a json response format cannot be combined with tools or a forced tool call; \
+             send one of them",
         ));
     }
     let stream = request.stream.unwrap_or(false);
-    // Only `n = 1` reaches this point - `refuse_unsupported` refuses the rest -
-    // so the narrowing u64 -> u32 cannot lose anything.
-    let n = u32::try_from(request.n.unwrap_or(1)).unwrap_or(1);
-    // `logprobs: true` and `top_logprobs > 0` are refused above; what survives
-    // is the neutral form, which asks for no logprobs at all.
-    let logprobs = None;
+    let n = request.n.unwrap_or(1);
+    if n == 0 || n > MAX_N {
+        return Err(OpenAiError::invalid_param(
+            "n",
+            format!("`n` must be between 1 and {MAX_N}"),
+        ));
+    }
+    // Narrowing checked against MAX_N above: cannot lose anything.
+    let n = u32::try_from(n).map_err(|_| OpenAiError::invalid_param("n", "`n` does not fit"))?;
+    let logprobs = logprobs(request.logprobs.as_ref(), request.top_logprobs.as_ref())?;
     Ok(Prepared {
         model: request.model,
         request: GenerationRequest {
             messages,
             tools,
-            sampling: SamplingParams {
+            sampling: SamplingParamsV2 {
                 temperature: temperature(request.temperature)?,
                 top_p: top_p(request.top_p)?,
                 max_new_tokens: max_tokens(request.max_tokens, request.max_completion_tokens)?,
                 seed: seed(request.seed)?,
+                top_k: top_k(request.top_k)?,
+                min_p: min_p(request.min_p)?,
+                repeat_penalty: repeat_penalty(request.repeat_penalty)?,
+                frequency_penalty: penalty("frequency_penalty", request.frequency_penalty)?,
+                presence_penalty: penalty("presence_penalty", request.presence_penalty)?,
+                penalty_window: penalty_window(request.penalty_window)?,
+                logit_bias: logit_bias(request.logit_bias.as_ref())?,
+                grammar_gbnf: grammar,
             },
             stop: stop(request.stop)?,
             n,
             logprobs,
+            tool_constraint: constraint,
+            reasoning_budget: None,
         },
         stream,
         include_usage: stream
@@ -108,60 +159,26 @@ pub fn prepare(request: ChatCompletionRequest) -> Result<Prepared, OpenAiError> 
     })
 }
 
-/// Whether a field holds the one value that changes nothing.
-type IsNeutral = fn(&Value) -> bool;
-
-/// The fields this server reads only to refuse them, unless they hold the value
-/// that changes nothing.
+/// What remains refused outright: the non-text modalities of a multimodal
+/// request. Everything that can change a token is honoured or refused with a
+/// reason in `prepare` - a parameter is never silently ignored.
 fn refuse_unsupported(request: &ChatCompletionRequest) -> Result<(), OpenAiError> {
-    if let Some(n) = request.n
-        && n != 1
+    if let Some(audio) = &request.audio
+        && !audio.is_null()
     {
         return Err(OpenAiError::unsupported(
-            "n",
-            "only one choice per request is supported (`n = 1`)",
+            "audio",
+            "this server serves text models; `audio` is not supported",
         ));
     }
-    for (param, value) in [
-        ("frequency_penalty", request.frequency_penalty),
-        ("presence_penalty", request.presence_penalty),
-    ] {
-        if value.is_some_and(|value| value != 0.0) {
+    if let Some(modalities) = &request.modalities {
+        let text_only = modalities
+            .as_array()
+            .is_some_and(|items| items.iter().all(|item| item == "text"));
+        if !text_only {
             return Err(OpenAiError::unsupported(
-                param,
-                format!("`{param}` is not supported by this server's sampler; send 0 or omit it"),
-            ));
-        }
-    }
-    let neutral: [(&str, Option<&Value>, IsNeutral); 6] = [
-        ("logprobs", request.logprobs.as_ref(), |value| {
-            value == &Value::Bool(false)
-        }),
-        ("top_logprobs", request.top_logprobs.as_ref(), |value| {
-            value.as_u64() == Some(0)
-        }),
-        ("logit_bias", request.logit_bias.as_ref(), |value| {
-            value.as_object().is_some_and(serde_json::Map::is_empty)
-        }),
-        (
-            "response_format",
-            request.response_format.as_ref(),
-            |value| value.get("type").and_then(Value::as_str) == Some("text"),
-        ),
-        ("audio", request.audio.as_ref(), |_| false),
-        ("modalities", request.modalities.as_ref(), |value| {
-            value
-                .as_array()
-                .is_some_and(|items| items.iter().all(|item| item == "text"))
-        }),
-    ];
-    for (param, value, is_neutral) in neutral {
-        if let Some(value) = value
-            && !is_neutral(value)
-        {
-            return Err(OpenAiError::unsupported(
-                param,
-                format!("`{param}` is not supported by this server"),
+                "modalities",
+                "only the `text` modality is supported by this server",
             ));
         }
     }
@@ -288,7 +305,7 @@ fn text(index: usize, content: &Content) -> Result<String, OpenAiError> {
 /// A call's arguments, which the contract sends as a JSON document inside a
 /// string. The templates iterate over them as an object, so an object is what
 /// they must be.
-fn arguments(param: &str, value: Option<&Value>) -> Result<Value, OpenAiError> {
+pub(crate) fn arguments(param: &str, value: Option<&Value>) -> Result<Value, OpenAiError> {
     let parsed = match value {
         None | Some(Value::Null) => return Ok(Value::Object(Default::default())),
         Some(Value::String(text)) if text.trim().is_empty() => {
@@ -331,23 +348,261 @@ fn convert_tool(index: usize, tool: WireTool) -> Result<ToolSpec, OpenAiError> {
     })
 }
 
-/// Whether the catalog is offered to the model. There is no constrained
-/// decoding, so a choice that would *force* a call cannot be honoured and is
-/// refused.
-fn offers_tools(choice: Option<&Value>) -> Result<bool, OpenAiError> {
+/// Whether the catalog is offered to the model at all (`auto`, or a
+/// constraint - `none` offers none).
+pub(crate) fn offers_tools(choice: Option<&Value>) -> bool {
+    !matches!(choice, Some(Value::String(choice)) if choice == "none")
+}
+
+/// The tool-calling constraint a `tool_choice` asks for, when it is one:
+/// `required` forces at least one call, the object form forces exactly the
+/// named function. Both are realized as a grammar derived from the template
+/// at rendering time, never by deleting calls after the fact.
+pub(crate) fn tool_constraint(
+    choice: Option<&Value>,
+    tools: &[ToolSpec],
+) -> Result<Option<ToolConstraint>, OpenAiError> {
     match choice {
-        None => Ok(true),
-        Some(Value::String(choice)) if choice == "auto" => Ok(true),
-        Some(Value::String(choice)) if choice == "none" => Ok(false),
-        Some(_) => Err(OpenAiError::unsupported(
+        None => Ok(None),
+        Some(Value::String(choice)) if choice == "auto" || choice == "none" => Ok(None),
+        Some(Value::String(choice)) if choice == "required" => {
+            if tools.is_empty() {
+                return Err(OpenAiError::invalid_param(
+                    "tool_choice",
+                    "`tool_choice: \"required\"` needs a `tools` catalog to choose from",
+                ));
+            }
+            Ok(Some(ToolConstraint::Required))
+        }
+        Some(Value::String(other)) => Err(OpenAiError::unsupported(
             "tool_choice",
-            "only `auto` and `none` are supported: forcing a call needs constrained decoding",
+            format!(
+                "unsupported `tool_choice` `{other}`; expected auto, none, required or a forced function"
+            ),
+        )),
+        Some(Value::Object(object)) => {
+            if object.get("type").and_then(Value::as_str) != Some("function") {
+                return Err(OpenAiError::invalid_param(
+                    "tool_choice.type",
+                    "a forced tool choice must be of type `function`",
+                ));
+            }
+            let name = object
+                .get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    OpenAiError::invalid_param(
+                        "tool_choice.function.name",
+                        "the forced function needs a `name`",
+                    )
+                })?;
+            if tools.is_empty() {
+                return Err(OpenAiError::invalid_param(
+                    "tool_choice",
+                    "a forced function needs a `tools` catalog to choose from",
+                ));
+            }
+            if !tools.iter().any(|tool| tool.name == name) {
+                return Err(OpenAiError::invalid_param(
+                    "tool_choice.function.name",
+                    format!("the forced function `{name}` is not in the `tools` catalog"),
+                ));
+            }
+            Ok(Some(ToolConstraint::Forced(name.to_owned())))
+        }
+        Some(_) => Err(OpenAiError::invalid_param(
+            "tool_choice",
+            "`tool_choice` must be a string or a function object",
         )),
     }
 }
 
+/// `logprobs`/`top_logprobs` as the count of top pairs to return, when
+/// logprobs are asked for at all. `top_logprobs` without `logprobs` is the
+/// one combination the contract refuses.
+pub(crate) fn logprobs(
+    logprobs: Option<&Value>,
+    top_logprobs: Option<&Value>,
+) -> Result<Option<u32>, OpenAiError> {
+    let asked = match logprobs {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => {
+            return Err(OpenAiError::invalid_param(
+                "logprobs",
+                "`logprobs` must be a boolean",
+            ));
+        }
+    };
+    let top = match top_logprobs {
+        None | Some(Value::Null) => 0,
+        Some(Value::Number(value)) => value.as_u64().ok_or_else(|| {
+            OpenAiError::invalid_param(
+                "top_logprobs",
+                "`top_logprobs` must be a non-negative integer",
+            )
+        })?,
+        Some(_) => {
+            return Err(OpenAiError::invalid_param(
+                "top_logprobs",
+                "`top_logprobs` must be an integer",
+            ));
+        }
+    };
+    if top > 0 && !asked {
+        return Err(OpenAiError::invalid_param(
+            "top_logprobs",
+            "`top_logprobs` requires `logprobs: true`",
+        ));
+    }
+    if top > MAX_TOP_LOGPROBS {
+        return Err(OpenAiError::invalid_param(
+            "top_logprobs",
+            format!("`top_logprobs` must be at most {MAX_TOP_LOGPROBS}"),
+        ));
+    }
+    // Narrowing checked against MAX_TOP_LOGPROBS above: exact.
+    Ok(asked.then_some(top as u32))
+}
+
+/// `top_k`: -1 (or absent) disables; anything below -1 or zero is refused.
+pub(crate) fn top_k(value: Option<i64>) -> Result<i32, OpenAiError> {
+    match value {
+        None => Ok(0),
+        Some(-1) => Ok(0),
+        Some(value) if value > 0 => i32::try_from(value).map_err(|_| {
+            OpenAiError::invalid_param("top_k", format!("`top_k` must be at most {}", i32::MAX))
+        }),
+        Some(_) => Err(OpenAiError::invalid_param(
+            "top_k",
+            "`top_k` must be -1 (disabled) or a positive integer",
+        )),
+    }
+}
+
+pub(crate) fn min_p(value: Option<f64>) -> Result<f32, OpenAiError> {
+    let Some(value) = value else {
+        return Ok(0.0);
+    };
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(OpenAiError::invalid_param(
+            "min_p",
+            "`min_p` must be between 0 and 1",
+        ));
+    }
+    // Narrowing a value already bounded to [0, 1]; 0 disables.
+    Ok(value as f32)
+}
+
+/// The repeat penalty has no wire field in the OpenAI contract; it is a local
+/// extension, so its bound is the sampler's own: finite and > 0, 1.0 off.
+pub(crate) fn repeat_penalty(value: Option<f64>) -> Result<f32, OpenAiError> {
+    let Some(value) = value else {
+        return Ok(1.0);
+    };
+    if !value.is_finite() || value <= 0.0 {
+        return Err(OpenAiError::invalid_param(
+            "repeat_penalty",
+            "`repeat_penalty` must be finite and greater than zero (1.0 disables it)",
+        ));
+    }
+    // A contract value must remain finite and positive after narrowing.
+    let narrowed = value as f32;
+    if !narrowed.is_finite() || narrowed <= 0.0 {
+        return Err(OpenAiError::invalid_param(
+            "repeat_penalty",
+            "`repeat_penalty` must fit a finite positive f32",
+        ));
+    }
+    Ok(narrowed)
+}
+
+/// The frequency/presence penalties, bounded as OpenAI bounds them; 0 is the
+/// neutral value and is accepted.
+pub(crate) fn penalty(param: &str, value: Option<f64>) -> Result<f32, OpenAiError> {
+    let Some(value) = value else {
+        return Ok(0.0);
+    };
+    if !value.is_finite() || !PENALTY_RANGE.contains(&value) {
+        return Err(OpenAiError::invalid_param(
+            param,
+            format!(
+                "`{param}` must be between {} and {}",
+                PENALTY_RANGE.start(),
+                PENALTY_RANGE.end()
+            ),
+        ));
+    }
+    // Narrowing a value already bounded to [-2, 2].
+    Ok(value as f32)
+}
+
+/// The window the penalties look back over: a local extension, `0` (the
+/// default) penalizes over the whole generated history.
+pub(crate) fn penalty_window(value: Option<u64>) -> Result<u32, OpenAiError> {
+    match value {
+        None => Ok(0),
+        Some(value) => u32::try_from(value).map_err(|_| {
+            OpenAiError::invalid_param(
+                "penalty_window",
+                format!("`penalty_window` must be at most {}", u32::MAX),
+            )
+        }),
+    }
+}
+
+/// `logit_bias` as `(token id, bias)` pairs: the keys must be token ids, the
+/// values bounded as OpenAI bounds them.
+pub(crate) fn logit_bias(value: Option<&Value>) -> Result<Vec<(i32, f32)>, OpenAiError> {
+    let Some(object) = value else {
+        return Ok(Vec::new());
+    };
+    let Some(object) = object.as_object() else {
+        return Err(OpenAiError::invalid_param(
+            "logit_bias",
+            "`logit_bias` must be an object mapping token ids to biases",
+        ));
+    };
+    if object.len() > MAX_LOGIT_BIAS {
+        return Err(OpenAiError::invalid_param(
+            "logit_bias",
+            format!("`logit_bias` takes at most {MAX_LOGIT_BIAS} entries"),
+        ));
+    }
+    object
+        .iter()
+        .map(|(id, bias)| {
+            let id = id.parse::<i32>().map_err(|_| {
+                OpenAiError::invalid_param(
+                    format!("logit_bias.{id}"),
+                    "a logit bias key must be a token id (an integer)",
+                )
+            })?;
+            let bias = bias.as_f64().ok_or_else(|| {
+                OpenAiError::invalid_param(
+                    format!("logit_bias.{id}"),
+                    "a logit bias must be a number",
+                )
+            })?;
+            if !bias.is_finite() || !LOGIT_BIAS_RANGE.contains(&bias) {
+                return Err(OpenAiError::invalid_param(
+                    format!("logit_bias.{id}"),
+                    format!(
+                        "a logit bias must be between {} and {}",
+                        LOGIT_BIAS_RANGE.start(),
+                        LOGIT_BIAS_RANGE.end()
+                    ),
+                ));
+            }
+            // Narrowing a value already bounded to [-100, 100].
+            Ok((id, bias as f32))
+        })
+        .collect()
+}
+
 /// `max_completion_tokens` is the newer name and wins when both are sent.
-fn max_tokens(legacy: Option<u64>, current: Option<u64>) -> Result<u32, OpenAiError> {
+pub(crate) fn max_tokens(legacy: Option<u64>, current: Option<u64>) -> Result<u32, OpenAiError> {
     let (param, value) = match (current, legacy) {
         (Some(value), _) => ("max_completion_tokens", value),
         (None, Some(value)) => ("max_tokens", value),
@@ -366,7 +621,7 @@ fn max_tokens(legacy: Option<u64>, current: Option<u64>) -> Result<u32, OpenAiEr
     })
 }
 
-fn temperature(value: Option<f64>) -> Result<f32, OpenAiError> {
+pub(crate) fn temperature(value: Option<f64>) -> Result<f32, OpenAiError> {
     let Some(value) = value else {
         return Ok(DEFAULT_TEMPERATURE);
     };
@@ -380,7 +635,7 @@ fn temperature(value: Option<f64>) -> Result<f32, OpenAiError> {
     Ok((value as f32).max(GREEDY_TEMPERATURE))
 }
 
-fn top_p(value: Option<f64>) -> Result<f32, OpenAiError> {
+pub(crate) fn top_p(value: Option<f64>) -> Result<f32, OpenAiError> {
     let Some(value) = value else {
         return Ok(DEFAULT_TOP_P);
     };
@@ -397,7 +652,7 @@ fn top_p(value: Option<f64>) -> Result<f32, OpenAiError> {
 /// OpenAI's seed is a signed 64-bit integer and the sampler's an unsigned
 /// 32-bit one. A value outside the second is refused, not folded into it: two
 /// seeds that sampled the same thing would make `seed` a lie.
-fn seed(value: Option<i64>) -> Result<u32, OpenAiError> {
+pub(crate) fn seed(value: Option<i64>) -> Result<u32, OpenAiError> {
     match value {
         None => Ok(DEFAULT_SEED),
         Some(value) => u32::try_from(value).map_err(|_| {
@@ -578,36 +833,150 @@ mod tests {
     }
 
     /// One row per field of the contract that is read: honoured in its neutral
-    /// form, refused otherwise, and the refusal names the field.
+    /// form, refused with the field named when the value is out of bounds,
+    /// and never silently ignored.
     #[test]
     fn a_parameter_that_would_change_the_sample_is_never_ignored() {
-        for (field, neutral, refused) in [
-            ("n", json!(1), json!(2)),
-            ("frequency_penalty", json!(0), json!(0.5)),
-            ("presence_penalty", json!(0.0), json!(-1)),
-            ("logprobs", json!(false), json!(true)),
-            ("top_logprobs", json!(0), json!(5)),
-            ("logit_bias", json!({}), json!({"42": 100})),
+        for (field, neutral, refused, param) in [
+            ("n", json!(1), json!(0), "n"),
+            ("n", json!(1), json!(129), "n"),
             (
-                "response_format",
-                json!({"type": "text"}),
-                json!({"type": "json_object"}),
+                "frequency_penalty",
+                json!(0),
+                json!(2.5),
+                "frequency_penalty",
             ),
-            ("modalities", json!(["text"]), json!(["text", "audio"])),
-            ("audio", Value::Null, json!({"voice": "alloy"})),
-            ("tool_choice", json!("auto"), json!("required")),
+            (
+                "presence_penalty",
+                json!(0.0),
+                json!(-2.5),
+                "presence_penalty",
+            ),
+            ("logprobs", json!(false), json!("yes"), "logprobs"),
+            ("top_logprobs", json!(0), json!(21), "top_logprobs"),
+            ("top_logprobs", json!(0), json!(-1), "top_logprobs"),
+            ("logit_bias", json!({}), json!({"x": 1}), "logit_bias.x"),
+            ("logit_bias", json!({}), json!({"42": 101}), "logit_bias.42"),
+            ("top_k", json!(-1), json!(0), "top_k"),
+            ("min_p", json!(0.0), json!(1.5), "min_p"),
+            ("repeat_penalty", json!(1.0), json!(0.0), "repeat_penalty"),
+            (
+                "modalities",
+                json!(["text"]),
+                json!(["text", "audio"]),
+                "modalities",
+            ),
+            ("audio", Value::Null, json!({"voice": "alloy"}), "audio"),
         ] {
             prepared(with(field, neutral.clone()))
                 .unwrap_or_else(|error| panic!("{field} = {neutral}: {error}"));
             let error = prepared(with(field, refused.clone())).unwrap_err();
-            assert_eq!(error.param.as_deref(), Some(field), "{field} = {refused}");
-            assert_eq!(error.code, Some("unsupported_parameter"), "{field}");
+            assert_eq!(error.param.as_deref(), Some(param), "{field} = {refused}");
         }
-        let error = prepared(with(
+        // `top_logprobs` without `logprobs` is refused.
+        let error = prepared(with("top_logprobs", json!(5))).unwrap_err();
+        assert_eq!(error.param.as_deref(), Some("top_logprobs"));
+    }
+
+    /// The sampling fields now land in the request's extended parameters.
+    #[test]
+    fn sampling_fields_reach_the_extended_parameters() {
+        let mut body = with("top_k", json!(40));
+        body["min_p"] = json!(0.05);
+        body["frequency_penalty"] = json!(0.5);
+        body["presence_penalty"] = json!(-0.5);
+        body["repeat_penalty"] = json!(1.1);
+        body["penalty_window"] = json!(64);
+        body["logit_bias"] = json!({"42": -10});
+        body["n"] = json!(3);
+        body["logprobs"] = json!(true);
+        body["top_logprobs"] = json!(5);
+        let request = prepared(body).unwrap().request;
+        assert_eq!(request.sampling.top_k, 40);
+        assert_eq!(request.sampling.min_p, 0.05);
+        assert_eq!(request.sampling.frequency_penalty, 0.5);
+        assert_eq!(request.sampling.presence_penalty, -0.5);
+        assert_eq!(request.sampling.repeat_penalty, 1.1);
+        assert_eq!(request.sampling.penalty_window, 64);
+        assert_eq!(request.sampling.logit_bias, vec![(42, -10.0)]);
+        assert_eq!(request.n, 3);
+        assert_eq!(request.logprobs, Some(5));
+        assert!(request.sampling.grammar_gbnf.is_none());
+        assert!(!request.sampling.is_v1());
+    }
+
+    #[test]
+    fn a_json_object_format_constrains_the_output_to_json() {
+        let request = prepared(with("response_format", json!({"type": "json_object"})))
+            .unwrap()
+            .request;
+        let grammar = request.sampling.grammar_gbnf.expect("a grammar");
+        assert!(grammar.contains("root"), "the GBNF names its root rule");
+    }
+
+    #[test]
+    fn a_json_schema_format_is_validated_at_admission() {
+        let ok = with(
+            "response_format",
+            json!({"type": "json_schema", "json_schema": {
+                "name": "point", "schema": {"type": "object", "properties": {"x": {"type": "number"}}}
+            }}),
+        );
+        let request = prepared(ok).unwrap().request;
+        assert!(request.sampling.grammar_gbnf.is_some());
+
+        let bad = with(
+            "response_format",
+            json!({"type": "json_schema", "json_schema": {
+                "name": "point", "schema": {"type": "object", "patternProperties": {}}
+            }}),
+        );
+        let error = prepared(bad).unwrap_err();
+        assert_eq!(
+            error.param.as_deref(),
+            Some("response_format.json_schema.schema/patternProperties")
+        );
+    }
+
+    #[test]
+    fn a_structured_output_and_tools_are_refused_together() {
+        let mut body = with("response_format", json!({"type": "json_object"}));
+        body["tools"] = json!([{"type": "function", "function": {"name": "move"}}]);
+        let error = prepared(body).unwrap_err();
+        assert_eq!(error.param.as_deref(), Some("response_format"));
+    }
+
+    #[test]
+    fn tool_choice_required_and_forced_become_constraints() {
+        let tools = json!([{"type": "function", "function": {"name": "move"}}]);
+        let mut body = with("tool_choice", json!("required"));
+        body["tools"] = tools.clone();
+        let request = prepared(body).unwrap().request;
+        assert_eq!(request.tool_constraint, Some(ToolConstraint::Required));
+        assert_eq!(request.tools.len(), 1);
+
+        let mut body = with(
             "tool_choice",
             json!({"type": "function", "function": {"name": "move"}}),
-        ))
-        .unwrap_err();
+        );
+        body["tools"] = tools.clone();
+        let request = prepared(body).unwrap().request;
+        assert_eq!(
+            request.tool_constraint,
+            Some(ToolConstraint::Forced("move".to_owned()))
+        );
+
+        // Forcing a function outside the catalog is refused, field-localized.
+        let mut body = with(
+            "tool_choice",
+            json!({"type": "function", "function": {"name": "fly"}}),
+        );
+        body["tools"] = tools.clone();
+        let error = prepared(body).unwrap_err();
+        assert_eq!(error.param.as_deref(), Some("tool_choice.function.name"));
+
+        // `required` without a catalog is refused.
+        let error = prepared(with("tool_choice", json!("required"))).unwrap_err();
         assert_eq!(error.param.as_deref(), Some("tool_choice"));
     }
 
@@ -641,20 +1010,28 @@ mod tests {
     }
 
     #[test]
-    fn one_call_at_most_is_refused_where_tools_are_offered() {
+    fn one_call_at_most_becomes_a_constraint_where_tools_are_offered() {
         let tools = json!([{"type": "function", "function": {"name": "move"}}]);
         let mut body = with("parallel_tool_calls", json!(false));
         prepared(body.clone()).expect("no catalog, nothing to limit");
         body["tools"] = tools.clone();
+        let request = prepared(body.clone()).unwrap().request;
+        assert_eq!(request.tool_constraint, Some(ToolConstraint::AtMostOne));
+        // Combined with `required`/`forced`: refused, one constraint at a time.
+        body["tool_choice"] = json!("required");
         let error = prepared(body.clone()).unwrap_err();
         assert_eq!(error.param.as_deref(), Some("parallel_tool_calls"));
-        assert_eq!(error.code, Some("unsupported_parameter"));
         body["tool_choice"] = json!("none");
-        prepared(body).expect("no catalog offered, nothing to limit");
+        let request = prepared(body).unwrap().request;
+        assert!(
+            request.tools.is_empty(),
+            "no catalog offered, nothing to limit"
+        );
+        assert_eq!(request.tool_constraint, None);
 
         let mut body = with("parallel_tool_calls", json!(true));
         body["tools"] = tools;
-        prepared(body).unwrap();
+        assert!(prepared(body).unwrap().request.tool_constraint.is_none());
     }
 
     #[test]
@@ -663,5 +1040,19 @@ mod tests {
         body["stream_options"] = json!({"include_usage": true});
         let prepared = prepared(body).unwrap();
         assert!(prepared.stream && prepared.include_usage);
+    }
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+
+    #[test]
+    fn repeat_penalties_must_survive_the_native_narrowing() {
+        for value in [1e-100, 1e100] {
+            let error = repeat_penalty(Some(value)).unwrap_err();
+            assert_eq!(error.param.as_deref(), Some("repeat_penalty"));
+        }
+        assert_eq!(repeat_penalty(Some(1.1)).unwrap(), 1.1_f32);
     }
 }
