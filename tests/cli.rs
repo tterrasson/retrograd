@@ -419,41 +419,15 @@ fn collect_writes_a_dataset_sft_trains_on() {
     assert!(dir.join("adapter.gguf").is_file());
 }
 
-/// Every line of `observe.jsonl`, and the records the feed publishes.
-fn read_export(directory: &std::path::Path) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
-    let read = |path: std::path::PathBuf| std::fs::read_to_string(path).expect("an export file");
-    let records = read(directory.join("observe.jsonl"))
+/// Every line of `observe.jsonl`. The export is the log alone: the web
+/// interface reads it through `retrograd-server view <directory>`, so the
+/// directory holds no other file.
+fn read_export(directory: &std::path::Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(directory.join("observe.jsonl"))
+        .expect("an export file")
         .lines()
         .map(|line| serde_json::from_str(line).expect("a complete record"))
-        .collect::<Vec<serde_json::Value>>();
-    let callback = |text: &str, prefix: &str| -> serde_json::Value {
-        let json = text
-            .strip_prefix(prefix)
-            .and_then(|rest| rest.strip_suffix(");\n"))
-            .expect("a feed callback");
-        serde_json::from_str(json).expect("a JSON argument")
-    };
-    let feed = directory.join("feed");
-    let manifest = callback(&read(feed.join("manifest.js")), "RG_FEED.manifest(");
-    assert_eq!(manifest["dropped_batches"], 0, "{manifest}");
-    let generation = feed.join(manifest["generation"].as_str().expect("a generation"));
-    let chunks = manifest["chunks"].as_u64().expect("a chunk count");
-    assert_eq!(
-        std::fs::read_dir(&generation)
-            .expect("the generation directory")
-            .count() as u64,
-        chunks,
-        "the manifest names every chunk and nothing else"
-    );
-    let published = (0..chunks)
-        .flat_map(|index| {
-            let text = read(generation.join(format!("{index:06}.js")));
-            let chunk = callback(&text, &format!("RG_FEED.chunk({index}, "));
-            chunk.as_array().expect("a record list").clone()
-        })
-        .collect();
-    assert!(directory.join("index.html").is_file());
-    (records, published)
+        .collect::<Vec<serde_json::Value>>()
 }
 
 fn of_type<'a>(records: &'a [serde_json::Value], kind: &str) -> Vec<&'a serde_json::Value> {
@@ -518,8 +492,7 @@ fn rollout_runs_export_what_they_trained_on() {
             .expect("run the CLI");
         assert!(output.status.success(), "{algorithm}: {}", stderr(&output));
 
-        let (records, published) = read_export(&observe);
-        assert_eq!(records, published, "{algorithm}: the feed mirrors the log");
+        let records = read_export(&observe);
         let runs = of_type(&records, "run");
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0]["algorithm"], algorithm);
