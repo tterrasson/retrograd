@@ -48,10 +48,12 @@ macro_rules! metric {
 mod baseline;
 mod batch;
 mod epochs;
+mod guardrails;
 
 use baseline::*;
 use batch::*;
 use epochs::*;
+pub(crate) use guardrails::{GuardrailWindow, VerdictStats, verdict_stats};
 
 /// Counter ratio as a metric value; zero when nothing was counted, which is the
 /// honest reading for "this path did not run" on a series that is otherwise a
@@ -522,6 +524,9 @@ struct RunState {
     prompt_draws: PromptDraws,
     /// Consecutive updates in which every group was dropped as zero-signal.
     stalled_updates: u32,
+    /// The verdict/verifiable-correlation alert window, when `[grpo.judge]`
+    /// declared guardrails. Fed once per update by phase 2.
+    guardrail_window: Option<GuardrailWindow>,
     /// Lines produced by the batch phases, waiting for the next progress
     /// event to carry them out. See [`Progress::notes`]: printing them here
     /// would tear the caller's progress bar.
@@ -571,6 +576,10 @@ fn resume_state(
             )
         })
         .transpose()?;
+    let guardrail_window = judge
+        .as_ref()
+        .and_then(|judge| judge.guardrails())
+        .map(GuardrailWindow::new);
     let layout = RowLayout::resolve(trainer, training)?;
     let loss_denominator = config.sampling.max_new_tokens as usize;
     // Every prompt must leave room for the full Dr. GRPO generation budget:
@@ -628,6 +637,7 @@ fn resume_state(
         },
         prompt_draws,
         stalled_updates: 0,
+        guardrail_window,
         pending_notes: importance_sampling_warning(
             "grpo",
             config.importance_sampling_level,

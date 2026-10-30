@@ -472,3 +472,13 @@ transcripts with the judge model. `trigger_chars`, `target_chars` and
 the judge's own generation budget, separate from the rollouts'). In-process
 generation runs through the same step-wise scheduler as the rollouts, on the
 training thread; a `snapshot` judge keeps its own frozen engine.
+
+`[<section>.judge.guardrails]`, optional alert on the verdict's agreement
+with the verifiable reward, measured by the single-turn GRPO loop that holds
+both halves: `verdict_correlation_threshold` (`0.0`), `window_updates` (`8`),
+`min_defined_groups` (`4`). When the mean Spearman correlation between
+verdict and verifiable reward over the window falls below the threshold, the
+run logs a warning and emits `judge/verdict_correlation_alert = 1` — a drift
+signal to analyse, not a proof of reward hacking. Groups whose correlation is
+undefined (constant verdict or verifiable reward, fewer than two judged members, no verdict) are
+counted in `judge/verdict_correlation_undefined_fraction`, never as zero.

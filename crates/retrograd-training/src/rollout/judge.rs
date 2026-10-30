@@ -75,6 +75,9 @@ pub struct GroupJudge {
     runtime: Option<tokio::runtime::Runtime>,
     failure: JudgeFailurePolicy,
     weight: f32,
+    /// The optional verdict/verifiable-correlation alert window declared in
+    /// the judge section; consumed by the update loop, not by the judge.
+    guardrails: Option<retrograd_spec::judge::JudgeGuardrails>,
 }
 
 enum Backend {
@@ -133,7 +136,7 @@ impl GroupJudge {
             ruler.local_refresh_every(),
             None,
         )?;
-        Self::local(local_judge, config.failure, config.weight)
+        Self::local_with_guardrails(local_judge, config.failure, config.weight, ruler.guardrails)
     }
 
     fn from_parts(config: &JudgeConfig, failure: JudgeFailurePolicy, weight: f32) -> Result<Self> {
@@ -149,11 +152,16 @@ impl GroupJudge {
             .enable_all()
             .build()
             .map_err(|error| Error::runtime(format!("start the judge runtime: {error}")))?;
+        let guardrails = match config {
+            JudgeConfig::Ruler { config } => config.guardrails,
+            JudgeConfig::Command { .. } => None,
+        };
         Ok(Self {
             backend,
             runtime: Some(runtime),
             failure,
             weight,
+            guardrails,
         })
     }
 
@@ -161,17 +169,36 @@ impl GroupJudge {
     /// [`GroupJudge::score`]. Used by callers that select the local transport
     /// programmatically.
     pub fn local(local: LocalJudge, failure: JudgeFailurePolicy, weight: f32) -> Result<Self> {
+        Self::local_with_guardrails(local, failure, weight, None)
+    }
+
+    /// [`GroupJudge::local`], with the alert window a configuration declared.
+    pub fn local_with_guardrails(
+        local: LocalJudge,
+        failure: JudgeFailurePolicy,
+        weight: f32,
+        guardrails: Option<retrograd_spec::judge::JudgeGuardrails>,
+    ) -> Result<Self> {
         if !weight.is_finite() || weight < 0.0 {
             return Err(Error::invalid(
                 "judge weight must be finite and non-negative",
             ));
+        }
+        if let Some(guardrails) = &guardrails {
+            guardrails.validate()?;
         }
         Ok(Self {
             backend: Backend::Local(Box::new(local)),
             runtime: None,
             failure,
             weight,
+            guardrails,
         })
+    }
+
+    /// The verdict/verifiable-correlation alert window, when declared.
+    pub fn guardrails(&self) -> Option<retrograd_spec::judge::JudgeGuardrails> {
+        self.guardrails
     }
 
     /// Default weight of a verdict, for a reward line that states none.

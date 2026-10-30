@@ -42,6 +42,7 @@ pub use render::compact::CompactionConfig;
 pub use render::prompt::{
     Aggregation, DEFAULT_PAIRWISE_RUBRIC, DEFAULT_RUBRIC, POINTWISE_LABELS, POINTWISE_QUESTION,
 };
+pub use retrograd_spec::judge::JudgeGuardrails;
 pub use ruler::pointwise_verdict;
 pub use ruler::{JudgeCacheMode, RULER_PROTOCOL_VERSION, RulerJudge, RulerStats};
 pub use ruler::{JudgeStrategy, RulerConfig};

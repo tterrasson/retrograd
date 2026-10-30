@@ -197,6 +197,64 @@ pub const DEFAULT_LOCAL_REFRESH_EVERY: u32 = 20;
 /// rollout-length answer.
 pub const DEFAULT_LOCAL_JUDGE_MAX_NEW_TOKENS: u32 = 1024;
 
+/// Guardrails on the verdict's agreement with the verifiable reward, measured
+/// by the training loop that holds both (single-turn GRPO: the reward command
+/// gives the verifiable half, the judge the verdict). A verdict that stops
+/// tracking what can be checked is the early sign of a drift to analyse - not
+/// by itself a proof of reward hacking, which is why this alerts instead of
+/// stopping the run.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct JudgeGuardrails {
+    /// Alert when the mean Spearman rank correlation between verdict and
+    /// verifiable reward, pooled over the window, falls below this value.
+    /// In [-1, 1]; 0.0 alerts on any negative mean.
+    #[serde(default = "default_verdict_correlation_threshold")]
+    pub verdict_correlation_threshold: f32,
+    /// How many updates the alert window spans.
+    #[serde(default = "default_guardrail_window_updates")]
+    pub window_updates: u32,
+    /// How many *defined* per-group correlations the window must hold before
+    /// the alert may fire. Groups whose verdict is constant, that are too
+    /// small, or that carry no verifiable reward give an undefined
+    /// correlation, counted separately - never replaced by zero.
+    #[serde(default = "default_guardrail_min_defined_groups")]
+    pub min_defined_groups: usize,
+}
+
+fn default_verdict_correlation_threshold() -> f32 {
+    0.0
+}
+fn default_guardrail_window_updates() -> u32 {
+    8
+}
+fn default_guardrail_min_defined_groups() -> usize {
+    4
+}
+
+impl JudgeGuardrails {
+    pub fn validate(&self) -> Result<()> {
+        if !self.verdict_correlation_threshold.is_finite()
+            || !(-1.0..=1.0).contains(&self.verdict_correlation_threshold)
+        {
+            return Err(Error::invalid(
+                "RULER guardrails verdict_correlation_threshold must be finite and in [-1, 1]",
+            ));
+        }
+        if self.window_updates == 0 {
+            return Err(Error::invalid(
+                "RULER guardrails window_updates must be at least one update",
+            ));
+        }
+        if self.min_defined_groups == 0 {
+            return Err(Error::invalid(
+                "RULER guardrails min_defined_groups must be at least one group",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// How a group is presented to the judge.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "mode", rename_all = "snake_case")]
@@ -290,6 +348,12 @@ pub struct RulerConfig {
     /// [`CompactionConfig`] for why it is a group-wide decision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction: Option<CompactionConfig>,
+    /// Guardrails on the verdict's agreement with the verifiable reward,
+    /// measured and alerted by the training loop that holds both. Off when
+    /// absent: the per-update correlation series is always published when a
+    /// judge runs, the alert is not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardrails: Option<JudgeGuardrails>,
 }
 
 impl Default for RulerConfig {
@@ -309,6 +373,7 @@ impl Default for RulerConfig {
             strategy: JudgeStrategy::default(),
             context: JudgeContext::default(),
             compaction: None,
+            guardrails: None,
         }
     }
 }
@@ -425,6 +490,9 @@ impl RulerConfig {
         }
         if let Some(compaction) = &self.compaction {
             compaction.validate()?;
+        }
+        if let Some(guardrails) = &self.guardrails {
+            guardrails.validate()?;
         }
         self.context.validate()
     }
@@ -616,6 +684,37 @@ mod tests {
         config.model.clear();
         config.validate_selection().unwrap();
         config.validate_protocol().unwrap();
+    }
+
+    #[test]
+    fn guardrails_parse_with_defaults_and_validate() {
+        let config: RulerConfig =
+            serde_json::from_str(r#"{"local": {}, "guardrails": {}}"#).unwrap();
+        let guardrails = config.guardrails.expect("parsed");
+        assert_eq!(guardrails.verdict_correlation_threshold, 0.0);
+        assert_eq!(guardrails.window_updates, 8);
+        assert_eq!(guardrails.min_defined_groups, 4);
+        config.validate_protocol().unwrap();
+
+        let config: RulerConfig = serde_json::from_str(
+            r#"{"local": {}, "guardrails": {"verdict_correlation_threshold": 0.2, "window_updates": 3, "min_defined_groups": 2}}"#,
+        )
+        .unwrap();
+        let guardrails = config.guardrails.unwrap();
+        assert_eq!(guardrails.verdict_correlation_threshold, 0.2);
+        assert_eq!(guardrails.window_updates, 3);
+        assert_eq!(guardrails.min_defined_groups, 2);
+        config.validate_protocol().unwrap();
+
+        for bad in [
+            r#"{"local": {}, "guardrails": {"verdict_correlation_threshold": 1.5}}"#,
+            r#"{"local": {}, "guardrails": {"window_updates": 0}}"#,
+            r#"{"local": {}, "guardrails": {"min_defined_groups": 0}}"#,
+        ] {
+            let config: RulerConfig = serde_json::from_str(bad).unwrap();
+            let error = config.validate_protocol().unwrap_err();
+            assert!(error.to_string().contains("guardrails"), "{error}");
+        }
     }
 
     #[test]

@@ -51,6 +51,7 @@ pub(super) fn build_baseline(
         completions,
         member_seeds,
         mut rewards,
+        verifiable_rewards,
         judge_terms,
         judge_verdicts,
         judged_groups,
@@ -83,6 +84,35 @@ pub(super) fn build_baseline(
         "the judge terms must stay aligned with the rewards they were blended into"
     );
     let (verifiable_reward_mean, judge_reward_mean) = reward_split(mean_reward_f64, &judge_terms);
+    // Verdict/verifiable guardrails, on the original reward-command outputs
+    // before blending or shaping, so f32 cancellation cannot change ranks.
+    // Computed whether or not an observer is attached - the series is the
+    // run's, the export is the observer's.
+    let verdict_stats = verdict_stats(&verifiable_rewards, &judge_verdicts, config.group_size);
+    let mut guardrail_window_mean = 0.0_f32;
+    let mut guardrail_alert = 0.0_f32;
+    if let Some(window) = state.guardrail_window.as_mut() {
+        if let Some(mean) = window.push(&verdict_stats) {
+            guardrail_alert = 1.0;
+            let threshold = window.threshold();
+            let defined = window.defined_groups();
+            let span = window.window_updates();
+            tracing::warn!(
+                "update {}: verdict/verifiable correlation averaged {mean:.2} over the last \
+                 {span} updates ({defined} defined groups), below the configured threshold \
+                 {threshold:.2} - a drift signal to analyse, not proof of reward hacking",
+                update + 1
+            );
+            state.pending_notes.push(format!(
+                "update {}: the judge's verdict/verifiable correlation averaged {mean:.2} over \
+                 the last {span} updates ({defined} defined groups), below the configured \
+                 threshold {threshold:.2} - a drift signal to analyse, not a proof of reward \
+                 hacking; see judge/verdict_correlation_* and judge/position_disagreement.",
+                update + 1
+            ));
+        }
+        guardrail_window_mean = window.window_mean();
+    }
     let raw_rewards = observer.map(|_| rewards.clone());
     // DAPO soft overlong punishment: a progressive penalty over
     // the last `buffer_tokens` of the budget, applied to the reward before
@@ -319,6 +349,9 @@ pub(super) fn build_baseline(
             trained_tokens,
             scoring_stats,
             rollout_stats,
+            verdict_stats,
+            guardrail_window_mean,
+            guardrail_alert,
             reference_seconds,
             timing,
         },

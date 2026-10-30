@@ -20,6 +20,9 @@ pub(super) struct TrainingBatch {
     pub(super) completions: Vec<String>,
     pub(super) member_seeds: Vec<u32>,
     pub(super) rewards: Vec<f32>,
+    /// Reward-command outputs before blending. Subtracting the judge term
+    /// from an f32 sum can change ranks or turn a constant into noise.
+    pub(super) verifiable_rewards: Vec<f32>,
     /// What the judge added to each entry of `rewards`, i.e. `verdict *
     /// weight`; zero where no verdict applied and everywhere without a judge.
     /// Same length and same order as `rewards`, so `rewards[i] -
@@ -82,6 +85,13 @@ pub(super) struct BatchMetrics {
     /// Scheduler statistics of the update's sampling calls, emitted as the
     /// `rollout/*` series.
     pub(super) rollout_stats: RolloutStats,
+    /// Verdict/verifiable guardrail statistics of this update, published as
+    /// the `judge/verdict_*` series when a judge ran.
+    pub(super) verdict_stats: VerdictStats,
+    /// Mean correlation over the alert window, when guardrails are declared.
+    pub(super) guardrail_window_mean: f32,
+    /// 1.0 when the alert window fired on this update, else 0.0.
+    pub(super) guardrail_alert: f32,
     pub(super) reference_seconds: f32,
     pub(super) timing: BatchTiming,
 }
@@ -122,6 +132,7 @@ pub(super) fn assemble_batch(
         completions: Vec<String>,
         seeds: Vec<u32>,
         rewards: Vec<f32>,
+        verifiable_rewards: Vec<f32>,
         /// Rides with `rewards` so a group held aside as padding keeps its
         /// reward decomposition intact.
         judge_terms: Vec<f32>,
@@ -134,6 +145,7 @@ pub(super) fn assemble_batch(
     let mut completions = Vec::with_capacity(rollouts_per_update);
     let mut member_seeds = Vec::with_capacity(rollouts_per_update);
     let mut rewards: Vec<f32> = Vec::with_capacity(rollouts_per_update);
+    let mut verifiable_rewards = Vec::with_capacity(rollouts_per_update);
     let mut judge_terms: Vec<f32> = Vec::with_capacity(rollouts_per_update);
     let mut judge_verdicts: Vec<Option<JudgeVerdict>> = Vec::with_capacity(rollouts_per_update);
     // Whether each rollout's reward carries the judge term the others carry.
@@ -331,6 +343,7 @@ pub(super) fn assemble_batch(
 
         let mut offset = 0_usize;
         for (candidate, judged) in candidates.into_iter().zip(round_judged) {
+            let group_verifiable_rewards = &round_rows[offset..offset + config.group_size];
             let group_rewards = &round_rewards[offset..offset + config.group_size];
             let group_judge_terms = &round_judge_terms[offset..offset + config.group_size];
             let group_judge_verdicts = &round_judge_verdicts[offset..offset + config.group_size];
@@ -361,6 +374,7 @@ pub(super) fn assemble_batch(
                 member_seeds.extend(candidate.seeds);
                 rollouts.extend(candidate.rollouts);
                 rewards.extend_from_slice(group_rewards);
+                verifiable_rewards.extend(group_verifiable_rewards.iter().map(|row| row.reward));
                 judge_terms.extend_from_slice(group_judge_terms);
                 judge_verdicts.extend_from_slice(group_judge_verdicts);
                 judged_groups.extend(std::iter::repeat_n(judged, config.group_size));
@@ -370,6 +384,10 @@ pub(super) fn assemble_batch(
                     completions: candidate.completions,
                     seeds: candidate.seeds,
                     rewards: group_rewards.to_vec(),
+                    verifiable_rewards: group_verifiable_rewards
+                        .iter()
+                        .map(|row| row.reward)
+                        .collect(),
                     judge_terms: group_judge_terms.to_vec(),
                     judge_verdicts: group_judge_verdicts.to_vec(),
                     prompt_slot: candidate.prompt_slot,
@@ -397,6 +415,7 @@ pub(super) fn assemble_batch(
             member_seeds.extend(group.seeds);
             rollouts.extend(group.rollouts);
             rewards.extend(group.rewards);
+            verifiable_rewards.extend(group.verifiable_rewards);
             judge_terms.extend(group.judge_terms);
             judge_verdicts.extend(group.judge_verdicts);
         }
@@ -423,6 +442,7 @@ pub(super) fn assemble_batch(
         completions,
         member_seeds,
         rewards,
+        verifiable_rewards,
         judge_terms,
         judge_verdicts,
         judged_groups,

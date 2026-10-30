@@ -206,8 +206,41 @@ max_new_tokens = 1024             # the judge's own generation budget
 
 Self-judging risks reward hacking: the judge and the policy share weights. Keep
 `judge_weight` below the verifiable reward's share, prefer `snapshot` (or
-`base`) over `policy`, and watch `judge/position_disagreement`. See
-`examples/smoke_tiny_grpo_self_judge.toml` for a runnable CPU example.
+`base`, the stable alternative) over `policy` (experimental), and watch
+`judge/position_disagreement` (pairwise `both_orders`) and
+`judge/degenerate_group_fraction` (groups the judge scored identically).
+See `examples/smoke_tiny_grpo_self_judge.toml` for a runnable CPU example.
+
+### Guardrails on the verdict
+
+Every update with a judge publishes, next to the usual `judge/*` series:
+
+- `judge/verdict_verifiable_spearman`: mean Spearman rank correlation, within
+  each group, between the verdict and the verifiable reward
+  (the original reward-command output, kept before blending to preserve
+  ranks despite rounding). Groups where the correlation is undefined —
+  constant verdict, constant verifiable reward, fewer than two judged
+  members, or no verdict at all — are counted in
+  `judge/verdict_correlation_undefined_fraction`, never folded in as zero.
+- `judge/verdict_group_variance_mean`: mean within-group variance of the
+  verdicts.
+- `judge/constant_verdict_group_fraction`: share of judged groups whose
+  verdicts are all equal (the same fact as `judge/degenerate_group_fraction`,
+  computed on the batch's verdicts).
+
+With `[grpo.judge.guardrails]`, a sliding window over updates additionally
+emits `judge/verdict_correlation_window_mean` and
+`judge/verdict_correlation_alert`: when the window holds at least
+`min_defined_groups` defined correlations and their mean falls below
+`verdict_correlation_threshold`, the run logs a warning and sets the alert to
+1. That is a drift signal to analyse, not a proof of reward hacking.
+
+```toml
+[grpo.judge.guardrails]
+verdict_correlation_threshold = 0.0   # alert on any negative window mean
+window_updates = 8
+min_defined_groups = 4
+```
 
 The verdict itself (`judge_verdict`) and, for a generating strategy, the
 judge's explanation (`judge_explanation`) are recorded per trajectory in

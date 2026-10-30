@@ -54,6 +54,9 @@ pub(super) fn run_epochs(
                 trained_tokens,
                 scoring_stats,
                 rollout_stats,
+                verdict_stats,
+                guardrail_window_mean,
+                guardrail_alert,
                 reference_seconds,
                 timing:
                     BatchTiming {
@@ -307,6 +310,47 @@ pub(super) fn run_epochs(
                 // exports, so one dashboard reads both loops.
                 .chain(match &judge {
                     Some(_) => judge_tally.metrics(),
+                    None => Vec::new(),
+                })
+                // Verdict/verifiable guardrails: the per-update correlation
+                // (undefined groups counted apart, never as zero), the
+                // within-group verdict variance, and - when guardrails are
+                // declared - the window mean and the alert flag.
+                .chain(match &judge {
+                    Some(_) => vec![
+                        metric!(
+                            "judge/verdict_verifiable_spearman",
+                            verdict_stats.spearman_mean
+                        ),
+                        metric!(
+                            "judge/verdict_correlation_undefined_fraction",
+                            ratio_or_zero(
+                                verdict_stats.undefined_groups as u64,
+                                verdict_stats.total_groups as u64
+                            )
+                        ),
+                        metric!(
+                            "judge/verdict_group_variance_mean",
+                            verdict_stats.verdict_variance_mean
+                        ),
+                        metric!(
+                            "judge/constant_verdict_group_fraction",
+                            ratio_or_zero(
+                                verdict_stats.constant_verdict_groups as u64,
+                                verdict_stats.judged_groups as u64
+                            )
+                        ),
+                    ],
+                    None => Vec::new(),
+                })
+                .chain(match judge.and_then(GroupJudge::guardrails) {
+                    Some(_) => vec![
+                        metric!(
+                            "judge/verdict_correlation_window_mean",
+                            guardrail_window_mean
+                        ),
+                        metric!("judge/verdict_correlation_alert", guardrail_alert),
+                    ],
                     None => Vec::new(),
                 })
                 .chain(judge.map(GroupJudge::metric_values).unwrap_or_default())
