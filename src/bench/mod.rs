@@ -204,9 +204,15 @@ pub(crate) fn bench_model(args: Vec<String>) -> Result<()> {
     match &run_config.algorithm {
         Algorithm::Sft(_) => {
             // The SFT pass is forward-only - tokenize, render, score labels -
-            // so it runs on the lightweight engine instead of a full trainer.
+            // so it runs on the lightweight engine instead of a full trainer,
+            // and scores one row at a time: a single `n_ctx` slot is the
+            // whole pool it needs, not the run's rollout concurrency.
+            let scoring = TrainConfig {
+                generation_concurrency: 1,
+                ..run_config.training.clone()
+            };
             let mut engine = load_model(&ui, started, || {
-                Engine::from_train_config(&run_config.model, &run_config.training)
+                Engine::from_train_config(&run_config.model, &scoring)
             })?;
             let format = match args.format {
                 Some(format) => format,

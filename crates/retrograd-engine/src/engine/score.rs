@@ -9,9 +9,9 @@
 //! back, so the slot advances by exactly the input tokens and the sequence is
 //! decoded once - the same forward pass the runtime's own scorer runs.
 //!
-//! The slot is reclaimed before and after every call, so a scoring pass leaves
-//! the pool as it found it (modulo whatever a concurrent prefix cache holds -
-//! its owner invalidates its own bookkeeping on a weights-version change).
+//! The scored slot is reclaimed before and after every call and no other slot
+//! is touched, so a caller that keeps dormant prefixes elsewhere in the pool
+//! (the rollout scheduler) only has to lend a slot it does not hold.
 
 use std::borrow::Cow;
 
@@ -47,12 +47,13 @@ fn suffix_targets(tokens: &[i32], n_prompt: usize) -> Vec<Option<i32>> {
 }
 
 impl Engine {
-    /// Feeds `tokens` into one slot one position at a time and returns the
+    /// Feeds `tokens` into `slot` one position at a time and returns the
     /// temperature-1 logprob of each target: entry `i` of `targets` is scored
     /// against the distribution after `tokens[..=i]`, and `None` entries are
     /// skipped. Returned values follow increasing position order.
     fn score_positions(
         &mut self,
+        slot: i32,
         tokens: &[i32],
         targets: &[Option<i32>],
     ) -> std::result::Result<Vec<f32>, EngineError> {
@@ -78,11 +79,11 @@ impl Engine {
             ));
         }
         // One slot, reclaimed on the way out whatever happens.
-        self.seq_rm(0, -1, -1)?;
-        let scored = self.score_slot(tokens, targets, vocab);
+        self.seq_rm(slot, -1, -1)?;
+        let scored = self.score_slot(slot, tokens, targets, vocab);
         let freed = self
             .request_free(SCORING_REQUEST)
-            .and_then(|()| self.seq_rm(0, -1, -1));
+            .and_then(|()| self.seq_rm(slot, -1, -1));
         let scores = scored?;
         freed?;
         Ok(scores)
@@ -92,6 +93,7 @@ impl Engine {
     /// cleared and reclaims afterwards.
     fn score_slot(
         &mut self,
+        slot: i32,
         tokens: &[i32],
         targets: &[Option<i32>],
         vocab: u32,
@@ -102,7 +104,7 @@ impl Engine {
         for (position, target) in targets.iter().enumerate() {
             let row = StepRow {
                 request: SCORING_REQUEST,
-                slot: 0,
+                slot,
                 tokens: Cow::Borrowed(&tokens[position..position + 1]),
                 pos0: i32::try_from(position).map_err(|_| {
                     EngineError::Overflow("scoring position does not fit i32".into())
@@ -138,7 +140,7 @@ impl Engine {
         n_prompt: usize,
     ) -> std::result::Result<Vec<f32>, EngineError> {
         validate_suffix(tokens, n_prompt)?;
-        self.score_positions(tokens, &suffix_targets(tokens, n_prompt))
+        self.score_positions(0, tokens, &suffix_targets(tokens, n_prompt))
     }
 
     /// Teacher-forced scores selected by an explicit target-token mask, the
@@ -151,8 +153,21 @@ impl Engine {
         tokens: &[i32],
         train_mask: &[bool],
     ) -> std::result::Result<Vec<f32>, EngineError> {
+        self.score_masked_tokens_in(0, tokens, train_mask)
+    }
+
+    /// [`Engine::score_masked_tokens`] in a chosen pool slot, which is
+    /// cleared before and after the pass; the other slots are left
+    /// untouched, so a caller can keep dormant prefixes resident beside it.
+    pub fn score_masked_tokens_in(
+        &mut self,
+        slot: i32,
+        tokens: &[i32],
+        train_mask: &[bool],
+    ) -> std::result::Result<Vec<f32>, EngineError> {
         let first = first_masked_target(tokens, train_mask)?;
-        let suffix = self.score_token_suffix(tokens, first)?;
+        validate_suffix(tokens, first)?;
+        let suffix = self.score_positions(slot, tokens, &suffix_targets(tokens, first))?;
         Ok((first..tokens.len())
             .zip(suffix)
             .filter_map(|(target, score)| train_mask[target].then_some(score))
@@ -223,7 +238,7 @@ mod train_surface {
                     .iter()
                     .map(|&label| (label != IGNORE_LABEL).then_some(label))
                     .collect::<Vec<_>>();
-                for logprob in self.score_positions(tokens, &targets)? {
+                for logprob in self.score_positions(0, tokens, &targets)? {
                     negative_log_likelihood -= f64::from(logprob);
                     supervised_tokens += 1;
                 }

@@ -149,10 +149,10 @@ impl DecodeBackend for SharedTrainer {
 
 /// An `Engine` shared the same way, for the engine-backed policy. Unlike the
 /// trainer, nothing in the engine runtime bumps its weights version when host
-/// code reclaims a slot directly (the step-wise scorer does exactly that), so
-/// the wrapper carries its own invalidation counter: the actor bumps it after
-/// every scoring pass, and the scheduler drops its prefix tree on the next
-/// admission, exactly as it does for a runtime-side version bump.
+/// code reclaims a slot directly, so the wrapper carries its own invalidation
+/// counter: the actor bumps it when the step-wise scorer had to run in a slot
+/// the scheduler did not lend it, and the scheduler drops its prefix tree on
+/// the next admission, exactly as it does for a runtime-side version bump.
 pub(crate) struct SharedEngine {
     pub(crate) engine: Rc<RefCell<Option<Engine>>>,
     pub(crate) invalidations: Rc<Cell<u64>>,
@@ -405,6 +405,12 @@ impl<B: DecodeBackend> SchedulerDriver<B> {
                 }
             })
             .collect()
+    }
+
+    /// Lends a pool slot with room for `cells` to host work between waves;
+    /// see [`Scheduler::lend_slot`].
+    pub(crate) fn lend_slot(&mut self, cells: u64) -> Result<Option<i32>> {
+        self.scheduler.lend_slot(cells).map_err(infer_error)
     }
 
     /// Drains the per-update accumulators and reads the cumulative prefix-cache

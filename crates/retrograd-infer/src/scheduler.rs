@@ -459,6 +459,39 @@ impl<B: DecodeBackend> Scheduler<B> {
         }
     }
 
+    /// Lends the caller one pool slot outside the scheduler's bookkeeping,
+    /// for host work between waves (a teacher-forced scorer): a slot no live
+    /// sequence and no dormant prefix holds, with `cells` of the pool left
+    /// beside the dormant prefixes. LRU prefix nodes are evicted (swapped to
+    /// a host snapshot when they qualify) until both fit, so the rest of the
+    /// prefix tree survives the loan. `None` when nothing more can be evicted.
+    ///
+    /// Only while no sequence is live. The caller must leave the slot empty
+    /// (`seq_rm`) before the next pump.
+    pub fn lend_slot(&mut self, cells: u64) -> Result<Option<i32>, InferError> {
+        if !self.live.is_empty() {
+            return Err(InferError::Failed(
+                "a slot can only be lent while no sequence is live".into(),
+            ));
+        }
+        loop {
+            let (slots_left, cells_left) = self.capacity()?;
+            if slots_left > 0 && cells_left >= cells {
+                let mut held = vec![false; self.n_slots];
+                for slot in self.kv.resident_slots() {
+                    if let Some(held) = held.get_mut(slot as usize) {
+                        *held = true;
+                    }
+                }
+                // The backend's slot count fits i32, checked at startup.
+                return Ok(held.iter().position(|held| !*held).map(|slot| slot as i32));
+            }
+            if !self.evict_one_lru()? {
+                return Ok(None);
+            }
+        }
+    }
+
     /// Pumps until no request is queued or live. Guarded against a stuck
     /// queue: after 1024 consecutive iterations without progress the
     /// scheduler reports a failure instead of spinning.

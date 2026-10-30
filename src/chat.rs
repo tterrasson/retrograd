@@ -84,9 +84,13 @@ pub(crate) fn chat_model(args: Vec<String>) -> Result<()> {
     let load = ui.spinner("loading model");
     // The chat session only generates, so it runs on the lightweight engine
     // instead of a full trainer: same model, same generation core, no
-    // optimizer state. The engine geometry mirrors the run's dedicated
-    // generation context, which is what makes its output bit-identical to a
-    // trainer's at equal seeds and weights.
+    // optimizer state. One conversation decodes one sequence, so the pool
+    // holds a single `n_ctx` slot rather than the run's rollout concurrency.
+    // Attention only sees the pool size through the padded KV window
+    // (`max(256, used)` cells, capped by the pool), so from `n_ctx >= 256` on
+    // the output is bit-identical to the run's full generation geometry - the
+    // launch size is unchanged unless the concurrency alone was raising it.
+    run_config.training.generation_concurrency = 1;
     let mut engine = Engine::from_train_config(&run_config.model, &run_config.training)
         .inspect_err(|_| {
             ui.fail_spinner(load.clone(), "model loading failed");

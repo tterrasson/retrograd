@@ -1068,17 +1068,27 @@ impl EngineHost {
     }
 
     /// Scores one trajectory, teacher-forced, through the engine's step-wise
-    /// API. The scorer reclaims a pool slot directly, which the engine runtime
-    /// does not report as a weights change, so the prefix cache is invalidated
-    /// by hand afterwards: the scheduler drops its tree on the next admission
-    /// instead of copying from a reclaimed slot.
+    /// API, in a pool slot the scheduler lends between waves: the scorer only
+    /// ever clears that slot, so every dormant prefix elsewhere stays usable
+    /// (the scheduler evicts LRU prefixes only if the pool lacks the room).
+    ///
+    /// When nothing more can be evicted (pinned prefixes fill the pool) the
+    /// pass falls back to slot 0, which a dormant prefix may hold: the prefix
+    /// cache is then invalidated by hand - the engine runtime does not report
+    /// a host-side `seq_rm` as a weights change - so the scheduler drops its
+    /// tree on the next admission instead of copying from a reclaimed slot.
     fn score_masked(&mut self, tokens: &[i32], train_mask: &[bool]) -> Result<Vec<f32>> {
+        // usize -> u64 widening.
+        let lent = self.driver.lend_slot(tokens.len() as u64)?;
+        let slot = lent.unwrap_or(0);
         let result = self.with_engine(|e| {
-            e.score_masked_tokens(tokens, train_mask)
+            e.score_masked_tokens_in(slot, tokens, train_mask)
                 .map_err(engine_error)
         });
-        self.invalidations
-            .set(self.invalidations.get().wrapping_add(1));
+        if lent.is_none() {
+            self.invalidations
+                .set(self.invalidations.get().wrapping_add(1));
+        }
         result
     }
 }

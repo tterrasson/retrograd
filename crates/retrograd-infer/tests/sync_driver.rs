@@ -304,3 +304,57 @@ fn a_step_failure_is_returned_and_fails_the_live_requests() {
     }
     assert!(saw_error);
 }
+
+#[test]
+fn a_lent_slot_is_empty_and_leaves_the_prefix_tree_resident() {
+    let shared = Arc::new(Mutex::new(fake()));
+    let mut scheduler = Scheduler::new(
+        SharedFake(shared.clone()),
+        SchedulerOptions {
+            n_batch: 16,
+            queue_capacity: 16,
+            event_capacity: 8,
+            slow_client_timeout: Duration::ZERO,
+            ..SchedulerOptions::default()
+        },
+    );
+    scheduler.initialize().unwrap();
+    let requests = vec![
+        Request::single(vec![1, 2, 3, 4], fake_sampling(3, 4)),
+        Request::single(vec![5, 6, 7, 8], fake_sampling(4, 4)),
+    ];
+    run_requests(&mut scheduler, requests).unwrap();
+    let resident = scheduler.kv_stats().resident_slots;
+    assert!(resident > 0, "finished sequences stay dormant");
+
+    // Room beside the dormant prefixes: no eviction, an empty slot.
+    let slot = scheduler.lend_slot(8).unwrap().expect("a free slot");
+    assert_eq!(shared.lock().unwrap().seq_pos(slot).unwrap(), (-1, -1));
+    let stats = scheduler.kv_stats();
+    assert_eq!((stats.resident_slots, stats.evictions), (resident, 0));
+
+    // The whole pool: every dormant prefix has to make room.
+    let slot = scheduler
+        .lend_slot(128)
+        .unwrap()
+        .expect("evicted into room");
+    assert_eq!(shared.lock().unwrap().seq_pos(slot).unwrap(), (-1, -1));
+    let stats = scheduler.kv_stats();
+    assert_eq!(stats.resident_slots, 0);
+    assert_eq!(stats.evictions, resident as u64);
+
+    // More cells than the pool has: nothing left to evict.
+    assert_eq!(scheduler.lend_slot(129).unwrap(), None);
+}
+
+#[test]
+fn a_slot_is_not_lent_while_a_sequence_is_live() {
+    let mut scheduler = scheduler(fake(), AdmissionMode::Continuous, 16);
+    scheduler.initialize().unwrap();
+    let _stream = scheduler
+        .submit(Request::single(vec![1, 2, 3], fake_sampling(5, 8)))
+        .unwrap();
+    scheduler.pump().unwrap();
+    assert!(scheduler.live_len() > 0);
+    assert!(scheduler.lend_slot(1).is_err());
+}
