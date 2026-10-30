@@ -21,9 +21,10 @@ use retrograd::{
     CheckpointDtype, CheckpointMetadata, CheckpointProgress, DEFAULT_CE_SEQ_CHUNK,
     DEFAULT_CHECKPOINT_STRIDE, DatasetRecord, Device, Error, FeatureDtype, GenerationKvDtype,
     GrpoBatchParams, ImportanceSamplingLevel, KvDtype, LayerRange, LoraConfig, LrScheduler,
-    MasterWeights, OptimizerKind, RewardMode, RewardProtocol, SamplingParams, SharedPrefixFanout,
-    TargetSet, TrainConfig, TrainMetrics, TrainSequence, TrainablePolicy, TrainableRunConfig,
-    TrainableSelector, TrainableSet, Trainer, WeightedBatch, backend_list, checkpoint,
+    MasterWeights, OptimizerKind, RewardMode, RewardProtocol, RolloutAdmission, SamplingParams,
+    SharedPrefixFanout, TargetSet, TrainConfig, TrainMetrics, TrainSequence, TrainablePolicy,
+    TrainableRunConfig, TrainableSelector, TrainableSet, Trainer, WeightedBatch, backend_list,
+    checkpoint,
 };
 use retrograd_agent::tools::{McpServerConfig, McpToolProvider, ToolProvider};
 use retrograd_agent::{
@@ -721,6 +722,7 @@ impl PyTrainer {
             n_seq_max,
             shared_prefix_fanout: SharedPrefixFanout::Auto,
             generation_concurrency,
+            rollout_admission: RolloutAdmission::default(),
             generation_batch,
             fast_generation_context,
             generation_kv_dtype,

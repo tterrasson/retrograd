@@ -4308,6 +4308,14 @@
         ],
         "type": "object"
       },
+      "RolloutAdmission": {
+        "description": "How rollout requests are admitted to the generation pool by the step-wise\nscheduler. `Lockstep` (the default) admits a whole wave only when no\nsequence is live, in the canonical order the batched continuous generator\nuses, so results reproduce it bit for bit; `Continuous` refills a slot\nfreed at step N with the next queued group at step N+1.",
+        "enum": [
+          "lockstep",
+          "continuous"
+        ],
+        "type": "string"
+      },
       "RunEvent": {
         "allOf": [
           {
@@ -5389,6 +5397,17 @@
             "type": [
               "boolean",
               "null"
+            ]
+          },
+          "rollout_admission": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RolloutAdmission",
+                "description": "How rollout requests are admitted to the generation pool: `\"lockstep\"`\n(the default) or `\"continuous\"`."
+              }
             ]
           },
           "shared_prefix_fanout": {

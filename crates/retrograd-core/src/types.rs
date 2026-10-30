@@ -404,6 +404,20 @@ pub enum SharedPrefixFanout {
     Exact(u32),
 }
 
+/// How rollout requests are admitted to the generation pool by the step-wise
+/// scheduler. `Lockstep` (the default) admits a whole wave only when no
+/// sequence is live, in the canonical order the batched continuous generator
+/// uses, so results reproduce it bit for bit; `Continuous` refills a slot
+/// freed at step N with the next queued group at step N+1.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum RolloutAdmission {
+    #[default]
+    Lockstep,
+    Continuous,
+}
+
 #[derive(Clone, Debug)]
 pub struct TrainConfig {
     pub n_ctx: u32,
@@ -420,6 +434,12 @@ pub struct TrainConfig {
     /// [`TrainConfig::effective_generation_concurrency`]. TOML configs always
     /// resolve it to a positive value.
     pub generation_concurrency: u32,
+    /// How the step-wise scheduler admits rollout requests to the generation
+    /// pool: [`RolloutAdmission::Lockstep`] (the default) reproduces the
+    /// batched continuous generator bit for bit and is what tests and
+    /// reproducibility runs use; [`RolloutAdmission::Continuous`] refills a
+    /// freed slot at the next step.
+    pub rollout_admission: RolloutAdmission,
     /// Fast sampling context: builds the dedicated generation context with an
     /// F16 KV cache and flash-attention instead of the optimizer context's exact
     /// F32 / no-FA settings. Halves the KV footprint and speeds up decoding;
@@ -597,6 +617,7 @@ impl Default for TrainConfig {
             n_seq_max: 1,
             shared_prefix_fanout: SharedPrefixFanout::Auto,
             generation_concurrency: 0,
+            rollout_admission: RolloutAdmission::default(),
             fast_generation_context: true,
             generation_kv_dtype: GenerationKvDtype::F16,
             kv_dtype: KvDtype::F16,

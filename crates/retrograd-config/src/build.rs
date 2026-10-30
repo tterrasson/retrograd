@@ -380,6 +380,9 @@ fn build_training(
         require_nonzero(value, "training.generation_batch must be greater than zero")?;
         training.generation_batch = value;
     }
+    if let Some(value) = file.rollout_admission {
+        training.rollout_admission = value;
+    }
     if let Some(value) = device {
         training.device = value.parse()?;
     }

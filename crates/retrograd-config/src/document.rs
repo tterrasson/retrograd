@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use retrograd_core::{
-    CheckpointDtype, Device, GenerationKvDtype, KvDtype, LoraDtype, MasterWeights,
+    CheckpointDtype, Device, GenerationKvDtype, KvDtype, LoraDtype, MasterWeights, RolloutAdmission,
 };
 
 use crate::agent::AgentToml;
@@ -261,6 +261,10 @@ pub struct TrainingToml {
     pub kv_dtype: Option<KvDtype>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_concurrency: Option<u32>,
+    /// How rollout requests are admitted to the generation pool: `"lockstep"`
+    /// (the default) or `"continuous"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollout_admission: Option<RolloutAdmission>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_batch: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

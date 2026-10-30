@@ -795,6 +795,7 @@ mod tests {
                 optimizer: OptimizerKind::Sgd,
             },
             optimizer_hyperparameters: OptimizerKind::Sgd.declared_hyperparameters(),
+            rollout_admission: retrograd_core::RolloutAdmission::Lockstep,
         };
         let ffi = train_config_to_ffi(&config).unwrap();
         assert_eq!(ffi.n_ctx, 256);

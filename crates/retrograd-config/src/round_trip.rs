@@ -29,7 +29,8 @@
 use retrograd_core::{
     CheckpointDtype, FeatureDtype, GefenLayout, GefenVariant, GenerationKvDtype,
     ImportanceSamplingLevel, KvDtype, LayerRange, LoraDtype, LrScheduler, MasterWeights,
-    OptimizerKind, RewardMode, SharedPrefixFanout, TrainablePolicy, TrainableSelector,
+    OptimizerKind, RewardMode, RolloutAdmission, SharedPrefixFanout, TrainablePolicy,
+    TrainableSelector,
 };
 use retrograd_dataset::DataFormat;
 
@@ -140,6 +141,7 @@ const KEYS: &[&str] = &[
     "training.micro_batch",
     "training.optimizer",
     "training.require_gpu_resident",
+    "training.rollout_admission",
     "training.shared_prefix_fanout",
     "training.threads",
     "training.trainable",
@@ -334,6 +336,7 @@ fn exhaustive_document() -> ConfigDocument {
             generation_kv_dtype: Some(GenerationKvDtype::F16),
             kv_dtype: Some(KvDtype::F32),
             generation_concurrency: Some(6),
+            rollout_admission: Some(RolloutAdmission::Continuous),
             generation_batch: Some(128),
             chunked_cross_entropy: Some(true),
             chunked_ce_tiles: Some(5),

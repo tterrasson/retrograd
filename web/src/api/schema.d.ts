@@ -2559,6 +2559,15 @@ export interface components {
       rewards: components['schemas']['RewardEntry'][]
     }
     /**
+     * @description How rollout requests are admitted to the generation pool by the step-wise
+     *     scheduler. `Lockstep` (the default) admits a whole wave only when no
+     *     sequence is live, in the canonical order the batched continuous generator
+     *     uses, so results reproduce it bit for bit; `Continuous` refills a slot
+     *     freed at step N with the next queued group at step N+1.
+     * @enum {string}
+     */
+    RolloutAdmission: 'lockstep' | 'continuous'
+    /**
      * @description One line of `events.jsonl`, and one SSE frame.
      *
      *     `seq` is monotonic per run and starts at 1, so `?since=0` replays everything
@@ -3015,6 +3024,7 @@ export interface components {
        */
       optimizer?: string | null
       require_gpu_resident?: boolean | null
+      rollout_admission?: null | components['schemas']['RolloutAdmission']
       shared_prefix_fanout?: null | components['schemas']['SharedPrefixFanoutToml']
       /** Format: int32 */
       threads?: number | null
