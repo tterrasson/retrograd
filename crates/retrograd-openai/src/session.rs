@@ -38,9 +38,9 @@ use retrograd_infer::{
 use tokio::sync::oneshot;
 
 use crate::backend::{Loader, ServeBackend, adapter_name};
-use crate::convert::ChatPrompt;
 use crate::error::OpenAiError;
 use crate::render::{self, ParserCache, Sampled};
+use crate::request::GenerationRequest;
 
 /// Everything needed to rebuild the weights one model id names. Equality of
 /// the *base* fields (model, context, device, chat-template variables) is
@@ -154,7 +154,7 @@ enum Envelope {
 struct Job {
     spec: WeightsSpec,
     /// `None` loads and answers nothing.
-    prompt: Option<ChatPrompt>,
+    prompt: Option<GenerationRequest>,
     reply: oneshot::Sender<Result<Option<ServingJob>, OpenAiError>>,
 }
 
@@ -243,9 +243,9 @@ impl Session {
     pub async fn complete(
         &self,
         spec: WeightsSpec,
-        prompt: ChatPrompt,
+        request: GenerationRequest,
     ) -> Result<Sampled, OpenAiError> {
-        let job = self.submit(spec, Some(prompt)).await?.ok_or_else(|| {
+        let job = self.submit(spec, Some(request)).await?.ok_or_else(|| {
             OpenAiError::internal("the serving thread answered without a request")
         })?;
         let prompt_tokens = job.prompt_tokens;
@@ -296,7 +296,7 @@ impl Session {
     async fn submit(
         &self,
         spec: WeightsSpec,
-        prompt: Option<ChatPrompt>,
+        prompt: Option<GenerationRequest>,
     ) -> Result<Option<ServingJob>, OpenAiError> {
         let (reply, answer) = oneshot::channel();
         self.jobs
@@ -482,23 +482,27 @@ impl Worker {
         &self,
         core: &mut Option<Core>,
         spec: &WeightsSpec,
-        prompt: Option<ChatPrompt>,
+        request: Option<GenerationRequest>,
     ) -> Result<Option<ServingJob>, OpenAiError> {
         let core = self.ensure(core, spec)?;
         let adapter = match &spec.adapter {
             Some(path) => Some(core.register(path)?),
             None => None,
         };
-        let Some(prompt) = prompt else {
+        let Some(request) = request else {
             return Ok(None);
         };
-        let rendered = render::render_prompt(core.scheduler.backend(), &prompt, &mut core.parsers)?;
+        let rendered =
+            render::render_prompt(core.scheduler.backend(), &request, &mut core.parsers)?;
         let prompt_tokens = rendered.tokens.len();
+        // `n` completions of one prompt is the `generate_batch` shape: one
+        // prefill, then one copy of the prompt per further choice.
+        let sampling = vec![request.sampling; request.n as usize];
         let request = Request {
             prompt: rendered.tokens,
-            sampling: vec![prompt.sampling],
-            stop: prompt.stop,
-            n_top_logprobs: 0,
+            sampling,
+            stop: request.stop,
+            n_top_logprobs: request.logprobs.unwrap_or(0),
             adapter,
             unparse_special: rendered.unparse_special,
         };
@@ -572,15 +576,15 @@ mod tests {
         }
     }
 
-    fn prompt() -> ChatPrompt {
-        crate::convert::prepare(
+    fn request() -> GenerationRequest {
+        crate::chat::convert::prepare(
             serde_json::from_value(serde_json::json!({
                 "model": "m", "messages": [{"role": "user", "content": "hi"}]
             }))
             .unwrap(),
         )
         .unwrap()
-        .prompt
+        .request
     }
 
     /// A lease that can be taken away, and counts how often it was lent.
@@ -611,22 +615,22 @@ mod tests {
         )
         .unwrap();
         session
-            .complete(spec(Some("a.gguf")), prompt())
+            .complete(spec(Some("a.gguf")), request())
             .await
             .unwrap();
         session
-            .complete(spec(Some("a.gguf")), prompt())
+            .complete(spec(Some("a.gguf")), request())
             .await
             .unwrap();
         assert_eq!(loader.loads(), 1, "the same checkpoint is not reloaded");
         // Another checkpoint of the same base: the adapter is registered, the
         // base is not rebuilt.
         session
-            .complete(spec(Some("b.gguf")), prompt())
+            .complete(spec(Some("b.gguf")), request())
             .await
             .unwrap();
         assert_eq!(loader.loads(), 1, "an adapter change is not a base reload");
-        session.complete(spec(None), prompt()).await.unwrap();
+        session.complete(spec(None), request()).await.unwrap();
         assert_eq!(loader.loads(), 1, "the base model was already loaded");
         assert_eq!(
             session.loaded().map(|spec| spec.model),
@@ -646,7 +650,7 @@ mod tests {
             SessionOptions::default(),
         )
         .unwrap();
-        session.complete(spec(None), prompt()).await.unwrap();
+        session.complete(spec(None), request()).await.unwrap();
         assert_eq!(lease.lent.load(Ordering::SeqCst), 1);
 
         session.yield_device();
@@ -658,7 +662,7 @@ mod tests {
             assert!(Instant::now() < deadline, "the session never yielded");
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        let error = session.complete(spec(None), prompt()).await.err().unwrap();
+        let error = session.complete(spec(None), request()).await.err().unwrap();
         assert_eq!(error.code, Some("device_busy"));
         assert_eq!(loader.loads(), 1);
     }
@@ -693,13 +697,13 @@ mod tests {
             SessionOptions::default(),
         )
         .unwrap();
-        let sampled = session.complete(spec(None), prompt()).await.unwrap();
+        let sampled = session.complete(spec(None), request()).await.unwrap();
         assert_eq!(sampled.text, "hello from retrograd");
         assert!(sampled.stopped_at_eog);
         // The reply plus the end-of-generation token.
         assert_eq!(sampled.completion_tokens, "hello from retrograd".len() + 1);
 
-        let mut short = prompt();
+        let mut short = request();
         short.sampling.max_new_tokens = 5;
         let sampled = session.complete(spec(None), short).await.unwrap();
         assert_eq!(sampled.text, "hello");

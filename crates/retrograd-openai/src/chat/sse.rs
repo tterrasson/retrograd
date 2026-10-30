@@ -7,8 +7,8 @@
 //! connection carries keep-alive comments, which is what keeps a proxy from
 //! cutting a request a live run takes an iteration to answer.
 
+use crate::chat::wire::{ChatCompletionChunk, ChunkChoice, Delta, ToolCallDelta};
 use crate::render::Completion;
-use crate::wire::{ChatCompletionChunk, ChunkChoice, Delta, ToolCallDelta};
 
 /// What every chunk of one answer repeats.
 #[derive(Clone, Debug)]
@@ -85,7 +85,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::wire::{FinishReason, FunctionOut, ToolCallOut, Usage};
+    use crate::chat::wire::{FinishReason, FunctionOut, ToolCallOut, Usage};
 
     fn meta() -> Meta {
         Meta {

@@ -26,9 +26,9 @@ use retrograd_agent_core::trajectory::{Message, Role};
 use retrograd_core::{Result as CoreResult, SamplingParams};
 use retrograd_engine::Trainer;
 
-use crate::convert::ChatPrompt;
+use crate::chat::wire::{FinishReason, FunctionOut, ToolCallOut, Usage};
 use crate::error::OpenAiError;
-use crate::wire::{FinishReason, FunctionOut, ToolCallOut, Usage};
+use crate::request::GenerationRequest;
 
 /// The read-only model queries prompt rendering needs: the same ones a serving
 /// backend ([`crate::backend::ServeBackend`]) answers on the thread that owns
@@ -169,12 +169,12 @@ pub struct Rendered {
 /// [`Trainer`].
 pub fn render_prompt(
     model: &dyn PromptModel,
-    prompt: &ChatPrompt,
+    request: &GenerationRequest,
     parsers: &mut ParserCache,
 ) -> Result<Rendered, OpenAiError> {
-    let tools_json = match prompt.tools.is_empty() {
+    let tools_json = match request.tools.is_empty() {
         true => None,
-        false => Some(chat::template_tools(&prompt.tools)?),
+        false => Some(chat::template_tools(&request.tools)?),
     };
     let rendering = match &tools_json {
         None => ToolRendering::None,
@@ -189,12 +189,12 @@ pub fn render_prompt(
                 parser.map(|blob| {
                     Arc::new(TemplateToolCallParser::new(blob)) as Arc<dyn ToolCallParser>
                 }),
-                prompt.tools.clone(),
+                request.tools.clone(),
             )?
         }
     };
 
-    let mut messages = prompt
+    let mut messages = request
         .messages
         .iter()
         .map(|message| match message.role {
@@ -230,7 +230,7 @@ pub fn render_prompt(
         ));
     }
     let context = model.context_size()?;
-    let requested = prompt.sampling.max_new_tokens;
+    let requested = request.sampling.max_new_tokens;
     if tokens.len().saturating_add(requested as usize) > context {
         return Err(OpenAiError::context_length_exceeded(
             tokens.len(),
@@ -258,7 +258,7 @@ pub fn render_prompt(
 /// the model.
 pub fn complete(
     model: &mut dyn ChatModel,
-    prompt: &ChatPrompt,
+    request: &GenerationRequest,
     base: bool,
     parsers: &mut ParserCache,
 ) -> Result<Sampled, OpenAiError> {
@@ -266,9 +266,9 @@ pub fn complete(
         tokens,
         reader,
         unparse_special,
-    } = render_prompt(model, prompt, parsers)?;
+    } = render_prompt(model, request, parsers)?;
 
-    let mut sampled = model.sample(&tokens, &prompt.sampling, base)?;
+    let mut sampled = model.sample(&tokens, &request.sampling, base)?;
     let completion_tokens = sampled.len();
     let mut stopped_at_eog = false;
     while let Some(&last) = sampled.last()
@@ -366,20 +366,20 @@ fn truncate_at_stop<'a>(text: &'a str, stop: &[String]) -> (&'a str, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::convert::prepare;
+    use crate::chat::convert::prepare;
     use crate::testing::FakeModel;
     use serde_json::json;
 
-    fn prompt(body: serde_json::Value) -> ChatPrompt {
+    fn request(body: serde_json::Value) -> GenerationRequest {
         prepare(serde_json::from_value(body).unwrap())
             .unwrap()
-            .prompt
+            .request
     }
 
     fn run(model: &mut FakeModel, body: serde_json::Value) -> Completion {
-        let prompt = prompt(body);
-        let sampled = complete(model, &prompt, false, &mut ParserCache::default()).unwrap();
-        finish(sampled, &prompt.stop)
+        let request = request(body);
+        let sampled = complete(model, &request, false, &mut ParserCache::default()).unwrap();
+        finish(sampled, &request.stop)
     }
 
     #[test]
@@ -425,9 +425,9 @@ mod tests {
     #[test]
     fn a_prompt_that_does_not_fit_is_refused_before_sampling() {
         let mut model = FakeModel::new("x").with_context(16);
-        let prompt = prompt(json!({"model": "m", "max_tokens": 8,
+        let request = request(json!({"model": "m", "max_tokens": 8,
             "messages": [{"role": "user", "content": "a long enough question"}]}));
-        let error = complete(&mut model, &prompt, false, &mut ParserCache::default())
+        let error = complete(&mut model, &request, false, &mut ParserCache::default())
             .err()
             .expect("refused");
         assert_eq!(error.code, Some("context_length_exceeded"));

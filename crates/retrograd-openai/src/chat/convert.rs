@@ -1,4 +1,4 @@
-//! From the wire request to what the model is asked.
+//! From the chat wire request to the common [`GenerationRequest`].
 //!
 //! The rule this module enforces, field by field: a parameter that would change
 //! the sampled distribution is never ignored. It is honoured, accepted in its
@@ -12,8 +12,9 @@ use retrograd_agent_core::trajectory::{Message, Role};
 use retrograd_core::SamplingParams;
 use serde_json::Value;
 
+use crate::chat::wire::{ChatCompletionRequest, Content, Stop, WireMessage, WireTool};
 use crate::error::OpenAiError;
-use crate::wire::{ChatCompletionRequest, Content, Stop, WireMessage, WireTool};
+use crate::request::GenerationRequest;
 
 pub const DEFAULT_MAX_TOKENS: u32 = 512;
 pub const DEFAULT_TEMPERATURE: f32 = 0.7;
@@ -29,25 +30,12 @@ pub const GREEDY_TOP_P: f32 = 1e-6;
 /// OpenAI's own bound on `stop`.
 const MAX_STOP: usize = 4;
 
-/// What a chat request asks the model, independent of which weights answer.
-#[derive(Clone, Debug)]
-pub struct ChatPrompt {
-    /// In the order the client sent them. A `tool` message carries the tool's
-    /// own output; how it is framed depends on the rendering, decided later.
-    pub messages: Vec<Message>,
-    /// Empty for `tool_choice: "none"`: with no constrained decoding, a
-    /// catalog in the prompt is an invitation to call, so none is rendered.
-    pub tools: Vec<ToolSpec>,
-    pub sampling: SamplingParams,
-    /// Applied to the text after generation, the first match truncating it.
-    pub stop: Vec<String>,
-}
-
-/// A validated request.
+/// A validated request: which id to serve, and the common
+/// [`GenerationRequest`] the surface translated the wire body into.
 #[derive(Clone, Debug)]
 pub struct Prepared {
     pub model: String,
-    pub prompt: ChatPrompt,
+    pub request: GenerationRequest,
     pub stream: bool,
     pub include_usage: bool,
 }
@@ -90,9 +78,15 @@ pub fn prepare(request: ChatCompletionRequest) -> Result<Prepared, OpenAiError> 
         ));
     }
     let stream = request.stream.unwrap_or(false);
+    // Only `n = 1` reaches this point - `refuse_unsupported` refuses the rest -
+    // so the narrowing u64 -> u32 cannot lose anything.
+    let n = u32::try_from(request.n.unwrap_or(1)).unwrap_or(1);
+    // `logprobs: true` and `top_logprobs > 0` are refused above; what survives
+    // is the neutral form, which asks for no logprobs at all.
+    let logprobs = None;
     Ok(Prepared {
         model: request.model,
-        prompt: ChatPrompt {
+        request: GenerationRequest {
             messages,
             tools,
             sampling: SamplingParams {
@@ -102,6 +96,8 @@ pub fn prepare(request: ChatCompletionRequest) -> Result<Prepared, OpenAiError> 
                 seed: seed(request.seed)?,
             },
             stop: stop(request.stop)?,
+            n,
+            logprobs,
         },
         stream,
         include_usage: stream
@@ -452,10 +448,10 @@ mod tests {
     #[test]
     fn defaults_fill_what_the_client_left_out() {
         let prepared = prepared(base()).unwrap();
-        assert_eq!(prepared.prompt.sampling.max_new_tokens, DEFAULT_MAX_TOKENS);
-        assert_eq!(prepared.prompt.sampling.temperature, DEFAULT_TEMPERATURE);
-        assert_eq!(prepared.prompt.sampling.top_p, DEFAULT_TOP_P);
-        assert_eq!(prepared.prompt.sampling.seed, DEFAULT_SEED);
+        assert_eq!(prepared.request.sampling.max_new_tokens, DEFAULT_MAX_TOKENS);
+        assert_eq!(prepared.request.sampling.temperature, DEFAULT_TEMPERATURE);
+        assert_eq!(prepared.request.sampling.top_p, DEFAULT_TOP_P);
+        assert_eq!(prepared.request.sampling.seed, DEFAULT_SEED);
         assert!(!prepared.stream);
     }
 
@@ -464,7 +460,7 @@ mod tests {
         let body = json!({"model": "m", "messages": [{"role": "user", "content": [
             {"type": "text", "text": "one "}, {"type": "text", "text": "two"}]}]});
         assert_eq!(
-            prepared(body).unwrap().prompt.messages[0].content,
+            prepared(body).unwrap().request.messages[0].content,
             "one two"
         );
 
@@ -482,7 +478,7 @@ mod tests {
             {"role": "developer", "content": "be brief"},
             {"role": "user", "content": "hi"}]});
         assert_eq!(
-            prepared(body).unwrap().prompt.messages[0].role,
+            prepared(body).unwrap().request.messages[0].role,
             Role::System
         );
     }
@@ -496,13 +492,13 @@ mod tests {
                  "function": {"name": "move", "arguments": "{\"direction\":\"left\"}"}},
                 {"type": "function", "function": {"name": "look", "arguments": ""}}]},
             {"role": "tool", "tool_call_id": "c1", "content": "moved"}]});
-        let prompt = prepared(body).unwrap().prompt;
-        let calls = &prompt.messages[1].tool_calls;
+        let request = prepared(body).unwrap().request;
+        let calls = &request.messages[1].tool_calls;
         assert_eq!(calls[0].id, "c1");
         assert_eq!(calls[0].arguments, json!({"direction": "left"}));
         assert_eq!(calls[1].id, "call_1");
         assert_eq!(calls[1].arguments, json!({}));
-        assert_eq!(prompt.messages[2].tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(request.messages[2].tool_call_id.as_deref(), Some("c1"));
     }
 
     #[test]
@@ -542,24 +538,24 @@ mod tests {
             let error = prepared(with(field, value.clone())).unwrap_err();
             assert_eq!(error.param.as_deref(), Some(field), "{field} = {value}");
         }
-        let prompt = prepared(with("seed", json!(4_294_967_295_u64)))
+        let request = prepared(with("seed", json!(4_294_967_295_u64)))
             .unwrap()
-            .prompt;
-        assert_eq!(prompt.sampling.seed, u32::MAX);
+            .request;
+        assert_eq!(request.sampling.seed, u32::MAX);
     }
 
     #[test]
     fn the_newer_token_limit_wins() {
         let mut body = with("max_tokens", json!(10));
         body["max_completion_tokens"] = json!(20);
-        assert_eq!(prepared(body).unwrap().prompt.sampling.max_new_tokens, 20);
+        assert_eq!(prepared(body).unwrap().request.sampling.max_new_tokens, 20);
     }
 
     #[test]
     fn zero_means_greedy_to_a_sampler_that_refuses_zero() {
         let mut body = with("temperature", json!(0));
         body["top_p"] = json!(0);
-        let sampling = prepared(body).unwrap().prompt.sampling;
+        let sampling = prepared(body).unwrap().request.sampling;
         assert_eq!(sampling.temperature, GREEDY_TEMPERATURE);
         assert_eq!(sampling.top_p, GREEDY_TOP_P);
     }
@@ -567,13 +563,13 @@ mod tests {
     #[test]
     fn stop_takes_one_or_up_to_four() {
         assert_eq!(
-            prepared(with("stop", json!("\n"))).unwrap().prompt.stop,
+            prepared(with("stop", json!("\n"))).unwrap().request.stop,
             ["\n"]
         );
         assert_eq!(
             prepared(with("stop", json!(["a", "", "b"])))
                 .unwrap()
-                .prompt
+                .request
                 .stop,
             ["a", "b"]
         );
@@ -633,15 +629,15 @@ mod tests {
     fn tool_choice_none_offers_no_catalog() {
         let mut body = with("tool_choice", json!("none"));
         body["tools"] = json!([{"type": "function", "function": {"name": "move"}}]);
-        assert!(prepared(body).unwrap().prompt.tools.is_empty());
+        assert!(prepared(body).unwrap().request.tools.is_empty());
 
         let body = with(
             "tools",
             json!([{"type": "function", "function": {"name": "move"}}]),
         );
-        let prompt = prepared(body).unwrap().prompt;
-        assert_eq!(prompt.tools.len(), 1);
-        assert_eq!(prompt.tools[0].input_schema["type"], "object");
+        let request = prepared(body).unwrap().request;
+        assert_eq!(request.tools.len(), 1);
+        assert_eq!(request.tools[0].input_schema["type"], "object");
     }
 
     #[test]
