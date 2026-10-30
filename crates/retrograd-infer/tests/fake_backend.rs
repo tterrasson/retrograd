@@ -45,6 +45,7 @@ fn options(mode: AdmissionMode, n_batch: usize) -> ActorOptions {
             queue_capacity: 16,
             event_capacity: 256,
             slow_client_timeout: Duration::from_millis(150),
+            ..SchedulerOptions::default()
         },
     }
 }

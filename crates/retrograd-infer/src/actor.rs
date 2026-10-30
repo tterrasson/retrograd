@@ -11,6 +11,7 @@ use std::thread::JoinHandle;
 
 use crate::backend::DecodeBackend;
 use crate::error::InferError;
+use crate::kv::{KvStats, PinId};
 use crate::request::{EventStream, Request};
 use crate::scheduler::{Envelope, QueuePermit, Queued, Scheduler, SchedulerOptions};
 
@@ -101,6 +102,41 @@ impl ActorHandle {
                 }
             })?;
         Ok(EventStream::new(rx, cancelled))
+    }
+
+    /// The prefix-cache counters of the actor's scheduler (hits, prefilled vs
+    /// prompt cells, evictions, swaps, tree size).
+    pub fn kv_stats(&self) -> Result<KvStats, InferError> {
+        let (reply, rx) = mpsc::channel();
+        self.inbox
+            .try_send(Envelope::Stats(reply))
+            .map_err(|_| InferError::Failed("the actor thread is not running".into()))?;
+        rx.recv()
+            .map_err(|_| InferError::Failed("the actor thread is gone".into()))
+    }
+
+    /// Pins the prefix-tree node at exactly `prefix` (which must be resident)
+    /// so eviction never releases it.
+    pub fn pin_prefix(&self, prefix: &[i32]) -> Result<PinId, InferError> {
+        let (reply, rx) = mpsc::channel();
+        self.inbox
+            .try_send(Envelope::Pin {
+                prefix: prefix.to_vec(),
+                reply,
+            })
+            .map_err(|_| InferError::Failed("the actor thread is not running".into()))?;
+        rx.recv()
+            .map_err(|_| InferError::Failed("the actor thread is gone".into()))?
+    }
+
+    /// Releases one pin.
+    pub fn unpin(&self, id: PinId) -> Result<bool, InferError> {
+        let (reply, rx) = mpsc::channel();
+        self.inbox
+            .try_send(Envelope::Unpin { id, reply })
+            .map_err(|_| InferError::Failed("the actor thread is not running".into()))?;
+        rx.recv()
+            .map_err(|_| InferError::Failed("the actor thread is gone".into()))
     }
 
     /// Graceful shutdown: no new admissions; live requests run to their end,

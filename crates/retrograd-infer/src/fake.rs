@@ -10,8 +10,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use retrograd_core::SamplingParams;
-use retrograd_engine::{EngineMemory, StepOutRow, StepOutput, StepRow};
+use retrograd_engine::{
+    EngineMemory, STATE_SEQ_FLAGS_PARTIAL_ONLY, StepOutRow, StepOutput, StepRow,
+};
 
+use crate::kv::KvCacheKey;
 use crate::{DecodeBackend, InferError};
 
 /// The fake's geometry and script.
@@ -34,12 +37,24 @@ pub struct FakeBackend {
     /// Every `step` call, as the `(slot, n_tokens, request)` rows it carried
     /// (`request` is `Some` on sampling rows).
     pub steps: Vec<Vec<(i32, u32, Option<i32>)>>,
-    /// Every `seq_cp(src, dst)` call.
-    pub copies: Vec<(i32, i32)>,
+    /// Every `seq_cp(src, dst, p0, p1)` call.
+    pub copies: Vec<(i32, i32, i32, i32)>,
     /// Every slot `seq_rm`'d.
     pub removed: Vec<i32>,
     /// First-seen order of request ids in sampling rows.
     pub request_order: Vec<i32>,
+    /// Every `seq_save(slot, flags)` call with the byte length it reported.
+    pub saves: Vec<(i32, u32, usize)>,
+    /// Every `seq_load(slot, flags)` call with the byte length it read.
+    pub loads: Vec<(i32, u32, usize)>,
+    /// Whether the pool is unified (partial-range `seq_cp` allowed).
+    pub kv_unified: bool,
+    /// Whether the model has a recurrent state (hybrid).
+    pub recurrent: bool,
+    /// The weights/adapter generation, bumped by `bump_weights_version`.
+    pub weights_version: u64,
+    /// The model fingerprint (fixed for a fake).
+    pub fingerprint: u64,
 }
 
 impl FakeBackend {
@@ -69,7 +84,44 @@ impl FakeBackend {
             copies: Vec::new(),
             removed: Vec::new(),
             request_order: Vec::new(),
+            saves: Vec::new(),
+            loads: Vec::new(),
+            kv_unified: true,
+            recurrent: false,
+            weights_version: 0,
+            fingerprint: 0xFA_CE,
         }
+    }
+
+    /// A partitioned pool: partial-range `seq_cp` is refused, like the
+    /// backend's cross-stream assertion.
+    pub fn with_kv_unified(mut self, unified: bool) -> Self {
+        self.kv_unified = unified;
+        self
+    }
+
+    /// Marks the fake model as hybrid (recurrent state present).
+    pub fn with_recurrent(mut self, recurrent: bool) -> Self {
+        self.recurrent = recurrent;
+        self
+    }
+
+    /// Simulates a weight mutation (optimizer step, adapter change): bumps the
+    /// weights version, which invalidates every prefix-cache entry.
+    pub fn bump_weights_version(&mut self) {
+        self.weights_version += 1;
+    }
+
+    /// Snapshot encoding: a magic, the flags, and the resident span - enough
+    /// for a load to restore the span exactly.
+    fn encode_snapshot(&self, slot: i32, flags: u32) -> Option<Vec<u8>> {
+        let (lo, hi) = self.slots.get(slot as usize).copied().flatten()?;
+        let mut buf = Vec::with_capacity(16);
+        buf.extend_from_slice(&0x5EED_u32.to_le_bytes());
+        buf.extend_from_slice(&flags.to_le_bytes());
+        buf.extend_from_slice(&lo.to_le_bytes());
+        buf.extend_from_slice(&hi.to_le_bytes());
+        Some(buf)
     }
 
     /// Makes every request emit the EOG token after `count` generated tokens.
@@ -241,7 +293,15 @@ impl DecodeBackend for FakeBackend {
         if src < 0 || src >= self.n_slots as i32 || dst < 0 || dst >= self.n_slots as i32 {
             return Err(InferError::invalid("seq_cp slot out of range"));
         }
-        self.copies.push((src, dst));
+        // A partial range on a partitioned pool is what asserts in the real
+        // backend: refuse it here so tests exercise the fallback.
+        let partial = !(p0 == -1 && p1 == -1);
+        if partial && !self.kv_unified {
+            return Err(InferError::invalid(
+                "seq_cp: a partial range between streams of a partitioned pool is unsupported",
+            ));
+        }
+        self.copies.push((src, dst, p0, p1));
         let span = self.slots[src as usize]
             .ok_or_else(|| InferError::invalid("seq_cp source slot is empty"))?;
         if self.slots[dst as usize].is_some() {
@@ -249,8 +309,105 @@ impl DecodeBackend for FakeBackend {
         }
         if p0 == -1 && p1 == -1 {
             self.slots[dst as usize] = Some(span);
+        } else {
+            // `p1` is exclusive, mirroring the backend's `pos_in`.
+            let lo = span.0.max(if p0 < 0 { 0 } else { p0 });
+            let hi = if p1 < 0 { span.1 } else { span.1.min(p1 - 1) };
+            self.slots[dst as usize] = (lo <= hi).then_some((lo, hi));
         }
         Ok(())
+    }
+
+    fn seq_pos(&self, slot: i32) -> Result<(i32, i32), InferError> {
+        if slot < 0 || slot >= self.n_slots as i32 {
+            return Err(InferError::invalid("seq_pos slot out of range"));
+        }
+        Ok(self.slots[slot as usize].unwrap_or((-1, -1)))
+    }
+
+    fn seq_save_len(&self, slot: i32, flags: u32) -> Result<usize, InferError> {
+        if slot < 0 || slot >= self.n_slots as i32 {
+            return Err(InferError::invalid("seq_save slot out of range"));
+        }
+        // PARTIAL_ONLY on a dense fake is empty; on a hybrid fake it is a
+        // fixed-size recurrent-state marker.
+        if flags == STATE_SEQ_FLAGS_PARTIAL_ONLY && self.recurrent {
+            return Ok(8);
+        }
+        if flags != 0 && flags != STATE_SEQ_FLAGS_PARTIAL_ONLY {
+            return Err(InferError::invalid("unknown snapshot flags"));
+        }
+        Ok(self
+            .encode_snapshot(slot, flags)
+            .map(|buf| buf.len())
+            .unwrap_or(0))
+    }
+
+    fn seq_save_into(
+        &mut self,
+        slot: i32,
+        flags: u32,
+        buffer: &mut [u8],
+    ) -> Result<usize, InferError> {
+        let encoded = if flags == STATE_SEQ_FLAGS_PARTIAL_ONLY && self.recurrent {
+            let mut buf = Vec::with_capacity(8);
+            buf.extend_from_slice(&0x5EED_u32.to_le_bytes());
+            buf.extend_from_slice(&STATE_SEQ_FLAGS_PARTIAL_ONLY.to_le_bytes());
+            buf
+        } else {
+            self.encode_snapshot(slot, flags)
+                .ok_or_else(|| InferError::invalid("seq_save slot is empty"))?
+        };
+        if buffer.len() < encoded.len() {
+            return Err(InferError::invalid("save buffer too small"));
+        }
+        buffer[..encoded.len()].copy_from_slice(&encoded);
+        self.saves.push((slot, flags, encoded.len()));
+        Ok(encoded.len())
+    }
+
+    fn seq_load(&mut self, slot: i32, flags: u32, data: &[u8]) -> Result<usize, InferError> {
+        if slot < 0 || slot >= self.n_slots as i32 {
+            return Err(InferError::invalid("seq_load slot out of range"));
+        }
+        self.loads.push((slot, flags, data.len()));
+        if flags == STATE_SEQ_FLAGS_PARTIAL_ONLY && self.recurrent {
+            // A recurrent-state restore: the span is untouched (the fake keeps
+            // spans as the attention KV; the recurrent state is implicit).
+            return Ok(data.len());
+        }
+        if data.len() < 16 || u32::from_le_bytes(data[0..4].try_into().expect("4 bytes")) != 0x5EED
+        {
+            return Err(InferError::invalid("corrupted snapshot"));
+        }
+        let lo = i32::from_le_bytes(data[8..12].try_into().expect("4 bytes"));
+        let hi = i32::from_le_bytes(data[12..16].try_into().expect("4 bytes"));
+        self.slots[slot as usize] = Some((lo, hi));
+        Ok(data.len())
+    }
+
+    fn kv_unified(&self) -> Result<bool, InferError> {
+        Ok(self.kv_unified)
+    }
+
+    fn weights_version(&self) -> Result<u64, InferError> {
+        Ok(self.weights_version)
+    }
+
+    fn model_fingerprint(&self) -> Result<u64, InferError> {
+        Ok(self.fingerprint)
+    }
+
+    fn is_hybrid(&self) -> Result<bool, InferError> {
+        Ok(self.recurrent)
+    }
+
+    fn cache_key(&self) -> Result<KvCacheKey, InferError> {
+        Ok(KvCacheKey::new(
+            self.fingerprint,
+            self.weights_version,
+            u64::from(self.kv_unified),
+        ))
     }
 
     fn memory(&self) -> Result<EngineMemory, InferError> {
@@ -259,7 +416,11 @@ impl DecodeBackend for FakeBackend {
             cells_total: self.cells_total,
             cells_used: self.cells_used(),
             kv_bytes: self.cells_used() * 16,
-            recurrent_bytes: 0,
+            recurrent_bytes: if self.recurrent {
+                self.cells_used() * 8
+            } else {
+                0
+            },
         })
     }
 
@@ -330,6 +491,47 @@ impl DecodeBackend for SharedFake {
 
     fn seq_cp(&mut self, src: i32, dst: i32, p0: i32, p1: i32) -> Result<(), InferError> {
         self.lock().seq_cp(src, dst, p0, p1)
+    }
+
+    fn seq_pos(&self, slot: i32) -> Result<(i32, i32), InferError> {
+        self.lock().seq_pos(slot)
+    }
+
+    fn seq_save_len(&self, slot: i32, flags: u32) -> Result<usize, InferError> {
+        self.lock().seq_save_len(slot, flags)
+    }
+
+    fn seq_save_into(
+        &mut self,
+        slot: i32,
+        flags: u32,
+        buffer: &mut [u8],
+    ) -> Result<usize, InferError> {
+        self.lock().seq_save_into(slot, flags, buffer)
+    }
+
+    fn seq_load(&mut self, slot: i32, flags: u32, data: &[u8]) -> Result<usize, InferError> {
+        self.lock().seq_load(slot, flags, data)
+    }
+
+    fn kv_unified(&self) -> Result<bool, InferError> {
+        self.lock().kv_unified()
+    }
+
+    fn weights_version(&self) -> Result<u64, InferError> {
+        self.lock().weights_version()
+    }
+
+    fn model_fingerprint(&self) -> Result<u64, InferError> {
+        self.lock().model_fingerprint()
+    }
+
+    fn is_hybrid(&self) -> Result<bool, InferError> {
+        self.lock().is_hybrid()
+    }
+
+    fn cache_key(&self) -> Result<KvCacheKey, InferError> {
+        self.lock().cache_key()
     }
 
     fn memory(&self) -> Result<EngineMemory, InferError> {

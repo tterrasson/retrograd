@@ -20,7 +20,7 @@ use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::{Duration, Instant};
 
 use retrograd_core::SamplingParams;
@@ -29,6 +29,7 @@ use retrograd_engine::{StepOutRow, StepOutput, StepRow};
 use crate::backend::DecodeBackend;
 use crate::detok::Detokenizer;
 use crate::error::InferError;
+use crate::kv::{KvCacheKey, KvStats, PinId, PrefixTree};
 use crate::request::{Event, FinishReason, Request, TokenEvent};
 
 /// How queued requests are admitted.
@@ -56,6 +57,18 @@ pub struct SchedulerOptions {
     /// How long a send to a full event stream may block before the request
     /// is cancelled (bounded backpressure, then cancellation).
     pub slow_client_timeout: Duration,
+    /// Keep a radix tree of finished sequences' KV (dormant slots) and reuse
+    /// the longest shared prefix at admission via `seq_cp`. Outputs stay bit
+    /// identical; only the compute path changes.
+    pub prefix_cache: bool,
+    /// Sequences shorter than this are not inserted into the prefix tree.
+    pub min_prefix_len: usize,
+    /// Host byte budget for swapped-out prefix snapshots (seq_save to host).
+    pub max_snapshot_bytes: u64,
+    /// Nodes at least this long are swapped (snapshot kept) rather than
+    /// dropped when evicted under pressure; shorter ones are recomputed on
+    /// the next hit.
+    pub swap_min_tokens: usize,
 }
 
 impl Default for SchedulerOptions {
@@ -66,6 +79,10 @@ impl Default for SchedulerOptions {
             queue_capacity: 64,
             event_capacity: 64,
             slow_client_timeout: Duration::from_secs(5),
+            prefix_cache: true,
+            min_prefix_len: 8,
+            max_snapshot_bytes: 256 << 20,
+            swap_min_tokens: 256,
         }
     }
 }
@@ -107,8 +124,14 @@ struct LiveMember {
     sampling: SamplingParams,
     /// `min(max_new_tokens, n_ctx_seq - prompt.len())`: the stop budget.
     limit: usize,
+    /// This member's share of the group's cell reservation (prompt minus the
+    /// cache-shared prefix, plus the budget).
+    reserved_share: u64,
     generated: usize,
     next_token: i32,
+    /// The tokens this member generated, in order - the tail of the prefix
+    /// path inserted into the tree when the member finishes.
+    history: Vec<i32>,
     live: bool,
     n_top_logprobs: u32,
     detok: Detokenizer,
@@ -123,7 +146,8 @@ struct LiveGroup {
     prefix_end: usize,
     /// The member holding the shared prefix while it is being prefilled.
     leader: usize,
-    /// Cells reserved for the whole group (prompt + budgets).
+    /// Cells reserved for the whole group (prompt + budgets, minus the
+    /// cache-shared prefix).
     reserved: u64,
     members: Vec<LiveMember>,
     phase: GroupPhase,
@@ -227,6 +251,10 @@ pub struct Scheduler<B: DecodeBackend> {
     scratch: Vec<i32>,
     decode_cursor: usize,
     prefill_turn: bool,
+    /// The prefix tree (dormant slots + snapshots), valid under `kv_key`.
+    kv: PrefixTree,
+    kv_key: Option<KvCacheKey>,
+    kv_stats: KvStats,
 }
 
 impl<B: DecodeBackend> Scheduler<B> {
@@ -244,11 +272,72 @@ impl<B: DecodeBackend> Scheduler<B> {
             scratch: Vec::with_capacity(n_batch),
             decode_cursor: 0,
             prefill_turn: false,
+            kv: PrefixTree::new(),
+            kv_key: None,
+            kv_stats: KvStats::default(),
         }
+    }
+
+    /// The prefix-cache counters (hits, prefilled vs prompt cells, evictions,
+    /// swaps, live tree size).
+    pub fn kv_stats(&self) -> KvStats {
+        KvStats {
+            nodes: self.kv.node_count(),
+            resident_slots: self.kv.resident_slot_count(),
+            snapshot_bytes: self.kv.snapshot_bytes(),
+            ..self.kv_stats
+        }
+    }
+
+    /// Pins the tree node at exactly `prefix` (which must be resident) so LRU
+    /// eviction never releases it - the anchor a multi-turn conversation
+    /// keeps its KV through.
+    pub fn pin_prefix(&mut self, prefix: &[i32]) -> Result<PinId, InferError> {
+        self.refresh_key()?;
+        self.kv.pin_at(prefix).ok_or_else(|| {
+            InferError::invalid("no resident prefix node at exactly that token path")
+        })
+    }
+
+    /// Releases one pin.
+    pub fn unpin(&mut self, id: PinId) -> bool {
+        self.kv.unpin(id)
+    }
+
+    /// Drops the whole prefix tree when the backend's cache key changed (the
+    /// weights/adapter generation moved): no prefix computed under other
+    /// weights is ever reused.
+    fn refresh_key(&mut self) -> Result<(), InferError> {
+        let key = self.backend.cache_key()?;
+        if self.kv_key != Some(key) {
+            let slots = self.kv.clear();
+            for slot in slots {
+                self.backend.seq_rm(slot, -1, -1)?;
+            }
+            self.kv_key = Some(key);
+        }
+        Ok(())
     }
 
     pub(crate) fn enqueue(&mut self, queued: Queued) {
         self.queue.push_back(queued);
+    }
+
+    /// Answers a control envelope (stats / pin / unpin) without touching the
+    /// admission queue.
+    fn handle_control(&mut self, envelope: Envelope) {
+        match envelope {
+            Envelope::Stats(reply) => {
+                let _ = reply.send(self.kv_stats());
+            }
+            Envelope::Pin { prefix, reply } => {
+                let _ = reply.send(self.pin_prefix(&prefix));
+            }
+            Envelope::Unpin { id, reply } => {
+                let _ = reply.send(self.unpin(id));
+            }
+            Envelope::Submit(_) | Envelope::Wake => {}
+        }
     }
 
     /// The actor's main loop, on the thread that owns the backend.
@@ -278,6 +367,7 @@ impl<B: DecodeBackend> Scheduler<B> {
                 match inbox.try_recv() {
                     Ok(Envelope::Submit(queued)) => self.enqueue(queued),
                     Ok(Envelope::Wake) => {}
+                    Ok(control) => self.handle_control(control),
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => {
                         draining = true;
@@ -291,8 +381,10 @@ impl<B: DecodeBackend> Scheduler<B> {
                 // live ones run to completion.
                 // Include requests still buffered in the inbox.
                 while let Ok(envelope) = inbox.try_recv() {
-                    if let Envelope::Submit(queued) = envelope {
-                        self.enqueue(queued);
+                    match envelope {
+                        Envelope::Submit(queued) => self.enqueue(queued),
+                        Envelope::Wake => {}
+                        control => self.handle_control(control),
                     }
                 }
                 while let Some(queued) = self.queue.pop_front() {
@@ -306,6 +398,7 @@ impl<B: DecodeBackend> Scheduler<B> {
                 match inbox.recv() {
                     Ok(Envelope::Submit(queued)) => self.enqueue(queued),
                     Ok(Envelope::Wake) => {}
+                    Ok(control) => self.handle_control(control),
                     Err(_) => return Ok(()),
                 }
                 continue;
@@ -584,6 +677,18 @@ impl<B: DecodeBackend> Scheduler<B> {
         if self.queue.is_empty() {
             return Ok(());
         }
+        // The prefix tree is only valid under the current weights generation:
+        // a key change drops every node and releases its slot.
+        self.refresh_key()?;
+        // Host byte budget for swapped snapshots: drop LRU swapped nodes when
+        // over budget (they hold no pool cells, only host bytes).
+        while self.kv.snapshot_bytes() > self.options.max_snapshot_bytes {
+            let Some(node) = self.kv.snapshot_eviction_candidate() else {
+                break;
+            };
+            self.kv.remove(node);
+            self.kv_stats.evictions += 1;
+        }
         let n_ctx_seq = self.backend.context_size()? as usize;
         let vocab = self.backend.vocab_size()? as usize;
         let memory = self.backend.memory()?;
@@ -642,17 +747,12 @@ impl<B: DecodeBackend> Scheduler<B> {
             return Ok(());
         }
 
-        let used_slots: usize = self
-            .live
-            .iter()
-            .flat_map(|group| &group.members)
-            .filter(|member| member.live)
-            .count();
-        let reserved: u64 = self.live.iter().map(|group| group.reserved).sum();
-        let committed = memory.cells_used.max(reserved);
-        let mut slots_left = self.n_slots.saturating_sub(used_slots);
-        let mut cells_left = cells_total.saturating_sub(committed);
-
+        // Bounded preemption: when the front of the queue does not fit, evict
+        // LRU unpinned prefix nodes (swap to a host snapshot when long enough
+        // and the byte budget allows, drop otherwise) until it fits or no
+        // node is evictable. Never more than one pass over the slots per
+        // admission call.
+        let mut evictions_left = self.n_slots + 1;
         match self.options.mode {
             AdmissionMode::Lockstep => {
                 // A wave is admitted only when nothing is live.
@@ -661,21 +761,24 @@ impl<B: DecodeBackend> Scheduler<B> {
                 }
                 // Select the oldest fitting wave before sorting it. Sorting
                 // the whole queue first would let a stream of short prompts
-                // overtake an older request forever.
+                // overtake an older request forever. The node each selected
+                // request hits is pinned until the wave is admitted, so a
+                // later eviction cannot take back the cells it was charged
+                // without.
                 let mut pending = Vec::new();
-                let (mut wave_slots, mut wave_cells) = (slots_left, cells_left);
-                while let Some(queued) = self.queue.front() {
-                    let members = queued.request.n();
-                    let need = reservation(&queued.request, n_ctx_seq);
-                    if members > wave_slots || need > wave_cells {
-                        break;
-                    }
-                    wave_slots -= members;
-                    wave_cells -= need;
+                let mut wave_pins = Vec::new();
+                let (mut held_slots, mut held_cells) = (0, 0);
+                while let Some((members, need, node)) =
+                    self.front_fits(n_ctx_seq, held_slots, held_cells, &mut evictions_left)?
+                {
+                    held_slots += members;
+                    held_cells += need;
+                    wave_pins.extend(node.map(|node| self.kv.pin_node(node)));
                     pending.push(self.queue.pop_front().expect("queue has a front"));
                 }
                 pending.sort_by(|a, b| canonical_cmp(&a.request, &b.request));
-                while !pending.is_empty() {
+                let mut admitted = Ok(());
+                while !pending.is_empty() && admitted.is_ok() {
                     let mut run_end = 1;
                     while run_end < pending.len()
                         && pending[run_end].request.prompt == pending[0].request.prompt
@@ -683,35 +786,195 @@ impl<B: DecodeBackend> Scheduler<B> {
                         run_end += 1;
                     }
                     let run = pending.drain(..run_end).collect();
-                    self.admit_group(run, n_ctx_seq, &mut slots_left, &mut cells_left)?;
+                    admitted = self.admit_group(run, n_ctx_seq);
                 }
+                for pin in wave_pins {
+                    self.kv.unpin(pin);
+                }
+                admitted?;
             }
             AdmissionMode::Continuous => {
                 // Do not let smaller arrivals indefinitely overtake a request
                 // waiting for several slots or a larger cell reservation.
-                while let Some(queued) = self.queue.front() {
-                    if queued.request.n() > slots_left
-                        || reservation(&queued.request, n_ctx_seq) > cells_left
-                    {
-                        break;
-                    }
+                while self
+                    .front_fits(n_ctx_seq, 0, 0, &mut evictions_left)?
+                    .is_some()
+                {
                     let queued = self.queue.pop_front().expect("queue has a front");
-                    self.admit_group(vec![queued], n_ctx_seq, &mut slots_left, &mut cells_left)?;
+                    self.admit_group(vec![queued], n_ctx_seq)?;
                 }
             }
         }
         Ok(())
     }
 
+    /// Free slots and cells beside the live groups and the dormant prefix
+    /// slots. A live member never writes more than its reservation and a
+    /// dormant slot holds at most its depth, so the commitment is the larger
+    /// of what the pool reports and that bound.
+    fn capacity(&self) -> Result<(usize, u64), InferError> {
+        let memory = self.backend.memory()?;
+        let used_slots = self
+            .live
+            .iter()
+            .flat_map(|group| &group.members)
+            .filter(|member| member.live)
+            .count()
+            + self.kv.resident_slot_count();
+        let reserved: u64 = self.live.iter().map(|group| group.reserved).sum();
+        let committed = memory
+            .cells_used
+            .max(reserved.saturating_add(self.kv.resident_cells()));
+        Ok((
+            self.n_slots.saturating_sub(used_slots),
+            memory.cells_total.saturating_sub(committed),
+        ))
+    }
+
+    /// Whether the front of the queue fits beside `held_slots`/`held_cells`
+    /// already promised to a pending wave, evicting LRU prefix nodes (at most
+    /// `evictions_left`) until it does. On a fit, returns its member count,
+    /// its cell reservation net of its prefix-cache hit, and the hit node.
+    fn front_fits(
+        &mut self,
+        n_ctx_seq: usize,
+        held_slots: usize,
+        held_cells: u64,
+        evictions_left: &mut usize,
+    ) -> Result<Option<(usize, u64, Option<usize>)>, InferError> {
+        loop {
+            let Some(queued) = self.queue.front() else {
+                return Ok(None);
+            };
+            let members = queued.request.n();
+            // Recomputed after every eviction: the evicted node may be the
+            // one the hit came from.
+            let hit = self.hit_candidate(&queued.request.prompt)?;
+            let shared = hit.map_or(0, |(_, hit)| hit as u64 * members as u64);
+            let need = reservation(&queued.request, n_ctx_seq).saturating_sub(shared);
+            let (slots_left, cells_left) = self.capacity()?;
+            if held_slots + members <= slots_left && held_cells + need <= cells_left {
+                return Ok(Some((members, need, hit.map(|(node, _)| node))));
+            }
+            if *evictions_left == 0 || !self.evict_one_lru()? {
+                return Ok(None);
+            }
+            *evictions_left -= 1;
+        }
+    }
+
+    /// Evicts the LRU unpinned prefix node: swaps it to a host snapshot when it
+    /// is long enough and the byte budget allows, drops it (recompute on the
+    /// next hit) otherwise. Releases its slot with `seq_rm`. Returns false
+    /// when no node is evictable.
+    fn evict_one_lru(&mut self) -> Result<bool, InferError> {
+        let Some(node) = self.kv.eviction_candidate() else {
+            return Ok(false);
+        };
+        let slot = self.kv.slot(node).expect("candidate owns a slot");
+        if self.kv.depth(node) >= self.options.swap_min_tokens {
+            // A failed save only costs the swap: the node is dropped instead.
+            let save_len = self.backend.seq_save_len(slot, 0).unwrap_or(0);
+            if save_len > 0
+                && self.kv.snapshot_bytes() + save_len as u64 <= self.options.max_snapshot_bytes
+            {
+                let mut buffer = vec![0_u8; save_len];
+                if let Ok(written) = self.backend.seq_save_into(slot, 0, &mut buffer) {
+                    buffer.truncate(written);
+                    self.kv.attach_snapshot(node, Arc::from(buffer));
+                    self.kv_stats.swaps += 1;
+                }
+            }
+        }
+        self.backend.seq_rm(slot, -1, -1)?;
+        self.kv.detach_slot(node);
+        if self.kv.snapshot(node).is_none() {
+            // No snapshot: the node is gone entirely (recompute later).
+            self.kv.remove(node);
+        }
+        self.kv_stats.evictions += 1;
+        Ok(true)
+    }
+
+    /// Searches the longest usable prefix-cache hit for `prompt`, without
+    /// mutating anything: `(node, applied_hit)` with
+    /// `0 < applied_hit < prompt.len()`. The applied hit is always a *strict*
+    /// prefix of the prompt: the last prompt token is never copied, it is
+    /// prefilled - the backend refuses to resubmit a token whose position is
+    /// already resident, and re-feeding it would double-advance a hybrid's
+    /// recurrent state.
+    fn hit_candidate(&self, prompt: &[i32]) -> Result<Option<(usize, usize)>, InferError> {
+        if !self.options.prefix_cache || prompt.len() < 2 {
+            return Ok(None);
+        }
+        // A mid-sequence hit (applied < node depth) needs a partial-range copy
+        // of [0, applied): only on a unified pool (a partitioned pool asserts
+        // on cross-stream partial copies) and only for a dense model (a
+        // hybrid's recurrent state cannot be truncated mid-sequence).
+        let partial_ok = self.backend.kv_unified()? && !self.backend.is_hybrid()?;
+        let last = prompt.len() - 1;
+        let (kv, backend) = (&self.kv, &self.backend);
+        let mut usable = |node: usize, hit: usize| -> bool {
+            // The applied hit is the raw hit clamped to a strict prefix.
+            let applied = hit.min(last);
+            let depth = kv.depth(node);
+            if applied == 0 || (applied < depth && !partial_ok) {
+                return false;
+            }
+            match kv.slot(node) {
+                // The resident span must be frozen at the node's boundary,
+                // which covers [0, applied) since applied <= depth.
+                Some(slot) => backend
+                    .seq_pos(slot)
+                    .is_ok_and(|span| span == (0, depth as i32 - 1)),
+                // Swapped node: restorable from its host snapshot, but only at
+                // its exact boundary (a load restores the whole span, and the
+                // suffix prefill must not overlap it).
+                None => kv.snapshot(node).is_some() && applied == depth,
+            }
+        };
+        Ok(kv
+            .longest_prefix(prompt, partial_ok, &mut usable)
+            .map(|(node, hit)| (node, hit.min(last))))
+    }
+
+    /// Applies the longest usable prefix-cache hit for `prompt` into the
+    /// (empty) `leader_slot`. Returns the applied hit length (0 = cold); the
+    /// applied hit is always `< prompt.len()`, so the last prompt token is
+    /// prefilled by the normal prefill phase.
+    fn apply_cache_hit(&mut self, prompt: &[i32], leader_slot: i32) -> Result<usize, InferError> {
+        let Some((node, hit)) = self.hit_candidate(prompt)? else {
+            return Ok(0);
+        };
+        debug_assert!(hit < prompt.len());
+        match self.kv.slot(node) {
+            Some(src) if hit == self.kv.depth(node) => {
+                // Exact boundary: whole-slot copy (safe on any pool mode).
+                self.backend.seq_cp(src, leader_slot, -1, -1)?;
+            }
+            Some(src) => {
+                // Mid-sequence: partial-range copy of positions [0, hit)
+                // (`p1` is exclusive in the backend's seq_cp).
+                self.backend.seq_cp(src, leader_slot, 0, hit as i32)?;
+            }
+            None => {
+                // Swapped node at its exact boundary: restore the full state
+                // into the slot.
+                let snapshot = self
+                    .kv
+                    .snapshot(node)
+                    .cloned()
+                    .expect("a usable swapped node carries a snapshot");
+                self.backend.seq_load(leader_slot, 0, &snapshot)?;
+            }
+        }
+        self.kv.touch(node);
+        Ok(hit)
+    }
+
     /// Places one group (one request, or a merged run of identical prompts)
     /// into free slots and reserves its cells.
-    fn admit_group(
-        &mut self,
-        group: Vec<Queued>,
-        n_ctx_seq: usize,
-        slots_left: &mut usize,
-        cells_left: &mut u64,
-    ) -> Result<(), InferError> {
+    fn admit_group(&mut self, group: Vec<Queued>, n_ctx_seq: usize) -> Result<(), InferError> {
         let prompt = group[0].request.prompt.clone();
         let n_members: usize = group.iter().map(|queued| queued.request.n()).sum();
         let prefix_end = if n_members > 1 {
@@ -719,10 +982,6 @@ impl<B: DecodeBackend> Scheduler<B> {
         } else {
             prompt.len()
         };
-        let reserved: u64 = group
-            .iter()
-            .map(|queued| reservation(&queued.request, n_ctx_seq))
-            .sum();
         let mut members = Vec::with_capacity(n_members);
         // Slots already taken, including the ones this group is taking: the
         // group is pushed to `live` only after every member is placed.
@@ -732,6 +991,12 @@ impl<B: DecodeBackend> Scheduler<B> {
                 if member.live && (member.slot as usize) < self.n_slots {
                     used[member.slot as usize] = true;
                 }
+            }
+        }
+        // Dormant prefix-tree slots are taken as well.
+        for slot in self.kv.resident_slots() {
+            if (slot as usize) < self.n_slots {
+                used[slot as usize] = true;
             }
         }
         for queued in group {
@@ -772,8 +1037,12 @@ impl<B: DecodeBackend> Scheduler<B> {
                     index,
                     sampling,
                     limit,
+                    // Set once the cache hit is known (the shared prefix is
+                    // not re-allocated).
+                    reserved_share: 0,
                     generated: 0,
                     next_token: 0,
+                    history: Vec::new(),
                     live: true,
                     n_top_logprobs: request.n_top_logprobs,
                     detok: Detokenizer::new(&request.stop),
@@ -790,15 +1059,35 @@ impl<B: DecodeBackend> Scheduler<B> {
                 member.slot = slot;
             }
         }
-        *slots_left -= n_members;
-        *cells_left = cells_left.saturating_sub(reserved);
+        // Prefix-cache hit into the leader's slot: the shared prefix is copied
+        // (or restored from a snapshot) instead of prefilled.
+        let leader_slot = members[0].slot;
+        let cache_hit = self.apply_cache_hit(&prompt, leader_slot)?;
+        let prefill_from = cache_hit.min(prefix_end);
+        // The shared prefix [0, cache_hit) is already resident in the tree's
+        // node: only the suffix and the budgets are new cells.
+        for member in &mut members {
+            member.reserved_share = ((prompt.len() - cache_hit) + member.limit) as u64;
+        }
+        let reserved = members.iter().map(|member| member.reserved_share).sum();
+        if cache_hit > 0 {
+            self.kv_stats.hits += 1;
+        } else {
+            self.kv_stats.misses += 1;
+        }
+        self.kv_stats.prompt_cells += prompt.len() as u64;
+        self.kv_stats.prefilled_cells += (prefix_end - prefill_from) as u64;
+        // The applied hit is always a strict prefix of the prompt, so the
+        // prefill phase always has at least the last prompt token to decode
+        // (and sample) - no replay of a resident position is ever needed.
+        let phase = GroupPhase::Prefill { pos: prefill_from };
         self.live.push(LiveGroup {
             prompt,
             prefix_end,
             leader: 0,
             reserved,
             members,
-            phase: GroupPhase::Prefill { pos: 0 },
+            phase,
         });
         Ok(())
     }
@@ -828,6 +1117,7 @@ impl<B: DecodeBackend> Scheduler<B> {
             let member_ref = &mut group_ref.members[member];
             member_ref.generated += 1;
             member_ref.next_token = produced.token;
+            member_ref.history.push(produced.token);
             let piece = self
                 .backend
                 .detokenize_bytes(std::slice::from_ref(&produced.token))?;
@@ -882,29 +1172,32 @@ impl<B: DecodeBackend> Scheduler<B> {
         Ok(())
     }
 
-    /// Ends one member: final event, slot returned to the pool, per-request
-    /// backend state released.
+    /// Ends one member: final event, slot returned to the pool (or handed to
+    /// the prefix tree as a dormant node), per-request backend state released.
     fn finish_member(
         &mut self,
         group: usize,
         member: usize,
         reason: FinishReason,
     ) -> Result<(), InferError> {
-        let (slot, request_id, index, text, events) = {
+        let (slot, request_id, index, text, events, path) = {
             let group_ref = &mut self.live[group];
             let member_ref = &mut group_ref.members[member];
             if !member_ref.live {
                 return Ok(());
             }
-            group_ref.reserved -= (group_ref.prompt.len() + member_ref.limit) as u64;
+            group_ref.reserved = group_ref.reserved.saturating_sub(member_ref.reserved_share);
             member_ref.live = false;
             let text = member_ref.detok.finish();
+            let mut path = group_ref.prompt.clone();
+            path.extend_from_slice(&member_ref.history);
             (
                 member_ref.slot,
                 member_ref.request_id,
                 member_ref.index,
                 text,
                 member_ref.events.take().expect("live member has a sender"),
+                path,
             )
         };
         // A timed-out stream is cancelled for every completion of its request.
@@ -930,7 +1223,31 @@ impl<B: DecodeBackend> Scheduler<B> {
                 .cancelled
                 .store(true, AtomicOrdering::SeqCst);
         }
-        self.backend.seq_rm(slot, -1, -1)?;
+        // Hand the finished sequence's slot to the prefix tree as a dormant
+        // node, instead of releasing it - a later request sharing this prefix
+        // will seq_cp from it. The node's depth is the *resident* span: the
+        // last sampled token is never fed back, so it is not in the KV and
+        // the node covers the first `resident` tokens only. A slot whose span
+        // does not start at 0 (SWA evicted the low positions) cannot be
+        // shared from zero and is released instead.
+        let (pos_min, pos_max) = self.backend.seq_pos(slot)?;
+        let resident = if pos_min == 0 {
+            (pos_max + 1) as usize
+        } else {
+            0
+        };
+        if self.options.prefix_cache
+            && resident >= self.options.min_prefix_len
+            && resident <= path.len()
+        {
+            let (_, attached) = self.kv.insert(&path[..resident], slot);
+            if !attached {
+                // The exact path already has a node: keep the existing one.
+                self.backend.seq_rm(slot, -1, -1)?;
+            }
+        } else {
+            self.backend.seq_rm(slot, -1, -1)?;
+        }
         self.backend.request_free(request_id)?;
         Ok(())
     }
@@ -1006,8 +1323,11 @@ impl<B: DecodeBackend> Scheduler<B> {
         error
     }
 
-    /// A fatal error for every live request: broadcast, then release.
+    /// A fatal error for every live request: broadcast, then release. Slots
+    /// of already-finished members belong to the prefix tree now and are left
+    /// alone.
     fn fail_all(&mut self, error: &InferError) {
+        let mut to_release: Vec<(i32, i32)> = Vec::new();
         for group in 0..self.live.len() {
             for member in 0..self.live[group].members.len() {
                 let member_ref = &mut self.live[group].members[member];
@@ -1020,15 +1340,15 @@ impl<B: DecodeBackend> Scheduler<B> {
                         );
                     }
                     member_ref.live = false;
+                    to_release.push((member_ref.slot, member_ref.request_id));
                 }
             }
         }
-        for group in self.live.drain(..) {
-            for member in group.members {
-                let _ = self.backend.seq_rm(member.slot, -1, -1);
-                let _ = self.backend.request_free(member.request_id);
-            }
+        for (slot, request_id) in to_release {
+            let _ = self.backend.seq_rm(slot, -1, -1);
+            let _ = self.backend.request_free(request_id);
         }
+        self.live.clear();
     }
 }
 
@@ -1037,6 +1357,18 @@ pub(crate) enum Envelope {
     Submit(Queued),
     /// Wakes a thread blocked on an empty queue (shutdown).
     Wake,
+    /// Prefix-cache stats query.
+    Stats(mpsc::Sender<KvStats>),
+    /// Pin the node at exactly `prefix`.
+    Pin {
+        prefix: Vec<i32>,
+        reply: mpsc::Sender<Result<PinId, InferError>>,
+    },
+    /// Release one pin.
+    Unpin {
+        id: PinId,
+        reply: mpsc::Sender<bool>,
+    },
 }
 
 #[cfg(test)]
@@ -1053,6 +1385,9 @@ mod tests {
                 mode: AdmissionMode::Continuous,
                 n_batch,
                 slow_client_timeout: Duration::ZERO,
+                // These tests exercise scheduling, not the prefix cache: keep
+                // every finished slot released.
+                prefix_cache: false,
                 ..SchedulerOptions::default()
             },
         );
@@ -1123,6 +1458,35 @@ mod tests {
         }
         fn seq_cp(&mut self, src: i32, dst: i32, p0: i32, p1: i32) -> Result<(), InferError> {
             self.inner.seq_cp(src, dst, p0, p1)
+        }
+        fn seq_pos(&self, slot: i32) -> Result<(i32, i32), InferError> {
+            self.inner.seq_pos(slot)
+        }
+        fn seq_save_len(&self, slot: i32, flags: u32) -> Result<usize, InferError> {
+            self.inner.seq_save_len(slot, flags)
+        }
+        fn seq_save_into(
+            &mut self,
+            slot: i32,
+            flags: u32,
+            buffer: &mut [u8],
+        ) -> Result<usize, InferError> {
+            self.inner.seq_save_into(slot, flags, buffer)
+        }
+        fn seq_load(&mut self, slot: i32, flags: u32, data: &[u8]) -> Result<usize, InferError> {
+            self.inner.seq_load(slot, flags, data)
+        }
+        fn kv_unified(&self) -> Result<bool, InferError> {
+            self.inner.kv_unified()
+        }
+        fn weights_version(&self) -> Result<u64, InferError> {
+            self.inner.weights_version()
+        }
+        fn model_fingerprint(&self) -> Result<u64, InferError> {
+            self.inner.model_fingerprint()
+        }
+        fn is_hybrid(&self) -> Result<bool, InferError> {
+            self.inner.is_hybrid()
         }
         fn memory(&self) -> Result<retrograd_engine::EngineMemory, InferError> {
             self.inner.memory()
