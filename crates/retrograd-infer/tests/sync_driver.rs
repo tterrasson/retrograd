@@ -325,9 +325,12 @@ fn a_lent_slot_is_empty_and_leaves_the_prefix_tree_resident() {
         },
     );
     scheduler.initialize().unwrap();
+    // Eight prompt tokens: a finished sequence is then long enough to stay
+    // dormant (min_prefix_len is 8) - the resident span is the prompt plus the
+    // fed-back tokens, so the prompt must clear the threshold on its own.
     let requests = vec![
-        Request::single(vec![1, 2, 3, 4], fake_sampling(3, 4)),
-        Request::single(vec![5, 6, 7, 8], fake_sampling(4, 4)),
+        Request::single(vec![1, 2, 3, 4, 5, 6, 7, 8], fake_sampling(3, 4)),
+        Request::single(vec![9, 10, 11, 12, 13, 14, 15, 16], fake_sampling(4, 4)),
     ];
     run_requests(&mut scheduler, requests).unwrap();
     let resident = scheduler.kv_stats().resident_slots;
