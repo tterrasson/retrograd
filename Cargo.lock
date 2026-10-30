@@ -1819,7 +1819,6 @@ dependencies = [
 name = "retrograd"
 version = "0.1.0"
 dependencies = [
- "axum",
  "comfy-table",
  "indicatif",
  "retrograd-agent",
@@ -1837,6 +1836,7 @@ dependencies = [
  "retrograd-plan",
  "retrograd-run",
  "retrograd-scenario-gen",
+ "retrograd-serve",
  "retrograd-tools",
  "retrograd-training",
  "rir-core",
@@ -2164,6 +2164,24 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "retrograd-serve"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "http",
+ "retrograd-core",
+ "retrograd-infer",
+ "retrograd-openai",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

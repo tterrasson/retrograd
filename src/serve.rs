@@ -10,16 +10,14 @@
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use indicatif::HumanDuration;
 use retrograd::config::{self, OutputKind};
 use retrograd::{Device, Error, Result};
 use retrograd_cli_ui::CliUi;
-use retrograd_openai::{
-    Endpoint, OpenAiError, Session, SessionOptions, SingleModel, TrainerLoader, Unshared,
-    WeightsSpec,
-};
+use retrograd_openai::{SingleModel, WeightsSpec};
+use retrograd_serve::SessionOptions;
 
 use crate::args::{Args, parse_value};
 
@@ -69,8 +67,9 @@ pub(crate) fn serve(args: Vec<String>) -> Result<()> {
     }
     let source = served_models(&args, &run_config)?;
     let address = SocketAddr::new(parse_host(&args.host)?, args.port);
+    let preload = source.spec.clone();
 
-    let ui = CliUi::new();
+    let ui = Arc::new(CliUi::new());
     ui.section("serve");
     ui.info(format!("config: {}", args.config.display()));
     ui.info(format!(
@@ -95,56 +94,48 @@ pub(crate) fn serve(args: Vec<String>) -> Result<()> {
         .enable_all()
         .build()?;
     runtime.block_on(async move {
-        let listener = tokio::net::TcpListener::bind(address).await?;
-        let session = Session::new(
-            Arc::new(TrainerLoader),
-            Arc::new(Unshared),
-            SessionOptions {
+        let load = ui.spinner("loading model");
+        // The serving runtime itself lives in the facade crate, which also
+        // carries the standalone `retrograd-infer` binary: one code path. It
+        // preloads the model before the socket answers anything.
+        let api_key = args.api_key.clone();
+        let on_loaded = {
+            let ui = ui.clone();
+            let api_key = api_key.clone();
+            move |outcome: retrograd_serve::LoadOutcome| match outcome {
+                Ok(elapsed) => {
+                    ui.finish_spinner(
+                        load.clone(),
+                        format!("model loaded in {}", HumanDuration(elapsed)),
+                    );
+                    let base = format!("http://{address}/v1");
+                    ui.info(format!("serving on {base}"));
+                    ui.info(format!(
+                        "try: OPENAI_BASE_URL={base} OPENAI_API_KEY={} <any OpenAI client>",
+                        api_key.as_deref().map_or("unused", |_| "<your key>")
+                    ));
+                    ui.info("Ctrl-C stops the server");
+                }
+                Err(message) => {
+                    ui.fail_spinner(load.clone(), format!("model loading failed: {message}"))
+                }
+            }
+        };
+        let server = retrograd_serve::Serve {
+            source: Arc::new(source),
+            preload,
+            session: SessionOptions {
                 // One process, one model: nothing else wants the device back.
                 idle: None,
                 ..SessionOptions::default()
             },
-        )
-        .map_err(openai_error)?;
-
-        let started = Instant::now();
-        let load = ui.spinner("loading model");
-        session
-            .preload(source.spec.clone())
-            .await
-            .map_err(openai_error)
-            .inspect_err(|_| ui.fail_spinner(load.clone(), "model loading failed"))?;
-        ui.finish_spinner(
-            load,
-            format!("model loaded in {}", HumanDuration(started.elapsed())),
-        );
-
-        let mut v1 = retrograd_openai::router(Endpoint {
-            source: Arc::new(source),
-            session: Arc::new(session),
+            address,
+            api_key,
             timeout: REQUEST_TIMEOUT,
-            enabled: true,
-        });
-        if let Some(key) = args.api_key.as_deref() {
-            v1 = v1.layer(axum::middleware::from_fn_with_state(
-                Arc::<str>::from(key),
-                retrograd_openai::auth::require_api_key,
-            ));
-        }
-        let router = axum::Router::new().nest("/v1", v1);
-
-        let base = format!("http://{}/v1", listener.local_addr()?);
-        ui.info(format!("serving on {base}"));
-        ui.info(format!(
-            "try: OPENAI_BASE_URL={base} OPENAI_API_KEY={} <any OpenAI client>",
-            args.api_key.as_deref().map_or("unused", |_| "<your key>")
-        ));
-        ui.info("Ctrl-C stops the server");
-        axum::serve(listener, router)
-            .with_graceful_shutdown(async {
-                let _ = tokio::signal::ctrl_c().await;
-            })
-            .await?;
+            max_body_bytes: 4 * 1024 * 1024,
+            on_loaded: Some(Arc::new(on_loaded)),
+        };
+        retrograd_serve::serve(server).await?;
         Ok(())
     })
 }
@@ -158,6 +149,7 @@ fn served_models(args: &ServeArgs, run_config: &config::RunConfig) -> Result<Sin
         adapter,
         n_ctx: run_config.training.n_ctx,
         device: run_config.training.device,
+        n_seq_max: None,
         chat_template_variables: variables.clone(),
     };
     let base = spec(&run_config.model, None);
@@ -231,14 +223,6 @@ fn parse_host(host: &str) -> Result<IpAddr> {
 
 fn is_loopback(host: &str) -> bool {
     parse_host(host).is_ok_and(|ip| ip.is_loopback())
-}
-
-/// The failures of the serving session, as the CLI reports every other one.
-fn openai_error(error: OpenAiError) -> Error {
-    match error.status.is_client_error() {
-        true => Error::invalid(error.message),
-        false => Error::runtime(error.message),
-    }
 }
 
 fn parse_serve_args(args: &[String]) -> Result<ServeArgs> {

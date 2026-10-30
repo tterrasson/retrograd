@@ -1,0 +1,33 @@
+[package]
+name = "retrograd-serve"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - the standalone inference server: OpenAI chat completions over one model, served by the step-wise inference engine"
+publish = false
+
+# The serving facade: the protocol and the session from `retrograd-openai`,
+# the step-wise policy from `retrograd-infer`, the decode backend from
+# `retrograd-engine` (through openai's EngineLoader). No training, agent or
+# config crate: the binary's dependency tree is checked by
+# `cargo tree -p retrograd-serve -e normal` in the fast lane.
+[dependencies]
+async-trait.workspace = true
+axum.workspace = true
+http.workspace = true
+retrograd-core.workspace = true
+retrograd-infer.workspace = true
+retrograd-openai.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
+toml.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "retrograd-infer"
+path = "src/bin/retrograd-infer.rs"

@@ -35,6 +35,7 @@ members = [
     "crates/retrograd-server",
     "crates/retrograd-ui",
     "crates/retrograd-openai",
+    "crates/retrograd-serve",
     "crates/retrograd-agent-core",
     "crates/retrograd-agent",
     "crates/retrograd-judge",
@@ -100,6 +101,7 @@ retrograd-openai = { path = "crates/retrograd-openai" }
 retrograd-plan = { path = "crates/retrograd-plan" }
 retrograd-run = { path = "crates/retrograd-run", default-features = false }
 retrograd-scenario-gen = { path = "crates/retrograd-scenario-gen" }
+retrograd-serve = { path = "crates/retrograd-serve" }
 retrograd-server = { path = "crates/retrograd-server" }
 retrograd-training = { path = "crates/retrograd-training" }
 retrograd-ui = { path = "crates/retrograd-ui" }
@@ -204,11 +206,12 @@ serde_json.workspace = true
 # profile gets, rather than the condensed `RolloutEpoch` a `RunObserver` sees.
 retrograd-agent = { workspace = true, optional = true, features = ["http-env"] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"], optional = true }
-# `retrograd serve`: the OpenAI chat-completions contract over one model, and
-# the HTTP server that carries it. The run server's stack - its registry, its
-# OpenAPI derive - stays out; only the protocol crate and axum come in.
-axum = { workspace = true, optional = true }
+# `retrograd serve`: the OpenAI chat-completions contract over one model. The
+# run server's stack - its registry, its OpenAPI derive - stays out; the
+# serving runtime is delegated to the facade crate, which also carries the
+# standalone `retrograd-infer` binary.
 retrograd-openai = { workspace = true, optional = true }
+retrograd-serve = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The cost model, for the two integration tests that compare a measured run
@@ -216,8 +219,8 @@ retrograd-openai = { workspace = true, optional = true }
 # `src/lib.rs` is a facade over the runtime, and the planner sits above it.
 retrograd-plan.workspace = true
 # The step-wise inference policy, for the integration test that runs the
-# scheduler over a real engine on the CPU fixture. A dev-dependency only:
-# no shipped binary links the inference crate yet.
+# scheduler over a real engine on the CPU fixture. The shipped binaries reach
+# it through `retrograd-serve` only.
 retrograd-infer.workspace = true
 # tests/rir_quant_oracle.rs holds ggml `to_float` → the RIR dequantization
 # oracle → its Loop IR expansion end to end, on the same bytes, with no device
@@ -245,7 +248,7 @@ cuda = ["retrograd-ffi/cuda"]
 # binary, and has no terminal to draw on.
 cli = ["dep:comfy-table", "dep:indicatif", "dep:tracing-subscriber", "dep:retrograd-cli-ui"]
 agent = ["retrograd-run/agent", "dep:retrograd-agent", "dep:tokio"]
-serve = ["agent", "cli", "dep:retrograd-openai", "dep:axum", "tokio/net", "tokio/signal"]
+serve = ["agent", "cli", "dep:retrograd-openai", "dep:retrograd-serve", "tokio/net", "tokio/signal"]
 mcp = ["agent", "retrograd-run/mcp", "retrograd-tools/mcp", "retrograd-agent/mcp"]
 container = ["agent", "retrograd-run/container", "retrograd-agent/container"]
 
