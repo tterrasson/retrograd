@@ -467,21 +467,24 @@ pub(crate) fn build_agent(
     config.validate().map_err(Error::from)?;
     // The paths inside the judge that are written relative to the config file,
     // and the transport selection, checked here so a contradictory document is
-    // refused at load with the field named - the local transport itself is
-    // resolved by the caller, which is the one that owns a model.
+    // refused at load with the field named.
     let mut judge = value.judge;
     if let Some(JudgeConfig::Ruler { config }) = &mut judge {
         config.validate_declaration().map_err(Error::from)?;
+        // Agentic rollouts are judged on the worker pool, away from the
+        // thread that owns the model: an in-process judge has no model to
+        // run on there.
+        if config.local.is_some() {
+            return Err(Error::config(
+                "[agent.judge] local = { … } is not available to agentic runs: their judge runs \
+                 beside the rollout workers, without the policy model. Point base_url and model \
+                 at an HTTP judge (retrograd serve serves one), or use local in [grpo.judge]",
+            ));
+        }
         config.cache_path = config
             .cache_path
             .take()
             .map(|path| resolve(root, path.to_path_buf()));
-        if let Some(local) = &mut config.local {
-            local.snapshot_dir = Some(match local.snapshot_dir.take() {
-                Some(path) => resolve(root, path),
-                None => resolve(root, std::path::PathBuf::from("judge-snapshot")),
-            });
-        }
     }
     Ok(AgentRunConfig {
         scenarios: resolve(root, value.scenarios),

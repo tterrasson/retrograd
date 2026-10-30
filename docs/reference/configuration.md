@@ -471,7 +471,9 @@ transcripts with the judge model. `trigger_chars`, `target_chars` and
 `snapshot_dir` (beside the document by default), `max_new_tokens` (`1024`,
 the judge's own generation budget, separate from the rollouts'). In-process
 generation runs through the same step-wise scheduler as the rollouts, on the
-training thread; a `snapshot` judge keeps its own frozen engine.
+training thread; a `snapshot` judge keeps its own frozen engine. `[grpo.judge]`
+only: `[agent.judge]` refuses it at load, since agentic rollouts are judged
+beside the rollout workers, away from the model.
 
 `[<section>.judge.guardrails]`, optional alert on the verdict's agreement
 with the verifiable reward, measured by the single-turn GRPO loop that holds

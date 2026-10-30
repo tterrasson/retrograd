@@ -2046,10 +2046,10 @@ fn grpo_judge_local_parses_and_rebases_its_snapshot_dir() {
     }
 }
 
-/// `[agent.judge]` accepts the same `local = { … }` form: it parses and the
-/// selection is validated at load; serving it needs the caller's resolver.
+/// `[agent.judge]` refuses `local = { … }` at load, with the field named:
+/// nothing on the agentic path could run it.
 #[test]
-fn agent_judge_local_parses_and_validates_its_selection() {
+fn agent_judge_local_is_refused_at_load() {
     let base = concat!(
         "[run]\nalgorithm='agent_grpo'\n",
         "[model]\npath='model.gguf'\ndevice='cpu'\n",
@@ -2058,17 +2058,8 @@ fn agent_judge_local_parses_and_validates_its_selection() {
     );
     let source = format!("{base}[agent.judge]\ntype='ruler'\nlocal={{weights='base'}}\n");
     let (_tmp, file) = write_config(&source);
-    let loaded = load(&file).unwrap();
-    let Algorithm::AgentGrpo(agent) = loaded.algorithm else {
-        panic!("expected an agent grpo config")
-    };
-    let Some(retrograd_spec::judge::JudgeConfig::Ruler { config }) = &agent.judge else {
-        panic!("expected a RULER judge")
-    };
-    assert_eq!(
-        config.local.as_ref().map(|local| local.weights),
-        Some(retrograd_spec::judge::LocalJudgeWeights::Base)
-    );
+    let error = load(&file).unwrap_err().to_string();
+    assert!(error.contains("[agent.judge] local"), "{error}");
 
     let source = format!(
         "{base}[agent.judge]\ntype='ruler'\nbase_url='http://x/v1'\nmodel='m'\nlocal={{}}\n"
