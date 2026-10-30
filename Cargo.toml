@@ -214,6 +214,12 @@ retrograd-openai = { workspace = true, optional = true }
 retrograd-serve = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The judge declarations and trajectory types, for tests/judge_local.rs: the
+# in-process judge is exercised on the CPU fixture through the training crate's
+# public transport, and these are the types its signature speaks.
+retrograd-agent-core.workspace = true
+retrograd-judge.workspace = true
+retrograd-spec.workspace = true
 # The cost model, for the two integration tests that compare a measured run
 # with the budget that was written for it. The library re-exports no planner:
 # `src/lib.rs` is a facade over the runtime, and the planner sits above it.

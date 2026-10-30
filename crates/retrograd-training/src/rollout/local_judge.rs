@@ -6,7 +6,7 @@
 //! served run deadlocks, because the request waits on the training thread
 //! while that thread waits on the request. Here the judge's requests are
 //! rendered with the model's own chat template, tokenized, sampled through
-//! [`Trainer::generate_sampled_continuous`] under the selected weights, and
+//! [`Trainer::generate_sampled_continuous_v2`] under the selected weights, and
 //! detokenized - all on the thread that owns the [`Trainer`].
 //!
 //! The pieces are kept apart on purpose. [`JudgeModel`] is the model surface
@@ -20,11 +20,12 @@ use std::path::{Path, PathBuf};
 
 use retrograd_agent_core::config::JudgeFailurePolicy;
 use retrograd_agent_core::trajectory::TrajectoryGroup;
-use retrograd_core::{Error, Result, SamplingParams, TrainConfig};
+use retrograd_core::{Error, Result, SamplingParams, SamplingParamsV2, TrainConfig};
 use retrograd_engine::{JudgeWeights, Trainer};
 use retrograd_judge::{
     JudgeBatchMetrics, JudgeCacheMode, JudgeReply, JudgeRequest, JudgeTransport,
-    JudgeTransportError, RULER_PROTOCOL_VERSION, RulerConfig, RulerJudge, apply_group_scores,
+    JudgeTransportError, RULER_PROTOCOL_VERSION, RulerConfig, RulerJudge, ScoreRequest,
+    apply_group_scores,
 };
 use retrograd_metrics::MetricValue;
 
@@ -33,32 +34,73 @@ use retrograd_metrics::MetricValue;
 /// without a GGUF.
 pub trait JudgeModel {
     /// Renders one judge prompt through the model's chat template (a single
-    /// user turn, assistant turn opened) and tokenizes the result, exactly as
-    /// a serving request would be.
-    fn render_chat(&mut self, prompt: &str) -> Result<Vec<i32>>;
+    /// user turn, assistant turn opened), as text, exactly as a serving
+    /// request would be. Scoring needs the text too: a label is tokenized in
+    /// the context of the rendered prompt, not in isolation.
+    fn render_chat_text(&mut self, prompt: &str) -> Result<String>;
+    /// Tokenizes raw text with the model's tokenizer.
+    fn tokenize_text(&self, text: &str) -> Result<Vec<i32>>;
+    /// Renders one judge prompt through the model's chat template and
+    /// tokenizes the result.
+    fn render_chat(&mut self, prompt: &str) -> Result<Vec<i32>> {
+        let rendered = self.render_chat_text(prompt)?;
+        self.tokenize_text(&rendered)
+    }
     /// Samples one completion per `(prompt, params)`, batched into a single
-    /// call. Returns only the tokens; the judge trains on nothing.
-    fn generate(&mut self, sequences: &[(&[i32], SamplingParams)]) -> Result<Vec<Vec<i32>>>;
+    /// call. Returns only the tokens; the judge trains on nothing. The
+    /// extended parameters carry the output grammar of a structured answer.
+    fn generate(&mut self, sequences: &[(&[i32], SamplingParamsV2)]) -> Result<Vec<Vec<i32>>>;
+    /// Teacher-forced log-probabilities of each of `targets` as the next
+    /// token after `prompt`: `log p(targets[i] | prompt)`. The two label
+    /// suffixes of one scoring request share the prompt, so the runtime
+    /// branches them off one decoded prefix.
+    fn score_next_logprobs(&mut self, prompt: &[i32], targets: &[i32]) -> Result<Vec<f32>>;
     fn detokenize(&self, tokens: &[i32]) -> Result<String>;
     fn context_size(&self) -> Result<usize>;
 }
 
 impl JudgeModel for Trainer {
-    fn render_chat(&mut self, prompt: &str) -> Result<Vec<i32>> {
+    fn render_chat_text(&mut self, prompt: &str) -> Result<String> {
         let messages = serde_json::json!([{"role": "user", "content": prompt}]).to_string();
-        let rendered = self.format_chat_messages(&messages, None, true)?;
-        self.tokenize_text(&rendered)
+        self.format_chat_messages(&messages, None, true)
     }
 
-    fn generate(&mut self, sequences: &[(&[i32], SamplingParams)]) -> Result<Vec<Vec<i32>>> {
+    fn tokenize_text(&self, text: &str) -> Result<Vec<i32>> {
+        Trainer::tokenize_text(self, text)
+    }
+
+    fn generate(&mut self, sequences: &[(&[i32], SamplingParamsV2)]) -> Result<Vec<Vec<i32>>> {
         // Forced reasoning tokens are kept in the reply rather than refused:
         // the judge does not train on its own output, so a forced token is
         // just part of the answer it reads.
         Ok(self
-            .generate_sampled_continuous(sequences)?
+            .generate_sampled_continuous_v2(sequences)?
             .into_iter()
             .map(|row| row.tokens)
             .collect())
+    }
+
+    fn score_next_logprobs(&mut self, prompt: &[i32], targets: &[i32]) -> Result<Vec<f32>> {
+        if targets.is_empty() {
+            return Err(Error::invalid("scoring needs at least one target token"));
+        }
+        // Each target is scored as the single completion token of
+        // `prompt + [target]`: all rows share the prompt, so one batched call
+        // decodes the prefix once and branches per candidate.
+        let sequences: Vec<(Vec<i32>, usize)> = targets
+            .iter()
+            .map(|target| {
+                let mut tokens = prompt.to_vec();
+                tokens.push(*target);
+                (tokens, prompt.len())
+            })
+            .collect();
+        let refs: Vec<(&[i32], usize)> = sequences
+            .iter()
+            .map(|(tokens, n_prompt)| (tokens.as_slice(), *n_prompt))
+            .collect();
+        let rows = self.score_token_suffix_batch(&refs)?;
+        Ok(rows.into_iter().map(|mut row| row.remove(0)).collect())
     }
 
     fn detokenize(&self, tokens: &[i32]) -> Result<String> {
@@ -143,15 +185,37 @@ pub fn plan_wave(
     plan
 }
 
+/// The output grammar a wire request asks for, as GBNF text: a strict
+/// `json_schema` attempt constrains to the request's schema, the degraded
+/// `json_object` retry to any JSON object. A request with no structured
+/// format is generated unconstrained (the schema is still stated in the
+/// prompt text, as the protocol always does).
+fn grammar_of(request: &JudgeRequest) -> Option<std::result::Result<std::sync::Arc<str>, String>> {
+    let format = request.response_format.as_ref()?;
+    match format.get("type").and_then(|value| value.as_str()) {
+        Some("json_schema") => Some(
+            retrograd_engine::grammar_from_json_schema(&request.schema.to_string())
+                .map(|gbnf| std::sync::Arc::from(gbnf.as_str()))
+                .map_err(|error| error.to_string()),
+        ),
+        Some("json_object") => Some(
+            retrograd_engine::json_object_grammar()
+                .map(|gbnf| std::sync::Arc::from(gbnf.as_str()))
+                .map_err(|error| error.to_string()),
+        ),
+        _ => None,
+    }
+}
+
 /// The in-process [`JudgeTransport`]: renders each request through the model's
-/// template, plans the wave, samples every batch with
-/// `generate_sampled_continuous`, and detokenizes each reply.
+/// template, plans the wave, samples every batch with the extended sampler
+/// (structured answers are grammar-constrained), and detokenizes each reply.
 ///
 /// Borrows the model mutably for the duration of the call - which is exactly
 /// why the protocol takes the transport as a parameter instead of storing it.
 pub struct LocalJudgeTransport<'a, M: JudgeModel + ?Sized> {
     model: &'a mut M,
-    sampling: SamplingParams,
+    sampling: SamplingParamsV2,
     max_new_tokens: u32,
     batch_len: usize,
 }
@@ -165,7 +229,7 @@ impl<'a, M: JudgeModel + ?Sized> LocalJudgeTransport<'a, M> {
     ) -> Self {
         Self {
             model,
-            sampling,
+            sampling: SamplingParamsV2::from(sampling),
             max_new_tokens,
             batch_len,
         }
@@ -216,19 +280,40 @@ impl<M: JudgeModel + ?Sized> JudgeTransport for LocalJudgeTransport<'_, M> {
                     .as_ref()
                     .expect("plan_wave only batches feasible prompts");
                 // Each request draws its own seed, derived from the wave's, so
-                // a replay of the same wave reproduces the same draws.
-                let params = SamplingParams {
-                    temperature: requests[index]
-                        .temperature
-                        .unwrap_or(self.sampling.temperature),
-                    top_p: self.sampling.top_p,
-                    max_new_tokens: self.max_new_tokens,
-                    // The seed is a wrapping bit pattern, so retaining its low
-                    // 32 bits is intentional even for a larger request index.
-                    seed: self.sampling.seed.wrapping_add(index as u32),
-                };
+                // a replay of the same wave reproduces the same draws. The
+                // seed is a wrapping bit pattern, so retaining its low 32 bits
+                // is intentional even for a larger request index.
+                let mut params = self.sampling.clone();
+                params.temperature = requests[index]
+                    .temperature
+                    .unwrap_or(self.sampling.temperature);
+                // The wire protocol uses zero for greedy decoding. The native
+                // sampler requires positive temperature; top_k=1 implements
+                // greedy selection after grammar masking without division by zero.
+                if params.temperature == 0.0 {
+                    params.temperature = 1.0;
+                    params.top_k = 1;
+                }
+                params.max_new_tokens = self.max_new_tokens;
+                params.seed = self.sampling.seed.wrapping_add(index as u32);
+                // A structured answer is constrained by its grammar, not only
+                // by the schema stated in the prompt: that is what keeps the
+                // syntax failures the failure policy would otherwise count.
+                match grammar_of(&requests[index]) {
+                    Some(Ok(gbnf)) => params.grammar_gbnf = Some(gbnf),
+                    Some(Err(message)) => {
+                        replies[index] = Some(Err(JudgeTransportError::Failed(format!(
+                            "build the output grammar: {message}"
+                        ))));
+                        continue;
+                    }
+                    None => {}
+                }
                 sequences.push((tokens.as_slice(), params));
                 slots.push(index);
+            }
+            if sequences.is_empty() {
+                continue;
             }
             match self.model.generate(&sequences) {
                 Ok(rows) if rows.len() != slots.len() => {
@@ -259,6 +344,81 @@ impl<M: JudgeModel + ?Sized> JudgeTransport for LocalJudgeTransport<'_, M> {
         replies
             .into_iter()
             .map(|reply| reply.expect("every request got a slot in the wave"))
+            .collect()
+    }
+
+    /// Scores each request's target labels: the prompt is rendered through the
+    /// template, each label is tokenized *in the context of that render* -
+    /// spacing and case included - and refused when it is not a single token
+    /// there, then the logprobs come from one branched teacher-forced call.
+    fn score(
+        &mut self,
+        requests: &[ScoreRequest],
+    ) -> Vec<std::result::Result<Vec<f32>, JudgeTransportError>> {
+        let context = match self.model.context_size() {
+            Ok(context) => context,
+            Err(error) => {
+                return requests
+                    .iter()
+                    .map(|_| {
+                        Err(JudgeTransportError::Failed(format!(
+                            "read the judge context window: {error}"
+                        )))
+                    })
+                    .collect();
+            }
+        };
+        requests
+            .iter()
+            .map(|request| {
+                let rendered = self
+                    .model
+                    .render_chat_text(&request.prompt)
+                    .map_err(|error| {
+                        JudgeTransportError::Failed(format!("render the judge prompt: {error}"))
+                    })?;
+                let base = self.model.tokenize_text(&rendered).map_err(|error| {
+                    JudgeTransportError::Failed(format!("tokenize the judge prompt: {error}"))
+                })?;
+                if base.is_empty() {
+                    return Err(JudgeTransportError::Failed(
+                        "the chat template rendered an empty prompt".to_owned(),
+                    ));
+                }
+                if base.len() >= context {
+                    return Err(JudgeTransportError::Failed(format!(
+                        "judge prompt of {} tokens fills the {} token context window, no room \
+                         for the label",
+                        base.len(),
+                        context
+                    )));
+                }
+                let mut targets = Vec::with_capacity(request.targets.len());
+                for label in &request.targets {
+                    let full = self
+                        .model
+                        .tokenize_text(&format!("{rendered}{label}"))
+                        .map_err(|error| {
+                            JudgeTransportError::Failed(format!(
+                                "tokenize the label '{label}': {error}"
+                            ))
+                        })?;
+                    match full.strip_prefix(base.as_slice()) {
+                        Some([token]) => targets.push(*token),
+                        other => {
+                            return Err(JudgeTransportError::Failed(format!(
+                                "the label '{label}' is not a single token in this template's \
+                                 context ({} tokens added): pointwise_logprob refuses \
+                                 multi-token labels rather than truncate to the first",
+                                other.map_or(0, <[i32]>::len)
+                            )));
+                        }
+                    }
+                }
+                self.model
+                    .score_next_logprobs(&base, &targets)
+                    .map_err(|error| JudgeTransportError::Failed(error.to_string()))
+            })
             .collect()
     }
 }
@@ -389,6 +549,27 @@ fn local_cache_identity(
     )
 }
 
+/// Verifies that every `pointwise_logprob` label is a single token in the
+/// context of the model's chat template, and refuses the run when one is not:
+/// a multi-token label would give a truncated first-token probability, which
+/// is not a verdict anyone configured.
+fn verify_pointwise_labels<M: JudgeModel + ?Sized>(model: &mut M) -> Result<()> {
+    let rendered = model.render_chat_text("ping")?;
+    let base = model.tokenize_text(&rendered)?;
+    for label in retrograd_judge::POINTWISE_LABELS {
+        let full = model.tokenize_text(&format!("{rendered}{label}"))?;
+        if !matches!(full.strip_prefix(base.as_slice()), Some([_])) {
+            return Err(Error::invalid(format!(
+                "the pointwise label '{label}' is not a single token in this template's context \
+                 ({} tokens for '{label}'): choose labels the tokenizer keeps whole, or drop the \
+                 pointwise_logprob strategy",
+                full.len().saturating_sub(base.len())
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// A judge that executes the RULER protocol in process, on the training
 /// thread's model, under a chosen set of weights.
 pub struct LocalJudge {
@@ -400,11 +581,16 @@ pub struct LocalJudge {
     batch_len: usize,
     judge_reasoning_budget: Option<u32>,
     model_fingerprint: String,
+    /// Whether the strategy is `pointwise_logprob`, whose labels are verified
+    /// once against the model's template before the first group is scored.
+    pointwise: bool,
+    labels_verified: bool,
 }
 
 impl LocalJudge {
     /// Builds the local judge around a RULER configuration (rubrics, strategy,
-    /// context budgets, compaction - the transport fields are unused).
+    /// context budgets, compaction - the transport fields are unused, the
+    /// selection itself was validated at load).
     ///
     /// `snapshot` weights need `snapshot_dir` and `refresh_every`; the first
     /// is refused at preflight when the run trains base weights.
@@ -421,6 +607,7 @@ impl LocalJudge {
         refresh_every: u32,
         judge_reasoning_budget: Option<u32>,
     ) -> Result<Self> {
+        ruler.validate_declaration()?;
         if max_new_tokens == 0 {
             return Err(Error::invalid(
                 "the local judge needs a positive generation budget",
@@ -472,6 +659,7 @@ impl LocalJudge {
                 ),
             ),
         };
+        let pointwise = ruler.strategy == retrograd_judge::JudgeStrategy::PointwiseLogprob;
         let judge =
             RulerJudge::with_cache(ruler, mode, identity).map_err(retrograd_core::Error::from)?;
         Ok(Self {
@@ -483,6 +671,8 @@ impl LocalJudge {
             batch_len,
             judge_reasoning_budget,
             model_fingerprint,
+            pointwise,
+            labels_verified: false,
         })
     }
 
@@ -528,6 +718,16 @@ impl LocalJudge {
                 self.max_new_tokens,
                 self.judge_reasoning_budget,
             ));
+        }
+        // A pointwise judge reads its labels as single tokens of the model's
+        // own template: verified once, here, under the selected weights, and
+        // refused for the whole run rather than per group when they are not.
+        if self.pointwise && !self.labels_verified {
+            let snapshot_engine = self.snapshot.as_mut().map(SnapshotJudge::engine);
+            trainer.with_weights(self.weights, snapshot_engine, |model| {
+                verify_pointwise_labels(model)
+            })?;
+            self.labels_verified = true;
         }
         self.score_groups_inner(
             trainer,
@@ -614,39 +814,68 @@ mod tests {
 
     /// A model that answers every prompt with a canned verdict, recording what
     /// it was asked. In `pairwise` mode it answers the two-way verdict format.
-    struct FakeModel {
-        context: usize,
-        batch_seen: Vec<usize>,
-        prompts: Vec<String>,
-        fail_generate: bool,
-        pairwise: bool,
+    pub(super) struct FakeModel {
+        pub(super) context: usize,
+        pub(super) batch_seen: Vec<usize>,
+        pub(super) prompts: Vec<String>,
+        pub(super) fail_generate: bool,
+        pub(super) pairwise: bool,
+        /// Logprobs returned per target by `score_next_logprobs`.
+        pub(super) label_logprobs: Vec<f32>,
+        pub(super) scored: Vec<(usize, Vec<i32>)>,
+        pub(super) retokenize_suffix: bool,
     }
 
     impl FakeModel {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             Self {
                 context: 4096,
                 batch_seen: Vec::new(),
                 prompts: Vec::new(),
                 fail_generate: false,
                 pairwise: false,
+                label_logprobs: vec![0.0, -1.0],
+                scored: Vec::new(),
+                retokenize_suffix: false,
             }
         }
     }
 
     impl JudgeModel for FakeModel {
-        fn render_chat(&mut self, prompt: &str) -> Result<Vec<i32>> {
+        fn render_chat_text(&mut self, prompt: &str) -> Result<String> {
             self.prompts.push(prompt.to_owned());
-            // One "token" per 8 characters: enough to exercise the budgets.
-            Ok(vec![0_i32; (prompt.len() / 8).max(1)])
+            // Trailing space, so a label appended to the render is its own
+            // whitespace-separated token - as the single-token check expects.
+            Ok(format!("<chat>{prompt} "))
         }
 
-        fn generate(&mut self, sequences: &[(&[i32], SamplingParams)]) -> Result<Vec<Vec<i32>>> {
+        fn tokenize_text(&self, text: &str) -> Result<Vec<i32>> {
+            // One "token" per whitespace-separated word.
+            let mut tokens = vec![0_i32; text.split_whitespace().count().max(1)];
+            if self.retokenize_suffix && (text.ends_with("yes") || text.ends_with("no")) {
+                tokens[0] = 1;
+            }
+            Ok(tokens)
+        }
+
+        fn generate(&mut self, sequences: &[(&[i32], SamplingParamsV2)]) -> Result<Vec<Vec<i32>>> {
+            for (_, params) in sequences {
+                assert!(params.temperature > 0.0);
+                assert_eq!(
+                    params.top_k, 1,
+                    "the zero-temperature judge decodes greedily"
+                );
+            }
             self.batch_seen.push(sequences.len());
             if self.fail_generate {
                 return Err(Error::runtime("the fake model refuses"));
             }
             Ok(sequences.iter().map(|_| vec![1_i32, 2, 3]).collect())
+        }
+
+        fn score_next_logprobs(&mut self, prompt: &[i32], targets: &[i32]) -> Result<Vec<f32>> {
+            self.scored.push((prompt.len(), targets.to_vec()));
+            Ok(self.label_logprobs.clone())
         }
 
         fn detokenize(&self, _tokens: &[i32]) -> Result<String> {
@@ -662,7 +891,7 @@ mod tests {
         }
     }
 
-    fn group() -> TrajectoryGroup {
+    pub(super) fn group() -> TrajectoryGroup {
         let trajectory = |answer: &str| Trajectory {
             scenario_id: "s".into(),
             messages: vec![
@@ -685,7 +914,7 @@ mod tests {
         }
     }
 
-    fn sampling() -> SamplingParams {
+    pub(super) fn sampling() -> SamplingParams {
         SamplingParams {
             temperature: 0.0,
             top_p: 1.0,
@@ -793,11 +1022,17 @@ mod tests {
             rows: usize,
         }
         impl JudgeModel for WrongArityModel {
-            fn render_chat(&mut self, _: &str) -> Result<Vec<i32>> {
-                Ok(vec![1])
+            fn render_chat_text(&mut self, _: &str) -> Result<String> {
+                Ok("x ".to_owned())
             }
-            fn generate(&mut self, _: &[(&[i32], SamplingParams)]) -> Result<Vec<Vec<i32>>> {
+            fn tokenize_text(&self, text: &str) -> Result<Vec<i32>> {
+                Ok(vec![0_i32; text.split_whitespace().count().max(1)])
+            }
+            fn generate(&mut self, _: &[(&[i32], SamplingParamsV2)]) -> Result<Vec<Vec<i32>>> {
                 Ok(vec![vec![1]; self.rows])
+            }
+            fn score_next_logprobs(&mut self, _: &[i32], _: &[i32]) -> Result<Vec<f32>> {
+                Ok(vec![0.0])
             }
             fn detokenize(&self, _: &[i32]) -> Result<String> {
                 Ok("{}".into())
@@ -859,5 +1094,129 @@ mod tests {
             model.batch_seen
         );
         assert_eq!(model.batch_seen.iter().sum::<usize>(), 3);
+    }
+}
+
+#[cfg(test)]
+mod pointwise_tests {
+    use super::tests::{FakeModel, group, sampling};
+    use super::*;
+    use retrograd_judge::{JudgeStrategy, ScoreRequest};
+
+    fn score_requests() -> Vec<ScoreRequest> {
+        vec![ScoreRequest {
+            prompt: "judge this".to_owned(),
+            targets: retrograd_judge::POINTWISE_LABELS
+                .iter()
+                .map(|label| label.to_string())
+                .collect(),
+        }]
+    }
+
+    #[test]
+    fn scoring_tokenizes_each_label_in_the_template_context() {
+        let mut model = FakeModel::new();
+        let replies =
+            LocalJudgeTransport::new(&mut model, sampling(), 64, 4).score(&score_requests());
+        assert_eq!(replies.len(), 1);
+        let logprobs = replies[0].as_ref().expect("a scoring reply").clone();
+        assert_eq!(logprobs, vec![0.0, -1.0]);
+        // One branched call per request, with the two label ids as targets.
+        assert_eq!(model.scored.len(), 1);
+        assert_eq!(model.scored[0].1.len(), 2);
+    }
+
+    #[test]
+    fn a_label_must_preserve_the_tokenized_prompt_prefix() {
+        let mut model = FakeModel::new();
+        model.retokenize_suffix = true;
+        assert!(verify_pointwise_labels(&mut model).is_err());
+        let replies =
+            LocalJudgeTransport::new(&mut model, sampling(), 64, 4).score(&score_requests());
+        assert!(replies[0].is_err());
+        assert!(model.scored.is_empty());
+    }
+
+    #[test]
+    fn a_multi_token_label_is_refused_not_truncated() {
+        let mut model = FakeModel::new();
+        let requests = vec![ScoreRequest {
+            prompt: "judge this".to_owned(),
+            targets: vec!["yes".to_owned(), "no way".to_owned()],
+        }];
+        let replies = LocalJudgeTransport::new(&mut model, sampling(), 64, 4).score(&requests);
+        let error = replies[0].as_ref().unwrap_err().to_string();
+        assert!(error.contains("not a single token"), "{error}");
+        assert!(error.contains("no way"), "{error}");
+        assert!(model.scored.is_empty());
+    }
+
+    #[test]
+    fn the_label_preflight_refuses_a_multi_token_label() {
+        let mut model = FakeModel::new();
+        assert!(verify_pointwise_labels(&mut model).is_ok());
+        // A model whose template glues the label onto the previous token.
+        struct GluedModel;
+        impl JudgeModel for GluedModel {
+            fn render_chat_text(&mut self, _: &str) -> Result<String> {
+                Ok("ping".to_owned())
+            }
+            fn tokenize_text(&self, text: &str) -> Result<Vec<i32>> {
+                // One token for the whole text: any appended label merges.
+                Ok(vec![0_i32; text.split_whitespace().count().max(1)])
+            }
+            fn generate(&mut self, _: &[(&[i32], SamplingParamsV2)]) -> Result<Vec<Vec<i32>>> {
+                Ok(Vec::new())
+            }
+            fn score_next_logprobs(&mut self, _: &[i32], _: &[i32]) -> Result<Vec<f32>> {
+                Ok(Vec::new())
+            }
+            fn detokenize(&self, _: &[i32]) -> Result<String> {
+                Ok(String::new())
+            }
+            fn context_size(&self) -> Result<usize> {
+                Ok(128)
+            }
+        }
+        // "ping" is one token, "pingyes" is still one token: not +1.
+        let error = verify_pointwise_labels(&mut GluedModel).unwrap_err();
+        assert!(error.to_string().contains("not a single token"), "{error}");
+    }
+
+    #[test]
+    fn pointwise_scores_a_group_end_to_end_through_the_model() {
+        let judge = RulerJudge::with_cache(
+            RulerConfig {
+                strategy: JudgeStrategy::PointwiseLogprob,
+                max_retries: 0,
+                ..Default::default()
+            },
+            JudgeCacheMode::Memory,
+            "local-test".into(),
+        )
+        .unwrap();
+        let mut model = FakeModel::new();
+        // log(1) vs log(e^-1): P(yes) = 1/(1+e^-1) ~ 0.731
+        model.label_logprobs = vec![0.0, -1.0];
+        let scores = judge
+            .score_group_via(
+                &mut LocalJudgeTransport::new(&mut model, sampling(), 64, 4),
+                &group(),
+            )
+            .unwrap();
+        assert_eq!(scores.len(), 2);
+        let expected = 1.0 / (1.0 + (-1.0_f32).exp());
+        for score in &scores {
+            assert!((score.value - expected).abs() < 1e-6, "{}", score.value);
+            assert!(score.valid);
+            assert!(
+                score
+                    .explanation
+                    .as_ref()
+                    .is_some_and(|e| e.contains("P(yes)"))
+            );
+        }
+        // One scoring request per trajectory.
+        assert_eq!(model.scored.len(), 2);
     }
 }

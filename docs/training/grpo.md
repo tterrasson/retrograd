@@ -161,6 +161,45 @@ cache_path = "judge-cache.jsonl"
 - `type = "command"` uses your own program as the judge instead of an
   OpenAI-compatible endpoint.
 
+### Self-judging: the judge in process
+
+`local = { … }` replaces `base_url`/`model` and runs the judge on the run's own
+model, in process, on the training thread — no HTTP hop, and no deadlock when
+the served model is the one being trained:
+
+```toml
+[grpo.judge]
+type = "ruler"
+[grpo.judge.local]
+weights = "snapshot"              # defaults shown
+refresh_every = 20
+snapshot_dir = "judge-snapshot"    # relative to this file
+max_new_tokens = 1024             # the judge's own generation budget
+```
+
+- `weights = "snapshot"` (default) judges with a frozen copy of the policy,
+  exported every `refresh_every` updates into a separate engine and scored
+  under one immutable version per update. `"base"` uses the frozen base model,
+  `"reference"` the run's KL anchor, `"policy"` the weights being trained
+  (experimental: every verdict comes from weights that just moved).
+- A snapshot judge holds a second engine (base copy + adapter) for the whole
+  run: the planner charges it to the device memory budget. Its verdict cache
+  is memory-only and re-keyed on the snapshot fingerprint at each refresh;
+  `policy` disables the cache entirely, since the weights move under it.
+- `strategy = { mode = "pointwise_logprob" }` skips generation entirely: each
+  answer is scored by the log-probability the judge model puts on `yes` vs
+  `no` after a fixed question. Deterministic, and local-only — an
+  OpenAI-compatible endpoint does not serve those logprobs reliably, so the
+  configuration refuses the strategy without `local`.
+- Structured verdicts (`listwise`, `chunked`, …) are grammar-constrained in
+  process. Token-budget exhaustion and semantic validation (bounds, ids)
+  still follow the configured `judge_failure` policy.
+
+Self-judging risks reward hacking: the judge and the policy share weights. Keep
+`judge_weight` below the verifiable reward's share, prefer `snapshot` (or
+`base`) over `policy`, and watch `judge/position_disagreement`. See
+`examples/smoke_tiny_grpo_self_judge.toml` for a runnable CPU example.
+
 The judge only affects training; held-out evaluation uses the reward program.
 
 ## Speed and memory

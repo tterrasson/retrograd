@@ -48,6 +48,7 @@ if [[ "${RETRO_PROFILE_TESTS:-0}" == "1" ]]; then
     --test fixed_reference \
     --test preference_runtime \
     --test muon_gefen \
+    --test judge_local \
     --test ppo_runtime \
     --test grpo_runtime \
     --test distill_runtime \
@@ -95,6 +96,7 @@ timed_step run:capabilities-suite cargo test --no-default-features --features ag
   --test fixed_reference \
   --test preference_runtime \
   --test muon_gefen \
+  --test judge_local \
   -- --test-threads=1
 
 # CPU-only slices of mixed CPU/GPU binaries, merged into a single cargo start.

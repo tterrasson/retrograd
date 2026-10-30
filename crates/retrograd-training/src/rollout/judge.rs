@@ -19,14 +19,15 @@
 //! different scales inside one group would fabricate an advantage that measures
 //! the scales rather than the completions.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use retrograd_agent_core::config::JudgeFailurePolicy;
 use retrograd_agent_core::trajectory::{Message, Role, Trajectory, TrajectoryGroup};
 use retrograd_config::GrpoJudge;
-use retrograd_core::{Error, Result};
-use retrograd_engine::Trainer;
-use retrograd_judge::{JudgeBackend, JudgeBatchCounts, RewardBackend};
+use retrograd_core::{Error, Result, SamplingParams, TrainConfig};
+use retrograd_engine::{JudgeWeights, Trainer};
+use retrograd_judge::{JudgeBackend, JudgeBatchCounts, JudgeConfig, RewardBackend};
 use retrograd_metrics::MetricValue;
 
 use super::local_judge::LocalJudge;
@@ -70,9 +71,59 @@ enum Backend {
 
 impl GroupJudge {
     pub fn new(config: &GrpoJudge) -> Result<Self> {
+        Self::from_parts(&config.config, config.failure, config.weight)
+    }
+
+    /// Builds the judge a `[grpo.judge]` section declares, resolving the
+    /// in-process transport (`local = { … }`) against the run's own model.
+    ///
+    /// `sampling` is the run's rollout sampling, which the judge reuses for
+    /// its generations; `trainer` and `training` describe the model the local
+    /// transport drives (its path, its geometry, its concurrency);
+    /// `default_snapshot_dir` is where the frozen adapters go when the
+    /// configuration did not name a directory (the loader already defaulted
+    /// it beside the document).
+    pub fn from_config(
+        config: &GrpoJudge,
+        sampling: SamplingParams,
+        trainer: &Trainer,
+        training: &TrainConfig,
+        default_snapshot_dir: impl Into<PathBuf>,
+    ) -> Result<Self> {
+        let JudgeConfig::Ruler { config: ruler } = &config.config else {
+            return Self::from_parts(&config.config, config.failure, config.weight);
+        };
+        let Some(local) = &ruler.local else {
+            return Self::from_parts(&config.config, config.failure, config.weight);
+        };
+        let weights = match local.weights {
+            retrograd_spec::judge::LocalJudgeWeights::Snapshot => JudgeWeights::Snapshot,
+            retrograd_spec::judge::LocalJudgeWeights::Base => JudgeWeights::Base,
+            retrograd_spec::judge::LocalJudgeWeights::Reference => JudgeWeights::Reference,
+            retrograd_spec::judge::LocalJudgeWeights::Policy => JudgeWeights::Policy,
+        };
+        let snapshot_dir = local
+            .snapshot_dir
+            .clone()
+            .unwrap_or_else(|| default_snapshot_dir.into());
+        let local_judge = LocalJudge::new(
+            (**ruler).clone(),
+            weights,
+            sampling,
+            ruler.local_max_new_tokens(),
+            training.effective_generation_concurrency() as usize,
+            trainer.model_path(),
+            training,
+            Some(snapshot_dir),
+            ruler.local_refresh_every(),
+            None,
+        )?;
+        Self::local(local_judge, config.failure, config.weight)
+    }
+
+    fn from_parts(config: &JudgeConfig, failure: JudgeFailurePolicy, weight: f32) -> Result<Self> {
         let backend = Backend::Http(
             config
-                .config
                 .build(std::path::Path::to_path_buf)
                 .map_err(|error| Error::config(format!("build the GRPO judge: {error}")))?,
         );
@@ -86,8 +137,8 @@ impl GroupJudge {
         Ok(Self {
             backend,
             runtime: Some(runtime),
-            failure: config.failure,
-            weight: config.weight,
+            failure,
+            weight,
         })
     }
 

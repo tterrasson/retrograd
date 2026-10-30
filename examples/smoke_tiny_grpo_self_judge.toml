@@ -1,0 +1,82 @@
+# Self-judging smoke run: the GRPO judge runs in process on the trained model.
+# Fetch the CPU fixture once, then run from the repository root:
+# scripts/fetch-cpu-fixture.sh
+# cargo run -q -- train examples/smoke_tiny_grpo_self_judge.toml
+#
+# Same shape as smoke_tiny_grpo.toml, but `[grpo.judge]` uses `local = { … }`
+# instead of an endpoint: the judge is the run's own model under a frozen
+# snapshot of the adapter, refreshed every `refresh_every` updates.
+
+[run]
+algorithm = "grpo"
+verbose = false
+
+[model]
+path = "../tests/fixtures/LFM2.5-230M-Q4_K_M.gguf"
+device = "cpu"
+
+[output]
+path = "/tmp/retrograd-smoke-self-judge-adapter.gguf"
+
+[lora]
+rank = 8
+alpha = 16.0
+seed = 42
+targets = ["q", "k", "v", "o", "ffn_up", "ffn_down", "ffn_gate"]
+
+[training]
+# The judge renders each completion into its own prompt, so the context must
+# hold a rollout *and* a judge request; 64 would refuse every group.
+ctx = 1024
+micro_batch = 8
+lr = 5e-6
+lr_scheduler = "constant"
+warmup_steps = 0
+weight_decay = 0.01
+max_grad_norm = 1.0
+
+[grpo]
+prompts = "smoke_rl_prompts.jsonl"
+reward_command = ["python3", "examples/smoke_rl_reward.py"]
+updates = 2
+prompts_per_update = 2
+group_size = 4
+grpo_epochs = 2
+clip_range_low = 0.2
+clip_range_high = 0.28
+kl_coefficient = 0.02
+# The judge's share of the reward stays below the verifiable part's.
+judge_weight = 0.2
+
+[grpo.judge]
+type = "ruler"
+# In-process transport: replaces base_url/model. Defaults shown:
+# weights = "snapshot", refresh_every = 20, snapshot_dir = "judge-snapshot"
+# (beside this file), max_new_tokens = 1024 (a verdict is longer than a
+# rollout answer - do not reuse the rollout budget).
+local = { weights = "snapshot", refresh_every = 1, snapshot_dir = "judge-snapshot" }
+# Pointwise scoring instead of generation: each answer is scored by the
+# log-probability the judge puts on "yes" vs "no". Deterministic, local-only,
+# and robust on a tiny model - a generated listwise verdict on this fixture
+# often drops an id, which the failure policy counts.
+strategy = { mode = "pointwise_logprob" }
+rubric = "Prefer correct, direct answers."
+
+[grpo.sampling]
+temperature = 1.0
+top_p = 1.0
+max_new_tokens = 4
+seed = 42
+
+[evaluation]
+data = "smoke_rl_eval.jsonl"
+every_iterations = 2
+patience = 10
+min_delta = 0.0
+
+[checkpoint]
+directory = "/tmp/retrograd-smoke-self-judge-checkpoints"
+mode = "best_eval"
+
+[metrics]
+tensorboard_dir = "/tmp/retrograd-smoke-self-judge-tensorboard"

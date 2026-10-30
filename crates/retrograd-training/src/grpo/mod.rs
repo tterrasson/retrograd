@@ -556,7 +556,21 @@ fn resume_state(
         )));
     }
     let prompts = read_prompts(&config.prompts)?;
-    let judge = config.judge.as_ref().map(GroupJudge::new).transpose()?;
+    // A `local = { … }` judge resolves against the run's own model; the loader
+    // already defaulted its snapshot directory beside the document.
+    let judge = config
+        .judge
+        .as_ref()
+        .map(|judge| {
+            GroupJudge::from_config(
+                judge,
+                config.sampling,
+                trainer,
+                training,
+                std::path::PathBuf::from("judge-snapshot"),
+            )
+        })
+        .transpose()?;
     let layout = RowLayout::resolve(trainer, training)?;
     let loss_denominator = config.sampling.max_new_tokens as usize;
     // Every prompt must leave room for the full Dr. GRPO generation budget:

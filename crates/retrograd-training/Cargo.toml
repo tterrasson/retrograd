@@ -25,6 +25,9 @@ retrograd-engine = { workspace = true, features = ["train"] }
 retrograd-infer.workspace = true
 retrograd-judge.workspace = true
 retrograd-metrics.workspace = true
+# The judge declarations (`LocalJudgeWeights` next to `JudgeConfig`), so the
+# local transport's weight selection is mapped where a model is resident.
+retrograd-spec.workspace = true
 # The observer trait and its plain types, for `[observe]`.
 retrograd-observe.workspace = true
 serde.workspace = true
