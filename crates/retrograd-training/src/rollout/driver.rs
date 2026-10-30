@@ -245,6 +245,8 @@ pub(crate) fn run_rollout_groups<B: DecodeBackend>(
                             sampling: params[base..base + take].to_vec(),
                             stop: Vec::new(),
                             n_top_logprobs: 0,
+                            adapter: None,
+                            unparse_special: false,
                         },
                     ));
                     base += take;

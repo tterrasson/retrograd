@@ -23,6 +23,14 @@ pub struct Request {
     pub stop: Vec<String>,
     /// How many top-logprob pairs each token event carries; 0 for none.
     pub n_top_logprobs: u32,
+    /// The named adapter (a LoRA checkpoint of the same base model) this
+    /// request runs under, or `None` for the base model. The scheduler
+    /// serializes per adapter: one step never mixes adapters, and switching
+    /// the active adapter invalidates the KV (weights version bump).
+    pub adapter: Option<String>,
+    /// Render special tokens as text in the emitted pieces (a template-derived
+    /// tool-call parser needs the call delimiters to read anything).
+    pub unparse_special: bool,
 }
 
 impl Request {
@@ -33,7 +41,21 @@ impl Request {
             sampling: vec![sampling],
             stop: Vec::new(),
             n_top_logprobs: 0,
+            adapter: None,
+            unparse_special: false,
         }
+    }
+
+    /// Runs this request under the named adapter.
+    pub fn with_adapter(mut self, adapter: Option<String>) -> Self {
+        self.adapter = adapter;
+        self
+    }
+
+    /// Renders special tokens as text in the emitted pieces.
+    pub fn with_unparse_special(mut self, unparse_special: bool) -> Self {
+        self.unparse_special = unparse_special;
+        self
     }
 
     /// The number of completions this request asks for.
@@ -79,6 +101,9 @@ impl Request {
         }
         if self.stop.iter().any(|stop| stop.is_empty()) {
             return Err(InferError::invalid("stop strings must not be empty"));
+        }
+        if self.adapter.as_ref().is_some_and(|name| name.is_empty()) {
+            return Err(InferError::invalid("an adapter name must not be empty"));
         }
         Ok(())
     }

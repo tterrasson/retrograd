@@ -4,6 +4,7 @@
 //! a bounded backpressure wait, so it never blocks the decode thread
 //! indefinitely.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
@@ -13,7 +14,9 @@ use crate::backend::DecodeBackend;
 use crate::error::InferError;
 use crate::kv::{KvStats, PinId};
 use crate::request::{EventStream, Request};
-use crate::scheduler::{Envelope, QueuePermit, Queued, Scheduler, SchedulerOptions};
+use crate::scheduler::{
+    Envelope, QueuePermit, Queued, Scheduler, SchedulerOptions, SchedulerStats,
+};
 
 /// The actor's knobs beyond the scheduler's: how many requests the inbox
 /// holds before `submit` is refused.
@@ -107,12 +110,34 @@ impl ActorHandle {
     /// The prefix-cache counters of the actor's scheduler (hits, prefilled vs
     /// prompt cells, evictions, swaps, tree size).
     pub fn kv_stats(&self) -> Result<KvStats, InferError> {
+        Ok(self.stats()?.kv)
+    }
+
+    /// A point-in-time report of the actor's scheduler and backend (prefix-cache
+    /// counters, pool occupancy, queue/live lengths, active adapter).
+    pub fn stats(&self) -> Result<SchedulerStats, InferError> {
         let (reply, rx) = mpsc::channel();
         self.inbox
             .try_send(Envelope::Stats(reply))
             .map_err(|_| InferError::Failed("the actor thread is not running".into()))?;
         rx.recv()
             .map_err(|_| InferError::Failed("the actor thread is gone".into()))
+    }
+
+    /// Registers a named adapter (a LoRA checkpoint of the same base model) on
+    /// the backend, without applying it. The actor thread runs the load, so
+    /// the backend never crosses a thread boundary.
+    pub fn load_adapter(&self, name: &str, path: &Path) -> Result<(), InferError> {
+        let (reply, rx) = mpsc::channel();
+        self.inbox
+            .try_send(Envelope::LoadAdapter {
+                name: name.to_owned(),
+                path: path.to_owned(),
+                reply,
+            })
+            .map_err(|_| InferError::Failed("the actor thread is not running".into()))?;
+        rx.recv()
+            .map_err(|_| InferError::Failed("the actor thread is gone".into()))?
     }
 
     /// Pins the prefix-tree node at exactly `prefix` (which must be resident)

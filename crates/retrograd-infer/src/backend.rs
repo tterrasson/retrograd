@@ -9,6 +9,8 @@
 //! the trainer's own thread), and [`FakeBackend`](crate::FakeBackend) is a
 //! deterministic in-memory implementation for tests that need no model.
 
+use std::path::Path;
+
 use retrograd_engine::{Engine, EngineMemory, StepOutput, StepRow, Trainer};
 
 use crate::InferError;
@@ -85,12 +87,137 @@ pub trait DecodeBackend {
     fn is_eog_token(&self, token: i32) -> Result<bool, InferError>;
     /// Renders tokens back to their raw piece bytes, without UTF-8 decoding:
     /// a piece may end mid-character, and the incremental detokenizer splits
-    /// characters itself. Special tokens are unparsed.
-    fn detokenize_bytes(&self, tokens: &[i32]) -> Result<Vec<u8>, InferError>;
+    /// characters itself. `unparse_special` renders special tokens as text
+    /// (a template-derived tool-call parser needs them to read anything).
+    fn detokenize_bytes(
+        &self,
+        tokens: &[i32],
+        unparse_special: bool,
+    ) -> Result<Vec<u8>, InferError>;
     /// The per-sequence context size, in positions.
     fn context_size(&self) -> Result<u32, InferError>;
     /// The model's vocabulary size.
     fn vocab_size(&self) -> Result<u32, InferError>;
+    /// Registers a named adapter (a LoRA checkpoint of the same base model)
+    /// beside the others, without applying it. Backends without named-adapter
+    /// support refuse here.
+    fn load_adapter(&mut self, name: &str, path: &Path) -> Result<(), InferError> {
+        let _ = (name, path);
+        Err(InferError::Failed(
+            "this backend does not support named adapters".into(),
+        ))
+    }
+    /// Applies the adapter registered under `name` - exactly one adapter is
+    /// active at a time, so a composed batch stays homogeneous - or the base
+    /// model when `name` is `None`. Activation must invalidate the resident KV
+    /// (bump the weights version): a prefix computed under another adapter is
+    /// never reused.
+    fn activate_adapter(&mut self, name: Option<&str>) -> Result<(), InferError> {
+        match name {
+            None => Ok(()),
+            Some(_) => Err(InferError::Failed(
+                "this backend does not support named adapters".into(),
+            )),
+        }
+    }
+    /// The name of the active adapter, or `None` when the base model is
+    /// active.
+    fn active_adapter(&self) -> Result<Option<String>, InferError> {
+        Ok(None)
+    }
+}
+
+/// A boxed backend is a backend: lets a caller type-erase the concrete
+/// implementation (e.g. `Box<dyn ServeBackend>`) behind the trait.
+impl<T: DecodeBackend + ?Sized> DecodeBackend for Box<T> {
+    fn step(&mut self, rows: &[StepRow<'_>], out: &mut StepOutput) -> Result<(), InferError> {
+        (**self).step(rows, out)
+    }
+
+    fn seq_rm(&mut self, slot: i32, p0: i32, p1: i32) -> Result<(), InferError> {
+        (**self).seq_rm(slot, p0, p1)
+    }
+
+    fn seq_cp(&mut self, src: i32, dst: i32, p0: i32, p1: i32) -> Result<(), InferError> {
+        (**self).seq_cp(src, dst, p0, p1)
+    }
+
+    fn seq_pos(&self, slot: i32) -> Result<(i32, i32), InferError> {
+        (**self).seq_pos(slot)
+    }
+
+    fn seq_save_len(&self, slot: i32, flags: u32) -> Result<usize, InferError> {
+        (**self).seq_save_len(slot, flags)
+    }
+
+    fn seq_save_into(
+        &mut self,
+        slot: i32,
+        flags: u32,
+        buffer: &mut [u8],
+    ) -> Result<usize, InferError> {
+        (**self).seq_save_into(slot, flags, buffer)
+    }
+
+    fn seq_load(&mut self, slot: i32, flags: u32, data: &[u8]) -> Result<usize, InferError> {
+        (**self).seq_load(slot, flags, data)
+    }
+
+    fn kv_unified(&self) -> Result<bool, InferError> {
+        (**self).kv_unified()
+    }
+
+    fn weights_version(&self) -> Result<u64, InferError> {
+        (**self).weights_version()
+    }
+
+    fn model_fingerprint(&self) -> Result<u64, InferError> {
+        (**self).model_fingerprint()
+    }
+
+    fn is_hybrid(&self) -> Result<bool, InferError> {
+        (**self).is_hybrid()
+    }
+
+    fn memory(&self) -> Result<EngineMemory, InferError> {
+        (**self).memory()
+    }
+
+    fn request_free(&mut self, request: i32) -> Result<(), InferError> {
+        (**self).request_free(request)
+    }
+
+    fn is_eog_token(&self, token: i32) -> Result<bool, InferError> {
+        (**self).is_eog_token(token)
+    }
+
+    fn detokenize_bytes(
+        &self,
+        tokens: &[i32],
+        unparse_special: bool,
+    ) -> Result<Vec<u8>, InferError> {
+        (**self).detokenize_bytes(tokens, unparse_special)
+    }
+
+    fn context_size(&self) -> Result<u32, InferError> {
+        (**self).context_size()
+    }
+
+    fn vocab_size(&self) -> Result<u32, InferError> {
+        (**self).vocab_size()
+    }
+
+    fn load_adapter(&mut self, name: &str, path: &Path) -> Result<(), InferError> {
+        (**self).load_adapter(name, path)
+    }
+
+    fn activate_adapter(&mut self, name: Option<&str>) -> Result<(), InferError> {
+        (**self).activate_adapter(name)
+    }
+
+    fn active_adapter(&self) -> Result<Option<String>, InferError> {
+        (**self).active_adapter()
+    }
 }
 
 impl DecodeBackend for Engine {
@@ -155,8 +282,12 @@ impl DecodeBackend for Engine {
         Ok(Engine::is_eog_token(self, token)?)
     }
 
-    fn detokenize_bytes(&self, tokens: &[i32]) -> Result<Vec<u8>, InferError> {
-        Ok(Engine::detokenize_bytes(self, tokens, false)?)
+    fn detokenize_bytes(
+        &self,
+        tokens: &[i32],
+        unparse_special: bool,
+    ) -> Result<Vec<u8>, InferError> {
+        Ok(Engine::detokenize_bytes(self, tokens, unparse_special)?)
     }
 
     fn context_size(&self) -> Result<u32, InferError> {
@@ -165,6 +296,18 @@ impl DecodeBackend for Engine {
 
     fn vocab_size(&self) -> Result<u32, InferError> {
         Ok(Engine::vocab_size(self)?)
+    }
+
+    fn load_adapter(&mut self, name: &str, path: &Path) -> Result<(), InferError> {
+        Ok(Engine::load_lora_named(self, name, path)?)
+    }
+
+    fn activate_adapter(&mut self, name: Option<&str>) -> Result<(), InferError> {
+        Ok(Engine::activate_lora(self, name)?)
+    }
+
+    fn active_adapter(&self) -> Result<Option<String>, InferError> {
+        Ok(Engine::active_adapter(self)?)
     }
 }
 
@@ -235,8 +378,12 @@ impl DecodeBackend for TrainerBackend<'_> {
         Ok(Trainer::is_eog_token(self.0, token)?)
     }
 
-    fn detokenize_bytes(&self, tokens: &[i32]) -> Result<Vec<u8>, InferError> {
-        Ok(Trainer::detokenize_bytes(self.0, tokens, false)?)
+    fn detokenize_bytes(
+        &self,
+        tokens: &[i32],
+        unparse_special: bool,
+    ) -> Result<Vec<u8>, InferError> {
+        Ok(Trainer::detokenize_bytes(self.0, tokens, unparse_special)?)
     }
 
     fn context_size(&self) -> Result<u32, InferError> {

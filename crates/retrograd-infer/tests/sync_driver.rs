@@ -63,6 +63,8 @@ fn run_requests_collects_every_completion_in_submission_order() {
             ],
             stop: Vec::new(),
             n_top_logprobs: 0,
+            adapter: None,
+            unparse_special: false,
         },
         Request::single(vec![9, 8, 7, 6], fake_sampling(8, 6)),
     ];
@@ -272,8 +274,12 @@ fn a_step_failure_is_returned_and_fails_the_live_requests() {
         fn is_eog_token(&self, token: i32) -> Result<bool, InferError> {
             self.0.is_eog_token(token)
         }
-        fn detokenize_bytes(&self, tokens: &[i32]) -> Result<Vec<u8>, InferError> {
-            self.0.detokenize_bytes(tokens)
+        fn detokenize_bytes(
+            &self,
+            tokens: &[i32],
+            unparse_special: bool,
+        ) -> Result<Vec<u8>, InferError> {
+            self.0.detokenize_bytes(tokens, unparse_special)
         }
         fn context_size(&self) -> Result<u32, InferError> {
             self.0.context_size()

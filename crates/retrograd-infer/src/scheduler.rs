@@ -18,13 +18,14 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::{Duration, Instant};
 
 use retrograd_core::{RolloutAdmission, SamplingParams};
-use retrograd_engine::{StepOutRow, StepOutput, StepRow};
+use retrograd_engine::{EngineMemory, StepOutRow, StepOutput, StepRow};
 
 use crate::backend::DecodeBackend;
 use crate::detok::Detokenizer;
@@ -168,6 +169,8 @@ struct LiveMember {
     history: Vec<i32>,
     live: bool,
     n_top_logprobs: u32,
+    /// Render special tokens as text (from the request).
+    unparse_special: bool,
     detok: Detokenizer,
     events: Option<SyncSender<Event>>,
     cancelled: Arc<AtomicBool>,
@@ -289,6 +292,22 @@ pub struct Scheduler<B: DecodeBackend> {
     kv: PrefixTree,
     kv_key: Option<KvCacheKey>,
     kv_stats: KvStats,
+    /// The adapter currently active on the backend. A composed step never
+    /// mixes adapters: admission only lets requests for this adapter join the
+    /// live set, and switches it when nothing is live.
+    active_adapter: Option<String>,
+}
+
+/// A point-in-time report of the scheduler and its backend, for a stats
+/// endpoint: prefix-cache counters, pool occupancy, queue/live lengths and
+/// the active adapter.
+#[derive(Clone, Debug)]
+pub struct SchedulerStats {
+    pub kv: KvStats,
+    pub memory: EngineMemory,
+    pub queued: usize,
+    pub live: usize,
+    pub adapter: Option<String>,
 }
 
 impl<B: DecodeBackend> Scheduler<B> {
@@ -309,6 +328,7 @@ impl<B: DecodeBackend> Scheduler<B> {
             kv: PrefixTree::new(),
             kv_key: None,
             kv_stats: KvStats::default(),
+            active_adapter: None,
         }
     }
 
@@ -321,6 +341,31 @@ impl<B: DecodeBackend> Scheduler<B> {
             snapshot_bytes: self.kv.snapshot_bytes(),
             ..self.kv_stats
         }
+    }
+
+    /// A point-in-time report of the scheduler and its backend.
+    pub fn stats(&self) -> SchedulerStats {
+        SchedulerStats {
+            kv: self.kv_stats(),
+            memory: self.backend.memory().unwrap_or_default(),
+            queued: self.queue.len(),
+            live: self.live_len(),
+            adapter: self.active_adapter.clone(),
+        }
+    }
+
+    /// Makes `wanted` the backend's active adapter when it is not already:
+    /// activation invalidates the resident KV on the backend side (weights
+    /// version bump), and the next [`Scheduler::refresh_key`] drops the prefix
+    /// tree, so no prefix computed under another adapter is ever reused.
+    fn ensure_adapter(&mut self, wanted: Option<&str>) -> Result<(), InferError> {
+        let current = self.backend.active_adapter()?;
+        if current.as_deref() != wanted {
+            self.backend.activate_adapter(wanted)?;
+            self.active_adapter = wanted.map(str::to_owned);
+            self.refresh_key()?;
+        }
+        Ok(())
     }
 
     /// Pins the tree node at exactly `prefix` (which must be resident) so LRU
@@ -357,18 +402,40 @@ impl<B: DecodeBackend> Scheduler<B> {
         self.queue.push_back(queued);
     }
 
-    /// Answers a control envelope (stats / pin / unpin) without touching the
-    /// admission queue.
+    /// The backend, for the caller that owns the scheduler's thread (prompt
+    /// rendering, adapter registration).
+    pub fn backend(&self) -> &B {
+        &self.backend
+    }
+
+    /// Mutable access to the backend, same thread only.
+    pub fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+
+    /// Refuses every queued (never admitted) request with a cancellation
+    /// error, e.g. when the backend is about to be unloaded.
+    pub fn fail_queued(&mut self) {
+        while let Some(queued) = self.queue.pop_front() {
+            let _ = queued.events.try_send(Event::Error(InferError::Cancelled));
+        }
+    }
+
+    /// Answers a control envelope (stats / pin / unpin / adapter load) without
+    /// touching the admission queue.
     fn handle_control(&mut self, envelope: Envelope) {
         match envelope {
             Envelope::Stats(reply) => {
-                let _ = reply.send(self.kv_stats());
+                let _ = reply.send(self.stats());
             }
             Envelope::Pin { prefix, reply } => {
                 let _ = reply.send(self.pin_prefix(&prefix));
             }
             Envelope::Unpin { id, reply } => {
                 let _ = reply.send(self.unpin(id));
+            }
+            Envelope::LoadAdapter { name, path, reply } => {
+                let _ = reply.send(self.backend.load_adapter(&name, &path));
             }
             Envelope::Submit(_) | Envelope::Wake => {}
         }
@@ -390,6 +457,7 @@ impl<B: DecodeBackend> Scheduler<B> {
         for slot in 0..self.n_slots {
             self.backend.seq_rm(slot as i32, -1, -1)?;
         }
+        self.active_adapter = self.backend.active_adapter()?;
         Ok(())
     }
 
@@ -899,6 +967,59 @@ impl<B: DecodeBackend> Scheduler<B> {
             return Ok(());
         }
 
+        // Adapters serialize the batch: a composed step never mixes adapters.
+        // When nothing is live, the front of the queue chooses the adapter to
+        // activate; while sequences are live, only requests for the active
+        // adapter may join them. Requests for other adapters wait - FIFO
+        // across adapter groups, since the group at the front chose the target.
+        let target = match self.live.is_empty() {
+            true => self
+                .queue
+                .front()
+                .and_then(|queued| queued.request.adapter.clone()),
+            false => self.active_adapter.clone(),
+        };
+        // Partition the queue for this pass: only candidates (same adapter as
+        // the target) are admitted now; the rest stay queued, in order, behind
+        // the leftover candidates.
+        let mut candidates = VecDeque::new();
+        let mut rest = VecDeque::new();
+        for queued in self.queue.drain(..) {
+            if queued.request.adapter == target {
+                candidates.push_back(queued);
+            } else {
+                rest.push_back(queued);
+            }
+        }
+        // An adapter that cannot be activated (not registered, or the backend
+        // has no named adapters) refuses its requests with an error event -
+        // a pump failure is not the way, it would fail unrelated live work.
+        // While sequences are live the target is the active adapter already.
+        let switched = match self.live.is_empty() {
+            true => self.ensure_adapter(target.as_deref()),
+            false => Ok(()),
+        };
+        if let Err(error) = switched {
+            while let Some(queued) = candidates.pop_front() {
+                let _ = queued.events.try_send(Event::Error(error.clone()));
+            }
+            self.queue = rest;
+            return Ok(());
+        }
+        self.queue = candidates;
+        let admitted = self.admit_candidates(n_ctx_seq);
+        // Put the other adapters' requests back, ahead of the candidates this
+        // pass did not admit (on error too): the next pass re-reads the front
+        // to choose the next adapter.
+        let leftover = std::mem::take(&mut self.queue);
+        self.queue = rest;
+        self.queue.extend(leftover);
+        admitted
+    }
+
+    /// Admits from the queue, which holds only requests for the active
+    /// adapter at this point.
+    fn admit_candidates(&mut self, n_ctx_seq: usize) -> Result<(), InferError> {
         // Bounded preemption: when the front of the queue does not fit, evict
         // LRU unpinned prefix nodes (swap to a host snapshot when long enough
         // and the byte budget allows, drop otherwise) until it fits or no
@@ -1158,6 +1279,7 @@ impl<B: DecodeBackend> Scheduler<B> {
                 cancelled,
                 permit: _permit,
             } = queued;
+            let unparse_special = request.unparse_special;
             for (index, sampling) in request.sampling.into_iter().enumerate() {
                 let slot = used
                     .iter()
@@ -1197,6 +1319,7 @@ impl<B: DecodeBackend> Scheduler<B> {
                     history: Vec::new(),
                     live: true,
                     n_top_logprobs: request.n_top_logprobs,
+                    unparse_special,
                     detok: Detokenizer::new(&request.stop),
                     events: Some(events.clone()),
                     cancelled: cancelled.clone(),
@@ -1270,9 +1393,18 @@ impl<B: DecodeBackend> Scheduler<B> {
             member_ref.generated += 1;
             member_ref.next_token = produced.token;
             member_ref.history.push(produced.token);
-            let piece = self
-                .backend
-                .detokenize_bytes(std::slice::from_ref(&produced.token))?;
+            // The EOG token is carried in the token events but contributes no
+            // text - with special tokens unparsed its piece would leak into
+            // the answer (without, the backend renders it empty already).
+            let piece =
+                if member_ref.unparse_special && self.backend.is_eog_token(produced.token)? {
+                    Vec::new()
+                } else {
+                    self.backend.detokenize_bytes(
+                        std::slice::from_ref(&produced.token),
+                        member_ref.unparse_special,
+                    )?
+                };
             let (text, stop_hit) = member_ref.detok.push_bytes(&piece);
             let top_logprobs = if member_ref.n_top_logprobs > 0 {
                 self.out.top(row_index).collect()
@@ -1509,8 +1641,8 @@ pub(crate) enum Envelope {
     Submit(Queued),
     /// Wakes a thread blocked on an empty queue (shutdown).
     Wake,
-    /// Prefix-cache stats query.
-    Stats(mpsc::Sender<KvStats>),
+    /// Scheduler + backend stats query.
+    Stats(mpsc::Sender<SchedulerStats>),
     /// Pin the node at exactly `prefix`.
     Pin {
         prefix: Vec<i32>,
@@ -1520,6 +1652,12 @@ pub(crate) enum Envelope {
     Unpin {
         id: PinId,
         reply: mpsc::Sender<bool>,
+    },
+    /// Register a named adapter on the backend (without applying it).
+    LoadAdapter {
+        name: String,
+        path: PathBuf,
+        reply: mpsc::Sender<Result<(), InferError>>,
     },
 }
 
@@ -1649,8 +1787,12 @@ mod tests {
         fn is_eog_token(&self, token: i32) -> Result<bool, InferError> {
             self.inner.is_eog_token(token)
         }
-        fn detokenize_bytes(&self, tokens: &[i32]) -> Result<Vec<u8>, InferError> {
-            self.inner.detokenize_bytes(tokens)
+        fn detokenize_bytes(
+            &self,
+            tokens: &[i32],
+            unparse_special: bool,
+        ) -> Result<Vec<u8>, InferError> {
+            self.inner.detokenize_bytes(tokens, unparse_special)
         }
         fn context_size(&self) -> Result<u32, InferError> {
             self.inner.context_size()

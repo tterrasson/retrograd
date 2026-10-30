@@ -1873,8 +1873,12 @@ impl DecodeBackend for ForcingBackend {
     fn is_eog_token(&self, token: i32) -> Result<bool, InferError> {
         self.0.is_eog_token(token)
     }
-    fn detokenize_bytes(&self, tokens: &[i32]) -> Result<Vec<u8>, InferError> {
-        self.0.detokenize_bytes(tokens)
+    fn detokenize_bytes(
+        &self,
+        tokens: &[i32],
+        unparse_special: bool,
+    ) -> Result<Vec<u8>, InferError> {
+        self.0.detokenize_bytes(tokens, unparse_special)
     }
     fn context_size(&self) -> Result<u32, InferError> {
         self.0.context_size()

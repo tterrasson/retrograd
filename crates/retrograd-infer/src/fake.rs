@@ -55,6 +55,12 @@ pub struct FakeBackend {
     pub weights_version: u64,
     /// The model fingerprint (fixed for a fake).
     pub fingerprint: u64,
+    /// Named adapters registered by `load_adapter` (name -> path).
+    pub adapters: HashMap<String, std::path::PathBuf>,
+    /// The active adapter (`None` = base model).
+    pub active_adapter: Option<String>,
+    /// Every adapter operation, for tests: `("load", name)` / `("activate", name)`.
+    pub adapter_ops: Vec<(String, Option<String>)>,
 }
 
 impl FakeBackend {
@@ -90,6 +96,9 @@ impl FakeBackend {
             recurrent: false,
             weights_version: 0,
             fingerprint: 0xFA_CE,
+            adapters: HashMap::new(),
+            active_adapter: None,
+            adapter_ops: Vec::new(),
         }
     }
 
@@ -110,6 +119,39 @@ impl FakeBackend {
     /// weights version, which invalidates every prefix-cache entry.
     pub fn bump_weights_version(&mut self) {
         self.weights_version += 1;
+    }
+
+    /// Registers a named adapter without applying it (the fake's
+    /// `load_adapter`).
+    pub fn register_adapter(&mut self, name: &str, path: std::path::PathBuf) {
+        self.adapters.insert(name.to_owned(), path);
+        self.adapter_ops
+            .push(("load".into(), Some(name.to_owned())));
+    }
+
+    /// Applies the named adapter (or the base model for `None`): like the real
+    /// runtime, activation clears the pool and bumps the weights version.
+    pub fn apply_adapter(&mut self, name: Option<&str>) -> Result<(), InferError> {
+        match name {
+            None => {
+                self.active_adapter = None;
+            }
+            Some(name) if self.adapters.contains_key(name) => {
+                self.active_adapter = Some(name.to_owned());
+            }
+            Some(name) => {
+                return Err(InferError::invalid(format!(
+                    "no adapter registered under '{name}'"
+                )));
+            }
+        }
+        self.adapter_ops
+            .push(("activate".into(), self.active_adapter.clone()));
+        for slot in self.slots.iter_mut() {
+            *slot = None;
+        }
+        self.bump_weights_version();
+        Ok(())
     }
 
     /// Snapshot encoding: a magic, the flags, and the resident span - enough
@@ -433,10 +475,19 @@ impl DecodeBackend for FakeBackend {
         Ok(token == self.eos)
     }
 
-    fn detokenize_bytes(&self, tokens: &[i32]) -> Result<Vec<u8>, InferError> {
+    fn detokenize_bytes(
+        &self,
+        tokens: &[i32],
+        unparse_special: bool,
+    ) -> Result<Vec<u8>, InferError> {
         Ok(tokens
             .iter()
             .flat_map(|&token| {
+                // Like the runtime's detokenize with remove_special: the EOG
+                // token renders as text only when special tokens are unparsed.
+                if token == self.eos && !unparse_special {
+                    return Vec::new();
+                }
                 usize::try_from(token)
                     .ok()
                     .and_then(|index| self.pieces.get(index).cloned())
@@ -452,6 +503,22 @@ impl DecodeBackend for FakeBackend {
 
     fn vocab_size(&self) -> Result<u32, InferError> {
         Ok(self.vocab)
+    }
+
+    fn load_adapter(&mut self, name: &str, path: &std::path::Path) -> Result<(), InferError> {
+        if name.is_empty() {
+            return Err(InferError::invalid("adapter name must not be empty"));
+        }
+        self.register_adapter(name, path.to_owned());
+        Ok(())
+    }
+
+    fn activate_adapter(&mut self, name: Option<&str>) -> Result<(), InferError> {
+        self.apply_adapter(name)
+    }
+
+    fn active_adapter(&self) -> Result<Option<String>, InferError> {
+        Ok(self.active_adapter.clone())
     }
 }
 
@@ -546,8 +613,12 @@ impl DecodeBackend for SharedFake {
         self.lock().is_eog_token(token)
     }
 
-    fn detokenize_bytes(&self, tokens: &[i32]) -> Result<Vec<u8>, InferError> {
-        self.lock().detokenize_bytes(tokens)
+    fn detokenize_bytes(
+        &self,
+        tokens: &[i32],
+        unparse_special: bool,
+    ) -> Result<Vec<u8>, InferError> {
+        self.lock().detokenize_bytes(tokens, unparse_special)
     }
 
     fn context_size(&self) -> Result<u32, InferError> {
@@ -556,5 +627,17 @@ impl DecodeBackend for SharedFake {
 
     fn vocab_size(&self) -> Result<u32, InferError> {
         self.lock().vocab_size()
+    }
+
+    fn load_adapter(&mut self, name: &str, path: &std::path::Path) -> Result<(), InferError> {
+        self.lock().load_adapter(name, path)
+    }
+
+    fn activate_adapter(&mut self, name: Option<&str>) -> Result<(), InferError> {
+        self.lock().activate_adapter(name)
+    }
+
+    fn active_adapter(&self) -> Result<Option<String>, InferError> {
+        self.lock().active_adapter()
     }
 }

@@ -128,8 +128,12 @@ impl DecodeBackend for SharedTrainer {
     fn is_eog_token(&self, token: i32) -> std::result::Result<bool, InferError> {
         self.with_ref(|t| Trainer::is_eog_token(t, token))
     }
-    fn detokenize_bytes(&self, tokens: &[i32]) -> std::result::Result<Vec<u8>, InferError> {
-        self.with_ref(|t| Trainer::detokenize_bytes(t, tokens, false))
+    fn detokenize_bytes(
+        &self,
+        tokens: &[i32],
+        unparse_special: bool,
+    ) -> std::result::Result<Vec<u8>, InferError> {
+        self.with_ref(|t| Trainer::detokenize_bytes(t, tokens, unparse_special))
     }
     fn context_size(&self) -> std::result::Result<u32, InferError> {
         // Both native trainer contexts use a unified pool, so the per-sequence
@@ -246,8 +250,12 @@ impl DecodeBackend for SharedEngine {
     fn is_eog_token(&self, token: i32) -> std::result::Result<bool, InferError> {
         self.with_ref(|e| Engine::is_eog_token(e, token))
     }
-    fn detokenize_bytes(&self, tokens: &[i32]) -> std::result::Result<Vec<u8>, InferError> {
-        self.with_ref(|e| Engine::detokenize_bytes(e, tokens, false))
+    fn detokenize_bytes(
+        &self,
+        tokens: &[i32],
+        unparse_special: bool,
+    ) -> std::result::Result<Vec<u8>, InferError> {
+        self.with_ref(|e| Engine::detokenize_bytes(e, tokens, unparse_special))
     }
     fn context_size(&self) -> std::result::Result<u32, InferError> {
         self.with_ref(Engine::context_size)
