@@ -2002,6 +2002,15 @@ name = "retrograd-ffi"
 version = "0.1.0"
 
 [[package]]
+name = "retrograd-infer"
+version = "0.1.0"
+dependencies = [
+ "retrograd-core",
+ "retrograd-engine",
+ "thiserror",
+]
+
+[[package]]
 name = "retrograd-judge"
 version = "0.1.0"
 dependencies = [

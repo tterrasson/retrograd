@@ -1,0 +1,20 @@
+[package]
+name = "retrograd-infer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - step-wise inference policy: scheduler, actor and incremental detokenization over a decode backend"
+publish = false
+
+[dependencies]
+retrograd-core.workspace = true
+# The decode backends the policy runs over: `Engine` implements `DecodeBackend`
+# directly, a `&mut Trainer` through `TrainerBackend`. Nothing here knows what
+# an algorithm is - the training, agent, dataset, plan, config and run crates
+# are all forbidden to this crate's dependency tree (checked by
+# tests/chain_boundary.rs).
+retrograd-engine.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

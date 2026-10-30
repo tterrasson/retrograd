@@ -82,6 +82,7 @@ timed_step compile:contracts cargo test \
   -p retrograd-agent --test train_sequences \
   -p retrograd-engine --test chat_parser_roundtrip --test tool_sft_render \
   -p retrograd-engine --test dependency_boundary \
+  -p retrograd-infer --test chain_boundary --test fake_backend \
   -p retrograd-judge --test reward_batch \
   -p retrograd-openai --test wire \
   -p retrograd-training --test value_head \
@@ -113,6 +114,7 @@ timed_step run:contracts cargo test \
   -p retrograd-agent --test train_sequences \
   -p retrograd-engine --test chat_parser_roundtrip --test tool_sft_render \
   -p retrograd-engine --test dependency_boundary \
+  -p retrograd-infer --test chain_boundary --test fake_backend \
   -p retrograd-judge --test reward_batch \
   -p retrograd-openai --test wire \
   -p retrograd-training --test value_head
