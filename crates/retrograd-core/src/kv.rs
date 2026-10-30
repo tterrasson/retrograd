@@ -17,7 +17,7 @@ impl ModelInfo {
     /// per-layer element count times the block ratio, rounded up per layer
     /// (ggml blocks a row along the head dimension, which every supported
     /// attention geometry divides into whole blocks - the same assumption
-    /// [`crate::KvDtype::block`] documents).
+    /// [`crate::GenerationKvDtype::block`] documents).
     pub fn kv_bytes_per_token(&self, dtype: EngineKvDtype) -> u64 {
         let (block_bytes, block_elements) = dtype_block(dtype);
         let per_layer_elements =

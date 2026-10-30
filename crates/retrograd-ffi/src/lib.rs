@@ -1122,7 +1122,7 @@ unsafe extern "C" {
         out_n_bytes: *mut usize,
     ) -> c_int;
 
-    /// Same document as [`Self::retro_chat_parse_assistant`], read with
+    /// Same document as [`retro_chat_parse_assistant`], read with
     /// `is_partial=true`: what the parser recognized of a turn still being
     /// generated. `content` is the committed prefix so far and a call's
     /// `arguments` may be an incomplete string.

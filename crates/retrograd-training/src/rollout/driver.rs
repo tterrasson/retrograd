@@ -12,13 +12,13 @@
 //! groups:
 //!
 //! - `Lockstep` keeps the wave splitting of the batched continuous generator
-//!   ([`continuous_waves`]): one physical wave is submitted, run to idle, and
+//!   (`continuous_waves`): one physical wave is submitted, run to idle, and
 //!   only then the next wave. Each wave member is its own single-completion
 //!   request, so the scheduler's canonical sort + identical-prompt merge
 //!   reproduces the admitted set of one `generate_tokens_continuous` call bit
 //!   for bit.
 //! - `Continuous` submits every group of the update at once - chunking only
-//!   groups wider than the slot count, the way [`continuous_waves`] does - and
+//!   groups wider than the slot count, the way `continuous_waves` does - and
 //!   lets the scheduler refill freed slots.
 //!
 //! In both modes `max_new_tokens` is clamped to the generation room of the
@@ -343,7 +343,7 @@ fn take_members(
 /// initializes the scheduler over `trainer`, and runs `groups` through it in
 /// the config's admission mode. Returns the per-group completions and the
 /// stats the driver sampled. Production code goes through
-/// [`super::sampling::sample_rollout_groups_continuous`], which wraps this with
+/// `sample_rollout_groups_continuous`, which wraps this with
 /// the detokenization and scoring that need the trainer back.
 pub fn run_scheduled_rollout_groups(
     trainer: &mut Trainer,

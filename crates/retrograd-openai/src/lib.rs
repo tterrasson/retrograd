@@ -16,7 +16,7 @@
 //! and [`embeddings`].
 //!
 //! The answer is rendered and parsed by the same code as the agentic rollouts
-//! ([`retrograd_agent::rendering`]), so a model evaluated through this endpoint
+//! (`retrograd_agent::rendering`), so a model evaluated through this endpoint
 //! is evaluated on the prompt format it was trained on.
 
 pub mod auth;

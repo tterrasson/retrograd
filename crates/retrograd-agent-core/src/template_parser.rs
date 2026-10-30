@@ -13,7 +13,7 @@
 //! template the rendering comes from, so the two halves cannot be chosen
 //! separately. The derivation itself lives in llama.cpp and is reached through
 //! [`retrograd_engine::parse_assistant_output`]; what is here is the
-//! translation into [`ParsedAssistant`](crate::parser::ParsedAssistant).
+//! translation into [`ParsedAssistant`].
 //!
 //! Running the derived grammar needs the C ABI, so this module - and only
 //! this module - is behind the `template-parser` feature that links

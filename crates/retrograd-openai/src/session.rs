@@ -1,7 +1,7 @@
 //! The serving session: one thread, one model, many requests at once.
 //!
-//! The session drives a [`Scheduler`](retrograd_infer::Scheduler) over a
-//! [`ServeBackend`](crate::backend::ServeBackend) - the inference `Engine` in
+//! The session drives a [`Scheduler`] over a
+//! [`ServeBackend`] - the inference `Engine` in
 //! production - on a thread of its own, so the weights never leave it. Several
 //! chat requests are batched in one decode (`Continuous` admission by default;
 //! `Lockstep` on request), and each request's answer is read back from its

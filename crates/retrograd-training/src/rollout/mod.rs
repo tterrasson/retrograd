@@ -10,13 +10,13 @@
 //! rollout policy; GRPO uses the standard fixed-reference k3 term. The weights
 //! are recomputed from a fresh forward pass before every optimizer step.
 //!
-//! One responsibility per file: [`prompts`] reads and tokenizes datasets,
-//! [`reward`] speaks the reward-process protocol and runs held-out evaluation,
-//! [`judge`] blends `[grpo.judge]`'s verdicts into what that protocol returned,
-//! [`sampling`] owns the row geometry and the decode paths, [`driver`] drives
-//! those decode paths through the step-wise scheduler, [`weights`] the
-//! objective's per-token coefficients, [`packing`] the physical batches, and
-//! [`step`] the optimizer steps built on all of them.
+//! One responsibility per file: `prompts` reads and tokenizes datasets,
+//! `reward` speaks the reward-process protocol and runs held-out evaluation,
+//! `judge` blends `[grpo.judge]`'s verdicts into what that protocol returned,
+//! `sampling` owns the row geometry and the decode paths, `driver` drives
+//! those decode paths through the step-wise scheduler, `weights` the
+//! objective's per-token coefficients, `packing` the physical batches, and
+//! `step` the optimizer steps built on all of them.
 
 pub mod driver;
 pub(crate) mod judge;

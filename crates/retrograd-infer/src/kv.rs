@@ -57,7 +57,7 @@ impl KvCacheKey {
     }
 }
 
-/// A pin handle returned by [`PrefixTree::pin_at`]. Ids are never reused, so
+/// A pin handle for a retained KV prefix. Ids are never reused, so
 /// a stale handle cannot release another node's pin.
 pub type PinId = u64;
 

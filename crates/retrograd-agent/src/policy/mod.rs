@@ -3,7 +3,7 @@
 //! Two actors share this module: [`PolicyActor`] owns a `Trainer` (for an
 //! agentic training run) and [`EnginePolicyActor`] owns an [`Engine`] (for a
 //! generation-only collection). Both drive generation through a persistent
-//! step-wise scheduler - see [`driver`] - instead of the batched
+//! step-wise scheduler - see `driver` - instead of the batched
 //! `generate_sampled_continuous` per turn, so a trajectory's KV survives its
 //! own turns in the scheduler's prefix tree instead of being re-prefilled
 //! from scratch every turn.

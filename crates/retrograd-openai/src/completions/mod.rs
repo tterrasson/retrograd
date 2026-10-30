@@ -1,6 +1,6 @@
 //! The legacy Completions API: `POST /v1/completions`.
 //!
-//! The prompt is served raw - no chat template ([`GenerationRequest::raw_prompt`]),
+//! The prompt is served raw - no chat template ([`crate::request::GenerationRequest::raw_prompt`]),
 //! which is what evaluation harnesses in `local-completions` mode expect - with
 //! the same sampling contract as chat and the same backend split: weights on
 //! disk stream live through the [`Session`](crate::session::Session), a live run

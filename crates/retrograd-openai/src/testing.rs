@@ -5,7 +5,7 @@
 //! the token `-1`. That is enough to drive every branch between the request and
 //! the response - rendering, context bound, stop, finish reason, parsing -
 //! without a device. The fake serves through a
-//! [`FakeBackend`](retrograd_infer::FakeBackend) scripted with the reply, so the
+//! [`FakeBackend`] scripted with the reply, so the
 //! whole session path (scheduler, event stream, collection) is exercised.
 
 use std::sync::atomic::{AtomicUsize, Ordering};

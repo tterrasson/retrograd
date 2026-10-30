@@ -1,7 +1,7 @@
 //! The Chat Completions surface: `POST /chat/completions`.
 //!
 //! The wire documents are [`wire`], the translation to the common
-//! [`GenerationRequest`](crate::request::GenerationRequest) is [`convert`], and
+//! [`GenerationRequest`] is [`convert`], and
 //! the streamed answer is cut into chunks by [`sse`]. All three branch on the
 //! same backend: the [`Session`](crate::session::Session) for weights on disk,
 //! the live run's own thread for a run that is training.

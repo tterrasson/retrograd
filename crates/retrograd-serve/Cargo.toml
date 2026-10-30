@@ -31,3 +31,5 @@ workspace = true
 [[bin]]
 name = "retrograd-infer"
 path = "src/bin/retrograd-infer.rs"
+# Keep this binary from overwriting the inference library's rustdoc directory.
+doc = false

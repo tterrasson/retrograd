@@ -534,7 +534,7 @@ pub fn sampling(seed: u32, max_new_tokens: u32) -> SamplingParams {
 }
 
 /// [`sampling`] as the serving type, extended fields neutral (the exact v1
-/// contract) - for building a [`Request`]'s sampling entries.
+/// contract) - for building a [`crate::Request`]'s sampling entries.
 pub fn sampling_v2(seed: u32, max_new_tokens: u32) -> SamplingParamsV2 {
     SamplingParamsV2::from(sampling(seed, max_new_tokens))
 }

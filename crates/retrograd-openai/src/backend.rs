@@ -1,7 +1,7 @@
 //! The serving backend: a [`DecodeBackend`] that can also render prompts,
 //! driven by the session's scheduler on the one thread that owns the weights.
 //!
-//! [`Engine`](retrograd_engine::Engine) is the production implementation -
+//! [`Engine`] is the production implementation -
 //! inference only, no optimizer, no training state - so a `Target::Cold`
 //! request is served by the same step-wise engine the rollouts run on.
 //! [`EngineLoader`] builds it from a [`WeightsSpec`]; the crate's tests use

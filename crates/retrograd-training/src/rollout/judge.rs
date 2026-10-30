@@ -45,7 +45,7 @@ pub(crate) struct JudgeGroup<'a> {
 ///
 /// `max_dropped_fraction` is deliberately not here: it is a property of an
 /// update, and an update judges one batch per sampling wave. It lives with the
-/// counts it is applied to, in [`JudgeTally::check`].
+/// counts it is applied to, in `JudgeTally::check`.
 pub(crate) struct GroupJudge {
     backend: Arc<dyn RewardBackend>,
     runtime: tokio::runtime::Runtime,

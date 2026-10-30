@@ -1,5 +1,5 @@
 //! From the legacy Completions wire request to the common
-//! [`GenerationRequest`](crate::request::GenerationRequest): each prompt is
+//! [`GenerationRequest`]: each prompt is
 //! served raw - no chat template, no tools, no parser - with the same
 //! sampling contract as chat (A2): a field that would change the sampled
 //! distribution is honoured or refused with the field named.
