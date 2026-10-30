@@ -61,6 +61,21 @@ pub struct JudgeReply {
     pub content: String,
 }
 
+/// One scoring request: the log-probabilities the judge model puts on each of
+/// `targets` as the *next* token after `prompt`.
+///
+/// This is the shape of a judge that does not generate: `pointwise_logprob`
+/// asks "yes" or "no" and reads the distribution instead of a sample. The
+/// targets are raw text on purpose - they must be tokenized in the context of
+/// the model's chat template (spacing and case included), which only a
+/// transport that owns the tokenizer can do.
+#[derive(Clone, Debug)]
+pub struct ScoreRequest {
+    pub prompt: String,
+    /// The candidate labels, in the order the caller wants their logprobs.
+    pub targets: Vec<String>,
+}
+
 /// Why a transport could not answer a batch.
 #[derive(Debug, thiserror::Error)]
 pub enum JudgeTransportError {
@@ -93,4 +108,24 @@ pub trait JudgeTransport {
         &mut self,
         requests: &[JudgeRequest],
     ) -> Vec<Result<JudgeReply, JudgeTransportError>>;
+
+    /// Executes scoring requests: one logprob vector per request, aligned with
+    /// `requests` and with each request's `targets`.
+    ///
+    /// The default refuses: an OpenAI-compatible endpoint does not serve
+    /// arbitrary target logprobs reliably, so a scoring judge is served in
+    /// process only. A transport that cannot score returns the error for every
+    /// slot, and the protocol treats it like any other failed request.
+    fn score(&mut self, requests: &[ScoreRequest]) -> Vec<Result<Vec<f32>, JudgeTransportError>> {
+        requests
+            .iter()
+            .map(|_| {
+                Err(JudgeTransportError::Failed(
+                    "this transport cannot score target logprobs: the pointwise_logprob strategy \
+                     is served by the in-process transport only"
+                        .to_owned(),
+                ))
+            })
+            .collect()
+    }
 }

@@ -465,13 +465,23 @@ pub(crate) fn build_agent(
         truncation: value.truncation,
     };
     config.validate().map_err(Error::from)?;
-    // The one path inside the judge that is written relative to the config file.
+    // The paths inside the judge that are written relative to the config file,
+    // and the transport selection, checked here so a contradictory document is
+    // refused at load with the field named - the local transport itself is
+    // resolved by the caller, which is the one that owns a model.
     let mut judge = value.judge;
     if let Some(JudgeConfig::Ruler { config }) = &mut judge {
+        config.validate_declaration().map_err(Error::from)?;
         config.cache_path = config
             .cache_path
             .take()
             .map(|path| resolve(root, path.to_path_buf()));
+        if let Some(local) = &mut config.local {
+            local.snapshot_dir = Some(match local.snapshot_dir.take() {
+                Some(path) => resolve(root, path),
+                None => resolve(root, std::path::PathBuf::from("judge-snapshot")),
+            });
+        }
     }
     Ok(AgentRunConfig {
         scenarios: resolve(root, value.scenarios),

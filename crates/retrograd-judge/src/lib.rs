@@ -39,10 +39,13 @@ pub use eval::{EvalReport, Fixture, evaluate, parse_fixtures};
 pub use process::{REWARD_PROTOCOL_VERSION, RewardProcess, RewardProcessError};
 pub use render::JudgeContext;
 pub use render::compact::CompactionConfig;
-pub use render::prompt::{Aggregation, DEFAULT_PAIRWISE_RUBRIC, DEFAULT_RUBRIC};
+pub use render::prompt::{
+    Aggregation, DEFAULT_PAIRWISE_RUBRIC, DEFAULT_RUBRIC, POINTWISE_LABELS, POINTWISE_QUESTION,
+};
+pub use ruler::pointwise_verdict;
 pub use ruler::{JudgeCacheMode, RULER_PROTOCOL_VERSION, RulerJudge, RulerStats};
 pub use ruler::{JudgeStrategy, RulerConfig};
-pub use transport::{JudgeReply, JudgeRequest, JudgeTransport, JudgeTransportError};
+pub use transport::{JudgeReply, JudgeRequest, JudgeTransport, JudgeTransportError, ScoreRequest};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Score {
@@ -65,14 +68,47 @@ pub trait RewardBackend: Send + Sync {
 
 pub use retrograd_spec::judge::JudgeConfig;
 
+/// A caller that can serve `local = { … }` in process.
+///
+/// This crate never links a model - an in-process judge drives the caller's
+/// own weights, mutably, on the caller's thread - so the resolution of the
+/// local transport is injected by whoever owns a model (the training loop,
+/// or a collect path that holds one). `build` passes a resolver that refuses:
+/// a `local` judge built without one is a configuration mistake, and the
+/// error names the field.
+pub trait LocalJudgeResolver {
+    fn resolve_local(&self, ruler: &RulerConfig) -> Result<Arc<dyn RewardBackend>>;
+}
+
+/// The resolver [`JudgeBackend::build`] uses: it refuses, with the field
+/// named, because no model is resident where the default build runs.
+struct NoLocalModel;
+
+impl LocalJudgeResolver for NoLocalModel {
+    fn resolve_local(&self, _ruler: &RulerConfig) -> Result<Arc<dyn RewardBackend>> {
+        Err(Error::invalid(
+            "a RULER judge with local = { … } runs in process on the caller's own model: \
+             build it with JudgeBackend::build_with and a LocalJudgeResolver, from where a \
+             model is resident",
+        ))
+    }
+}
+
 /// Builds the judge backend a `JudgeConfig` declares - the one thing
 /// `retrograd-spec` cannot do itself without linking the transport.
 pub trait JudgeBackend {
-    /// `resolve` rebases relative paths (the RULER cache) against the
-    /// configuration file's directory; pass the identity function when paths are
-    /// already absolute.
+    /// `resolve` rebases relative paths (the RULER cache, the snapshot
+    /// directory) against the configuration file's directory; pass the
+    /// identity function when paths are already absolute.
     fn build(
         &self,
+        resolve: impl Fn(&std::path::Path) -> std::path::PathBuf,
+    ) -> Result<Arc<dyn RewardBackend>>;
+
+    /// Same, with the in-process resolver a `local = { … }` judge needs.
+    fn build_with(
+        &self,
+        resolver: &dyn LocalJudgeResolver,
         resolve: impl Fn(&std::path::Path) -> std::path::PathBuf,
     ) -> Result<Arc<dyn RewardBackend>>;
 }
@@ -80,24 +116,42 @@ pub trait JudgeBackend {
 impl JudgeBackend for JudgeConfig {
     fn build(
         &self,
-        #[cfg_attr(not(feature = "http"), allow(unused_variables))]
+        resolve: impl Fn(&std::path::Path) -> std::path::PathBuf,
+    ) -> Result<Arc<dyn RewardBackend>> {
+        self.build_with(&NoLocalModel, resolve)
+    }
+
+    fn build_with(
+        &self,
+        resolver: &dyn LocalJudgeResolver,
         resolve: impl Fn(&std::path::Path) -> std::path::PathBuf,
     ) -> Result<Arc<dyn RewardBackend>> {
         Ok(match self {
-            #[cfg(feature = "http")]
             Self::Ruler { config } => {
                 let mut config = (**config).clone();
+                config.validate_declaration()?;
                 config.cache_path = config.cache_path.as_deref().map(&resolve);
-                Arc::new(RulerJudge::with_http(config)?)
-            }
-            // The configuration is right and the build is not, which is the one
-            // sentence a missing transport has to say (same shape as
-            // `retrograd-env`'s container arm).
-            #[cfg(not(feature = "http"))]
-            Self::Ruler { .. } => {
-                return Err(Error::invalid(
-                    "a RULER judge needs the `http` feature of retrograd-judge",
-                ));
+                if let Some(local) = &mut config.local {
+                    local.snapshot_dir = local.snapshot_dir.as_deref().map(&resolve);
+                }
+                match &config.local {
+                    Some(_) => resolver.resolve_local(&config)?,
+                    None => {
+                        #[cfg(feature = "http")]
+                        {
+                            Arc::new(RulerJudge::with_http(config)?)
+                        }
+                        // The configuration is right and the build is not, which is the one
+                        // sentence a missing transport has to say (same shape as
+                        // `retrograd-env`'s container arm).
+                        #[cfg(not(feature = "http"))]
+                        {
+                            return Err(Error::invalid(
+                                "a RULER judge needs the `http` feature of retrograd-judge",
+                            ));
+                        }
+                    }
+                }
             }
             Self::Command {
                 command,
@@ -355,6 +409,31 @@ mod tests {
     use retrograd_agent_core::trajectory::Trajectory;
 
     struct PartialJudge;
+
+    #[test]
+    fn local_resolution_receives_rebased_paths() {
+        struct Resolver;
+        impl LocalJudgeResolver for Resolver {
+            fn resolve_local(&self, ruler: &RulerConfig) -> Result<Arc<dyn RewardBackend>> {
+                assert_eq!(
+                    ruler.cache_path.as_deref(),
+                    Some(std::path::Path::new("/config/cache"))
+                );
+                assert_eq!(
+                    ruler.local.as_ref().unwrap().snapshot_dir.as_deref(),
+                    Some(std::path::Path::new("/config/snapshots"))
+                );
+                Ok(Arc::new(PartialJudge))
+            }
+        }
+        let config: JudgeConfig = serde_json::from_value(serde_json::json!({
+            "type": "ruler", "cache_path": "cache", "local": {"snapshot_dir": "snapshots"}
+        }))
+        .unwrap();
+        config
+            .build_with(&Resolver, |path| std::path::Path::new("/config").join(path))
+            .unwrap();
+    }
 
     #[async_trait]
     impl RewardBackend for PartialJudge {

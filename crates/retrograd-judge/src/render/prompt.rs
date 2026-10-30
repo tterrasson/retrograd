@@ -210,6 +210,27 @@ pub fn pairwise_prompt(
     envelope(rubric, &rendered.context, &body)
 }
 
+/// The fixed question a `pointwise_logprob` judge answers, and the two labels
+/// it is scored on. The labels are tokenized in the context of the model's
+/// chat template by the transport - spacing and case included - and a label
+/// that is not a single token there is refused rather than truncated to its
+/// first token.
+pub const POINTWISE_QUESTION: &str = "Is this answer correct? Answer yes or no.";
+pub const POINTWISE_LABELS: [&str; 2] = ["yes", "no"];
+
+/// One trajectory alone, asked the fixed question: the prompt of a scoring
+/// (non-generating) judge. No presentation permutation applies here - there
+/// is nothing to bias but the trajectory itself.
+pub fn pointwise_prompt(rubric: &str, rendered: &RenderedGroup, index: usize) -> Result<String> {
+    let context = serde_json::to_string(&rendered.context)
+        .map_err(|error| Error::Reward(format!("serialize judge context: {error}")))?;
+    let body = serde_json::to_string(&trajectory_body(rendered, index, None))
+        .map_err(|error| Error::Reward(format!("serialize judge trajectory: {error}")))?;
+    Ok(format!(
+        "{rubric}\n\n<context>\n{context}\n</context>\n\n<trajectory>\n{body}\n</trajectory>\n\n{POINTWISE_QUESTION}"
+    ))
+}
+
 /// Deterministic presentation permutation for one request.
 ///
 /// Position bias is the first bias of an LLM-as-a-judge: the same trajectory

@@ -45,6 +45,10 @@ pub use http::HttpJudgeTransport;
 mod chunked;
 mod listwise;
 mod pairwise;
+mod pointwise;
+
+/// [`pointwise::verdict`], re-exported at the crate root.
+pub use pointwise::verdict as pointwise_verdict;
 
 #[cfg(test)]
 use crate::render::compact::CompactionConfig;
@@ -56,7 +60,9 @@ pub use retrograd_spec::judge::{JudgeStrategy, RulerConfig};
 
 /// Version of the render/parse protocol, mixed into every cache key: a cached
 /// verdict written by an older prompt or parser must not be read as today's.
-pub const RULER_PROTOCOL_VERSION: u32 = 1;
+/// v2 adds the `pointwise_logprob` strategy and the `local` transport of the
+/// configuration.
+pub const RULER_PROTOCOL_VERSION: u32 = 2;
 
 /// How much of the verdict cache a judge uses.
 ///
@@ -404,6 +410,7 @@ impl RulerCore {
                 both_orders,
                 aggregation,
             } => self.score_pairwise_via(transport, &rendered, max_pairs, both_orders, aggregation),
+            JudgeStrategy::PointwiseLogprob => self.score_pointwise_via(transport, &rendered),
         }
     }
 
@@ -488,23 +495,57 @@ impl RulerCore {
         requests: Vec<JudgeRequest>,
         parse: impl Fn(usize, &JudgeRequest, &str) -> Result<T>,
     ) -> Vec<Result<T>> {
+        self.run_wave(
+            transport,
+            requests,
+            |request, attempt| self.wire_request(request, attempt),
+            |request| request.prompt.as_str(),
+            |transport, wave| {
+                transport
+                    .complete(wave)
+                    .into_iter()
+                    .map(|reply| reply.map(|reply| reply.content))
+                    .collect()
+            },
+            |index, request, content| parse(index, request, &content),
+        )
+    }
+
+    /// The wave machinery shared by every execution shape: `wire` builds the
+    /// attempt's wire form of a request (the degraded response format on
+    /// retries), `prompt_of` reads the prompt for the size stats, `send` runs
+    /// one wave through the transport, and `parse` turns a reply into the
+    /// wave's value type. Requests that fail - transport error or unparsable
+    /// reply - are retried on their own up to `max_retries`, exactly as the
+    /// HTTP path always did.
+    ///
+    /// Returns one result per request, in request order.
+    fn run_wave<T, W: Clone, R>(
+        &self,
+        transport: &mut dyn JudgeTransport,
+        requests: Vec<W>,
+        wire: impl Fn(&W, u32) -> W,
+        prompt_of: impl Fn(&W) -> &str,
+        send: impl Fn(&mut dyn JudgeTransport, &[W]) -> Vec<std::result::Result<R, JudgeTransportError>>,
+        parse: impl Fn(usize, &W, R) -> Result<T>,
+    ) -> Vec<Result<T>> {
         let started = Instant::now();
         let count = requests.len();
         let mut attempts = vec![0_u32; count];
         let mut results: Vec<Option<Result<T>>> = (0..count).map(|_| None).collect();
         let mut pending: Vec<usize> = (0..count).collect();
         while !pending.is_empty() {
-            let wave: Vec<JudgeRequest> = pending
+            let wave: Vec<W> = pending
                 .iter()
-                .map(|&index| self.wire_request(&requests[index], attempts[index]))
+                .map(|&index| wire(&requests[index], attempts[index]))
                 .collect();
             for request in &wave {
-                let chars = request.prompt.chars().count() as u64;
+                let chars = prompt_of(request).chars().count() as u64;
                 self.stats
                     .prompt_chars_max
                     .fetch_max(chars, Ordering::Relaxed);
             }
-            let replies = transport.complete(&wave);
+            let replies = send(transport, &wave);
             if replies.len() != wave.len() {
                 for &index in &pending {
                     results[index] = Some(Err(JudgeTransportError::Arity {
@@ -519,7 +560,7 @@ impl RulerCore {
             for (slot, reply) in replies.into_iter().enumerate() {
                 let index = pending[slot];
                 let outcome = match reply {
-                    Ok(reply) => parse(index, &requests[index], &reply.content),
+                    Ok(reply) => parse(index, &requests[index], reply),
                     Err(error) => Err(Error::from(error)),
                 };
                 match outcome {
@@ -1181,6 +1222,75 @@ mod tests {
         assert_eq!(scores[2].value, 0.0);
         assert_eq!(transport.prompts.len(), 3);
         assert_eq!(judge.stats().requests, 3);
+    }
+
+    #[test]
+    fn pointwise_logprob_scores_each_member_from_the_transports_logprobs() {
+        use crate::transport::ScoreRequest;
+        /// A scoring transport: fixed logprobs per request, recording prompts.
+        struct ScoringTransport {
+            logprobs: Vec<Vec<f32>>,
+            prompts: Vec<String>,
+        }
+        impl JudgeTransport for ScoringTransport {
+            fn complete(&mut self, _: &[JudgeRequest]) -> Vec<TransportResult> {
+                panic!("pointwise never generates")
+            }
+            fn score(
+                &mut self,
+                requests: &[ScoreRequest],
+            ) -> Vec<std::result::Result<Vec<f32>, JudgeTransportError>> {
+                for request in requests {
+                    assert_eq!(request.targets, ["yes", "no"]);
+                    self.prompts.push(request.prompt.clone());
+                }
+                requests
+                    .iter()
+                    .map(|_| Ok(self.logprobs.pop().expect("one logprob vector per request")))
+                    .collect()
+            }
+        }
+        let judge = RulerJudge::new(RulerConfig {
+            strategy: JudgeStrategy::PointwiseLogprob,
+            max_retries: 0,
+            ..local_config()
+        })
+        .unwrap();
+        // log(4) vs log(1) -> 0.8 for the first member, the reverse for the second.
+        let mut transport = ScoringTransport {
+            logprobs: vec![vec![0.0, 4.0_f32.ln()], vec![4.0_f32.ln(), 0.0]],
+            prompts: Vec::new(),
+        };
+        let scores = judge
+            .score_group_via(&mut transport, &group(&["good", "bad"]))
+            .unwrap();
+        assert_eq!(scores.len(), 2);
+        assert!((scores[0].value - 0.8).abs() < 1e-6, "{}", scores[0].value);
+        assert!((scores[1].value - 0.2).abs() < 1e-6, "{}", scores[1].value);
+        assert!(scores[0].valid && scores[1].valid);
+        // One scoring request per trajectory, each carrying the fixed question.
+        assert_eq!(transport.prompts.len(), 2);
+        assert!(transport.prompts[0].contains("Is this answer correct? Answer yes or no."));
+        assert!(transport.prompts[0].contains("good"));
+        assert!(!transport.prompts[0].contains("bad"));
+        assert_eq!(judge.stats().requests, 2);
+    }
+
+    #[test]
+    fn pointwise_logprob_fails_the_group_when_the_transport_cannot_score() {
+        let judge = RulerJudge::new(RulerConfig {
+            strategy: JudgeStrategy::PointwiseLogprob,
+            max_retries: 0,
+            ..local_config()
+        })
+        .unwrap();
+        // FakeTransport does not override `score`: the default refuses, which
+        // is what an HTTP endpoint would do.
+        let mut transport = FakeTransport::new(vec![]);
+        let error = judge
+            .score_group_via(&mut transport, &group(&["a", "b"]))
+            .unwrap_err();
+        assert!(error.to_string().contains("in-process"), "{error}");
     }
 
     #[test]

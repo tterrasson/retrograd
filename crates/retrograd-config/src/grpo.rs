@@ -389,13 +389,22 @@ pub(crate) fn build_grpo_judge(
         "grpo.judge_weight is required next to [grpo.judge]: it is how much of the \
          reward the verdict carries",
     )?;
-    // The one path inside the judge that is written relative to the config file
+    // The paths inside the judge that are written relative to the config file
     // - same treatment as `[agent.judge]`.
     if let retrograd_spec::judge::JudgeConfig::Ruler { config } = &mut config {
+        config.validate_declaration().map_err(Error::from)?;
         config.cache_path = config
             .cache_path
             .take()
             .map(|path| resolve(root, path.to_path_buf()));
+        if let Some(local) = &mut config.local {
+            local.snapshot_dir = Some(match local.snapshot_dir.take() {
+                Some(path) => resolve(root, path),
+                // Default: a `judge-snapshot` directory beside the document,
+                // so a run's frozen adapters live with its configuration.
+                None => resolve(root, std::path::PathBuf::from("judge-snapshot")),
+            });
+        }
     }
     let judge = GrpoJudge {
         config,

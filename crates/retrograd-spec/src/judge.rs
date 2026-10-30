@@ -146,6 +146,57 @@ pub enum Aggregation {
     BradleyTerry,
 }
 
+/// Which weights an in-process judge reads. Mirrored by the engine's
+/// `JudgeWeights`: this crate cannot link the engine, so the selection is
+/// declared here and mapped where a model is resident.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalJudgeWeights {
+    /// A frozen snapshot of the policy, exported every `refresh_every`
+    /// updates into a separate engine. The default: the judge must not move
+    /// under the run it scores.
+    #[default]
+    Snapshot,
+    /// The frozen base model, adapter disabled.
+    Base,
+    /// The run's reference policy (the anchor when there is one).
+    Reference,
+    /// The weights currently being trained. Experimental: every verdict is
+    /// produced by weights that moved since the last one.
+    Policy,
+}
+
+/// The in-process transport of a RULER judge: `local = { … }` replaces
+/// `base_url`/`model`, exactly one of the two is set.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct LocalJudgeConfig {
+    /// Which weights the judge reads. `snapshot` by default.
+    pub weights: LocalJudgeWeights,
+    /// Updates between two exports of the frozen snapshot. Only meaningful
+    /// with `weights = "snapshot"`; refused otherwise. Point of departure: 20.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_every: Option<u32>,
+    /// Where the frozen adapters are exported. Resolved against the
+    /// configuration file's directory like `cache_path`; the caller supplies a
+    /// default when the field is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_dir: Option<PathBuf>,
+    /// Generation budget of one judge request, in tokens. Separate from the
+    /// rollouts': a verdict is longer than a rollout answer, and reusing the
+    /// rollout budget would truncate every verdict mid-JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_new_tokens: Option<u32>,
+}
+
+/// Default of `local.refresh_every`: a point of departure to be fixed by
+/// measurement, not a derived number.
+pub const DEFAULT_LOCAL_REFRESH_EVERY: u32 = 20;
+
+/// Default of `local.max_new_tokens`: room for a structured verdict, not a
+/// rollout-length answer.
+pub const DEFAULT_LOCAL_JUDGE_MAX_NEW_TOKENS: u32 = 1024;
+
 /// How a group is presented to the judge.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "mode", rename_all = "snake_case")]
@@ -182,6 +233,12 @@ pub enum JudgeStrategy {
         #[serde(default)]
         aggregation: Aggregation,
     },
+    /// No generation at all: each completion is scored by the log-probability
+    /// the judge model puts on the labels `yes` / `no` after a fixed question.
+    /// Deterministic, and served by the in-process transport only - an
+    /// OpenAI-compatible endpoint does not return these logprobs reliably -
+    /// so the configuration refuses it without `local = { … }`.
+    PointwiseLogprob,
 }
 
 fn default_anchor() -> bool {
@@ -195,8 +252,17 @@ fn default_both_orders() -> bool {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RulerConfig {
+    /// The OpenAI-compatible endpoint, when the judge is served over HTTP.
+    /// Empty when `local` is set: exactly one of the two transports is
+    /// declared, and [`RulerConfig::validate_selection`] enforces it.
+    #[serde(default)]
     pub base_url: String,
+    #[serde(default)]
     pub model: String,
+    /// In-process transport: the judge runs on the caller's own model.
+    /// Exclusive with a non-empty `base_url`/`model` pair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local: Option<LocalJudgeConfig>,
     #[serde(default = "default_api_key_env")]
     pub api_key_env: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -231,6 +297,7 @@ impl Default for RulerConfig {
         Self {
             base_url: String::new(),
             model: String::new(),
+            local: None,
             api_key_env: default_api_key_env(),
             rubric: None,
             pairwise_rubric: None,
@@ -261,17 +328,61 @@ fn default_retries() -> u32 {
 
 impl RulerConfig {
     pub fn validate(&self) -> Result<()> {
-        if self.base_url.is_empty() || self.model.is_empty() || self.api_key_env.is_empty() {
+        self.validate_declaration()?;
+        if self.local.is_some() {
             return Err(Error::invalid(
-                "RULER base_url, model, and api_key_env must not be empty",
+                "RULER local = { … } declares the in-process transport: it has no endpoint to \
+                 bind, so this judge cannot be built over HTTP - serve it where a model is \
+                 resident",
             ));
         }
-        if self.max_concurrency == 0 || self.timeout_secs == 0 {
+        Ok(())
+    }
+
+    /// Everything checkable from the document alone, before any transport
+    /// exists: the selection, the strategy/transport fit, and the protocol
+    /// fields. Both `[grpo.judge]` and `[agent.judge]` call this at load, so a
+    /// contradictory document is refused with the field named rather than at
+    /// the first group.
+    pub fn validate_declaration(&self) -> Result<()> {
+        self.validate_selection()?;
+        if self.local.is_none() {
+            if self.base_url.is_empty() || self.model.is_empty() || self.api_key_env.is_empty() {
+                return Err(Error::invalid(
+                    "RULER base_url, model, and api_key_env must not be empty",
+                ));
+            }
+            if self.max_concurrency == 0 || self.timeout_secs == 0 {
+                return Err(Error::invalid(
+                    "RULER concurrency and timeout must be greater than zero",
+                ));
+            }
+        }
+        if self.local.is_none() && self.strategy == JudgeStrategy::PointwiseLogprob {
             return Err(Error::invalid(
-                "RULER concurrency and timeout must be greater than zero",
+                "RULER strategy pointwise_logprob needs local = { … }: an OpenAI-compatible \
+                 endpoint does not serve the target logprobs it reads",
             ));
         }
         self.validate_protocol()
+    }
+
+    /// The transport selection: exactly one of `base_url`/`model` and `local`.
+    /// This is the part every frontend can check at load time, before any
+    /// transport exists, so both `[grpo.judge]` and `[agent.judge]` refuse a
+    /// contradictory document here rather than at the first group.
+    pub fn validate_selection(&self) -> Result<()> {
+        let http = !self.base_url.is_empty() || !self.model.is_empty();
+        match (http, self.local.is_some()) {
+            (true, true) => Err(Error::invalid(
+                "RULER base_url/model and local are mutually exclusive: declare one transport, \
+                 not both",
+            )),
+            (false, false) => Err(Error::invalid(
+                "RULER needs a transport: base_url and model, or local = { … }",
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// Validates everything except the transport fields (`base_url`, `model`,
@@ -294,10 +405,44 @@ impl RulerConfig {
                 "RULER pairwise max_pairs must be greater than zero",
             ));
         }
+        if let Some(local) = &self.local {
+            if local.weights != LocalJudgeWeights::Snapshot && local.refresh_every.is_some() {
+                return Err(Error::invalid(
+                    "RULER local.refresh_every only applies to weights = \"snapshot\": the other \
+                     weight selections are not refreshed",
+                ));
+            }
+            if local.refresh_every == Some(0) {
+                return Err(Error::invalid(
+                    "RULER local.refresh_every must be at least one update",
+                ));
+            }
+            if local.max_new_tokens == Some(0) {
+                return Err(Error::invalid(
+                    "RULER local.max_new_tokens must be greater than zero",
+                ));
+            }
+        }
         if let Some(compaction) = &self.compaction {
             compaction.validate()?;
         }
         self.context.validate()
+    }
+
+    /// The effective `local.refresh_every`, once the default is applied.
+    pub fn local_refresh_every(&self) -> u32 {
+        self.local
+            .as_ref()
+            .and_then(|local| local.refresh_every)
+            .unwrap_or(DEFAULT_LOCAL_REFRESH_EVERY)
+    }
+
+    /// The effective `local.max_new_tokens`, once the default is applied.
+    pub fn local_max_new_tokens(&self) -> u32 {
+        self.local
+            .as_ref()
+            .and_then(|local| local.max_new_tokens)
+            .unwrap_or(DEFAULT_LOCAL_JUDGE_MAX_NEW_TOKENS)
     }
 }
 
@@ -358,6 +503,7 @@ impl<'de> Deserialize<'de> for JudgeConfig {
                 };
                 let config: RulerConfig =
                     serde_json::from_value(inner).map_err(D::Error::custom)?;
+                config.validate_declaration().map_err(D::Error::custom)?;
                 Ok(Self::Ruler {
                     config: Box::new(config),
                 })
@@ -385,5 +531,104 @@ impl<'de> Deserialize<'de> for JudgeConfig {
             }
             other => Err(D::Error::custom(format!("unknown judge type '{other}'"))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn http_config() -> RulerConfig {
+        RulerConfig {
+            base_url: "http://localhost:8080/v1".into(),
+            model: "judge".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn local_and_http_transports_are_exclusive() {
+        let config = http_config();
+        config.validate().unwrap();
+        config.validate_selection().unwrap();
+
+        let mut local = http_config();
+        local.local = Some(LocalJudgeConfig::default());
+        let error = local.validate_selection().unwrap_err();
+        assert!(error.to_string().contains("mutually exclusive"), "{error}");
+
+        let mut empty = RulerConfig::default();
+        empty.base_url.clear();
+        empty.model.clear();
+        let error = empty.validate_selection().unwrap_err();
+        assert!(error.to_string().contains("needs a transport"), "{error}");
+    }
+
+    #[test]
+    fn declarations_reject_incomplete_http_transports_during_deserialization() {
+        for fields in [
+            serde_json::json!({"model": "judge"}),
+            serde_json::json!({"base_url": "http://localhost/v1"}),
+            serde_json::json!({"base_url": "http://localhost/v1", "model": "judge", "max_concurrency": 0}),
+        ] {
+            let mut declaration = fields;
+            declaration["type"] = "ruler".into();
+            assert!(serde_json::from_value::<JudgeConfig>(declaration).is_err());
+        }
+    }
+
+    #[test]
+    fn local_parses_from_toml_shape_and_keeps_its_defaults() {
+        let config: RulerConfig = serde_json::from_str(
+            r#"{"local": {"refresh_every": 20}, "strategy": {"mode": "pointwise_logprob"}}"#,
+        )
+        .unwrap();
+        let local = config.local.as_ref().expect("local transport");
+        assert_eq!(local.weights, LocalJudgeWeights::Snapshot);
+        assert_eq!(local.refresh_every, Some(20));
+        assert_eq!(config.local_refresh_every(), 20);
+        assert_eq!(config.strategy, JudgeStrategy::PointwiseLogprob);
+        config.validate_selection().unwrap();
+        config.validate_protocol().unwrap();
+
+        // refresh_every defaults to 20 and is refused away from snapshot.
+        let config: RulerConfig = serde_json::from_str(r#"{"local": {}}"#).unwrap();
+        assert_eq!(config.local_refresh_every(), DEFAULT_LOCAL_REFRESH_EVERY);
+        let mut config: RulerConfig =
+            serde_json::from_str(r#"{"local": {"weights": "base", "refresh_every": 5}}"#).unwrap();
+        let error = config.validate_protocol().unwrap_err();
+        assert!(error.to_string().contains("local.refresh_every"), "{error}");
+        config.local.as_mut().unwrap().refresh_every = Some(0);
+        config.local.as_mut().unwrap().weights = LocalJudgeWeights::Snapshot;
+        let error = config.validate_protocol().unwrap_err();
+        assert!(error.to_string().contains("refresh_every"), "{error}");
+    }
+
+    #[test]
+    fn pointwise_logprob_is_refused_over_http() {
+        let mut config = http_config();
+        config.strategy = JudgeStrategy::PointwiseLogprob;
+        let error = config.validate().unwrap_err();
+        assert!(error.to_string().contains("pointwise_logprob"), "{error}");
+        // The same strategy is fine in process.
+        config.local = Some(LocalJudgeConfig::default());
+        config.base_url.clear();
+        config.model.clear();
+        config.validate_selection().unwrap();
+        config.validate_protocol().unwrap();
+    }
+
+    #[test]
+    fn local_is_refused_when_bound_to_an_endpoint() {
+        let mut config = http_config();
+        config.local = Some(LocalJudgeConfig::default());
+        // validate() refuses it only when the selection itself is valid; the
+        // HTTP-only check fires before the transport fields are read.
+        let error = config.validate().unwrap_err();
+        assert!(error.to_string().contains("mutually exclusive"), "{error}");
+        config.base_url.clear();
+        config.model.clear();
+        let error = config.validate().unwrap_err();
+        assert!(error.to_string().contains("no endpoint"), "{error}");
     }
 }

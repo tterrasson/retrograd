@@ -1952,3 +1952,128 @@ fn agent_reasoning_budget_reads_minus_one_as_no_budget() {
         "{error}"
     );
 }
+
+/// `[grpo.judge]` with `local = { … }` replaces the endpoint: the weights
+/// selection, the refresh interval and the snapshot directory parse, the
+/// snapshot directory is rebased against the document, and the two
+/// transports stay mutually exclusive.
+#[test]
+fn grpo_judge_local_parses_and_rebases_its_snapshot_dir() {
+    let base = concat!(
+        "[run]\nalgorithm='grpo'\n",
+        "[model]\npath='model.gguf'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
+    );
+    let grpo = concat!(
+        "[grpo]\nprompts='p.jsonl'\nreward_command=['r']\n",
+        "updates=1\nprompts_per_update=1\ngroup_size=2\ngrpo_epochs=1\n",
+        "clip_range_low=0.2\nclip_range_high=0.28\nkl_coefficient=0.0\n",
+        "judge_weight=0.3\n",
+        "[grpo.judge]\ntype='ruler'\nlocal={weights='snapshot', refresh_every=10, \
+         snapshot_dir='snap'}\n",
+        "[grpo.sampling]\ntemperature=1.0\ntop_p=1.0\nmax_new_tokens=8\nseed=1\n",
+    );
+    let (_tmp, file) = write_config(&format!("{base}{grpo}"));
+    let loaded = load(&file).unwrap();
+    let Algorithm::Grpo(config) = loaded.algorithm else {
+        panic!("expected a grpo config")
+    };
+    let retrograd_spec::judge::JudgeConfig::Ruler { config } =
+        config.judge.expect("a judge").config
+    else {
+        panic!("expected a RULER judge")
+    };
+    let local = config.local.as_ref().expect("the local transport");
+    assert_eq!(
+        local.weights,
+        retrograd_spec::judge::LocalJudgeWeights::Snapshot
+    );
+    assert_eq!(local.refresh_every, Some(10));
+    assert_eq!(
+        local.snapshot_dir.as_deref(),
+        Some(file.parent().unwrap().join("snap").as_path())
+    );
+    assert_eq!(config.local_refresh_every(), 10);
+    assert!(config.base_url.is_empty() && config.model.is_empty());
+
+    // Defaults: no refresh_every, snapshot weights.
+    let grpo = concat!(
+        "[grpo]\nprompts='p.jsonl'\nreward_command=['r']\n",
+        "updates=1\nprompts_per_update=1\ngroup_size=2\ngrpo_epochs=1\n",
+        "clip_range_low=0.2\nclip_range_high=0.28\nkl_coefficient=0.0\n",
+        "judge_weight=0.3\n",
+        "[grpo.judge]\ntype='ruler'\nlocal={}\n",
+        "[grpo.sampling]\ntemperature=1.0\ntop_p=1.0\nmax_new_tokens=8\nseed=1\n",
+    );
+    let (_tmp, file) = write_config(&format!("{base}{grpo}"));
+    let loaded = load(&file).unwrap();
+    let Algorithm::Grpo(config) = loaded.algorithm else {
+        panic!("expected a grpo config")
+    };
+    let retrograd_spec::judge::JudgeConfig::Ruler { config } =
+        config.judge.expect("a judge").config
+    else {
+        panic!("expected a RULER judge")
+    };
+    assert_eq!(config.local_refresh_every(), 20);
+
+    // Both transports at once, or refresh_every away from snapshot, are
+    // refused at load with the field named.
+    for (judge_toml, expected) in [
+        (
+            "[grpo.judge]\ntype='ruler'\nbase_url='http://x/v1'\nmodel='m'\nlocal={}\n",
+            "mutually exclusive",
+        ),
+        (
+            "[grpo.judge]\ntype='ruler'\nlocal={weights='base', refresh_every=4}\n",
+            "local.refresh_every",
+        ),
+        (
+            "[grpo.judge]\ntype='ruler'\nbase_url='http://x/v1'\nmodel='m'\n\
+             strategy={mode='pointwise_logprob'}\n",
+            "pointwise_logprob",
+        ),
+    ] {
+        let source = format!(
+            "{base}[grpo]\nprompts='p.jsonl'\nreward_command=['r']\nupdates=1\n\
+             prompts_per_update=1\ngroup_size=2\ngrpo_epochs=1\nclip_range_low=0.2\n\
+             clip_range_high=0.28\nkl_coefficient=0.0\njudge_weight=0.3\n{judge_toml}\
+             [grpo.sampling]\ntemperature=1.0\ntop_p=1.0\nmax_new_tokens=8\nseed=1\n"
+        );
+        let (_tmp, file) = write_config(&source);
+        let error = load(&file).unwrap_err().to_string();
+        assert!(error.contains(expected), "expected {expected}, got {error}");
+    }
+}
+
+/// `[agent.judge]` accepts the same `local = { … }` form: it parses and the
+/// selection is validated at load; serving it needs the caller's resolver.
+#[test]
+fn agent_judge_local_parses_and_validates_its_selection() {
+    let base = concat!(
+        "[run]\nalgorithm='agent_grpo'\n",
+        "[model]\npath='model.gguf'\ndevice='cpu'\n",
+        "[output]\npath='out.gguf'\n[lora]\n",
+        "[agent]\nscenarios='s.jsonl'\nupdates=1\nscenarios_per_update=1\ngroup_size=2\n",
+    );
+    let source = format!("{base}[agent.judge]\ntype='ruler'\nlocal={{weights='base'}}\n");
+    let (_tmp, file) = write_config(&source);
+    let loaded = load(&file).unwrap();
+    let Algorithm::AgentGrpo(agent) = loaded.algorithm else {
+        panic!("expected an agent grpo config")
+    };
+    let Some(retrograd_spec::judge::JudgeConfig::Ruler { config }) = &agent.judge else {
+        panic!("expected a RULER judge")
+    };
+    assert_eq!(
+        config.local.as_ref().map(|local| local.weights),
+        Some(retrograd_spec::judge::LocalJudgeWeights::Base)
+    );
+
+    let source = format!(
+        "{base}[agent.judge]\ntype='ruler'\nbase_url='http://x/v1'\nmodel='m'\nlocal={{}}\n"
+    );
+    let (_tmp, file) = write_config(&source);
+    let error = load(&file).unwrap_err().to_string();
+    assert!(error.contains("mutually exclusive"), "{error}");
+}
