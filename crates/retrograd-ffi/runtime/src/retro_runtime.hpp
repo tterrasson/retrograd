@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <random>
 
 #include <map>
 #include <memory>
@@ -74,6 +75,10 @@ struct gguf_context_deleter {
     void operator()(gguf_context * ctx) const;
 };
 
+struct llama_batch_ext_deleter {
+    void operator()(llama_batch_ext * batch) const;
+};
+
 // Opaque: the parsed jinja program lives in retro_chat_template.cpp so jinja
 // headers don't leak into every translation unit that includes this header.
 struct chat_template_state;
@@ -88,6 +93,7 @@ using dataset_ptr = std::unique_ptr<ggml_opt_dataset, ggml_opt_dataset_deleter>;
 using opt_result_ptr = std::unique_ptr<ggml_opt_result, ggml_opt_result_deleter>;
 using gguf_context_ptr = std::unique_ptr<gguf_context, gguf_context_deleter>;
 using chat_template_state_ptr = std::unique_ptr<chat_template_state, chat_template_state_deleter>;
+using batch_ext_ptr = std::unique_ptr<llama_batch_ext, llama_batch_ext_deleter>;
 
 
 // A reasoning budget as token sequences, derived from the template the way
@@ -106,6 +112,72 @@ struct reasoning_budget_plan {
     // replayed into the budget before sampling, so a prompt that already opened
     // the reasoning block (Qwen3.5 under `enable_thinking`) starts counting.
     size_t n_prompt_tail = 0;
+};
+
+// One reasoning-budget state machine (the fork's common_reasoning_budget_*),
+// movable but not copyable. Used per row by the batched generators and per
+// request by the step-wise API; the method definitions live in
+// retro_gen_core.cpp, next to the sampler oracle they share.
+class budget_machine {
+public:
+    budget_machine() = default;
+    budget_machine(const llama_vocab * vocab, const reasoning_budget_plan * plan);
+    ~budget_machine();
+    budget_machine(const budget_machine &) = delete;
+    budget_machine & operator=(const budget_machine &) = delete;
+    budget_machine(budget_machine && other) noexcept;
+    budget_machine & operator=(budget_machine && other) noexcept;
+
+    bool active() const { return sampler_ != nullptr; }
+
+    // Replays the end of the prompt (its last plan->n_prompt_tail tokens) so a
+    // prompt that already opened the reasoning block starts the machine
+    // counting, and one that closed it starts it done.
+    void prime(const int32_t * prompt, size_t n_prompt);
+    // The token to emit in place of `sampled`, and whether the budget forced it.
+    int32_t next(int32_t sampled, bool & forced);
+
+private:
+    const int32_t * closing_tag_end(const int32_t * from, const int32_t * to) const;
+    void accept(int32_t token);
+
+    const reasoning_budget_plan * plan_ = nullptr;
+    llama_sampler * sampler_ = nullptr;
+    // Position in plan_->forced, which the machine keeps to itself.
+    size_t force_pos_ = 0;
+};
+
+// Per-request state of the step-wise generation API (retro_*_step): the sampler
+// RNG and the reasoning-budget machine, keyed by a caller-chosen request id and
+// deliberately independent of the KV slot - a request keeps its state across
+// slot reassignments and releases it with retro_*_request_free. Owned by the
+// trainer_state / engine_state that outlives the calls.
+struct step_request_state {
+    std::mt19937 rng;
+    bool seeded = false;
+    budget_machine budget;
+    // The plan the machine was built from, so a budget change between step
+    // calls is detected and the machine rebuilt.
+    reasoning_budget_plan plan_snapshot {};
+    bool plan_known = false;
+    bool primed = false;
+    // The last decoded input tokens, buffered while unprimed so the budget
+    // machine can be primed exactly as the batched generators prime from the
+    // prompt tail.
+    std::vector<int32_t> prompt_tail;
+};
+
+struct step_request_table {
+    std::map<int32_t, step_request_state> requests;
+};
+
+// A reusable llama_batch_ext for step calls, rebuilt when the target context
+// changes, so batch storage can be reused across steps.
+struct step_batch_cache {
+    llama_context * ctx = nullptr;
+    batch_ext_ptr batch;
+    // The batch for `target`, created on first use and reused after.
+    llama_batch_ext * get(llama_context * target);
 };
 
 // Chat-template, tool-call-parser and reasoning-budget state of one loaded
@@ -302,6 +374,10 @@ struct trainer_state {
     // outlives the individual generation calls and is handed to gen_core.
     // See gen_cache for the invariant.
     gen_cache generation_cache;
+    // Per-request state and reusable extended batch of the step-wise API on
+    // the generation context (retro_trainer_generation_step & co.).
+    step_request_table step_requests;
+    step_batch_cache step_batch;
     // Execution policy, not training geometry: how much of its own wall time
     // this trainer is allowed to spend waiting on submitted GPU work, so
     // another workload can use the device in between. Disabled unless
@@ -767,6 +843,29 @@ int generate_continuous_batch_impl(
         size_t n_out_max,
         size_t * out_n_tokens,
         uint8_t * out_forced);
+// Step-wise API on the trainer's generation context; same contracts as the
+// retro_engine_step / retro_engine_seq_* family (see retro_lora_train.h).
+int generation_step_impl(
+        retro_trainer * trainer,
+        const retro_step_row * rows,
+        size_t n_rows,
+        retro_step_out_row * out_rows,
+        int32_t * out_top_ids,
+        float * out_top_logprobs,
+        size_t n_top_stride);
+int generation_seq_rm_impl(retro_trainer * trainer, int32_t slot, int32_t p0, int32_t p1);
+int generation_seq_cp_impl(
+        retro_trainer * trainer, int32_t src, int32_t dst, int32_t p0, int32_t p1);
+int generation_seq_save_impl(
+        retro_trainer * trainer, int32_t slot, uint32_t flags,
+        uint8_t * buffer, size_t n_buffer, size_t * out_n_bytes);
+int generation_seq_load_impl(
+        retro_trainer * trainer, int32_t slot, uint32_t flags,
+        const uint8_t * buffer, size_t n_bytes, size_t * out_n_read);
+int generation_seq_pos_impl(
+        retro_trainer * trainer, int32_t slot, int32_t * out_pos_min, int32_t * out_pos_max);
+int generation_memory_impl(retro_trainer * trainer, retro_engine_memory_info * out);
+int generation_request_free_impl(retro_trainer * trainer, int32_t request);
 int score_tokens_impl(
         retro_trainer * trainer,
         const int32_t * tokens,

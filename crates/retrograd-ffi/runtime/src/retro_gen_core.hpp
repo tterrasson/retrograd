@@ -31,6 +31,16 @@ struct batch_guard {
     batch_guard & operator=(const batch_guard &) = delete;
 };
 
+// Owning guard for a llama_batch_ext allocated for one call; the step API
+// reuses a caller-lent batch instead (see gen_core::step).
+struct batch_ext_guard {
+    llama_batch_ext * batch;
+    explicit batch_ext_guard(llama_context * ctx) : batch(ctx ? llama_batch_ext_init(ctx) : nullptr) {}
+    ~batch_ext_guard() { if (batch) llama_batch_ext_free(batch); }
+    batch_ext_guard(const batch_ext_guard &) = delete;
+    batch_ext_guard & operator=(const batch_ext_guard &) = delete;
+};
+
 // Vocab-sized sampling buffers, reused across the tokens of one generation so
 // they are allocated once per call instead of once per sampled token.
 struct sampler_scratch {
@@ -76,6 +86,46 @@ struct gen_core {
     // sampling and the previous decode still in flight, which is the price the
     // contract names as "0.99 is not approximately 1.0".
     int decode(llama_batch & batch);
+
+    // The extended-batch counterpart, for the step-wise API: one
+    // llama_process per call, through the same owner policy (duty-cycle
+    // limiter included) as decode().
+    int decode_ext(llama_batch_ext & batch);
+
+    // The step-wise generation primitive. One llama_process over `rows`
+    // (n_rows), sampled rows read back through the batch index their last
+    // token was added at - which is exactly what llama_get_logits_ith (and the
+    // sampled-token / target-logprob accessors) accept after llama_process.
+    // `requests` is owned by the caller's state and outlives the call;
+    // `ext_batch` is a reusable batch lent by the owner (cleared and refilled
+    // here), or null to allocate one for the call. Returns 0 on success, -1
+    // on error (retro_last_error() set). See retro_lora_train.h for the full
+    // residency, logits-validity and partial-mutation contract.
+    int step(
+            const retro_step_row * rows,
+            size_t n_rows,
+            retro_step_out_row * out_rows,
+            int32_t * out_top_ids,
+            float * out_top_logprobs,
+            size_t n_top_stride,
+            step_request_table & requests,
+            const reasoning_budget_plan * plan,
+            llama_batch_ext * ext_batch);
+
+    // Raw sequence operations on the context's memory, for callers that manage
+    // placement themselves (the step API does). Each one invalidates the
+    // prefix-cache bookkeeping: the mutation happened outside its protocol.
+    // seq_rm returns false (after set_error) when the memory cannot perform a
+    // partial removal; removing a whole sequence never fails.
+    bool seq_rm(int32_t slot, int32_t p0, int32_t p1);
+    bool seq_cp(int32_t src, int32_t dst, int32_t p0, int32_t p1);
+    // Two-call save contract; -2 means the buffer is too small and
+    // *out_n_bytes carries the required size.
+    int seq_save(int32_t slot, uint32_t flags, uint8_t * buffer, size_t n_buffer, size_t * out_n_bytes);
+    int seq_load(int32_t slot, uint32_t flags, const uint8_t * buffer, size_t n_bytes, size_t * out_n_read);
+    // Resident position range of `slot`, both -1 when empty.
+    int seq_pos(int32_t slot, int32_t * out_pos_min, int32_t * out_pos_max);
+    int memory(retro_engine_memory_info * out);
 
     // Clears the context's sequence memory (the `true` variant: embeddings too).
     void clear_ctx_memory();

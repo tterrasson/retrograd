@@ -536,7 +536,7 @@ pub struct RetroSftDataset {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct RetroSamplingParams {
     pub temperature: c_float,
     pub top_p: c_float,
@@ -556,6 +556,77 @@ pub struct RetroGenerationSequence {
     pub prompt_tokens: *const i32,
     pub n_prompt: usize,
     pub sampling: RetroSamplingParams,
+}
+
+/// Mirror of `RETRO_STATE_SEQ_FLAGS_PARTIAL_ONLY`: save/load only the partial
+/// state (recurrent state, plus the SWA KV of a sliding-window layer).
+pub const RETRO_STATE_SEQ_FLAGS_PARTIAL_ONLY: u32 = 1;
+/// Mirror of `RETRO_STATE_SEQ_FLAGS_ON_DEVICE`.
+pub const RETRO_STATE_SEQ_FLAGS_ON_DEVICE: u32 = 2;
+
+/// Mirror of `retro_step_row`, versioned by `struct_size`: one row of a step
+/// plan in `retro_*_step`. See the published header for the full contract
+/// (residency, logits validity, partial mutation on failure).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RetroStepRow {
+    /// Filled by the caller: the evolution key. Must be `size_of::<Self>()`.
+    pub struct_size: u32,
+    /// Per-request state id (sampler RNG, reasoning-budget machine); >= 0 on
+    /// rows that join a request, required on sampling rows.
+    pub request: i32,
+    /// Sequence id in the context's KV pool.
+    pub slot: i32,
+    pub tokens: *const i32,
+    pub n: u32,
+    /// Absolute position of `tokens[0]`.
+    pub pos0: i32,
+    /// Request logits on the last token and sample it.
+    pub sample: bool,
+    /// Read when `sample` is set (`seed` seeds the request's RNG once).
+    pub sampling: RetroSamplingParams,
+    pub n_top_logprobs: u32,
+    /// Reserved for per-line adapters; must be 0 in this build.
+    pub adapter: i32,
+}
+
+/// Mirror of `retro_step_out_row`: what one step produced for one row.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RetroStepOutRow {
+    /// Filled by the runtime.
+    pub struct_size: u32,
+    /// The emitted token; valid when `sampled` is set.
+    pub token: i32,
+    /// Temperature-1 policy logprob of `token`, as the batched generators
+    /// report it.
+    pub logprob: c_float,
+    /// Top entries written at the row's slice of the top output buffers.
+    pub n_top: u32,
+    /// The reasoning budget forced `token`.
+    pub forced: u8,
+    /// A sample was produced for this row.
+    pub sampled: u8,
+}
+
+/// Mirror of `retro_engine_memory_info`: KV-pool occupancy of a generation
+/// context.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RetroEngineMemoryInfo {
+    /// Filled by the runtime.
+    pub struct_size: u32,
+    /// Sequence slots of the context (n_seq_max).
+    pub n_slots: u32,
+    /// KV cells of the pool.
+    pub cells_total: u64,
+    /// Occupied cells: sum of the resident position spans of non-empty slots.
+    pub cells_used: u64,
+    /// Bytes of the attention KV buffers.
+    pub kv_bytes: u64,
+    /// Partial state bytes summed over all slots (recurrent state, plus SWA KV
+    /// where the model has a sliding window).
+    pub recurrent_bytes: u64,
 }
 
 #[repr(C)]
@@ -1116,6 +1187,64 @@ unsafe extern "C" {
         out_forced: *mut u8,
     ) -> c_int;
 
+    pub fn retro_trainer_generation_step(
+        trainer: *mut RetroTrainer,
+        rows: *const RetroStepRow,
+        n_rows: usize,
+        out_rows: *mut RetroStepOutRow,
+        out_top_ids: *mut i32,
+        out_top_logprobs: *mut c_float,
+        n_top_stride: usize,
+    ) -> c_int;
+
+    pub fn retro_trainer_generation_seq_rm(
+        trainer: *mut RetroTrainer,
+        slot: i32,
+        p0: i32,
+        p1: i32,
+    ) -> c_int;
+
+    pub fn retro_trainer_generation_seq_cp(
+        trainer: *mut RetroTrainer,
+        src: i32,
+        dst: i32,
+        p0: i32,
+        p1: i32,
+    ) -> c_int;
+
+    pub fn retro_trainer_generation_seq_save(
+        trainer: *mut RetroTrainer,
+        slot: i32,
+        flags: u32,
+        buffer: *mut u8,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
+    pub fn retro_trainer_generation_seq_load(
+        trainer: *mut RetroTrainer,
+        slot: i32,
+        flags: u32,
+        buffer: *const u8,
+        n_bytes: usize,
+        out_n_read: *mut usize,
+    ) -> c_int;
+
+    pub fn retro_trainer_generation_seq_pos(
+        trainer: *mut RetroTrainer,
+        slot: i32,
+        out_pos_min: *mut i32,
+        out_pos_max: *mut i32,
+    ) -> c_int;
+
+    pub fn retro_trainer_generation_memory(
+        trainer: *mut RetroTrainer,
+        out: *mut RetroEngineMemoryInfo,
+    ) -> c_int;
+
+    pub fn retro_trainer_generation_request_free(trainer: *mut RetroTrainer, request: i32)
+    -> c_int;
+
     pub fn retro_trainer_score_tokens(
         trainer: *mut RetroTrainer,
         tokens: *const i32,
@@ -1470,6 +1599,55 @@ unsafe extern "C" {
         out_stats: *mut RetroGenerationStats,
     ) -> c_int;
 
+    pub fn retro_engine_step(
+        engine: *mut RetroEngine,
+        rows: *const RetroStepRow,
+        n_rows: usize,
+        out_rows: *mut RetroStepOutRow,
+        out_top_ids: *mut i32,
+        out_top_logprobs: *mut c_float,
+        n_top_stride: usize,
+    ) -> c_int;
+
+    pub fn retro_engine_seq_rm(engine: *mut RetroEngine, slot: i32, p0: i32, p1: i32) -> c_int;
+
+    pub fn retro_engine_seq_cp(
+        engine: *mut RetroEngine,
+        src: i32,
+        dst: i32,
+        p0: i32,
+        p1: i32,
+    ) -> c_int;
+
+    pub fn retro_engine_seq_save(
+        engine: *mut RetroEngine,
+        slot: i32,
+        flags: u32,
+        buffer: *mut u8,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
+    pub fn retro_engine_seq_load(
+        engine: *mut RetroEngine,
+        slot: i32,
+        flags: u32,
+        buffer: *const u8,
+        n_bytes: usize,
+        out_n_read: *mut usize,
+    ) -> c_int;
+
+    pub fn retro_engine_seq_pos(
+        engine: *mut RetroEngine,
+        slot: i32,
+        out_pos_min: *mut i32,
+        out_pos_max: *mut i32,
+    ) -> c_int;
+
+    pub fn retro_engine_memory(engine: *mut RetroEngine, out: *mut RetroEngineMemoryInfo) -> c_int;
+
+    pub fn retro_engine_request_free(engine: *mut RetroEngine, request: i32) -> c_int;
+
     pub fn retro_last_error() -> *const c_char;
 }
 
@@ -1784,26 +1962,40 @@ mod contract_tests {
         // engine extraction; retro_rollout.cpp keeps only wrappers and must
         // hold no decode of its own.
         let core = include_str!("../runtime/src/retro_gen_core.cpp");
+        // `llama_process` is the extended-batch spelling of the same decode, so
+        // it is scanned too: a raw call of either spelling outside the two
+        // limiter helpers would be a silent hole in the duty cycle.
         let raw: Vec<&str> = core
             .lines()
-            .filter(|line| line.contains("llama_decode(") && !line.trim_start().starts_with("//"))
+            .filter(|line| {
+                (line.contains("llama_decode(") || line.contains("llama_process("))
+                    && !line.trim_start().starts_with("//")
+            })
             .collect();
         assert_eq!(
             raw.len(),
-            2,
-            "raw llama_decode calls outside gen_core::decode: {raw:#?}"
+            4,
+            "raw decode/process calls outside gen_core::decode / decode_ext: {raw:#?}"
         );
         for line in &raw {
             assert!(
                 line.contains("return llama_decode(ctx, batch);")
-                    || line.contains("const int status = llama_decode(ctx, batch);"),
+                    || line.contains("const int status = llama_decode(ctx, batch);")
+                    || line
+                        .contains("return llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, &batch);")
+                    || line.contains(
+                        "const int status = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, &batch);"
+                    ),
                 "unexpected raw decode: {line}"
             );
         }
         let rollout = include_str!("../runtime/src/retro_rollout.cpp");
         let rollout_raw: Vec<&str> = rollout
             .lines()
-            .filter(|line| line.contains("llama_decode(") && !line.trim_start().starts_with("//"))
+            .filter(|line| {
+                (line.contains("llama_decode(") || line.contains("llama_process("))
+                    && !line.trim_start().starts_with("//")
+            })
             .collect();
         assert!(
             rollout_raw.is_empty(),
@@ -1948,6 +2140,38 @@ mod contract_tests {
         assert_eq!(size_of::<RetroSamplingParams>(), 16);
         assert_eq!(offset_of!(RetroSamplingParams, max_new_tokens), 8);
         assert_eq!(size_of::<RetroSftDataset>(), 32);
+
+        // The step-wise API structs: caller-filled rows are versioned by
+        // struct_size like every other caller-filled struct, and the output
+        // structs are pinned so the runtime and this crate cannot drift.
+        assert_eq!(size_of::<RetroStepRow>(), 64);
+        assert_eq!(align_of::<RetroStepRow>(), 8);
+        assert_eq!(offset_of!(RetroStepRow, struct_size), 0);
+        assert_eq!(offset_of!(RetroStepRow, request), 4);
+        assert_eq!(offset_of!(RetroStepRow, slot), 8);
+        assert_eq!(offset_of!(RetroStepRow, tokens), 16);
+        assert_eq!(offset_of!(RetroStepRow, n), 24);
+        assert_eq!(offset_of!(RetroStepRow, pos0), 28);
+        assert_eq!(offset_of!(RetroStepRow, sample), 32);
+        assert_eq!(offset_of!(RetroStepRow, sampling), 36);
+        assert_eq!(offset_of!(RetroStepRow, n_top_logprobs), 52);
+        assert_eq!(offset_of!(RetroStepRow, adapter), 56);
+        assert_eq!(size_of::<RetroStepOutRow>(), 20);
+        assert_eq!(align_of::<RetroStepOutRow>(), 4);
+        assert_eq!(offset_of!(RetroStepOutRow, struct_size), 0);
+        assert_eq!(offset_of!(RetroStepOutRow, token), 4);
+        assert_eq!(offset_of!(RetroStepOutRow, logprob), 8);
+        assert_eq!(offset_of!(RetroStepOutRow, n_top), 12);
+        assert_eq!(offset_of!(RetroStepOutRow, forced), 16);
+        assert_eq!(offset_of!(RetroStepOutRow, sampled), 17);
+        assert_eq!(size_of::<RetroEngineMemoryInfo>(), 40);
+        assert_eq!(align_of::<RetroEngineMemoryInfo>(), 8);
+        assert_eq!(offset_of!(RetroEngineMemoryInfo, struct_size), 0);
+        assert_eq!(offset_of!(RetroEngineMemoryInfo, n_slots), 4);
+        assert_eq!(offset_of!(RetroEngineMemoryInfo, cells_total), 8);
+        assert_eq!(offset_of!(RetroEngineMemoryInfo, cells_used), 16);
+        assert_eq!(offset_of!(RetroEngineMemoryInfo, kv_bytes), 24);
+        assert_eq!(offset_of!(RetroEngineMemoryInfo, recurrent_bytes), 32);
         // `n_topk` is appended, and lands in the tail padding the 40-byte layout
         // already carried, so the struct keeps its size. The offset assertion is
         // what pins that; the size alone would not have noticed the field.

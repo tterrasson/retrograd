@@ -26,6 +26,10 @@ struct engine_state {
     context_ptr ctx;
     // Prefix-cache bookkeeping, owned here and handed to the gen_core.
     gen_cache cache;
+    // Per-request state and reusable extended batch of the step-wise API
+    // (retro_engine_step & co.).
+    step_request_table step_requests;
+    step_batch_cache step_batch;
     // No duty-cycle limiter, no scoring counters: the engine is unthrottled.
     gen_core_env env;
     lora_adapter_ptr adapter;
@@ -714,6 +718,120 @@ extern "C" int retro_engine_generation_stats(
             return -1;
         }
         *out_stats = state->cache.stats;
+        return 0;
+    });
+}
+
+extern "C" int retro_engine_step(
+        retro_engine * engine,
+        const retro_step_row * rows,
+        size_t n_rows,
+        retro_step_out_row * out_rows,
+        int32_t * out_top_ids,
+        float * out_top_logprobs,
+        size_t n_top_stride) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        const reasoning_budget_plan * plan = resolve_reasoning_budget(state->chat);
+        if (!plan) {
+            return -1;
+        }
+        gen_core core = engine_core(*state);
+        return core.step(rows, n_rows, out_rows, out_top_ids, out_top_logprobs, n_top_stride,
+                state->step_requests, plan, state->step_batch.get(state->ctx.get()));
+    });
+}
+
+extern "C" int retro_engine_seq_rm(retro_engine * engine, int32_t slot, int32_t p0, int32_t p1) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        gen_core core = engine_core(*state);
+        return core.seq_rm(slot, p0, p1) ? 0 : -1;
+    });
+}
+
+extern "C" int retro_engine_seq_cp(
+        retro_engine * engine, int32_t src, int32_t dst, int32_t p0, int32_t p1) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        gen_core core = engine_core(*state);
+        return core.seq_cp(src, dst, p0, p1) ? 0 : -1;
+    });
+}
+
+extern "C" int retro_engine_seq_save(
+        retro_engine * engine,
+        int32_t slot,
+        uint32_t flags,
+        uint8_t * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        gen_core core = engine_core(*state);
+        return core.seq_save(slot, flags, buffer, n_buffer, out_n_bytes);
+    });
+}
+
+extern "C" int retro_engine_seq_load(
+        retro_engine * engine,
+        int32_t slot,
+        uint32_t flags,
+        const uint8_t * buffer,
+        size_t n_bytes,
+        size_t * out_n_read) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        gen_core core = engine_core(*state);
+        return core.seq_load(slot, flags, buffer, n_bytes, out_n_read);
+    });
+}
+
+extern "C" int retro_engine_seq_pos(
+        retro_engine * engine, int32_t slot, int32_t * out_pos_min, int32_t * out_pos_max) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        gen_core core = engine_core(*state);
+        return core.seq_pos(slot, out_pos_min, out_pos_max);
+    });
+}
+
+extern "C" int retro_engine_memory(retro_engine * engine, retro_engine_memory_info * out) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        gen_core core = engine_core(*state);
+        return core.memory(out);
+    });
+}
+
+extern "C" int retro_engine_request_free(retro_engine * engine, int32_t request) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        state->step_requests.requests.erase(request);
         return 0;
     });
 }

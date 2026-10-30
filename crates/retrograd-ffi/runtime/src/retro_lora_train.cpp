@@ -1095,6 +1095,62 @@ extern "C" int retro_trainer_generate_continuous_batch(
             out_forced);
 }
 
+extern "C" int retro_trainer_generation_step(
+        retro_trainer * trainer,
+        const retro_step_row * rows,
+        size_t n_rows,
+        retro_step_out_row * out_rows,
+        int32_t * out_top_ids,
+        float * out_top_logprobs,
+        size_t n_top_stride) {
+    return retro::generation_step_impl(
+            trainer, rows, n_rows, out_rows, out_top_ids, out_top_logprobs, n_top_stride);
+}
+
+extern "C" int retro_trainer_generation_seq_rm(
+        retro_trainer * trainer, int32_t slot, int32_t p0, int32_t p1) {
+    return retro::generation_seq_rm_impl(trainer, slot, p0, p1);
+}
+
+extern "C" int retro_trainer_generation_seq_cp(
+        retro_trainer * trainer, int32_t src, int32_t dst, int32_t p0, int32_t p1) {
+    return retro::generation_seq_cp_impl(trainer, src, dst, p0, p1);
+}
+
+extern "C" int retro_trainer_generation_seq_save(
+        retro_trainer * trainer,
+        int32_t slot,
+        uint32_t flags,
+        uint8_t * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes) {
+    return retro::generation_seq_save_impl(trainer, slot, flags, buffer, n_buffer, out_n_bytes);
+}
+
+extern "C" int retro_trainer_generation_seq_load(
+        retro_trainer * trainer,
+        int32_t slot,
+        uint32_t flags,
+        const uint8_t * buffer,
+        size_t n_bytes,
+        size_t * out_n_read) {
+    return retro::generation_seq_load_impl(trainer, slot, flags, buffer, n_bytes, out_n_read);
+}
+
+extern "C" int retro_trainer_generation_seq_pos(
+        retro_trainer * trainer, int32_t slot, int32_t * out_pos_min, int32_t * out_pos_max) {
+    return retro::generation_seq_pos_impl(trainer, slot, out_pos_min, out_pos_max);
+}
+
+extern "C" int retro_trainer_generation_memory(
+        retro_trainer * trainer, retro_engine_memory_info * out) {
+    return retro::generation_memory_impl(trainer, out);
+}
+
+extern "C" int retro_trainer_generation_request_free(retro_trainer * trainer, int32_t request) {
+    return retro::generation_request_free_impl(trainer, request);
+}
+
 extern "C" int retro_trainer_score_tokens(
         retro_trainer * trainer,
         const int32_t * tokens,

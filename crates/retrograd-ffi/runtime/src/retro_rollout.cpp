@@ -126,6 +126,128 @@ int generate_continuous_batch_impl(
     });
 }
 
+// The context the step-wise generation API runs on: the dedicated generation
+// context when the run has one, the main context otherwise - the same rule the
+// batched generators use.
+llama_context * generation_ctx_of(trainer_state & state) {
+    return state.generation_ctx ? state.generation_ctx.get() : state.ctx.get();
+}
+
+int generation_step_impl(
+        retro_trainer * trainer,
+        const retro_step_row * rows,
+        size_t n_rows,
+        retro_step_out_row * out_rows,
+        int32_t * out_top_ids,
+        float * out_top_logprobs,
+        size_t n_top_stride) {
+    return boundary([&]() -> int {
+        trainer_state * state = checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        const reasoning_budget_plan * plan = resolve_reasoning_budget(state->chat);
+        if (!plan) {
+            return -1;
+        }
+        llama_context * ctx = generation_ctx_of(*state);
+        gen_core core = core_over(*state, ctx);
+        return core.step(rows, n_rows, out_rows, out_top_ids, out_top_logprobs, n_top_stride,
+                state->step_requests, plan, state->step_batch.get(ctx));
+    });
+}
+
+int generation_seq_rm_impl(retro_trainer * trainer, int32_t slot, int32_t p0, int32_t p1) {
+    return boundary([&]() -> int {
+        trainer_state * state = checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        gen_core core = core_over(*state, generation_ctx_of(*state));
+        return core.seq_rm(slot, p0, p1) ? 0 : -1;
+    });
+}
+
+int generation_seq_cp_impl(
+        retro_trainer * trainer, int32_t src, int32_t dst, int32_t p0, int32_t p1) {
+    return boundary([&]() -> int {
+        trainer_state * state = checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        gen_core core = core_over(*state, generation_ctx_of(*state));
+        return core.seq_cp(src, dst, p0, p1) ? 0 : -1;
+    });
+}
+
+int generation_seq_save_impl(
+        retro_trainer * trainer,
+        int32_t slot,
+        uint32_t flags,
+        uint8_t * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes) {
+    return boundary([&]() -> int {
+        trainer_state * state = checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        gen_core core = core_over(*state, generation_ctx_of(*state));
+        return core.seq_save(slot, flags, buffer, n_buffer, out_n_bytes);
+    });
+}
+
+int generation_seq_load_impl(
+        retro_trainer * trainer,
+        int32_t slot,
+        uint32_t flags,
+        const uint8_t * buffer,
+        size_t n_bytes,
+        size_t * out_n_read) {
+    return boundary([&]() -> int {
+        trainer_state * state = checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        gen_core core = core_over(*state, generation_ctx_of(*state));
+        return core.seq_load(slot, flags, buffer, n_bytes, out_n_read);
+    });
+}
+
+int generation_seq_pos_impl(
+        retro_trainer * trainer, int32_t slot, int32_t * out_pos_min, int32_t * out_pos_max) {
+    return boundary([&]() -> int {
+        trainer_state * state = checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        gen_core core = core_over(*state, generation_ctx_of(*state));
+        return core.seq_pos(slot, out_pos_min, out_pos_max);
+    });
+}
+
+int generation_memory_impl(retro_trainer * trainer, retro_engine_memory_info * out) {
+    return boundary([&]() -> int {
+        trainer_state * state = checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        gen_core core = core_over(*state, generation_ctx_of(*state));
+        return core.memory(out);
+    });
+}
+
+int generation_request_free_impl(retro_trainer * trainer, int32_t request) {
+    return boundary([&]() -> int {
+        trainer_state * state = checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        state->step_requests.requests.erase(request);
+        return 0;
+    });
+}
+
 int score_tokens_impl(
         retro_trainer * trainer,
         const int32_t * tokens,

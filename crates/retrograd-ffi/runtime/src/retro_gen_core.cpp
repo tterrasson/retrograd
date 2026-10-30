@@ -658,134 +658,181 @@ bool prefill_continuous_prompts(
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// The reasoning budget: one llama.cpp state machine per row of a call.
+} // namespace
 
-// One llama.cpp reasoning-budget state machine per row of a call. Retrograd
-// samples on its own - the CPU oracle or a device chain - so the machine is
-// used for its state and not as a sampler: once it is forcing, its token
-// replaces the sampled one, which is the only token its masked distribution
-// could have drawn. Rows report which of their tokens were forced, since those
-// are the runtime's choice and not the policy's.
+// ---------------------------------------------------------------------------
+// The reasoning budget: one llama.cpp state machine per row of a batched call,
+// or per request of a step-wise one.
+
+// Retrograd samples on its own - the CPU oracle or a device chain - so the
+// machine is used for its state and not as a sampler: once it is forcing, its
+// token replaces the sampled one, which is the only token its masked
+// distribution could have drawn. Rows and requests report which of their
+// tokens were forced, since those are the runtime's choice and not the
+// policy's. budget_machine is declared in retro_runtime.hpp (step_request_state
+// holds one), so its definitions sit at namespace scope, outside the anonymous
+// block below.
+
+budget_machine::budget_machine(const llama_vocab * vocab, const reasoning_budget_plan * plan) {
+    if (!plan || !plan->active) {
+        return;
+    }
+    plan_ = plan;
+    sampler_ = common_reasoning_budget_init(
+            vocab, { plan->start }, plan->ends, plan->forced, plan->budget);
+}
+
+budget_machine::~budget_machine() {
+    if (sampler_) {
+        llama_sampler_free(sampler_);
+    }
+}
+
+budget_machine::budget_machine(budget_machine && other) noexcept
+    : plan_(other.plan_), sampler_(other.sampler_), force_pos_(other.force_pos_) {
+    other.plan_ = nullptr;
+    other.sampler_ = nullptr;
+    other.force_pos_ = 0;
+}
+
+budget_machine & budget_machine::operator=(budget_machine && other) noexcept {
+    if (this != &other) {
+        if (sampler_) {
+            llama_sampler_free(sampler_);
+        }
+        plan_ = other.plan_;
+        sampler_ = other.sampler_;
+        force_pos_ = other.force_pos_;
+        other.plan_ = nullptr;
+        other.sampler_ = nullptr;
+        other.force_pos_ = 0;
+    }
+    return *this;
+}
+
+// One past the earliest end tag in [from, to), or null if none closes there.
+const int32_t * budget_machine::closing_tag_end(const int32_t * from, const int32_t * to) const {
+    const int32_t * closed = nullptr;
+    const int32_t * earliest = to;
+    for (const auto & tag : plan_->ends) {
+        const int32_t * found = std::search(from, to, tag.begin(), tag.end());
+        if (found != to && found < earliest) {
+            earliest = found;
+            closed = found + tag.size();
+        }
+    }
+    return closed;
+}
+
+void budget_machine::accept(int32_t token) {
+    const auto before = common_reasoning_budget_get_state(sampler_);
+    llama_sampler_accept(sampler_, token);
+    if (common_reasoning_budget_get_state(sampler_) == REASONING_BUDGET_FORCING
+            && before != REASONING_BUDGET_FORCING) {
+        force_pos_ = 0;
+    }
+}
+
+// Replays the end of the prompt, as long as the template's generation
+// prompt, so a prompt that already opened the reasoning block starts the
+// machine counting and one that closed it starts it done.
+//
+// A machine that starts forcing on a prompt token - a budget of zero on an
+// opening tag, or one spent inside the prompt - stops the replay there: the
+// machine reads every token it accepts while forcing as the next forced
+// one, so the prompt's newline after the opening tag would stand for the
+// end tag and the tag would never be emitted. The rest of the prompt
+// belongs to the prompt, unless it closes the block itself (an empty block
+// written by the template): then the forced sequence is accepted in its
+// place, which leaves the machine done, and the replay resumes after the tag.
+void budget_machine::prime(const int32_t * prompt, size_t n_prompt) {
+    if (!plan_ || n_prompt == 0) {
+        return;
+    }
+    const int32_t * end = prompt + n_prompt;
+    const int32_t * at = prompt + (n_prompt - std::min(plan_->n_prompt_tail, n_prompt));
+    while (at != end) {
+        accept(*at++);
+        if (common_reasoning_budget_get_state(sampler_) != REASONING_BUDGET_FORCING) {
+            continue;
+        }
+        const int32_t * closed = closing_tag_end(at, end);
+        if (!closed) {
+            return;
+        }
+        for (const int32_t token : plan_->forced) {
+            accept(token);
+        }
+        at = closed;
+    }
+}
+
+// The token to emit in place of `sampled`, and whether the budget forced it.
+int32_t budget_machine::next(int32_t sampled, bool & forced) {
+    forced = false;
+    if (!plan_) {
+        return sampled;
+    }
+    int32_t token = sampled;
+    if (common_reasoning_budget_get_state(sampler_) == REASONING_BUDGET_FORCING) {
+        // The machine forces exactly `forced`, one token per accept, so a
+        // forcing machine whose local position ran past it is out of step.
+        GGML_ASSERT(force_pos_ < plan_->forced.size());
+        token = plan_->forced[force_pos_++];
+        forced = true;
+    }
+    accept(token);
+    // The forced sequence is emitted whole: the machine is done exactly
+    // when the last forced token went out, and still forcing before.
+    if (forced) {
+        const bool done = force_pos_ == plan_->forced.size();
+        const auto after = common_reasoning_budget_get_state(sampler_);
+        GGML_ASSERT(done ? after == REASONING_BUDGET_DONE : after == REASONING_BUDGET_FORCING);
+    }
+    return token;
+}
+
+namespace {
+
+// Whether two derived budget plans describe the same machine configuration.
+bool same_reasoning_plan(const reasoning_budget_plan & left, const reasoning_budget_plan & right) {
+    return left.active == right.active
+            && left.budget == right.budget
+            && left.start == right.start
+            && left.ends == right.ends
+            && left.forced == right.forced
+            && left.n_prompt_tail == right.n_prompt_tail;
+}
+
+// One budget machine per row of a batched call.
 class reasoning_budget_rows {
 public:
     reasoning_budget_rows(const llama_vocab * vocab, const reasoning_budget_plan * plan, size_t n_rows) {
         if (!plan || !plan->active) {
             return;
         }
-        plan_ = plan;
-        rows_.resize(n_rows);
-        for (row_state & row : rows_) {
-            row.sampler = common_reasoning_budget_init(
-                    vocab, { plan->start }, plan->ends, plan->forced, plan->budget);
-        }
-    }
-
-    ~reasoning_budget_rows() {
-        for (row_state & row : rows_) {
-            if (row.sampler) {
-                llama_sampler_free(row.sampler);
-            }
+        rows_.reserve(n_rows);
+        for (size_t row = 0; row < n_rows; ++row) {
+            rows_.emplace_back(vocab, plan);
         }
     }
 
     reasoning_budget_rows(const reasoning_budget_rows &) = delete;
     reasoning_budget_rows & operator=(const reasoning_budget_rows &) = delete;
 
-    // Replays the end of the prompt, as long as the template's generation
-    // prompt, so a prompt that already opened the reasoning block starts the
-    // row counting and one that closed it starts it done.
-    //
-    // A machine that starts forcing on a prompt token - a budget of zero on an
-    // opening tag, or one spent inside the prompt - stops the replay there: the
-    // machine reads every token it accepts while forcing as the next forced
-    // one, so the prompt's newline after the opening tag would stand for the
-    // end tag and the tag would never be emitted. The rest of the prompt
-    // belongs to the prompt, unless it closes the block itself (an empty block
-    // written by the template): then the forced sequence is accepted in its
-    // place, which leaves the machine done, and the replay resumes after the tag.
     void prime(size_t row, const int32_t * prompt, size_t n_prompt) {
-        if (!plan_) {
+        if (rows_.empty()) {
             return;
         }
-        const int32_t * end = prompt + n_prompt;
-        const int32_t * at = prompt + (n_prompt - std::min(plan_->n_prompt_tail, n_prompt));
-        while (at != end) {
-            accept(row, *at++);
-            if (common_reasoning_budget_get_state(rows_[row].sampler) != REASONING_BUDGET_FORCING) {
-                continue;
-            }
-            const int32_t * closed = closing_tag_end(at, end);
-            if (!closed) {
-                return;
-            }
-            for (const int32_t token : plan_->forced) {
-                accept(row, token);
-            }
-            at = closed;
-        }
+        rows_[row].prime(prompt, n_prompt);
     }
 
-    // The token the row emits in place of `sampled`, and whether the budget
-    // forced it.
     int32_t next(size_t row, int32_t sampled, bool & forced) {
-        forced = false;
-        if (!plan_) {
-            return sampled;
-        }
-        row_state & state = rows_[row];
-        int32_t token = sampled;
-        if (common_reasoning_budget_get_state(state.sampler) == REASONING_BUDGET_FORCING) {
-            // The machine forces exactly `forced`, one token per accept, so a
-            // forcing machine whose local position ran past it is out of step.
-            GGML_ASSERT(state.force_pos < plan_->forced.size());
-            token = plan_->forced[state.force_pos++];
-            forced = true;
-        }
-        accept(row, token);
-        // The forced sequence is emitted whole: the machine is done exactly
-        // when the last forced token went out, and still forcing before.
-        if (forced) {
-            const bool done = state.force_pos == plan_->forced.size();
-            const auto after = common_reasoning_budget_get_state(state.sampler);
-            GGML_ASSERT(done ? after == REASONING_BUDGET_DONE : after == REASONING_BUDGET_FORCING);
-        }
-        return token;
+        return rows_.empty() ? sampled : rows_[row].next(sampled, forced);
     }
 
 private:
-    struct row_state {
-        llama_sampler * sampler = nullptr;
-        // Position in `forced`, which the machine keeps to itself.
-        size_t force_pos = 0;
-    };
-
-    // One past the earliest end tag in [from, to), or null if none closes there.
-    const int32_t * closing_tag_end(const int32_t * from, const int32_t * to) const {
-        const int32_t * closed = nullptr;
-        const int32_t * earliest = to;
-        for (const auto & tag : plan_->ends) {
-            const int32_t * found = std::search(from, to, tag.begin(), tag.end());
-            if (found != to && found < earliest) {
-                earliest = found;
-                closed = found + tag.size();
-            }
-        }
-        return closed;
-    }
-
-    void accept(size_t row, int32_t token) {
-        row_state & state = rows_[row];
-        const auto before = common_reasoning_budget_get_state(state.sampler);
-        llama_sampler_accept(state.sampler, token);
-        if (common_reasoning_budget_get_state(state.sampler) == REASONING_BUDGET_FORCING
-                && before != REASONING_BUDGET_FORCING) {
-            state.force_pos = 0;
-        }
-    }
-
-    const reasoning_budget_plan * plan_ = nullptr;
-    std::vector<row_state> rows_;
+    std::vector<budget_machine> rows_;
 };
 
 // Writes one emitted token's forced flag when the caller asked for them.
@@ -1180,6 +1227,23 @@ int gen_core::decode(llama_batch & batch) {
     // The debt is recorded either way - the device did the work - but a failing
     // decode is unwinding into an error the caller is waiting on, so the repayment
     // moves to the next boundary rather than delaying it.
+    if (status == 0) {
+        env.duty_cycle->idle_if_needed();
+    }
+    return status;
+}
+
+int gen_core::decode_ext(llama_batch_ext & batch) {
+    // Same owner policy as decode(), over the extended batch the step API
+    // builds: one llama_process per step call.
+    if (!env.duty_cycle || !env.duty_cycle->enabled()) {
+        return llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, &batch);
+    }
+    env.duty_cycle->begin_window();
+    const int status = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, &batch);
+    // Fence whatever was submitted, failure included: see decode().
+    llama_synchronize(ctx);
+    env.duty_cycle->account_window();
     if (status == 0) {
         env.duty_cycle->idle_if_needed();
     }
@@ -1681,6 +1745,428 @@ int gen_core::generate_continuous_batch(
     } else {
         clear_generation_memory();
     }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// The step-wise API: one llama_process per call, raw sequence operations, and
+// the pool occupancy report. The plan comes from the caller; the execution is
+// this core's. See retro_lora_train.h for the published contract.
+
+void llama_batch_ext_deleter::operator()(llama_batch_ext * batch) const {
+    if (batch) {
+        llama_batch_ext_free(batch);
+    }
+}
+
+llama_batch_ext * step_batch_cache::get(llama_context * target) {
+    if (!target) {
+        return nullptr;
+    }
+    if (ctx != target || !batch) {
+        batch.reset(llama_batch_ext_init(target));
+        ctx = target;
+    }
+    return batch.get();
+}
+
+int gen_core::step(
+        const retro_step_row * rows,
+        size_t n_rows,
+        retro_step_out_row * out_rows,
+        int32_t * out_top_ids,
+        float * out_top_logprobs,
+        size_t n_top_stride,
+        step_request_table & requests,
+        const reasoning_budget_plan * plan,
+        llama_batch_ext * ext_batch) {
+    if (!rows || n_rows == 0 || !out_rows) {
+        set_error("step rows and output rows are required");
+        return -3;
+    }
+    const int32_t n_seq_max = llama_n_seq_max(ctx);
+    const int32_t n_batch = llama_n_batch(ctx);
+    const int64_t n_ctx_seq = llama_n_ctx_seq(ctx);
+    if (n_rows > static_cast<size_t>(n_batch)
+            || (n_top_stride != 0 && n_rows > SIZE_MAX / n_top_stride)) {
+        set_error("the step row count or output shape exceeds capacity");
+        return -3;
+    }
+    // Read the evolution key before any other field: an older or truncated
+    // caller may not own sizeof(retro_step_row) bytes.
+    constexpr size_t row_prefix = offsetof(retro_step_row, adapter) + sizeof(int32_t);
+    std::vector<int32_t> seen_requests;
+    size_t total = 0;
+    for (size_t r = 0; r < n_rows; ++r) {
+        const retro_step_row & row = rows[r];
+        if (row.struct_size < row_prefix) {
+            set_error("retro_step_row.struct_size is too small for this build");
+            return -3;
+        }
+        if (!row.tokens || row.n == 0) {
+            set_error("a step row requires at least one token");
+            return -3;
+        }
+        if (row.slot < 0 || row.slot >= n_seq_max) {
+            set_error("step row slot is outside the context's sequence range");
+            return -3;
+        }
+        if (row.adapter != 0) {
+            set_error("step row adapter must be 0 (the active adapter) in this build");
+            return -3;
+        }
+        if (row.pos0 < 0 || static_cast<int64_t>(row.pos0) + row.n > n_ctx_seq) {
+            set_error("step row positions exceed the per-sequence context");
+            return -3;
+        }
+        for (size_t previous = 0; previous < r; ++previous) {
+            const retro_step_row & other = rows[previous];
+            if (row.slot == other.slot
+                    && row.pos0 < static_cast<int64_t>(other.pos0) + other.n
+                    && other.pos0 < static_cast<int64_t>(row.pos0) + row.n) {
+                set_error("step rows overlap in the same sequence slot");
+                return -3;
+            }
+        }
+        if (!validate_tokens(row.tokens, row.n)) {
+            return -3;
+        }
+        if (row.n > static_cast<uint32_t>(n_batch)
+                || total + row.n > static_cast<size_t>(n_batch)) {
+            set_error("the step's tokens exceed the context's physical batch (n_batch)");
+            return -3;
+        }
+        total += row.n;
+        if (row.n_top_logprobs > 0 && (!out_top_ids || !out_top_logprobs)) {
+            set_error("top logprobs requested but the output buffers are missing");
+            return -3;
+        }
+        if (row.n_top_logprobs > n_top_stride) {
+            set_error("a step row's n_top_logprobs exceeds the output stride");
+            return -3;
+        }
+        if (row.sample) {
+            if (row.request < 0) {
+                set_error("a sampling step row requires a request id");
+                return -3;
+            }
+            // The caller owns stopping; only the distribution parameters
+            // participate in this primitive's sampling contract.
+            retro_sampling_params sampling = row.sampling;
+            sampling.max_new_tokens = 1;
+            if (!validate_sampling(sampling)) {
+                return -3;
+            }
+        }
+        if (row.request >= 0) {
+            if (std::find(seen_requests.begin(), seen_requests.end(), row.request)
+                    != seen_requests.end()) {
+                set_error("a request id appears twice in one step");
+                return -3;
+            }
+            seen_requests.push_back(row.request);
+        }
+    }
+
+    // The step mutates raw KV outside the prefix-cache protocol: forget the
+    // bookkeeping so a later batched call never trusts a stale residency.
+    if (cache) {
+        cache->forget_bookkeeping();
+    }
+
+    gen_detail::batch_ext_guard owned(ext_batch ? nullptr : ctx);
+    llama_batch_ext * ext = ext_batch ? ext_batch : owned.batch;
+    if (!ext) {
+        set_error("failed to allocate the step batch");
+        return -1;
+    }
+    llama_batch_ext_clear(ext);
+    std::vector<int32_t> last_index(n_rows, -1);
+    for (size_t r = 0; r < n_rows; ++r) {
+        const retro_step_row & row = rows[r];
+        for (uint32_t i = 0; i < row.n; ++i) {
+            const int32_t index = llama_batch_ext_add_token(
+                    ext, static_cast<llama_seq_id>(row.slot),
+                    static_cast<llama_token>(row.tokens[i]));
+            if (index < 0) {
+                set_error("the step batch is full or the slot is invalid");
+                return -1;
+            }
+            const llama_pos pos = static_cast<llama_pos>(static_cast<int64_t>(row.pos0) + i);
+            if (!llama_batch_ext_set_pos(ext, index, &pos)) {
+                set_error("failed to set a step token's position");
+                return -1;
+            }
+            if (i + 1 == row.n) {
+                last_index[r] = index;
+                if (row.sample && !llama_batch_ext_set_output_logits(ext, index, true)) {
+                    set_error("failed to request logits for a sampling step row");
+                    return -1;
+                }
+            }
+        }
+    }
+    const int decode_status = decode_ext(*ext);
+    const llama_vocab * vocab = this->vocab();
+    const size_t n_vocab = this->n_vocab();
+    // Record only input tokens actually decoded. On a partial failure the
+    // caller resumes after seq_pos(), and the undecoded suffix must not have
+    // primed the request's budget ahead of its KV state.
+    for (size_t r = 0; r < n_rows; ++r) {
+        const retro_step_row & row = rows[r];
+        if (row.request < 0) {
+            continue;
+        }
+        step_request_state & request = requests.requests[row.request];
+        if (!request.plan_known || !same_reasoning_plan(request.plan_snapshot, *plan)) {
+            request.budget = budget_machine();
+            request.plan_snapshot = *plan;
+            // Own the plan the machine reads: a later set_reasoning_budget()
+            // replaces the model's plan, including its forced-token vector.
+            request.budget = budget_machine(vocab, &request.plan_snapshot);
+            request.plan_known = true;
+            request.primed = false;
+            request.prompt_tail.clear();
+        }
+        if (!plan->active || request.primed) {
+            continue;
+        }
+        size_t decoded = row.n;
+        if (decode_status != 0) {
+            const llama_memory_t memory = llama_get_memory(ctx);
+            const int64_t last = memory ? llama_memory_seq_pos_max(memory, row.slot) : -1;
+            decoded = last < row.pos0 ? 0 : std::min<size_t>(row.n, last - row.pos0 + 1);
+        }
+        // Keep exactly the final n_prompt_tail tokens across chunk boundaries.
+        request.prompt_tail.insert(request.prompt_tail.end(), row.tokens, row.tokens + decoded);
+        if (request.prompt_tail.size() > plan->n_prompt_tail) {
+            request.prompt_tail.erase(request.prompt_tail.begin(),
+                    request.prompt_tail.end() - plan->n_prompt_tail);
+        }
+    }
+    if (decode_status != 0) {
+        set_error("llama_process failed during step: the KV may hold a prefix of the "
+                  "submitted tokens (query it with the seq_pos entry point) - do not "
+                  "resubmit tokens that are already resident");
+        return -1;
+    }
+
+    gen_detail::sampler_scratch scratch;
+    std::vector<int32_t> order;
+    std::vector<double> work;
+    for (size_t r = 0; r < n_rows; ++r) {
+        const retro_step_row & row = rows[r];
+        retro_step_out_row & out = out_rows[r];
+        out.struct_size = sizeof(retro_step_out_row);
+        out.token = 0;
+        out.logprob = 0.0f;
+        out.n_top = 0;
+        out.forced = 0;
+        out.sampled = 0;
+        if (!row.sample) {
+            continue;
+        }
+        // The index llama_batch_ext_add_token returned resolves through the
+        // context's output map after llama_process: exactly what
+        // llama_get_logits_ith (and the sampled-token / target-logprob
+        // accessors) accept for an extended batch.
+        const float * logits = llama_get_logits_ith(ctx, last_index[r]);
+        if (!logits) {
+            set_error("the step decode produced no logits for a sampling row");
+            return -1;
+        }
+        step_request_state & request = requests.requests[row.request];
+        if (!request.seeded) {
+            request.rng.seed(row.sampling.seed);
+            request.seeded = true;
+        }
+        if (request.budget.active() && !request.primed) {
+            request.budget.prime(request.prompt_tail.data(), request.prompt_tail.size());
+            request.primed = true;
+        }
+        const retro_sampling_params & params = row.sampling;
+        const int32_t sampled = sample_token(
+                logits, n_vocab, params.temperature, params.top_p, request.rng, scratch);
+        bool forced = false;
+        const int32_t token = request.budget.next(sampled, forced);
+        out.token = token;
+        out.forced = forced ? 1 : 0;
+        out.sampled = 1;
+        // The same expression the batched generators report, so a step-wise
+        // loop reproduces their logprobs bit for bit.
+        out.logprob = params.temperature == 1.0f
+                ? static_cast<float>(
+                        static_cast<double>(logits[token]) - scratch.max - std::log(scratch.total))
+                : token_logprob(logits, n_vocab, token, scratch.probs);
+        const uint32_t k = std::min<uint32_t>(
+                row.n_top_logprobs,
+                static_cast<uint32_t>(std::min<size_t>(n_top_stride, n_vocab)));
+        if (k > 0) {
+            top_token_logprobs(logits, n_vocab, k, order, work,
+                    out_top_ids + r * n_top_stride, out_top_logprobs + r * n_top_stride);
+            out.n_top = k;
+        }
+    }
+    return 0;
+}
+
+bool gen_core::seq_rm(int32_t slot, int32_t p0, int32_t p1) {
+    llama_memory_t memory = llama_get_memory(ctx);
+    if (!memory) {
+        set_error("the context has no sequence memory");
+        return false;
+    }
+    if (slot < 0 || slot >= llama_n_seq_max(ctx)) {
+        set_error("slot is outside the context's sequence range");
+        return false;
+    }
+    if (!llama_memory_seq_rm(memory, static_cast<llama_seq_id>(slot), p0, p1)) {
+        set_error("the memory cannot remove that partial range; "
+                  "remove the whole sequence instead");
+        return false;
+    }
+    if (cache) {
+        cache->forget_bookkeeping();
+    }
+    return true;
+}
+
+bool gen_core::seq_cp(int32_t src, int32_t dst, int32_t p0, int32_t p1) {
+    llama_memory_t memory = llama_get_memory(ctx);
+    if (!memory) {
+        set_error("the context has no sequence memory");
+        return false;
+    }
+    const int32_t n_seq_max = llama_n_seq_max(ctx);
+    if (src < 0 || src >= n_seq_max || dst < 0 || dst >= n_seq_max) {
+        set_error("seq_cp slots are outside the context's sequence range");
+        return false;
+    }
+    llama_memory_seq_cp(memory, static_cast<llama_seq_id>(src), static_cast<llama_seq_id>(dst), p0, p1);
+    if (cache) {
+        cache->forget_bookkeeping();
+    }
+    return true;
+}
+
+int gen_core::seq_save(
+        int32_t slot, uint32_t flags, uint8_t * buffer, size_t n_buffer, size_t * out_n_bytes) {
+    if (!out_n_bytes) {
+        set_error("out_n_bytes is required");
+        return -1;
+    }
+    constexpr uint32_t known_flags = RETRO_STATE_SEQ_FLAGS_PARTIAL_ONLY;
+    if (flags & ~known_flags) {
+        set_error("only host snapshots (flags 0 or PARTIAL_ONLY) are supported");
+        return -1;
+    }
+    if (slot < 0 || slot >= llama_n_seq_max(ctx)) {
+        set_error("slot is outside the context's sequence range");
+        return -1;
+    }
+    const size_t required = llama_state_seq_get_size_ext(ctx, slot, flags);
+    if (required == 0) {
+        set_error("failed to determine the sequence snapshot size");
+        return -1;
+    }
+    *out_n_bytes = required;
+    if (!buffer) {
+        return 0;
+    }
+    if (n_buffer < required) {
+        set_error("the save buffer is too small for this sequence's state");
+        return -2;
+    }
+    const size_t written = llama_state_seq_get_data_ext(ctx, buffer, required, slot, flags);
+    if (written == 0) {
+        set_error("saving the sequence state produced no data");
+        return -1;
+    }
+    *out_n_bytes = written;
+    return 0;
+}
+
+int gen_core::seq_load(
+        int32_t slot, uint32_t flags, const uint8_t * buffer, size_t n_bytes, size_t * out_n_read) {
+    if (!out_n_read) {
+        set_error("out_n_read is required");
+        return -1;
+    }
+    constexpr uint32_t known_flags = RETRO_STATE_SEQ_FLAGS_PARTIAL_ONLY;
+    if (flags & ~known_flags) {
+        set_error("only host snapshots (flags 0 or PARTIAL_ONLY) are supported");
+        return -1;
+    }
+    if (slot < 0 || slot >= llama_n_seq_max(ctx)) {
+        set_error("slot is outside the context's sequence range");
+        return -1;
+    }
+    if (!buffer || n_bytes == 0) {
+        set_error("a snapshot buffer is required");
+        return -1;
+    }
+    if (cache) {
+        cache->forget_bookkeeping();
+    }
+    const size_t read = llama_state_seq_set_data_ext(ctx, buffer, n_bytes, slot, flags);
+    if (read == 0) {
+        set_error("the snapshot was refused (wrong size, flags or corrupted data)");
+        return -1;
+    }
+    *out_n_read = read;
+    return 0;
+}
+
+int gen_core::seq_pos(int32_t slot, int32_t * out_pos_min, int32_t * out_pos_max) {
+    if (!out_pos_min || !out_pos_max) {
+        set_error("the position outputs are required");
+        return -1;
+    }
+    if (slot < 0 || slot >= llama_n_seq_max(ctx)) {
+        set_error("slot is outside the context's sequence range");
+        return -1;
+    }
+    llama_memory_t memory = llama_get_memory(ctx);
+    if (!memory) {
+        set_error("the context has no sequence memory");
+        return -1;
+    }
+    *out_pos_min = llama_memory_seq_pos_min(memory, static_cast<llama_seq_id>(slot));
+    *out_pos_max = llama_memory_seq_pos_max(memory, static_cast<llama_seq_id>(slot));
+    return 0;
+}
+
+int gen_core::memory(retro_engine_memory_info * out) {
+    if (!out) {
+        set_error("out is required");
+        return -1;
+    }
+    out->struct_size = sizeof(retro_engine_memory_info);
+    out->n_slots = static_cast<uint32_t>(llama_n_seq_max(ctx));
+    out->cells_total = static_cast<uint64_t>(llama_n_ctx(ctx));
+    llama_memory_t memory = llama_get_memory(ctx);
+    uint64_t used = 0;
+    uint64_t recurrent = 0;
+    for (int32_t slot = 0; slot < llama_n_seq_max(ctx); ++slot) {
+        if (memory) {
+            const llama_pos pos_min = llama_memory_seq_pos_min(memory, static_cast<llama_seq_id>(slot));
+            const llama_pos pos_max = llama_memory_seq_pos_max(memory, static_cast<llama_seq_id>(slot));
+            if (pos_min >= 0) {
+                used += static_cast<uint64_t>(pos_max - pos_min + 1);
+            }
+        }
+        // The fork's PARTIAL_ONLY state: recurrent state, plus the SWA KV of a
+        // sliding-window layer where the model has one.
+        recurrent += llama_state_seq_get_size_ext(
+                ctx, static_cast<llama_seq_id>(slot), LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+    }
+    out->cells_used = used;
+    uint64_t kv = 0;
+    for (const auto & item : context_memory_by_buffer(ctx)) {
+        kv += item.second.kv;
+    }
+    out->kv_bytes = kv;
+    out->recurrent_bytes = recurrent;
     return 0;
 }
 

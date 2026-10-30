@@ -1132,6 +1132,77 @@ typedef struct retro_generation_sequence {
     retro_sampling_params sampling;
 } retro_generation_sequence;
 
+// --- Step-wise generation API -------------------------------------------------
+//
+// A step through the shared generation core: one call runs exactly one
+// llama_process over the rows it is given, and the caller drives the loop
+// (admission, chunking, stop criteria) itself. The plan of a step comes from
+// the caller; its execution is the runtime's.
+//
+// Input rows carry `struct_size`, set by the caller to sizeof(retro_step_row).
+// The runtime checks it before reading the row fields. Output structs have
+// their `struct_size` filled by the runtime.
+
+// Flags for retro_*_seq_save / retro_*_seq_load, mirroring the fork's
+// LLAMA_STATE_SEQ_FLAGS_*: NONE saves the whole sequence state (attention KV
+// and recurrent state), PARTIAL_ONLY saves only the partial state (recurrent
+// state, plus the SWA KV of a sliding-window layer). ON_DEVICE mirrors the
+// fork's value but is unsupported by these byte-buffer snapshot operations.
+#define RETRO_STATE_SEQ_FLAGS_NONE         0u
+#define RETRO_STATE_SEQ_FLAGS_PARTIAL_ONLY 1u
+#define RETRO_STATE_SEQ_FLAGS_ON_DEVICE    2u
+
+// One row of a step plan: `n` tokens to decode into sequence `slot` at
+// absolute positions pos0..pos0+n-1, optionally sampling on the last one.
+typedef struct retro_step_row {
+    uint32_t struct_size;   // evolution key, sizeof(retro_step_row)
+    // Per-request state id (sampler RNG and reasoning-budget machine), keyed
+    // by the caller and independent of `slot`: a request keeps its state
+    // across slot reassignments, and releases it with retro_*_request_free.
+    // Required (>= 0) on sampling rows; optional on prefill rows - a request
+    // that will sample later must carry its id from its first row so the
+    // reasoning budget can be primed from the prompt tail.
+    int32_t  request;
+    int32_t  slot;          // sequence id in the context's KV pool
+    const int32_t * tokens; // n token ids
+    uint32_t n;             // >= 1; the sum of n over all rows must fit n_batch
+    int32_t  pos0;          // absolute position of tokens[0], >= 0
+    bool     sample;        // request logits on the last token and sample it
+    // Read when `sample` is set. `seed` seeds the request's RNG once, at its
+    // first sampling row; `max_new_tokens` is the caller's stop criterion and
+    // is not read by the runtime here.
+    retro_sampling_params sampling;
+    uint32_t n_top_logprobs; // top-k ids/logprobs to write for the sampled row
+    // Reserved for per-line adapters: must be 0 (the context's active adapter)
+    // in this build.
+    int32_t  adapter;
+} retro_step_row;
+
+// What one step produced for one row. `token`/`logprob`/`forced`/`n_top` are
+// valid only when `sampled` is set.
+typedef struct retro_step_out_row {
+    uint32_t struct_size;   // filled by the runtime: sizeof(retro_step_out_row)
+    int32_t  token;         // the emitted token (the forced one when `forced`)
+    float    logprob;       // temperature-1 policy logprob of `token`, as the
+                            // batched generators report it
+    uint32_t n_top;         // top entries written at out_top_ids/logprobs
+    uint8_t  forced;        // the reasoning budget forced `token`
+    uint8_t  sampled;       // a sample was produced for this row
+} retro_step_out_row;
+
+// KV-pool occupancy of an engine / trainer generation context.
+typedef struct retro_engine_memory_info {
+    uint32_t struct_size;    // filled by the runtime
+    uint32_t n_slots;        // sequence slots of the context (n_seq_max)
+    uint64_t cells_total;    // KV cells of the pool (llama_n_ctx)
+    uint64_t cells_used;     // occupied cells: sum of the resident position
+                             // spans of every non-empty slot
+    uint64_t kv_bytes;       // bytes of the attention KV buffers
+    // Partial state bytes summed over all slots (recurrent state, plus the SWA
+    // KV of a sliding-window layer - the fork's PARTIAL_ONLY semantics).
+    uint64_t recurrent_bytes;
+} retro_engine_memory_info;
+
 // Fixed-size weighted training rows. `labels` mirrors `tokens` (-1 = ignored);
 // `weights` scales each label position's cross-entropy contribution and 0
 // masks the position. With detached per-token coefficients the resulting
@@ -1523,6 +1594,45 @@ int retro_trainer_generate_continuous_batch(
     size_t n_out_max,
     size_t * out_n_tokens,
     uint8_t * out_forced);
+
+// --- Step-wise generation on the trainer's generation context ----------------
+//
+// The same operations as the retro_engine_step / retro_engine_seq_* family
+// below, exposed on the trainer's dedicated generation context (the main
+// context when the run has none), through the same shared generation core, so
+// a trainer can be driven step by step - from its own thread - exactly like an
+// engine. Same structs, same contracts as the engine entry points.
+int retro_trainer_generation_step(
+    retro_trainer * trainer,
+    const retro_step_row * rows,
+    size_t n_rows,
+    retro_step_out_row * out_rows,
+    int32_t * out_top_ids,
+    float * out_top_logprobs,
+    size_t n_top_stride);
+int retro_trainer_generation_seq_rm(
+    retro_trainer * trainer, int32_t slot, int32_t p0, int32_t p1);
+int retro_trainer_generation_seq_cp(
+    retro_trainer * trainer, int32_t src, int32_t dst, int32_t p0, int32_t p1);
+int retro_trainer_generation_seq_save(
+    retro_trainer * trainer,
+    int32_t slot,
+    uint32_t flags,
+    uint8_t * buffer,
+    size_t n_buffer,
+    size_t * out_n_bytes);
+int retro_trainer_generation_seq_load(
+    retro_trainer * trainer,
+    int32_t slot,
+    uint32_t flags,
+    const uint8_t * buffer,
+    size_t n_bytes,
+    size_t * out_n_read);
+int retro_trainer_generation_seq_pos(
+    retro_trainer * trainer, int32_t slot, int32_t * out_pos_min, int32_t * out_pos_max);
+int retro_trainer_generation_memory(
+    retro_trainer * trainer, retro_engine_memory_info * out);
+int retro_trainer_generation_request_free(retro_trainer * trainer, int32_t request);
 
 // Teacher-forced scoring with the current model + LoRA weights: writes
 // log p(tokens[i+1] | tokens[0..=i]) into out_logprobs[i] for i in
@@ -2146,6 +2256,101 @@ int retro_engine_memory_report(
 int retro_engine_generation_stats(
     retro_engine * engine,
     retro_generation_stats * out_stats);
+
+// --- Step-wise generation -----------------------------------------------------
+//
+// One call runs exactly one llama_process over `rows` (n_rows entries). The
+// contract:
+//
+// - Capacity: the sum of every row's `n` must not exceed the context's
+//   n_batch, each row needs n >= 1, a valid slot, valid tokens, and positions
+//   pos0..pos0+n-1 inside the per-sequence context. `sample` rows additionally
+//   need a request id >= 0 and valid sampling params, and a request id may
+//   appear at most once per call. Rows in the same slot must not overlap.
+//   Violations are caller errors (invalid
+//   argument, -3), reported before anything is decoded.
+// - Residency: after a successful call, every input token of every row is
+//   resident in the KV of its slot at its position. A sampled token is NOT
+//   resident yet: it becomes resident when it is fed back as the input of a
+//   later step. Logits are valid after the call only for the last input token
+//   of each `sample` row - exactly the rows the output describes; the next
+//   step overwrites them. No raw logits row is exposed.
+// - Sampling goes through the same CPU oracle as the batched generators
+//   (mt19937 seeded once per request from the first sampling row's seed), so a
+//   caller-side loop reproduces retro_engine_generate_continuous_batch() bit
+//   for bit when it composes steps in the canonical order. The reasoning
+//   budget, when one is set, is a per-request machine primed from the last
+//   n_prompt_tail input tokens the request decoded; forced tokens are
+//   reported through `forced`.
+// - Failure: -1 for a runtime error, -3 for an invalid argument, with
+//   retro_last_error() set. A failed decode may have made a
+//   prefix of the submitted tokens resident: never resubmit tokens that are
+//   already resident - query the extent with retro_engine_seq_pos() and
+//   continue from there. A full KV is a capacity condition surfaced this way,
+//   not an invalid argument.
+// - The step mutates raw KV outside the batched generators' prefix-cache
+//   protocol, so it invalidates that bookkeeping (a later
+//   retro_engine_generate_* call starts cold). Outputs: out_rows[n_rows],
+//   and when any row asks for top logprobs, out_top_ids / out_top_logprobs as
+//   n_rows * n_top_stride row-major arrays (NULL when no row asks).
+int retro_engine_step(
+    retro_engine * engine,
+    const retro_step_row * rows,
+    size_t n_rows,
+    retro_step_out_row * out_rows,
+    int32_t * out_top_ids,
+    float * out_top_logprobs,
+    size_t n_top_stride);
+
+// Removes the positions [p0, p1) of `slot` from the KV (p0 < 0: from 0,
+// p1 < 0: to the end; -1, -1 removes the whole sequence). Returns -1 when the
+// memory cannot perform a partial removal.
+int retro_engine_seq_rm(retro_engine * engine, int32_t slot, int32_t p0, int32_t p1);
+
+// Copies the positions [p0, p1) of `src` into `dst` (same open-end convention).
+// The copied range of `dst` must be empty: remove it first with seq_rm.
+int retro_engine_seq_cp(
+    retro_engine * engine, int32_t src, int32_t dst, int32_t p0, int32_t p1);
+
+// Saves the state of `slot` (attention KV and recurrent state, or only the
+// partial state with RETRO_STATE_SEQ_FLAGS_PARTIAL_ONLY). Two-call contract:
+// a NULL buffer only reports the required size in *out_n_bytes and
+// returns 0; a short buffer returns -2 with the required size; otherwise the
+// snapshot is written and its size reported. Only host snapshots (flags 0
+// or RETRO_STATE_SEQ_FLAGS_PARTIAL_ONLY) are supported: ON_DEVICE snapshots
+// reference mutable context storage and cannot be owned by a byte buffer.
+int retro_engine_seq_save(
+    retro_engine * engine,
+    int32_t slot,
+    uint32_t flags,
+    uint8_t * buffer,
+    size_t n_buffer,
+    size_t * out_n_bytes);
+
+// Restores a snapshot written by retro_engine_seq_save into `slot`, which
+// should be empty (seq_rm it whole first). Returns the bytes read in
+// *out_n_read, or -1 when the data was refused. Only host snapshots (flags 0
+// or RETRO_STATE_SEQ_FLAGS_PARTIAL_ONLY) are supported. The restored sequence resumes
+// at the position the snapshot recorded.
+int retro_engine_seq_load(
+    retro_engine * engine,
+    int32_t slot,
+    uint32_t flags,
+    const uint8_t * buffer,
+    size_t n_bytes,
+    size_t * out_n_read);
+
+// The resident position range of `slot`: both -1 when the slot is empty.
+// This is how a caller learns how far a failed step got before resubmitting.
+int retro_engine_seq_pos(
+    retro_engine * engine, int32_t slot, int32_t * out_pos_min, int32_t * out_pos_max);
+
+// KV-pool occupancy of the engine's context; see retro_engine_memory_info.
+int retro_engine_memory(retro_engine * engine, retro_engine_memory_info * out);
+
+// Releases the per-request state (sampler RNG, reasoning-budget machine) of
+// `request`. The KV of its slot is untouched; combine with seq_rm to free it.
+int retro_engine_request_free(retro_engine * engine, int32_t request);
 
 const char * retro_last_error(void);
 
