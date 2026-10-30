@@ -6,7 +6,7 @@ use indicatif::HumanDuration;
 use std::time::Instant;
 
 use retrograd::config;
-use retrograd::{Device, Error, Result, SamplingParams, Trainer};
+use retrograd::{Device, Engine, Error, Result, SamplingParams};
 
 use crate::args::{Args, parse_value};
 use crate::bench::load_bench_adapter;
@@ -66,13 +66,6 @@ pub(crate) fn chat_model(args: Vec<String>) -> Result<()> {
     if let Some(ctx) = args.ctx {
         run_config.training.n_ctx = ctx;
     }
-    // Generation decodes the prompt in n_batch chunks inside a single context,
-    // so the batch sizes only have to stay within the context window.
-    run_config.training.n_batch = run_config.training.n_batch.min(run_config.training.n_ctx);
-    run_config.training.n_ubatch = run_config
-        .training
-        .n_ubatch
-        .min(run_config.training.n_batch);
 
     let ui = CliUi::new();
     ui.section("chat");
@@ -89,8 +82,13 @@ pub(crate) fn chat_model(args: Vec<String>) -> Result<()> {
 
     let started = Instant::now();
     let load = ui.spinner("loading model");
-    let mut trainer =
-        Trainer::new(&run_config.model, run_config.training.clone()).inspect_err(|_| {
+    // The chat session only generates, so it runs on the lightweight engine
+    // instead of a full trainer: same model, same generation core, no
+    // optimizer state. The engine geometry mirrors the run's dedicated
+    // generation context, which is what makes its output bit-identical to a
+    // trainer's at equal seeds and weights.
+    let mut engine = Engine::from_train_config(&run_config.model, &run_config.training)
+        .inspect_err(|_| {
             ui.fail_spinner(load.clone(), "model loading failed");
         })?;
     ui.finish_spinner(
@@ -105,10 +103,10 @@ pub(crate) fn chat_model(args: Vec<String>) -> Result<()> {
             .adapter
             .clone()
             .unwrap_or_else(|| run_config.output.path.clone());
-        load_bench_adapter(&mut trainer, &adapter, &ui)?;
+        load_bench_adapter(&mut engine, &adapter, &ui)?;
     }
 
-    run_chat_loop(&mut trainer, &args, run_config.training.n_ctx, &ui)
+    run_chat_loop(&mut engine, &args, run_config.training.n_ctx, &ui)
 }
 
 fn parse_chat_args(args: &[String]) -> Result<ChatArgs> {
@@ -258,9 +256,9 @@ fn parse_chat_args(args: &[String]) -> Result<ChatArgs> {
 /// Reads user turns from stdin and prints model replies until end of input or a
 /// `/exit` command. Conversation history is threaded through the model's own
 /// chat template so multi-turn context is preserved.
-fn run_chat_loop(trainer: &mut Trainer, args: &ChatArgs, n_ctx: u32, ui: &CliUi) -> Result<()> {
+fn run_chat_loop(engine: &mut Engine, args: &ChatArgs, n_ctx: u32, ui: &CliUi) -> Result<()> {
     let color = std::io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
-    let context = trainer.context_size().unwrap_or(n_ctx as usize);
+    let context = n_ctx as usize;
     ui.info(format!(
         "context: {context} tokens, temperature={}, top_p={}, max_new_tokens={}",
         args.sampling.temperature, args.sampling.top_p, args.sampling.max_new_tokens
@@ -302,8 +300,8 @@ fn run_chat_loop(trainer: &mut Trainer, args: &ChatArgs, n_ctx: u32, ui: &CliUi)
             .iter()
             .map(|(role, content)| (role.as_str(), content.as_str()))
             .collect();
-        let prompt = trainer.format_chat(&borrowed, true)?;
-        let tokens = trainer.tokenize_text(&prompt)?;
+        let prompt = engine.format_chat(&borrowed, true)?;
+        let tokens = engine.tokenize_text(&prompt)?;
         // Share the seed between the base and adapter passes of a compare turn so
         // the two completions differ only by the adapter, and vary it per turn so
         // repeated prompts are not answered identically.
@@ -314,14 +312,14 @@ fn run_chat_loop(trainer: &mut Trainer, args: &ChatArgs, n_ctx: u32, ui: &CliUi)
 
         let reply = match args.mode {
             ChatMode::BaseOnly | ChatMode::Adapter => {
-                let reply = generate_reply(trainer, &tokens, &sampling, false)?;
+                let reply = generate_reply(engine, &tokens, &sampling, false)?;
                 print_chat_reply(color, "bot", "38;5;40", &reply);
                 reply
             }
             ChatMode::Compare => {
-                let base = generate_reply(trainer, &tokens, &sampling, true)?;
+                let base = generate_reply(engine, &tokens, &sampling, true)?;
                 print_chat_reply(color, "base", "38;5;245", &base);
-                let adapted = generate_reply(trainer, &tokens, &sampling, false)?;
+                let adapted = generate_reply(engine, &tokens, &sampling, false)?;
                 print_chat_reply(color, "adapter", "38;5;40", &adapted);
                 // The adapter answer is the one under test, so it carries the
                 // shared history forward.
@@ -335,27 +333,27 @@ fn run_chat_loop(trainer: &mut Trainer, args: &ChatArgs, n_ctx: u32, ui: &CliUi)
 }
 
 /// Generates one completion for `prompt`, either with the trained weights
-/// (`base = false`) or under the run's reference policy (`base = true`), and
+/// (`base = false`) or under the frozen base model (`base = true`), and
 /// returns the decoded text with end-of-generation markers stripped.
 fn generate_reply(
-    trainer: &mut Trainer,
+    engine: &mut Engine,
     prompt: &[i32],
     sampling: &SamplingParams,
     base: bool,
 ) -> Result<String> {
     let generation = if base {
-        trainer.generate_base(prompt, sampling)?
+        engine.generate_base(prompt, sampling)?
     } else {
-        trainer.generate(prompt, sampling)?
+        engine.generate(prompt, sampling)?
     };
     let mut tokens = generation.tokens;
     while tokens
         .last()
-        .is_some_and(|&token| trainer.is_eog_token(token).unwrap_or(false))
+        .is_some_and(|&token| engine.is_eog_token(token).unwrap_or(false))
     {
         tokens.pop();
     }
-    Ok(trainer.detokenize(&tokens, false)?.trim().to_string())
+    Ok(engine.detokenize(&tokens, false)?.trim().to_string())
 }
 
 fn print_chat_reply(color: bool, label: &str, code: &str, text: &str) {

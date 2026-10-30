@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use indicatif::HumanDuration;
 use retrograd::config::{self, Algorithm};
 use retrograd::dataset::{self, DataFormat, PreparedDataset};
-use retrograd::{Device, Error, EvalMetrics, Result, TrainConfig, Trainer};
+use retrograd::{Device, Engine, Error, EvalMetrics, Result, TrainConfig, Trainer};
 
 use retrograd_cli_ui::CliUi;
 
@@ -201,18 +201,13 @@ pub(crate) fn bench_model(args: Vec<String>) -> Result<()> {
     }
 
     let started = Instant::now();
-    let load = ui.spinner("loading model");
-    let mut trainer =
-        Trainer::new(&run_config.model, run_config.training.clone()).inspect_err(|_| {
-            ui.fail_spinner(load.clone(), "model loading failed");
-        })?;
-    ui.finish_spinner(
-        load,
-        format!("model loaded in {}", HumanDuration(started.elapsed())),
-    );
-
     match &run_config.algorithm {
         Algorithm::Sft(_) => {
+            // The SFT pass is forward-only - tokenize, render, score labels -
+            // so it runs on the lightweight engine instead of a full trainer.
+            let mut engine = load_model(&ui, started, || {
+                Engine::from_train_config(&run_config.model, &run_config.training)
+            })?;
             let format = match args.format {
                 Some(format) => format,
                 None => DataFormat::infer(&data_path)?,
@@ -221,7 +216,7 @@ pub(crate) fn bench_model(args: Vec<String>) -> Result<()> {
             let prepare_started = Instant::now();
             let prepare = ui.spinner("preparing dataset");
             let mut data =
-                dataset::prepare(&trainer, &data_path, format, eval_ctx).inspect_err(|_| {
+                dataset::prepare(&engine, &data_path, format, eval_ctx).inspect_err(|_| {
                     ui.fail_spinner(prepare.clone(), "dataset preparation failed");
                 })?;
             if let Some(limit) = args.limit {
@@ -238,38 +233,51 @@ pub(crate) fn bench_model(args: Vec<String>) -> Result<()> {
                     data.n_ctx,
                 ),
             );
-            let base = run_bench_pass(&mut trainer, &data, "base", &ui)?;
+            let base = run_bench_pass(&mut engine, &data, "base", &ui)?;
             let adapted = if let Some(adapter) = &args.adapter {
-                load_bench_adapter(&mut trainer, adapter, &ui)?;
-                Some(run_bench_pass(&mut trainer, &data, "adapter", &ui)?)
+                load_bench_adapter(&mut engine, adapter, &ui)?;
+                Some(run_bench_pass(&mut engine, &data, "adapter", &ui)?)
             } else {
                 None
             };
             print_sft_bench_report(&base, adapted.as_ref());
         }
-        Algorithm::Ppo(ppo) => run_reward_bench(&mut trainer, &args, &ui, |trainer| {
-            retrograd::training::ppo::benchmark_rewards(
-                trainer,
-                ppo,
-                &run_config.training,
-                &data_path,
-                args.limit,
-            )
-        })?,
-        Algorithm::Grpo(grpo) => run_reward_bench(&mut trainer, &args, &ui, |trainer| {
-            retrograd::training::grpo::benchmark_rewards(
-                trainer,
-                grpo,
-                &run_config.training,
-                &data_path,
-                args.limit,
-            )
-        })?,
+        Algorithm::Ppo(ppo) => {
+            let mut trainer = load_model(&ui, started, || {
+                Trainer::new(&run_config.model, run_config.training.clone())
+            })?;
+            run_reward_bench(&mut trainer, &args, &ui, |trainer| {
+                retrograd::training::ppo::benchmark_rewards(
+                    trainer,
+                    ppo,
+                    &run_config.training,
+                    &data_path,
+                    args.limit,
+                )
+            })?
+        }
+        Algorithm::Grpo(grpo) => {
+            let mut trainer = load_model(&ui, started, || {
+                Trainer::new(&run_config.model, run_config.training.clone())
+            })?;
+            run_reward_bench(&mut trainer, &args, &ui, |trainer| {
+                retrograd::training::grpo::benchmark_rewards(
+                    trainer,
+                    grpo,
+                    &run_config.training,
+                    &data_path,
+                    args.limit,
+                )
+            })?
+        }
         Algorithm::Distill(distill) => {
             // One teacher for the pass, and for both passes when an adapter is
             // supplied: the base and the adapted student are graded against the
             // *same* model, so the second load would be both a doubled memory
             // cost and a chance to compare two different targets.
+            let mut trainer = load_model(&ui, started, || {
+                Trainer::new(&run_config.model, run_config.training.clone())
+            })?;
             let teacher = retrograd::training::distill::SharedTeacher::new();
             let base = run_distill_bench_pass("base", &ui, || {
                 retrograd::training::distill::benchmark(
@@ -316,6 +324,20 @@ pub(crate) fn bench_model(args: Vec<String>) -> Result<()> {
         }
     };
     Ok(())
+}
+
+/// Loads the model for a bench pass under the standard spinner, whichever
+/// handle the pass runs on.
+fn load_model<T>(ui: &CliUi, started: Instant, load: impl FnOnce() -> Result<T>) -> Result<T> {
+    let spinner = ui.spinner("loading model");
+    let model = load().inspect_err(|_| {
+        ui.fail_spinner(spinner.clone(), "model loading failed");
+    })?;
+    ui.finish_spinner(
+        spinner,
+        format!("model loaded in {}", HumanDuration(started.elapsed())),
+    );
+    Ok(model)
 }
 
 fn run_reward_bench(
@@ -433,10 +455,32 @@ fn configure_bench_batches(config: &mut TrainConfig) {
     config.n_ubatch = greatest_divisor(config.n_batch, config.n_batch.min(32));
 }
 
-pub(crate) fn load_bench_adapter(trainer: &mut Trainer, adapter: &Path, ui: &CliUi) -> Result<()> {
+/// What `load_bench_adapter` needs from a loaded model: attach a LoRA adapter
+/// from a GGUF file. Implemented by both handles a bench pass can run on.
+pub(crate) trait AdapterLoader {
+    fn load_adapter(&mut self, adapter: &Path) -> Result<()>;
+}
+
+impl AdapterLoader for Engine {
+    fn load_adapter(&mut self, adapter: &Path) -> Result<()> {
+        self.load_lora(adapter).map_err(Error::from)
+    }
+}
+
+impl AdapterLoader for Trainer {
+    fn load_adapter(&mut self, adapter: &Path) -> Result<()> {
+        self.load_lora(adapter)
+    }
+}
+
+pub(crate) fn load_bench_adapter(
+    model: &mut impl AdapterLoader,
+    adapter: &Path,
+    ui: &CliUi,
+) -> Result<()> {
     let started = Instant::now();
     let load = ui.spinner("loading adapter");
-    trainer.load_lora(adapter).inspect_err(|_| {
+    model.load_adapter(adapter).inspect_err(|_| {
         ui.fail_spinner(load.clone(), "adapter loading failed");
     })?;
     ui.finish_spinner(
@@ -486,20 +530,20 @@ fn bench_row(data: &PreparedDataset, row: usize) -> PreparedDataset {
 }
 
 fn run_bench_pass(
-    trainer: &mut Trainer,
+    engine: &mut Engine,
     data: &PreparedDataset,
     name: &str,
     ui: &CliUi,
 ) -> Result<BenchResult> {
     // Build/cache the decode graph outside the timed pass so base and adapter
     // throughput are comparable even for very small datasets.
-    trainer.eval_sft(&bench_row(data, 0))?;
+    engine.eval_sft(&bench_row(data, 0))?;
     let spinner = ui.spinner(format!("evaluating {name}"));
     let started = Instant::now();
     let mut metrics = EvalMetrics::default();
     let mut examples = Vec::with_capacity(data.examples);
     for row in 0..data.examples {
-        let row_metrics = trainer.eval_sft(&bench_row(data, row)).inspect_err(|_| {
+        let row_metrics = engine.eval_sft(&bench_row(data, row)).inspect_err(|_| {
             ui.fail_spinner(spinner.clone(), format!("{name} evaluation failed"));
         })?;
         metrics.negative_log_likelihood += row_metrics.negative_log_likelihood;

@@ -19,13 +19,13 @@ use std::time::Duration;
 
 use retrograd_agent::collect::api::{ApiGenerator, collect_from_api};
 use retrograd_agent::{
-    AssistantForm, CollectConfig, CollectSink, CollectStats, EnvironmentConfig, PairsConfig,
-    Policy, PolicyActor, RolloutEngine, ScenarioReport, collect_trajectories,
+    AssistantForm, CollectConfig, CollectSink, CollectStats, EnginePolicyActor, EnvironmentConfig,
+    PairsConfig, Policy, RolloutEngine, ScenarioReport, collect_trajectories,
 };
 use retrograd_config::{AgentRunConfig, Algorithm, CollectApiConfig, RunConfig};
 use retrograd_core::{Error, Result};
 use retrograd_dataset::{ChatExample, PreferenceExample};
-use retrograd_engine::Trainer;
+use retrograd_engine::Engine;
 
 use crate::RunObserver;
 use crate::agent::{append_system_suffix, build_world, read_scenarios};
@@ -207,6 +207,12 @@ struct Collection<'a> {
 impl Collection<'_> {
     /// Rollouts of the configuration's own model - or the `--model` override -
     /// through the rollout engine, graded by the environment and the judge.
+    ///
+    /// A collection never trains, so it runs on the lightweight engine
+    /// instead of a full trainer: same model, same generation core, no
+    /// optimizer state. The engine's geometry mirrors the run's dedicated
+    /// generation context, so generation is bit-identical to a trainer's at
+    /// equal seeds and weights.
     fn with_policy(
         &self,
         config: &RunConfig,
@@ -215,8 +221,8 @@ impl Collection<'_> {
     ) -> Result<(CollectStats, usize)> {
         let started = Instant::now();
         observer.model_load_started();
-        let mut trainer =
-            Trainer::new(&config.model, config.training.clone()).inspect_err(|_| {
+        let mut engine =
+            Engine::from_train_config(&config.model, &config.training).inspect_err(|_| {
                 observer.model_load_failed();
             })?;
         observer.model_load_finished(started.elapsed());
@@ -226,24 +232,24 @@ impl Collection<'_> {
             .and_then(|lora| lora.init_adapter.as_ref())
         {
             observer.info(&format!("adapter: {}", adapter.display()));
-            trainer.load_lora(adapter)?;
+            engine.load_lora(adapter)?;
         }
         // Before anything renders the template: the tool-support probe is cached.
-        trainer.set_chat_template_variables(Some(&agent.template_variables_json()))?;
-        trainer.set_reasoning_budget(agent.reasoning_budget)?;
+        engine.set_chat_template_variables(&agent.template_variables_json())?;
+        let budget = match agent.reasoning_budget {
+            None => -1,
+            Some(budget) => i32::try_from(budget)
+                .map_err(|_| Error::invalid(format!("reasoning budget {budget} exceeds i32")))?,
+        };
+        engine.set_reasoning_budget(budget)?;
         let mut limits = agent.config.limits;
-        limits.max_trajectory_tokens = agent.trajectory_limit(trainer.context_size()?)?;
+        limits.max_trajectory_tokens = agent.trajectory_limit(engine.context_size()? as usize)?;
 
         let world = build_world(agent, true, observer, self.local, self.runtime)?;
         let mut sink = FileSink::create(self.partial, observer)?;
         let training = &config.training;
         let collected = self.local.block_on(self.runtime, async {
-            let actor = PolicyActor::spawn_local(
-                trainer,
-                64,
-                training.effective_generation_concurrency().max(1) as usize,
-                training.n_seq_max.max(1) as usize,
-            )?;
+            let actor = EnginePolicyActor::spawn_local(engine, 64, training)?;
             let policy: Arc<dyn Policy> = Arc::new(actor.handle());
             let result = async {
                 let engine = match &world.environments {
@@ -271,9 +277,9 @@ impl Collection<'_> {
             if let Some(environments) = &world.environments {
                 environments.shutdown().await;
             }
-            // The trainer is only dropped: nothing was trained, so there is
+            // The engine is only dropped: nothing was trained, so there is
             // nothing to save, and a failure to get it back changes no outcome.
-            drop(actor.into_trainer().await);
+            drop(actor.into_engine().await);
             result
         });
         world.shutdown(self.local, self.runtime);
