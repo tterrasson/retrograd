@@ -670,6 +670,31 @@ extern "C" int retro_chat_parse_assistant(
     });
 }
 
+extern "C" int retro_chat_parse_assistant_partial(
+        const char * parser_blob,
+        size_t n_parser_blob,
+        const char * text,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes) {
+    return retro::boundary([&]() -> int {
+        if (!out_n_bytes) {
+            retro::set_error("out_n_bytes is required");
+            return -1;
+        }
+        if (!parser_blob || n_parser_blob == 0) {
+            retro::set_error("tool-call parser blob is required");
+            return -1;
+        }
+        if (!text) {
+            retro::set_error("assistant text is required");
+            return -1;
+        }
+        return retro::parse_assistant_output_partial(
+                parser_blob, n_parser_blob, text, buffer, n_buffer, out_n_bytes);
+    });
+}
+
 extern "C" int retro_trainer_describe_lora(
         retro_trainer * trainer,
         char * buffer,

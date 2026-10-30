@@ -614,6 +614,20 @@ int parse_assistant_output(
         size_t n_buffer,
         size_t * out_n_bytes);
 
+// Same document as `parse_assistant_output`, read with `is_partial=true`: what
+// the parser recognized of a turn still being generated. `content` is the
+// committed prefix so far and a call's `arguments` may be an incomplete
+// string - a streaming caller diffs successive reads and never retracts what
+// it already sent, so it holds its own buffer over any prefix the partial
+// parse could still revise.
+int parse_assistant_output_partial(
+        const char * parser_blob,
+        size_t n_parser_blob,
+        const char * text,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes);
+
 ggml_backend_dev_t first_gpu_device();
 bool load_model_and_context(trainer_state & state);
 

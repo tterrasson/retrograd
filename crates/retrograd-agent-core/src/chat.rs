@@ -321,6 +321,110 @@ mod tests {
         }
     }
 
+    /// The partial reads a streamed answer relies on are stable for every
+    /// retained template: fed one byte at a time, the content a partial parse
+    /// returns never retracts what a previous partial parse returned, and the
+    /// last partial read agrees with the full one on the call it recognized.
+    #[cfg(feature = "template-parser")]
+    #[test]
+    fn partial_reads_of_the_retained_templates_are_stable() {
+        use crate::parser::ToolCallParser;
+
+        let tools = template_tools(&move_tool()).unwrap();
+        let user = vec![Message::text(Role::User, "go")];
+        for name in ["lfm2.5-230m", "qwen3-0.6b", "qwen3.5-0.8b"] {
+            let template = fixture(name);
+            // The exact bytes the template writes for one call, read off a
+            // rendered turn: the prompt, the call body, the closer.
+            let prompt = retrograd_engine::render_chat_template_source(
+                &template,
+                &template_messages_verbatim(&user).unwrap(),
+                Some(&tools),
+                None,
+                true,
+            )
+            .unwrap();
+            let whole = retrograd_engine::render_chat_template_source(
+                &template,
+                &template_messages_verbatim(&[Message::text(Role::User, "go"), move_call()])
+                    .unwrap(),
+                Some(&tools),
+                None,
+                false,
+            )
+            .unwrap();
+            let plain = retrograd_engine::render_chat_template_source(
+                &template,
+                &template_messages_verbatim(&[
+                    Message::text(Role::User, "go"),
+                    Message::text(Role::Assistant, "zqxplain"),
+                ])
+                .unwrap(),
+                Some(&tools),
+                None,
+                false,
+            )
+            .unwrap();
+            let closer = &plain[plain.rfind("zqxplain").unwrap() + "zqxplain".len()..];
+            let body = whole
+                .strip_prefix(prompt.as_str())
+                .unwrap_or_else(|| panic!("{name}: the turn does not extend the prompt"));
+            let body = body.strip_suffix(closer).unwrap_or(body);
+            let parser = TemplateToolCallParser::new(
+                retrograd_engine::tool_call_parser_from_source(&template, Some(&tools), None)
+                    .unwrap(),
+            );
+            let mut previous = String::new();
+            let mut previous_calls: Vec<crate::parser::PartialToolCall> = Vec::new();
+            for end in 1..=body.len() {
+                if !body.is_char_boundary(end) {
+                    continue;
+                }
+                let partial = parser.parse_partial(&body[..end]);
+                assert!(
+                    partial.content.starts_with(previous.as_str()),
+                    "{name}: at byte {end} the partial read retracted {previous:?} to \
+                     {:?}",
+                    partial.content
+                );
+                for (old, call) in previous_calls.iter().zip(&partial.tool_calls) {
+                    assert!(
+                        call.arguments.starts_with(&old.arguments),
+                        "{name}: at byte {end} arguments retracted: {old:?} -> {call:?}"
+                    );
+                    assert_eq!(
+                        call.name, old.name,
+                        "{name}: a call name changed at byte {end}"
+                    );
+                    assert_eq!(call.id, old.id, "{name}: a call id changed at byte {end}");
+                }
+                previous_calls = partial.tool_calls;
+                previous = partial.content;
+            }
+            let last_partial = parser.parse_partial(body);
+            let full = parser.parse(body);
+            assert_eq!(last_partial.content, full.content, "{name}");
+            assert_eq!(
+                last_partial.tool_calls.len(),
+                full.tool_calls.len(),
+                "{name}: {last_partial:?} vs {full:?}"
+            );
+            assert_eq!(
+                last_partial.tool_calls.first().map(|call| call.id.as_str()),
+                full.tool_calls.first().map(|call| call.id.as_str()),
+                "{name}: partial and full ids must agree"
+            );
+            assert_eq!(
+                last_partial
+                    .tool_calls
+                    .first()
+                    .map(|call| call.name.as_str()),
+                full.tool_calls.first().map(|call| call.name.as_str()),
+                "{name}"
+            );
+        }
+    }
+
     #[test]
     fn the_catalog_uses_the_shape_chat_templates_iterate_over() {
         let tools = vec![ToolSpec {

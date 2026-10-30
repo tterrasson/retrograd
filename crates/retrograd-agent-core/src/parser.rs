@@ -38,6 +38,54 @@ impl From<ParsedCalls> for ParsedAssistant {
 /// whatever it could not read rather than failing the turn outright.
 pub trait ToolCallParser: Send + Sync {
     fn parse(&self, output: &str) -> ParsedAssistant;
+
+    /// What is recognized of a turn that is still arriving: the same split, but
+    /// a call's arguments stay the raw string the parser produced, possibly
+    /// incomplete - the streaming caller sends them as deltas and lets the
+    /// final full [`Self::parse`] validate them.
+    ///
+    /// The default reads the whole text, which commits a trailing partial
+    /// marker as content; a streaming caller holds its own buffer over such a
+    /// prefix and never retracts what it already sent. Parsers that can do
+    /// better override this.
+    fn parse_partial(&self, output: &str) -> PartialAssistant {
+        self.parse(output).into()
+    }
+}
+
+/// What a parser recognized of an assistant turn still being generated.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PartialAssistant {
+    pub content: String,
+    pub reasoning: String,
+    pub tool_calls: Vec<PartialToolCall>,
+}
+
+/// A recognized call whose arguments may still be arriving.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PartialToolCall {
+    pub id: String,
+    pub name: String,
+    /// The raw arguments text, possibly incomplete.
+    pub arguments: String,
+}
+
+impl From<ParsedAssistant> for PartialAssistant {
+    fn from(parsed: ParsedAssistant) -> Self {
+        Self {
+            content: parsed.content,
+            reasoning: parsed.reasoning,
+            tool_calls: parsed
+                .tool_calls
+                .into_iter()
+                .map(|call| PartialToolCall {
+                    id: call.id,
+                    name: call.name,
+                    arguments: call.arguments.to_string(),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Parser for the `<tool_call>...</tool_call>` conventions.
@@ -67,6 +115,47 @@ impl ToolCallParser for HermesToolCallParser {
     fn parse(&self, output: &str) -> ParsedAssistant {
         parse_hermes(output).into()
     }
+
+    fn parse_partial(&self, output: &str) -> PartialAssistant {
+        parse_hermes_partial(output)
+    }
+}
+
+const HERMES_OPEN: &str = "<tool_call>";
+const HERMES_CLOSE: &str = "</tool_call>";
+
+/// Holds back an unfinished marker or call. The fallback has no incremental
+/// argument grammar, so only closed calls are decoded, through the same reader
+/// as a full turn. This preserves validated arguments, tag-form calls and ids.
+fn parse_hermes_partial(output: &str) -> PartialAssistant {
+    let hold = partial_marker_len(output);
+    let text = &output[..output.len() - hold];
+    let mut rest = text;
+    let mut committed = text.len();
+    while let Some(open) = rest.find(HERMES_OPEN) {
+        let body_start = open + HERMES_OPEN.len();
+        let Some(close) = rest[body_start..].find(HERMES_CLOSE) else {
+            committed = text.len() - rest.len() + open;
+            break;
+        };
+        rest = &rest[body_start + close + HERMES_CLOSE.len()..];
+    }
+    HermesToolCallParser.parse(&text[..committed]).into()
+}
+
+/// The length of the longest suffix of `text` that is a proper prefix of one
+/// of the markers: the part that may still become a call and is therefore held
+/// back rather than committed.
+fn partial_marker_len(text: &str) -> usize {
+    [HERMES_OPEN, HERMES_CLOSE]
+        .iter()
+        .filter_map(|marker| {
+            (1..marker.len())
+                .rev()
+                .find(|&len| text.ends_with(&marker[..len]))
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// The observation a call that could not be read comes back as.
@@ -81,6 +170,44 @@ pub fn parse_error(index: usize, error: impl std::fmt::Display) -> ToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_partial_read_holds_a_trailing_marker_prefix_back() {
+        let parsed = HermesToolCallParser.parse_partial("answer <tool_ca");
+        assert_eq!(parsed.content, "answer");
+        assert!(parsed.tool_calls.is_empty());
+        // An unfinished call stays buffered until its arguments can be decoded.
+        let parsed = HermesToolCallParser.parse_partial("answer <tool_call>{\"name\":\"mo");
+        assert_eq!(parsed.content, "answer");
+        assert!(parsed.tool_calls.is_empty());
+        // The envelope is never sent as if it were the function's arguments.
+        let parsed =
+            HermesToolCallParser.parse_partial("answer <tool_call>{\"name\":\"move\",\"argu");
+        assert!(parsed.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn a_partial_read_of_a_complete_call_matches_the_full_read() {
+        let full = "plan <tool_call>{\"name\":\"echo\",\"arguments\":{\"x\":1}}</tool_call> done";
+        let partial = HermesToolCallParser.parse_partial(full);
+        let parsed = HermesToolCallParser.parse(full);
+        assert_eq!(partial.content, parsed.content);
+        assert_eq!(partial.tool_calls.len(), parsed.tool_calls.len());
+        assert_eq!(partial.tool_calls[0].name, parsed.tool_calls[0].name);
+        assert_eq!(
+            partial.tool_calls[0].arguments,
+            parsed.tool_calls[0].arguments.to_string()
+        );
+        // Re-reading the whole prefix preserves positional ids, including an
+        // invalid sibling, rather than decoding every block as call_0.
+        let output = format!(
+            "{full}<tool_call>{{broken}}</tool_call><tool_call>{{\"name\":\"next\"}}</tool_call>"
+        );
+        let partial = HermesToolCallParser.parse_partial(&output);
+        let full = HermesToolCallParser.parse(&output);
+        assert_eq!(partial, PartialAssistant::from(full));
+        assert_eq!(partial.tool_calls[1].id, "call_2");
+    }
 
     #[test]
     fn parses_multiple_calls_and_mixed_content() {

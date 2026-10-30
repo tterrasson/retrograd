@@ -955,6 +955,19 @@ unsafe extern "C" {
         out_n_bytes: *mut usize,
     ) -> c_int;
 
+    /// Same document as [`Self::retro_chat_parse_assistant`], read with
+    /// `is_partial=true`: what the parser recognized of a turn still being
+    /// generated. `content` is the committed prefix so far and a call's
+    /// `arguments` may be an incomplete string.
+    pub fn retro_chat_parse_assistant_partial(
+        parser_blob: *const c_char,
+        n_parser_blob: usize,
+        text: *const c_char,
+        buffer: *mut c_char,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
     pub fn retro_trainer_describe_lora(
         trainer: *mut RetroTrainer,
         buffer: *mut c_char,
@@ -2605,6 +2618,19 @@ mod contract_tests {
             // to refuse is the parser blob.
             assert_eq!(
                 retro_chat_parse_assistant(
+                    ptr::null(),
+                    0,
+                    text.as_ptr(),
+                    ptr::null_mut(),
+                    0,
+                    &mut bytes,
+                ),
+                -1
+            );
+            assert_eq!(last_error(), "tool-call parser blob is required");
+            // Same refusal on the partial entry point.
+            assert_eq!(
+                retro_chat_parse_assistant_partial(
                     ptr::null(),
                     0,
                     text.as_ptr(),

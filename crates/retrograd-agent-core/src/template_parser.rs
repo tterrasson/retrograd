@@ -21,7 +21,9 @@
 
 use retrograd_dataset::chat_template::{DocumentError, decode_parsed_assistant};
 
-use crate::parser::{ParsedAssistant, ToolCallParser, parse_error};
+use crate::parser::{
+    ParsedAssistant, PartialAssistant, PartialToolCall, ToolCallParser, parse_error,
+};
 
 /// A serialized PEG parser produced from one model's chat template and one tool
 /// catalog, ready to run on any thread.
@@ -69,6 +71,65 @@ impl ToolCallParser for TemplateToolCallParser {
             ..Default::default()
         })
     }
+
+    fn parse_partial(&self, output: &str) -> PartialAssistant {
+        // The partial read keeps a call's `arguments` as the raw string the
+        // runtime produced - under `is_partial` it may be incomplete, and
+        // running it through the JSON decoder here would turn every in-flight
+        // call into a parse error. The final full parse validates it.
+        let document = match retrograd_engine::parse_assistant_output_partial(&self.parser, output)
+        {
+            Ok(document) => document,
+            // A partial read that still fails is left empty: the caller keeps
+            // its buffer and retries on the next piece.
+            Err(_) => return PartialAssistant::default(),
+        };
+        decode_partial(&document).unwrap_or_default()
+    }
+}
+
+/// Turns the runtime's JSON into a [`PartialAssistant`], keeping each call's
+/// `arguments` as the raw string. Only a malformed *document* is an `Err` here.
+fn decode_partial(document: &str) -> Result<PartialAssistant, DocumentError> {
+    let value: serde_json::Value =
+        serde_json::from_str(document).map_err(DocumentError::InvalidJson)?;
+    let object = value.as_object().ok_or(DocumentError::NotAnObject)?;
+    let field = |name: &str| {
+        object
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_owned()
+    };
+    let calls = object
+        .get("tool_calls")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(DocumentError::NoToolCalls)?;
+    let mut partial = PartialAssistant {
+        content: field("content"),
+        reasoning: field("reasoning_content"),
+        tool_calls: Vec::with_capacity(calls.len()),
+    };
+    for (index, call) in calls.iter().enumerate() {
+        let object = call.as_object().ok_or(DocumentError::NotAnObject)?;
+        let string = |name: &str| {
+            object
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        partial.tool_calls.push(PartialToolCall {
+            id: match string("id") {
+                id if id.is_empty() => format!("call_{index}"),
+                id => id,
+            },
+            name: string("name"),
+            arguments: string("arguments"),
+        });
+    }
+    Ok(partial)
 }
 
 /// Turns the runtime's JSON into a [`ParsedAssistant`].

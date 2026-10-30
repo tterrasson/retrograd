@@ -345,10 +345,17 @@ int build_tool_call_parser_from_source(
             encode_parser_blob(recipe), "failed to build tool-call parser", buffer, n_buffer, out_n_bytes);
 }
 
-int parse_assistant_output(
+// The shared body of the two entry points below: `is_partial` is the flag
+// `common_chat_parse` already carries - a partial parse reports what it
+// recognized of a turn that is still being generated, which is what a streaming
+// caller diffs against its previous read. The document shape is identical, but
+// under a partial parse `content` is what is committed so far and a call's
+// `arguments` may be an incomplete string, so the Rust side keeps it raw.
+static int parse_assistant_output_impl(
         const char * parser_blob,
         size_t n_parser_blob,
         const char * text,
+        bool is_partial,
         char * buffer,
         size_t n_buffer,
         size_t * out_n_bytes) {
@@ -359,7 +366,7 @@ int parse_assistant_output(
 
     common_chat_msg message;
     try {
-        message = common_chat_parse(common_chat_input(text), /*is_partial=*/false, *params);
+        message = common_chat_parse(common_chat_input(text), is_partial, *params);
     } catch (const std::exception & err) {
         set_error(std::string("failed to parse assistant output: ") + err.what());
         return -1;
@@ -382,6 +389,28 @@ int parse_assistant_output(
     out["tool_calls"] = calls;
 
     return copy_json_out(out.dump(), "failed to render parsed assistant output", buffer, n_buffer, out_n_bytes);
+}
+
+int parse_assistant_output(
+        const char * parser_blob,
+        size_t n_parser_blob,
+        const char * text,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes) {
+    return parse_assistant_output_impl(
+            parser_blob, n_parser_blob, text, /*is_partial=*/false, buffer, n_buffer, out_n_bytes);
+}
+
+int parse_assistant_output_partial(
+        const char * parser_blob,
+        size_t n_parser_blob,
+        const char * text,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes) {
+    return parse_assistant_output_impl(
+            parser_blob, n_parser_blob, text, /*is_partial=*/true, buffer, n_buffer, out_n_bytes);
 }
 
 int set_reasoning_budget(chat_model_state & chat, int32_t budget) {

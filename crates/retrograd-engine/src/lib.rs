@@ -463,7 +463,7 @@ pub use stats::{DutyCycleStats, GenerationStats, OptimizerMemory, OptimizerTimin
 pub use step::{EngineMemory, STATE_SEQ_FLAGS_PARTIAL_ONLY, StepOutRow, StepOutput, StepRow};
 pub use trainer::{
     SampledRow, VOCABULARY_WITNESSES, VocabularyMismatch, parse_assistant_output,
-    render_chat_template_source, tool_call_parser_from_source,
+    parse_assistant_output_partial, render_chat_template_source, tool_call_parser_from_source,
 };
 
 // The "uninitialized buffer filled through FFI" helpers below each mark a

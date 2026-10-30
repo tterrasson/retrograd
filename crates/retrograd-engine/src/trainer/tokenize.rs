@@ -442,19 +442,52 @@ pub fn parse_assistant_output(parser: &str, text: &str) -> Result<String> {
     // rollout member. The JSON adds the field names and the escaping around a
     // document whose bulk is the text itself.
     let size_hint = text.len().saturating_mul(2).saturating_add(256);
+    parse_assistant_output_impl(parser, text, size_hint, false)
+}
+
+/// Runs a parser from [`Trainer::tool_call_parser`] over one assistant output
+/// that is still being generated, with `is_partial=true` on the C side: the
+/// document reports what the parser recognized so far - `content` is the
+/// committed prefix and a call's `arguments` may be an incomplete string.
+///
+/// Like [`parse_assistant_output`] this needs no trainer, no model and no
+/// context, and may be called concurrently with generation - once per received
+/// piece of a streamed answer, so cheaply and without a probe.
+pub fn parse_assistant_output_partial(parser: &str, text: &str) -> Result<String> {
+    let size_hint = text.len().saturating_mul(2).saturating_add(256);
+    parse_assistant_output_impl(parser, text, size_hint, true)
+}
+
+fn parse_assistant_output_impl(
+    parser: &str,
+    text: &str,
+    size_hint: usize,
+    partial: bool,
+) -> Result<String> {
     let text = CString::new(text).map_err(nul_error)?;
     // SAFETY: both borrowed buffers live through this synchronous call, and the
     // entry takes no trainer to invalidate.
     unsafe {
         read_string_sized_lossy(size_hint, |buffer, n_buffer, out| {
-            ffi::retro_chat_parse_assistant(
-                parser.as_ptr().cast(),
-                parser.len(),
-                text.as_ptr(),
-                buffer,
-                n_buffer,
-                out,
-            )
+            if partial {
+                ffi::retro_chat_parse_assistant_partial(
+                    parser.as_ptr().cast(),
+                    parser.len(),
+                    text.as_ptr(),
+                    buffer,
+                    n_buffer,
+                    out,
+                )
+            } else {
+                ffi::retro_chat_parse_assistant(
+                    parser.as_ptr().cast(),
+                    parser.len(),
+                    text.as_ptr(),
+                    buffer,
+                    n_buffer,
+                    out,
+                )
+            }
         })
     }
 }
