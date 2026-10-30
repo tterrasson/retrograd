@@ -15,6 +15,7 @@ mod error;
 mod execution;
 mod hex;
 mod json_pointer;
+mod kv;
 mod optimizer;
 mod trainable;
 mod types;
@@ -40,6 +41,9 @@ pub use execution::{
 };
 pub use hex::hex_lower;
 pub use json_pointer::{PointerPath, escape_json_pointer};
+pub use kv::{
+    InferenceFootprint, inference_footprint, sequences_of_len, validate_kv_dtype_support,
+};
 pub use optimizer::{
     GEFEN_CODEBOOK_LEVELS, GEFEN_DEFAULT_BLOCK_SIZE, GEFEN_DEFAULT_MIN_NUMEL,
     GEFEN_ZERO_BLOCK_INDEX, GefenLayout, GefenVariant, HyperparameterBound,
