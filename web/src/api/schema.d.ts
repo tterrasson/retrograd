@@ -1934,7 +1934,7 @@ export interface components {
       id: string
       /** Format: int32 */
       max_pairs?: number | null
-      /** @description `auto` | `listwise` | `chunked` | `pairwise`. */
+      /** @description `auto` | `listwise` | `chunked` | `pairwise` | `pointwise_logprob`. */
       mode?: string | null
       rubric?: string | null
     }

@@ -396,7 +396,11 @@ impl MemoryEstimate {
             PhaseResources { bytes, posts }
         };
 
-        let persistent_device = phase(vec![
+        // The co-resident models - a teacher, an anchor, a local judge's
+        // snapshot engine - are persistent device memory like the run's own
+        // weights, and the peak must carry them. The post is only listed when
+        // it is non-zero, so an estimate without one is unchanged.
+        let mut persistent_posts = vec![
             exact("model_weight_bytes", self.model_weight_bytes),
             analytical("optimizer_kv_bytes", self.optimizer_kv_bytes),
             analytical("generation_kv_bytes", self.generation_kv_bytes),
@@ -406,7 +410,11 @@ impl MemoryEstimate {
             ),
             analytical("trainable_gradient_bytes", self.trainable_gradient_bytes),
             analytical("optimizer_state_bytes", self.optimizer_state_bytes),
-        ]);
+        ];
+        if self.co_resident_bytes > 0 {
+            persistent_posts.insert(1, analytical("co_resident_bytes", self.co_resident_bytes));
+        }
+        let persistent_device = phase(persistent_posts);
         let persistent_host = phase(vec![
             analytical("host_dataset_bytes", self.host_dataset_bytes),
             analytical("host_rollout_bytes", self.host_rollout_bytes),
@@ -798,6 +806,39 @@ fn rollout_host_bytes(rollouts_per_update: u64, n_ctx: u64) -> u64 {
 /// configuration and nothing else.
 pub fn co_resident_model_bytes(model: &ModelInfo, training: &TrainConfig) -> u64 {
     co_resident_model_bytes_at(model, training, training.n_ctx)
+}
+
+/// Device bytes a co-resident snapshot judge holds beside the run: one more
+/// copy of the base weights with its training and generation KV, plus the
+/// frozen adapter it loads on top. Forward-only like a reference anchor, so
+/// no backward graph and no optimizer state - but the adapter is *added*
+/// to the base copy, not selected out of it.
+pub fn local_judge_snapshot_bytes(
+    model: &ModelInfo,
+    training: &TrainConfig,
+    lora: Option<&LoraConfig>,
+) -> u64 {
+    let base = co_resident_model_bytes(model, training);
+    let concurrency = u64::from(training.effective_generation_concurrency().max(1));
+    let generation_kv = if has_generation_context(training, concurrency) {
+        total([
+            blocked_kv_cache_bytes(
+                model,
+                product([u64::from(training.n_ctx), concurrency]),
+                generation_kv_block(training),
+            ),
+            recurrent_state_bytes(model, concurrency),
+        ])
+    } else {
+        0
+    };
+    let adapter = lora.map_or(0, |lora| {
+        product([
+            trainable_parameters(model, Some(lora)),
+            lora_element_bytes(lora.dtype),
+        ])
+    });
+    total([base, generation_kv, adapter])
 }
 
 /// Like [`co_resident_model_bytes`] but at a context width other than the
@@ -1536,6 +1577,23 @@ mod tests {
             Calibration::default(),
         );
         assert!(more.logits_bytes <= chunked.logits_bytes);
+    }
+
+    #[test]
+    fn a_snapshot_judge_counts_its_dedicated_generation_cache() {
+        let model = tiny_model();
+        let mut training = training(1024);
+        training.generation_concurrency = 1;
+        training.fast_generation_context = false;
+        training.generation_batch = 0;
+        let plain = local_judge_snapshot_bytes(&model, &training, None);
+        assert_eq!(plain, co_resident_model_bytes(&model, &training));
+        training.fast_generation_context = true;
+        let fast = local_judge_snapshot_bytes(&model, &training, None);
+        assert_eq!(
+            fast - plain,
+            model.kv_cache_bytes(u64::from(training.n_ctx), 2) + recurrent_state_bytes(&model, 1)
+        );
     }
 
     #[test]

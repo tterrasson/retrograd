@@ -20,6 +20,7 @@ thiserror.workspace = true
 retrograd-config.workspace = true
 retrograd-core.workspace = true
 retrograd-dataset.workspace = true
+retrograd-spec.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

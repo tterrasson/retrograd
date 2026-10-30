@@ -2606,7 +2606,7 @@
             ]
           },
           "mode": {
-            "description": "`auto` | `listwise` | `chunked` | `pairwise`.",
+            "description": "`auto` | `listwise` | `chunked` | `pairwise` | `pointwise_logprob`.",
             "type": [
               "string",
               "null"

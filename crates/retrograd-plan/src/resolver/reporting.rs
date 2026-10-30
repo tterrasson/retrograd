@@ -150,11 +150,37 @@ pub(super) fn record_candidate_transition(
 }
 
 pub(super) fn workload_of(input: &ResolveInput<'_>, config: &RunConfig) -> Workload {
+    let mut models = input.co_resident();
+    // A local snapshot judge is a second engine held for the whole run, on
+    // the same model: its geometry is the one being sized.
+    if local_snapshot_judge(config) {
+        models.judge_snapshot = Some(input.model);
+    }
     Workload {
         kind: workload_kind_of(config),
         examples: input.data.examples,
-        co_resident_bytes: co_resident_bytes(config, input.co_resident()),
+        co_resident_bytes: co_resident_bytes(config, models),
     }
+}
+
+/// Whether the document declares an in-process judge on a frozen snapshot: the
+/// one local-judge mode that holds a second engine for the whole run. `base`
+/// and `reference` reuse weights the run already loaded, and `policy` adds
+/// nothing, so none of them costs a co-resident model.
+pub fn local_snapshot_judge(config: &RunConfig) -> bool {
+    let retrograd_config::Algorithm::Grpo(grpo) = &config.algorithm else {
+        return false;
+    };
+    let Some(judge) = &grpo.judge else {
+        return false;
+    };
+    let retrograd_spec::judge::JudgeConfig::Ruler { config: ruler } = &judge.config else {
+        return false;
+    };
+    ruler
+        .local
+        .as_ref()
+        .is_some_and(|local| local.weights == retrograd_spec::judge::LocalJudgeWeights::Snapshot)
 }
 
 /// The models a run holds beside the one being sized, as geometry the caller
@@ -166,6 +192,9 @@ pub struct CoResident<'a> {
     pub teacher: Option<&'a ModelInfo>,
     /// Geometry of the fixed-reference anchor, when the document names one.
     pub reference: Option<&'a ModelInfo>,
+    /// Geometry of the model an in-process snapshot judge runs on - the model
+    /// being sized, held a second time with its frozen adapter.
+    pub judge_snapshot: Option<&'a ModelInfo>,
 }
 
 /// Device bytes those models hold beside the one being sized. A model that is
@@ -193,7 +222,17 @@ pub(super) fn co_resident_bytes(config: &RunConfig, models: CoResident<'_>) -> u
         ),
         _ => 0,
     };
-    teacher.saturating_add(reference)
+    // A local snapshot judge is a second engine on the same model: base copy,
+    // its generation KV, and the frozen adapter - all resident for the run.
+    let judge = match models.judge_snapshot {
+        Some(model) => crate::cost::local_judge_snapshot_bytes(
+            model,
+            &config.training,
+            config.lora.as_ref().map(|lora| &lora.config),
+        ),
+        None => 0,
+    };
+    teacher.saturating_add(reference).saturating_add(judge)
 }
 
 /// `(iterations, total_steps)`.
@@ -294,6 +333,15 @@ fn preference_steps_per_epoch(
 /// Judge requests over the whole run - a figure the plan carries,
 /// because a judge costs money per call.
 pub(super) fn judge_calls(input: &ResolveInput<'_>, config: &RunConfig) -> u64 {
+    if let retrograd_config::Algorithm::Grpo(grpo) = &config.algorithm
+        && let Some(judge) = &grpo.judge
+        && let retrograd_spec::judge::JudgeConfig::Ruler { config: ruler } = &judge.config
+        && ruler.strategy == retrograd_spec::judge::JudgeStrategy::PointwiseLogprob
+    {
+        return u64::from(grpo.updates)
+            .saturating_mul(grpo.prompts_per_update as u64)
+            .saturating_mul(grpo.group_size as u64);
+    }
     let Some(judge) = &input.recipe.judge else {
         return 0;
     };
@@ -306,6 +354,8 @@ pub(super) fn judge_calls(input: &ResolveInput<'_>, config: &RunConfig) -> u64 {
             .map(u64::from)
             // Without a cap, pairwise compares every pair of the group.
             .unwrap_or_else(|| (grpo.group_size * (grpo.group_size - 1) / 2) as u64),
+        // One scoring request per trajectory: no generation, no chunking.
+        Some("pointwise_logprob") => grpo.group_size as u64,
         // One listwise request per group, plus its chunked fallback in the worst
         // case; `auto` and `chunked` both land here.
         _ => 2,

@@ -925,3 +925,124 @@ fn no_eval_dataset_means_no_eval_truncation_figure() {
     let resolution = resolve(&assembled).expect("a roomy card must resolve");
     assert_eq!(resolution.plan.eval_truncation_fraction, None);
 }
+
+/// A local judge on a frozen snapshot holds a second engine for the whole run:
+/// the plan must charge its base copy, KV and adapter to the device budget,
+/// while an HTTP judge (or a `policy`/`base` local one) adds nothing.
+#[test]
+fn a_local_snapshot_judge_counts_a_second_engine_in_the_memory_budget() {
+    let recipe = retrograd_plan::Recipe {
+        objective: Objective::ReasoningRl,
+        allow: vec![Allow::TruncateContext],
+        reward: Some(RewardRef {
+            id: "sql-exec".to_string(),
+        }),
+        ..sft_recipe()
+    };
+    let model = tiny_model();
+    let data = uniform_dataset(800, 1_200);
+    let grpo = |judge: serde_json::Value| {
+        json!({
+            "grpo": {
+                "prompts": "p.jsonl",
+                "updates": 1,
+                "prompts_per_update": 1,
+                "group_size": 2,
+                "grpo_epochs": 1,
+                "clip_range_low": 0.2,
+                "clip_range_high": 0.28,
+                "kl_coefficient": 0.0,
+                "judge_weight": 0.5,
+                "judge": judge,
+            }
+        })
+    };
+    let resolve_with = |judge: serde_json::Value| {
+        let overrides = grpo(judge);
+        let mut assembled = input(
+            &recipe,
+            &overrides,
+            &model,
+            &data,
+            machine(64 * GIB, 64 * GIB),
+        );
+        assembled.reward_command = vec!["python".to_string(), "reward.py".to_string()];
+        resolve(&assembled).expect("the resolution must succeed")
+    };
+    let http = resolve_with(json!({
+        "type": "ruler",
+        "base_url": "http://judge/v1",
+        "model": "judge"
+    }));
+    let snapshot = resolve_with(json!({"type": "ruler", "local": {}}));
+    let policy = resolve_with(json!({"type": "ruler", "local": {"weights": "policy"}}));
+    let http_bytes = http.plan.memory.resources.device_peak_bytes;
+    let snapshot_bytes = snapshot.plan.memory.resources.device_peak_bytes;
+    let policy_bytes = policy.plan.memory.resources.device_peak_bytes;
+    assert!(
+        snapshot_bytes > http_bytes,
+        "a snapshot judge must add a second engine: {snapshot_bytes} vs {http_bytes}"
+    );
+    assert_eq!(
+        policy_bytes, http_bytes,
+        "the policy weights are the run's own: nothing co-resident"
+    );
+    // The difference is exactly the judge engine: base copy + KV + adapter.
+    let training = &snapshot.config.training;
+    let lora = snapshot.config.lora.as_ref().map(|lora| &lora.config);
+    let expected = retrograd_plan::cost::local_judge_snapshot_bytes(&model, training, lora);
+    assert_eq!(snapshot_bytes - http_bytes, expected);
+}
+
+/// `pointwise_logprob` is one scoring request per trajectory: no generation,
+/// so `judge_calls_expected` counts the group size, not a listwise pair.
+#[test]
+fn pointwise_logprob_counts_one_request_per_trajectory() {
+    let recipe = retrograd_plan::Recipe {
+        objective: Objective::ReasoningRl,
+        allow: vec![Allow::TruncateContext],
+        reward: Some(RewardRef {
+            id: "sql-exec".to_string(),
+        }),
+        judge: Some(retrograd_plan::JudgeRef {
+            id: "local".to_string(),
+            mode: Some("pointwise_logprob".to_string()),
+            max_pairs: None,
+            anchor: None,
+            rubric: None,
+        }),
+        ..sft_recipe()
+    };
+    let overrides = json!({
+        "grpo": {
+            "prompts": "p.jsonl",
+            "updates": 3,
+            "prompts_per_update": 2,
+            "group_size": 4,
+            "grpo_epochs": 1,
+            "clip_range_low": 0.2,
+            "clip_range_high": 0.28,
+            "kl_coefficient": 0.0,
+            "judge_weight": 0.5,
+            "judge": {"type": "ruler", "local": {"weights": "base"},
+                      "strategy": {"mode": "pointwise_logprob"}},
+        }
+    });
+    let model = tiny_model();
+    let data = uniform_dataset(800, 1_200);
+    let mut assembled = input(
+        &recipe,
+        &overrides,
+        &model,
+        &data,
+        machine(64 * GIB, 64 * GIB),
+    );
+    assembled.reward_command = vec!["python".to_string(), "reward.py".to_string()];
+    let resolution = resolve(&assembled).expect("the resolution must succeed");
+    // 3 updates x 2 prompts x 4 members = 24 scoring requests.
+    assert_eq!(resolution.plan.judge_calls_expected, 24);
+    let mut direct_recipe = recipe.clone();
+    direct_recipe.judge = None;
+    assembled.recipe = &direct_recipe;
+    assert_eq!(resolve(&assembled).unwrap().plan.judge_calls_expected, 24);
+}

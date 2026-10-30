@@ -196,7 +196,7 @@ pub struct RewardRef {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct JudgeRef {
     pub id: String,
-    /// `auto` | `listwise` | `chunked` | `pairwise`.
+    /// `auto` | `listwise` | `chunked` | `pairwise` | `pointwise_logprob`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

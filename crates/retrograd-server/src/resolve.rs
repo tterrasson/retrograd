@@ -579,6 +579,9 @@ pub async fn plan_config(
         retrograd_plan::CoResident {
             teacher: teacher.as_ref(),
             reference: reference.as_ref(),
+            // A local judge on a frozen snapshot holds a second engine on the
+            // model being sized, and the budget must carry it.
+            judge_snapshot: retrograd_plan::local_snapshot_judge(&config).then_some(&model),
         },
         base_trainable.as_ref(),
         &data,

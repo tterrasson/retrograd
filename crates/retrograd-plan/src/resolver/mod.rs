@@ -136,6 +136,7 @@ impl<'a> ResolveInput<'a> {
         CoResident {
             teacher: self.teacher,
             reference: self.reference,
+            judge_snapshot: None,
         }
     }
 }
