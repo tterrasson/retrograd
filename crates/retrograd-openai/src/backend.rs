@@ -23,11 +23,27 @@ pub trait ServeBackend: DecodeBackend + PromptModel {
     /// decides). The runtime builds each request's budget machine from the
     /// engine's plan. The serving session drains requests before changing it.
     fn set_reasoning_budget(&mut self, budget: i32) -> CoreResult<()>;
+    /// Whether the loaded model declares a pooling mode, i.e. can produce a
+    /// sequence embedding at all. A causal chat model without one gets no
+    /// embedding invented by averaging.
+    fn supports_embeddings(&self) -> CoreResult<bool>;
+    /// The pooled embedding of one token sequence. Prefill-only: the runtime
+    /// clears the KV before and after, so it never shares KV with a
+    /// generation whose attention mode differs.
+    fn embed(&mut self, tokens: &[i32]) -> CoreResult<Vec<f32>>;
 }
 
 impl ServeBackend for Engine {
     fn set_reasoning_budget(&mut self, budget: i32) -> CoreResult<()> {
         Ok(Engine::set_reasoning_budget(self, budget)?)
+    }
+
+    fn supports_embeddings(&self) -> CoreResult<bool> {
+        Ok(Engine::supports_embeddings(self)?)
+    }
+
+    fn embed(&mut self, tokens: &[i32]) -> CoreResult<Vec<f32>> {
+        Ok(Engine::embed(self, tokens)?)
     }
 }
 

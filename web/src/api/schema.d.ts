@@ -159,6 +159,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/v1/embeddings': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** OpenAI: embeddings of the input texts or token lists, from the weights on disk */
+    post: operations['post_embeddings']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/v1/engine/stats': {
     parameters: {
       query?: never
@@ -3626,6 +3643,37 @@ export interface operations {
         content: {
           'application/json': components['schemas']['Defaults']
         }
+      }
+      /** @description a problem document (RFC 9457) */
+      default: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['Problem']
+        }
+      }
+    }
+  }
+  post_embeddings: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': string
+      }
+    }
+    responses: {
+      /** @description ok */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
       }
       /** @description a problem document (RFC 9457) */
       default: {

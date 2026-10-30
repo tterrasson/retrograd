@@ -161,7 +161,13 @@ pub struct FakeServing {
     model: FakeModel,
     backend: SharedFake,
     budget_changes: Arc<Mutex<Vec<(i32, usize)>>>,
+    /// Whether the fake answers embeddings; off, the endpoint's refusal path
+    /// is what a model without a pooling mode gets.
+    embeddings: bool,
 }
+
+/// The fake's embedding width.
+pub const FAKE_EMBEDDING_SIZE: usize = 8;
 
 impl FakeServing {
     fn build(reply: &str, with_eog: bool) -> (Self, SharedFake) {
@@ -182,6 +188,7 @@ impl FakeServing {
                 model: FakeModel::new(reply),
                 backend: SharedFake(backend.0.clone()),
                 budget_changes: Arc::default(),
+                embeddings: true,
             },
             backend,
         )
@@ -296,6 +303,27 @@ impl PromptModel for FakeServing {
 }
 
 impl ServeBackend for FakeServing {
+    fn supports_embeddings(&self) -> CoreResult<bool> {
+        Ok(self.embeddings)
+    }
+
+    /// A deterministic stand-in: the fake's tokens are bytes, and the vector
+    /// is a fixed function of them - identical inputs give identical vectors,
+    /// and a batch gives the same vectors as separate calls.
+    fn embed(&mut self, tokens: &[i32]) -> CoreResult<Vec<f32>> {
+        let mut out = vec![0.0_f32; FAKE_EMBEDDING_SIZE];
+        if !tokens.is_empty() {
+            for (index, token) in tokens.iter().enumerate() {
+                out[index % FAKE_EMBEDDING_SIZE] +=
+                    (u8::try_from(*token).unwrap_or(0) as f32) * (index as f32 + 1.0);
+            }
+            for value in &mut out {
+                *value /= tokens.len() as f32;
+            }
+        }
+        Ok(out)
+    }
+
     fn set_reasoning_budget(&mut self, budget: i32) -> CoreResult<()> {
         let sampled = self
             .backend
@@ -325,6 +353,8 @@ pub struct FakeLoader {
     /// its slot journal across reloads.
     shared: Option<SharedFake>,
     budget_changes: Arc<Mutex<Vec<(i32, usize)>>>,
+    /// Whether the fake backend answers embeddings.
+    embeddings: bool,
 }
 
 impl Clone for FakeLoader {
@@ -338,6 +368,7 @@ impl Clone for FakeLoader {
                 .shared
                 .as_ref()
                 .map(|shared| SharedFake(shared.0.clone())),
+            embeddings: self.embeddings,
         }
     }
 }
@@ -350,7 +381,15 @@ impl FakeLoader {
             specs: Arc::default(),
             budget_changes: Arc::default(),
             shared: None,
+            embeddings: true,
         }
+    }
+
+    /// A loader whose backend answers no embeddings - the refusal path a
+    /// model without a pooling mode gets.
+    pub fn without_embeddings(mut self) -> Self {
+        self.embeddings = false;
+        self
     }
 
     /// A loader whose answer never ends on its own, returning the shared
@@ -364,6 +403,7 @@ impl FakeLoader {
             specs: Arc::default(),
             budget_changes: Arc::default(),
             shared: Some(SharedFake(serving.backend.0.clone())),
+            embeddings: true,
         };
         (loader, shared)
     }
@@ -407,10 +447,12 @@ impl Loader for FakeLoader {
                 model: FakeModel::new(&self.reply),
                 backend: SharedFake(shared.0.clone()),
                 budget_changes: self.budget_changes.clone(),
+                embeddings: self.embeddings,
             }),
             None => {
                 let mut backend = FakeServing::new(&self.reply);
                 backend.budget_changes = self.budget_changes.clone();
+                backend.embeddings = self.embeddings;
                 Box::new(backend)
             }
         };

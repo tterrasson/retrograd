@@ -563,7 +563,15 @@ const OPERATIONS: &[Operation] = &[
     )
     .accepts(&["application/json"])
     .openai(),
-
+    op(
+        "post",
+        "/v1/embeddings",
+        "OpenAI: embeddings of the input texts or token lists, from the weights on disk",
+        None,
+        None,
+    )
+    .accepts(&["application/json"])
+    .openai(),
 ];
 
 /// The paths object, built from [`OPERATIONS`].

@@ -6235,6 +6235,41 @@
         "summary": "Derivation rules and the settings applied by default"
       }
     },
+    "/v1/embeddings": {
+      "post": {
+        "operationId": "post_embeddings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem document (RFC 9457)"
+          }
+        },
+        "summary": "OpenAI: embeddings of the input texts or token lists, from the weights on disk",
+        "tags": [
+          "openai"
+        ]
+      }
+    },
     "/v1/engine/stats": {
       "get": {
         "operationId": "get_engine_stats",

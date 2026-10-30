@@ -285,4 +285,8 @@ impl ModelCard {
 pub struct ModelList {
     pub object: &'static str,
     pub data: Vec<ModelCard>,
+    /// The Retrograd extension: the server's capabilities, published only
+    /// where they are validated. Not part of the standard contract.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<serde_json::Value>,
 }

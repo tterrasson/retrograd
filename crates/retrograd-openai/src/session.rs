@@ -124,6 +124,23 @@ pub struct ServingJob {
     pub reader: Option<Arc<dyn ToolCallParser>>,
 }
 
+/// One input of an embeddings request: a text (tokenized on the session's
+/// thread, with the model's own tokenizer) or a token list as the client sent
+/// it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EmbedItem {
+    Text(String),
+    Tokens(Vec<i32>),
+}
+
+/// The answer to an embeddings request: one vector per input, and each
+/// input's token count for the usage.
+#[derive(Clone, Debug)]
+pub struct EmbeddingOutcome {
+    pub embeddings: Vec<Vec<f32>>,
+    pub prompt_tokens: Vec<usize>,
+}
+
 /// A point-in-time report of the serving session, for a stats endpoint.
 #[derive(Clone, Debug)]
 pub struct EngineStats {
@@ -145,6 +162,13 @@ pub struct EngineStats {
 
 enum Envelope {
     Job(Job),
+    /// Prefill-only embedding extraction on the loaded backend: no generation
+    /// slot is taken, and live requests are drained first.
+    Embed {
+        spec: WeightsSpec,
+        inputs: Vec<EmbedItem>,
+        reply: oneshot::Sender<Result<EmbeddingOutcome, OpenAiError>>,
+    },
     Stats(oneshot::Sender<Option<EngineStats>>),
     /// Nothing to do but look at the flags: sent so a thread asleep on an idle
     /// model notices a yield without waiting out its timeout.
@@ -287,6 +311,39 @@ impl Session {
     /// The weights currently loaded, if any.
     pub fn loaded(&self) -> Option<WeightsSpec> {
         self.loaded.lock().map(|spec| spec.clone()).unwrap_or(None)
+    }
+
+    /// Embeds each input with the weights `spec` names, on the session's
+    /// thread: prefill-only, one vector per input, in order. The inputs are
+    /// processed one at a time - no generation slot is taken, and the KV (and
+    /// with it the prefix cache) is cleared around the extraction, so live
+    /// requests are drained first.
+    pub async fn embed(
+        &self,
+        spec: WeightsSpec,
+        inputs: Vec<EmbedItem>,
+    ) -> Result<EmbeddingOutcome, OpenAiError> {
+        let (reply, answer) = oneshot::channel();
+        self.jobs
+            .try_send(Envelope::Embed {
+                spec,
+                inputs,
+                reply,
+            })
+            .map_err(|error| match error {
+                TrySendError::Full(_) => OpenAiError::busy(
+                    "queue_full",
+                    "this server is already holding as many requests as it queues; retry \
+                     shortly",
+                    1,
+                ),
+                TrySendError::Disconnected(_) => {
+                    OpenAiError::internal("the serving thread is no longer running")
+                }
+            })?;
+        answer.await.map_err(|_| {
+            OpenAiError::internal("the serving thread stopped before answering the request")
+        })?
     }
 
     /// A point-in-time report of the serving thread, or `None` when no model is
@@ -519,6 +576,18 @@ impl Worker {
                             let _ = reply.send(outcome);
                         }
                     }
+                    Envelope::Embed {
+                        spec,
+                        inputs,
+                        reply,
+                    } => {
+                        // The request was abandoned while it waited: no embed is
+                        // spent on it.
+                        if !reply.is_closed() {
+                            let outcome = self.embed(&mut core, &spec, inputs);
+                            let _ = reply.send(outcome);
+                        }
+                    }
                     Envelope::Stats(reply) => {
                         let _ = reply.send(self.stats(&core));
                     }
@@ -621,6 +690,82 @@ impl Worker {
         }))
     }
 
+    /// Prefill-only embedding extraction on the loaded backend. Live requests
+    /// are drained first (the embedding graph differs from the decode graph,
+    /// so the KV it leaves is not a generation's), the requested adapter is
+    /// applied for the extraction and released after, and the inputs are
+    /// embedded one at a time so no batch of decodes is queued behind them.
+    fn embed(
+        &self,
+        core: &mut Option<Core>,
+        spec: &WeightsSpec,
+        inputs: Vec<EmbedItem>,
+    ) -> Result<EmbeddingOutcome, OpenAiError> {
+        if inputs.is_empty() {
+            return Err(OpenAiError::invalid_param("input", "`input` is required"));
+        }
+        let core = self.ensure(core, spec)?;
+        let adapter = match &spec.adapter {
+            Some(path) => Some(core.register(path)?),
+            None => None,
+        };
+        core.scheduler.run_until_idle()?;
+        let previous_adapter = core.scheduler.backend().active_adapter()?;
+        core.scheduler
+            .backend_mut()
+            .activate_adapter(adapter.as_deref())?;
+        let result = (|| {
+            if !core.scheduler.backend().supports_embeddings()? {
+                return Err(OpenAiError::unsupported(
+                    "embeddings",
+                    "the model declares no pooling (a causal chat model): embeddings are not \
+                     served for it",
+                ));
+            }
+            let mut embeddings = Vec::with_capacity(inputs.len());
+            let mut prompt_tokens = Vec::with_capacity(inputs.len());
+            for item in inputs {
+                let tokens = match item {
+                    EmbedItem::Text(text) => core.scheduler.backend().tokenize(&text)?,
+                    EmbedItem::Tokens(tokens) => tokens,
+                };
+                if tokens.is_empty() {
+                    return Err(OpenAiError::invalid_param(
+                        "input",
+                        "an embedding input must tokenize to at least one token",
+                    ));
+                }
+                let context = crate::render::PromptModel::context_size(core.scheduler.backend())?;
+                if tokens.len() > context {
+                    return Err(OpenAiError::context_length_exceeded(
+                        tokens.len(),
+                        0,
+                        context,
+                    ));
+                }
+                let embedding = core.scheduler.backend_mut().embed(&tokens)?;
+                prompt_tokens.push(tokens.len());
+                embeddings.push(embedding);
+            }
+            Ok(EmbeddingOutcome {
+                embeddings,
+                prompt_tokens,
+            })
+        })();
+        // Restore the scheduler's adapter even after a failed extraction.
+        let restored = core
+            .scheduler
+            .backend_mut()
+            .activate_adapter(previous_adapter.as_deref());
+        match result {
+            Err(error) => Err(error),
+            Ok(outcome) => {
+                restored?;
+                Ok(outcome)
+            }
+        }
+    }
+
     fn ensure<'a>(
         &self,
         core: &'a mut Option<Core>,
@@ -693,6 +838,43 @@ mod tests {
         )
         .unwrap()
         .request
+    }
+
+    #[tokio::test]
+    async fn embeddings_select_the_base_and_restore_the_schedulers_adapter() {
+        let (loader, shared) = FakeLoader::shared_endless("abc");
+        let session = Session::new(
+            Arc::new(loader),
+            Arc::new(Unshared),
+            SessionOptions::default(),
+        )
+        .unwrap();
+        let mut prompt = request();
+        prompt.sampling.max_new_tokens = 2;
+        session
+            .complete(spec(Some("a.gguf")), prompt.clone())
+            .await
+            .unwrap();
+        assert_eq!(shared.lock().active_adapter.as_deref(), Some("a.gguf"));
+        shared.lock().adapter_ops.clear();
+        session
+            .embed(spec(None), vec![EmbedItem::Tokens(vec![1, 2])])
+            .await
+            .unwrap();
+        let ops = shared.lock().adapter_ops.clone();
+        assert_eq!(
+            ops,
+            vec![
+                ("activate".into(), None),
+                ("activate".into(), Some("a.gguf".into()))
+            ]
+        );
+        assert_eq!(shared.lock().active_adapter.as_deref(), Some("a.gguf"));
+        session
+            .complete(spec(Some("a.gguf")), prompt)
+            .await
+            .unwrap();
+        assert_eq!(shared.lock().active_adapter.as_deref(), Some("a.gguf"));
     }
 
     /// A lease that can be taken away, and counts how often it was lent.

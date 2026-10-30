@@ -12,7 +12,8 @@
 //! every surface is served by the same backend - the [`Session`] for weights on
 //! disk, a live run's own thread for a run that is training. The surfaces live
 //! in their own subtrees: [`chat`] (Chat Completions), [`responses`] (the
-//! Responses API, with its store) and [`completions`] (legacy Completions).
+//! Responses API, with its store), [`completions`] (the legacy completions)
+//! and [`embeddings`].
 //!
 //! The answer is rendered and parsed by the same code as the agentic rollouts
 //! ([`retrograd_agent::rendering`]), so a model evaluated through this endpoint
@@ -22,6 +23,7 @@ pub mod auth;
 pub mod backend;
 pub mod chat;
 pub mod completions;
+pub mod embeddings;
 pub mod error;
 pub mod grammar;
 pub mod render;
@@ -115,8 +117,9 @@ pub struct Endpoint {
 }
 
 /// `GET /models`, `GET /models/{model}`, and the generation surfaces
-/// (`POST /chat/completions`, `POST /responses`, `POST /completions`),
-/// relative to wherever the caller mounts them - `/v1` for every OpenAI client.
+/// (`POST /chat/completions`, `POST /responses`, `POST /completions`,
+/// `POST /embeddings`), relative to wherever the caller mounts them - `/v1`
+/// for every OpenAI client.
 ///
 /// No timeout layer belongs over these: a stream stays open until its answer
 /// exists, and the bound is [`Endpoint::timeout`], applied by the handler.
@@ -127,7 +130,22 @@ pub fn router(endpoint: Endpoint) -> Router {
         .merge(chat::router())
         .merge(responses::router())
         .merge(completions::router())
+        .merge(embeddings::router())
         .with_state(endpoint)
+}
+
+/// The Retrograd extension of `GET /v1/models`: the capabilities this server
+/// serves, published only where they are validated (the contract tests). Not
+/// part of the standard OpenAI contract; standard fields are untouched.
+#[derive(serde::Serialize)]
+struct ServerCapabilities {
+    /// The Responses API stores responses (bounded in-memory LRU by default).
+    responses_store: bool,
+    /// `POST /v1/completions` (legacy) is served.
+    completions: bool,
+    /// `POST /v1/embeddings` is served; whether one model answers embeddings is
+    /// decided per request (a model that declares no pooling is refused).
+    embeddings: bool,
 }
 
 async fn list_models(State(endpoint): State<Endpoint>) -> Result<Response, OpenAiError> {
@@ -136,6 +154,14 @@ async fn list_models(State(endpoint): State<Endpoint>) -> Result<Response, OpenA
     Ok(axum::Json(ModelList {
         object: "list",
         data,
+        capabilities: Some(
+            serde_json::to_value(ServerCapabilities {
+                responses_store: true,
+                completions: true,
+                embeddings: true,
+            })
+            .unwrap_or(serde_json::Value::Null),
+        ),
     })
     .into_response())
 }
