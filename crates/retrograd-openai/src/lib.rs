@@ -11,7 +11,8 @@
 //! [`GenerationRequest`]: every surface translates its wire body into it, and
 //! every surface is served by the same backend - the [`Session`] for weights on
 //! disk, a live run's own thread for a run that is training. The surfaces live
-//! in their own subtree: [`chat`] serves Chat Completions.
+//! in their own subtrees: [`chat`] (Chat Completions, served today) and
+//! [`responses`] (the Responses API, served next).
 //!
 //! The answer is rendered and parsed by the same code as the agentic rollouts
 //! ([`retrograd_agent::rendering`]), so a model evaluated through this endpoint
@@ -23,6 +24,7 @@ pub mod chat;
 pub mod error;
 pub mod render;
 pub mod request;
+pub mod responses;
 pub mod session;
 pub mod stream;
 pub mod testing;
