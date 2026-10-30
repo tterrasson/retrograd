@@ -168,6 +168,11 @@ pub struct EngineConfig {
     pub kv_dtype: EngineKvDtype,
     /// Request flash attention. Required for a quantized `kv_dtype`.
     pub flash_attn: bool,
+    /// One unified KV stream across all `n_seq_max` slots (the historical
+    /// default of the runtime). With a unified pool, a prefix copy of any
+    /// position range between slots is metadata-only; a partitioned pool only
+    /// supports whole-sequence copies.
+    pub kv_unified: bool,
     pub device: Device,
     /// 0 resolves like the trainer (`RETRO_THREADS` included).
     pub threads: u32,
@@ -183,6 +188,7 @@ impl Default for EngineConfig {
             n_ubatch: 512,
             kv_dtype: EngineKvDtype::F16,
             flash_attn: true,
+            kv_unified: true,
             device: Device::Auto,
             threads: 0,
             verbose: false,

@@ -960,6 +960,9 @@ bool load_model_and_context(trainer_state & state) {
     // sequence ids. A partitioned KV cache would divide `n_ctx` by the group
     // size and reject an otherwise valid full-width training row.
     ctx_params.kv_unified = true;
+    // Read back by retro_trainer_generation_kv_unified; the generation context
+    // built below inherits ctx_params, so it is unified as well.
+    state.generation_kv_unified = ctx_params.kv_unified;
     // Recurrent-state rollback depth, derived from what the shared-prefix
     // scorer can ask of this geometry and from what the snapshots cost, rather
     // than pinned at zero for every model (see derive_recurrent_rollback).

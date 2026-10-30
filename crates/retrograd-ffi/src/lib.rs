@@ -778,12 +778,16 @@ pub struct RetroEngineConfig {
     /// 0 resolves like the trainer (RETRO_THREADS included).
     pub threads: u32,
     pub verbose: bool,
+    /// One unified KV stream across all slots (0 or 1); see the C header.
+    /// A u32 so the field lands past the old 40-byte layout and the runtime's
+    /// struct_size versioning detects callers compiled before it existed.
+    pub kv_unified: u32,
 }
 
 impl Default for RetroEngineConfig {
     fn default() -> Self {
         Self {
-            // The ABI layout is 40 bytes, checked in contract_tests below.
+            // The ABI layout is checked in contract_tests below.
             struct_size: size_of::<Self>() as u32,
             n_ctx: 4096,
             n_seq_max: 8,
@@ -794,6 +798,7 @@ impl Default for RetroEngineConfig {
             device: 0, // RETRO_DEVICE_AUTO
             threads: 0,
             verbose: false,
+            kv_unified: 1,
         }
     }
 }
@@ -1245,6 +1250,28 @@ unsafe extern "C" {
     pub fn retro_trainer_generation_request_free(trainer: *mut RetroTrainer, request: i32)
     -> c_int;
 
+    /// Mirror of `retro_trainer_generation_kv_unified`.
+    pub fn retro_trainer_generation_kv_unified(
+        trainer: *mut RetroTrainer,
+        out_unified: *mut bool,
+    ) -> c_int;
+
+    /// Mirror of `retro_trainer_generation_weights_version`: bumped by every
+    /// `forget_generation_kv` (optimizer step, import, adapter change).
+    pub fn retro_trainer_generation_weights_version(
+        trainer: *mut RetroTrainer,
+        out_version: *mut u64,
+    ) -> c_int;
+
+    /// Mirror of `retro_trainer_model_fingerprint`.
+    pub fn retro_trainer_model_fingerprint(
+        trainer: *mut RetroTrainer,
+        out_fingerprint: *mut u64,
+    ) -> c_int;
+
+    /// Mirror of `retro_trainer_is_hybrid`.
+    pub fn retro_trainer_is_hybrid(trainer: *mut RetroTrainer, out_is_hybrid: *mut bool) -> c_int;
+
     pub fn retro_trainer_score_tokens(
         trainer: *mut RetroTrainer,
         tokens: *const i32,
@@ -1647,6 +1674,23 @@ unsafe extern "C" {
     pub fn retro_engine_memory(engine: *mut RetroEngine, out: *mut RetroEngineMemoryInfo) -> c_int;
 
     pub fn retro_engine_request_free(engine: *mut RetroEngine, request: i32) -> c_int;
+
+    /// Mirror of `retro_engine_kv_unified`: whether the engine context's KV
+    /// pool is unified (any-range seq_cp is metadata-only) or partitioned.
+    pub fn retro_engine_kv_unified(engine: *mut RetroEngine, out_unified: *mut bool) -> c_int;
+
+    /// Mirror of `retro_engine_weights_version`: generation of the weights the
+    /// resident KV was computed under.
+    pub fn retro_engine_weights_version(engine: *mut RetroEngine, out_version: *mut u64) -> c_int;
+
+    /// Mirror of `retro_engine_model_fingerprint`.
+    pub fn retro_engine_model_fingerprint(
+        engine: *mut RetroEngine,
+        out_fingerprint: *mut u64,
+    ) -> c_int;
+
+    /// Mirror of `retro_engine_is_hybrid`.
+    pub fn retro_engine_is_hybrid(engine: *mut RetroEngine, out_is_hybrid: *mut bool) -> c_int;
 
     pub fn retro_last_error() -> *const c_char;
 }
@@ -2073,8 +2117,11 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroGenerationStats, reused_tokens), 32);
 
         // The engine config is versioned by struct_size, so its layout is part
-        // of the ABI like every other caller-filled struct here.
-        assert_eq!(size_of::<RetroEngineConfig>(), 40);
+        // of the ABI like every other caller-filled struct here. `kv_unified`
+        // was appended after `verbose` as a u32: callers compiled against the
+        // older 40-byte layout pass struct_size 40, the runtime reads only
+        // that prefix and keeps the default.
+        assert_eq!(size_of::<RetroEngineConfig>(), 44);
         assert_eq!(align_of::<RetroEngineConfig>(), 4);
         assert_eq!(offset_of!(RetroEngineConfig, struct_size), 0);
         assert_eq!(offset_of!(RetroEngineConfig, n_ctx), 4);
@@ -2086,6 +2133,7 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroEngineConfig, device), 28);
         assert_eq!(offset_of!(RetroEngineConfig, threads), 32);
         assert_eq!(offset_of!(RetroEngineConfig, verbose), 36);
+        assert_eq!(offset_of!(RetroEngineConfig, kv_unified), 40);
 
         // These introspection structs are caller-allocated C values, so their
         // layout is part of the ABI. The fixed name arrays remain at the end so

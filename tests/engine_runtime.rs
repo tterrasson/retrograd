@@ -59,6 +59,7 @@ fn engine_config(train: &TrainConfig) -> EngineConfig {
             EngineKvDtype::F32
         },
         flash_attn: train.fast_generation_context,
+        kv_unified: true,
         device: Device::Cpu,
         threads: 0,
         verbose: false,

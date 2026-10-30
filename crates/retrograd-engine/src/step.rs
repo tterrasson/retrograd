@@ -26,6 +26,12 @@ pub(crate) fn validate_snapshot_flags(flags: u32) -> Result<(), EngineError> {
     Ok(())
 }
 
+/// Snapshot flag for `seq_save`/`seq_load`: only the partial state (recurrent
+/// state, plus the SWA KV of a sliding-window layer) is saved/restored. 0 is
+/// the full sequence state. Mirrors the runtime's
+/// `RETRO_STATE_SEQ_FLAGS_PARTIAL_ONLY`.
+pub const STATE_SEQ_FLAGS_PARTIAL_ONLY: u32 = ffi::RETRO_STATE_SEQ_FLAGS_PARTIAL_ONLY;
+
 /// One row of a step plan: `tokens` are decoded into `slot` at the absolute
 /// positions `pos0..pos0 + tokens.len() - 1`, and when `sample` is set the last
 /// token's logits are sampled through the same oracle as the batched

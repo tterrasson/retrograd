@@ -410,6 +410,16 @@ struct trainer_state {
     // shared with the engine through chat_model_state. `chat.model` is set
     // once the model is loaded.
     chat_model_state chat;
+    // Generation of the weights/adapters the generation context's resident KV
+    // was computed under: bumped by forget_generation_kv() - optimizer step,
+    // weight import, adapter change - so a prefix cache keyed on it can drop
+    // every entry tied to superseded weights.
+    uint64_t generation_weights_version = 0;
+    // Whether the generation context's KV pool is unified, as requested when
+    // the contexts were built. With a unified pool a seq_cp of any position
+    // range is metadata-only; a partitioned pool only supports
+    // whole-sequence copies.
+    bool generation_kv_unified = true;
 
     // Single owner of report-cache coherence: every mutation that can change
     // any report calls this. Recomputing a still-valid report is harmless,
@@ -441,6 +451,7 @@ struct trainer_state {
             }
         }
         generation_cache.forget_bookkeeping();
+        generation_weights_version += 1;
     }
 
 };
@@ -646,6 +657,23 @@ int read_tensor_inventory_impl(
         retro_tensor_desc * out_tensors,
         size_t n_max,
         size_t * out_count);
+// FNV-1a over the model path and the loaded weight size: identifies the
+// weights+tokenizer a resident KV belongs to, for prefix-cache keying. Not a
+// content hash - a file rewritten in place at the same size keeps its print.
+inline uint64_t model_fingerprint(const std::string & path, const llama_model * model) {
+    uint64_t hash = UINT64_C(14695981039346656037);
+    const auto mix = [&hash](const void * data, size_t size) {
+        const auto * bytes = static_cast<const unsigned char *>(data);
+        for (size_t i = 0; i < size; ++i) {
+            hash ^= bytes[i];
+            hash *= UINT64_C(1099511628211);
+        }
+    };
+    mix(path.data(), path.size());
+    const uint64_t size = model ? llama_model_size(model) : 0;
+    mix(&size, sizeof(size));
+    return hash;
+}
 std::string backend_report(const trainer_state & state);
 std::string capability_report(const trainer_state & state);
 bool shared_prefix_packed_training(const trainer_state & state);

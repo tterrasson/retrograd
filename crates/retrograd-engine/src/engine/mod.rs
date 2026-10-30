@@ -104,7 +104,7 @@ fn engine_config_to_ffi(
         ));
     }
     Ok(ffi::RetroEngineConfig {
-        // The fixed C layout is 40 bytes (checked by the FFI ABI tests).
+        // The fixed C layout is checked by the FFI ABI tests.
         struct_size: size_of::<ffi::RetroEngineConfig>() as u32,
         n_ctx: config.n_ctx,
         n_seq_max: config.n_seq_max,
@@ -115,6 +115,7 @@ fn engine_config_to_ffi(
         device: config.device.as_ffi(),
         threads: config.threads,
         verbose: config.verbose,
+        kv_unified: u32::from(config.kv_unified),
     })
 }
 
@@ -416,6 +417,7 @@ mod tests {
             n_ubatch: 32,
             kv_dtype: EngineKvDtype::Q8_0,
             flash_attn: true,
+            kv_unified: false,
             device: Device::Cpu,
             threads: 6,
             verbose: true,
@@ -434,6 +436,7 @@ mod tests {
         assert_eq!(ffi.device, 1);
         assert_eq!(ffi.threads, 6);
         assert!(ffi.verbose);
+        assert_eq!(ffi.kv_unified, 0);
     }
 
     #[test]

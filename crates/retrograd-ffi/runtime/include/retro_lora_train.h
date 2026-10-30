@@ -1634,6 +1634,15 @@ int retro_trainer_generation_memory(
     retro_trainer * trainer, retro_engine_memory_info * out);
 int retro_trainer_generation_request_free(retro_trainer * trainer, int32_t request);
 
+// Same KV-pool capability and versioning queries as the engine's, over the
+// generation context (the main context when the run has none). The weights
+// version is bumped by every forget_generation_kv(): optimizer step, weight
+// import, adapter change.
+int retro_trainer_generation_kv_unified(retro_trainer * trainer, bool * out_unified);
+int retro_trainer_generation_weights_version(retro_trainer * trainer, uint64_t * out_version);
+int retro_trainer_model_fingerprint(retro_trainer * trainer, uint64_t * out_fingerprint);
+int retro_trainer_is_hybrid(retro_trainer * trainer, bool * out_is_hybrid);
+
 // Teacher-forced scoring with the current model + LoRA weights: writes
 // log p(tokens[i+1] | tokens[0..=i]) into out_logprobs[i] for i in
 // [0, n_tokens-1). Forward only; the optimizer state is untouched.
@@ -2168,6 +2177,13 @@ typedef struct retro_engine_config {
     int32_t  device;        // one of retro_device
     uint32_t threads;       // 0 = resolve like the trainer (RETRO_THREADS included)
     bool     verbose;
+    // One unified KV stream across all sequence slots (the historical default
+    // of this runtime), 0 or 1. With a unified pool, seq_cp of any position
+    // range is a metadata-only operation between slots; with a partitioned
+    // pool only whole-sequence copies are supported by the backend. A u32 so
+    // the field lands past the old 40-byte layout and struct_size versioning
+    // detects callers compiled before it existed.
+    uint32_t kv_unified;
 } retro_engine_config;
 
 // Loads `model_path` mapped and builds one forward-only context with the
@@ -2351,6 +2367,26 @@ int retro_engine_memory(retro_engine * engine, retro_engine_memory_info * out);
 // Releases the per-request state (sampler RNG, reasoning-budget machine) of
 // `request`. The KV of its slot is untouched; combine with seq_rm to free it.
 int retro_engine_request_free(retro_engine * engine, int32_t request);
+
+// Whether the engine context's KV pool is unified (the configuration it was
+// built from). With a unified pool a seq_cp of any
+// position range is metadata-only; a partitioned pool only supports
+// whole-sequence copies - callers must check before issuing a partial copy.
+int retro_engine_kv_unified(retro_engine * engine, bool * out_unified);
+
+// Monotonic generation of the weights/adapters the resident KV was computed
+// under: bumped by every invalidation (adapter load/enable, KV forget). A
+// prefix cache may key its entries on (model_fingerprint, weights_version).
+int retro_engine_weights_version(retro_engine * engine, uint64_t * out_version);
+
+// Stable fingerprint of the loaded model file (path and size): identifies the
+// weights+tokenizer a resident KV belongs to, for prefix-cache keying.
+int retro_engine_model_fingerprint(retro_engine * engine, uint64_t * out_fingerprint);
+
+// Whether the loaded model is hybrid (recurrent state beside the attention
+// KV): its recurrent state cannot be truncated mid-sequence, so prefix reuse
+// is limited to exact boundaries.
+int retro_engine_is_hybrid(retro_engine * engine, bool * out_is_hybrid);
 
 const char * retro_last_error(void);
 

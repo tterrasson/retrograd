@@ -146,4 +146,45 @@ impl Engine {
         // SAFETY: the `Engine` invariant holds.
         self.check(unsafe { ffi::retro_engine_request_free(self.raw.as_ptr(), request) })
     }
+
+    /// Whether the engine context's KV pool is unified (as configured when the
+    /// context was built). With a unified pool a [`Engine::seq_cp`]
+    /// of any position range is metadata-only; a partitioned pool only
+    /// supports whole-sequence copies.
+    pub fn kv_unified(&self) -> Result<bool, EngineError> {
+        let mut unified = false;
+        // SAFETY: the `Engine` invariant holds and `unified` is a valid out-pointer.
+        self.check(unsafe { ffi::retro_engine_kv_unified(self.raw.as_ptr(), &mut unified) })?;
+        Ok(unified)
+    }
+
+    /// The generation of the weights/adapters the resident KV was computed
+    /// under; bumped by every KV invalidation (adapter load/enable, forget).
+    /// A prefix cache keys its entries on (model fingerprint, this version).
+    pub fn weights_version(&self) -> Result<u64, EngineError> {
+        let mut version = 0_u64;
+        // SAFETY: the `Engine` invariant holds and `version` is a valid out-pointer.
+        self.check(unsafe { ffi::retro_engine_weights_version(self.raw.as_ptr(), &mut version) })?;
+        Ok(version)
+    }
+
+    /// Fingerprint of the loaded model (path and weight size):
+    /// identifies the weights+tokenizer a resident KV belongs to.
+    pub fn model_fingerprint(&self) -> Result<u64, EngineError> {
+        let mut fingerprint = 0_u64;
+        // SAFETY: the `Engine` invariant holds and `fingerprint` is a valid out-pointer.
+        self.check(unsafe {
+            ffi::retro_engine_model_fingerprint(self.raw.as_ptr(), &mut fingerprint)
+        })?;
+        Ok(fingerprint)
+    }
+
+    /// Whether the loaded model is hybrid (recurrent state beside the attention
+    /// KV). Prefix reuse for hybrids is strict: exact boundaries only.
+    pub fn is_hybrid(&self) -> Result<bool, EngineError> {
+        let mut hybrid = false;
+        // SAFETY: the `Engine` invariant holds and `hybrid` is a valid out-pointer.
+        self.check(unsafe { ffi::retro_engine_is_hybrid(self.raw.as_ptr(), &mut hybrid) })?;
+        Ok(hybrid)
+    }
 }

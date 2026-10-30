@@ -47,6 +47,10 @@ struct engine_state {
     std::string weight_storage = "mapped";
     int32_t effective_kv_dtype = RETRO_KV_DTYPE_F32;
     ggml_rir_counters rir_baseline {};
+    // Bumped by forget_engine_kv(): every event that invalidates resident KV
+    // (adapter load/enable, explicit forget) moves the weights generation, so
+    // a prefix cache keyed on it can drop stale entries.
+    uint64_t weights_version = 0;
 };
 
 engine_state * checked_engine(retro_engine * engine) {
@@ -78,6 +82,7 @@ retro_engine_config default_engine_config() {
     config.device = RETRO_DEVICE_AUTO;
     config.threads = 0;
     config.verbose = false;
+    config.kv_unified = 1;
     return config;
 }
 
@@ -206,10 +211,10 @@ bool load_engine_model_and_context(engine_state & state) {
     ctx_params.n_batch = state.config.n_batch;
     ctx_params.n_ubatch = state.config.n_ubatch;
     ctx_params.n_seq_max = state.config.n_seq_max;
-    // Same as the trainer's contexts: one unified KV pool, no recurrent
-    // rollback (sampling never rolls a sequence back), windowed SWA, and no
-    // differentiable store - forward only.
-    ctx_params.kv_unified = true;
+    // Same as the trainer's contexts by default: one unified KV pool (the
+    // config may partition it), no recurrent rollback (sampling never rolls a sequence back), windowed SWA,
+    // and no differentiable store - forward only.
+    ctx_params.kv_unified = state.config.kv_unified != 0;
     ctx_params.n_rs_seq = 0;
     ctx_params.swa_full = false;
     ctx_params.kv_differentiable = false;
@@ -262,6 +267,7 @@ void forget_engine_kv(engine_state & state) {
         llama_memory_clear(memory, false);
     }
     state.cache.forget_bookkeeping();
+    state.weights_version += 1;
 }
 
 // Same two-call contract and same guards as the trainer's tokenize_into.
@@ -388,6 +394,9 @@ extern "C" retro_engine * retro_engine_new(
                 set_error("retro_engine_config.struct_size is too small for this build");
                 return nullptr;
             }
+            // A caller compiled against the 40-byte layout stops before
+            // kv_unified, which then keeps its default.
+            static_assert(offsetof(retro_engine_config, kv_unified) == 40);
             std::memcpy(&resolved, config, std::min<size_t>(size, sizeof(resolved)));
         }
         if (!validate_engine_config(resolved)) {
@@ -832,6 +841,55 @@ extern "C" int retro_engine_request_free(retro_engine * engine, int32_t request)
             return -1;
         }
         state->step_requests.requests.erase(request);
+        return 0;
+    });
+}
+
+extern "C" int retro_engine_kv_unified(retro_engine * engine, bool * out_unified) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state || !out_unified) {
+            if (state) set_error("out_unified is required");
+            return -1;
+        }
+        // The configuration the context was built from.
+        *out_unified = state->config.kv_unified != 0;
+        return 0;
+    });
+}
+
+extern "C" int retro_engine_weights_version(retro_engine * engine, uint64_t * out_version) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state || !out_version) {
+            if (state) set_error("out_version is required");
+            return -1;
+        }
+        *out_version = state->weights_version;
+        return 0;
+    });
+}
+
+extern "C" int retro_engine_is_hybrid(retro_engine * engine, bool * out_is_hybrid) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state || !out_is_hybrid) {
+            if (state) set_error("out_is_hybrid is required");
+            return -1;
+        }
+        *out_is_hybrid = llama_model_is_hybrid(state->model.get());
+        return 0;
+    });
+}
+
+extern "C" int retro_engine_model_fingerprint(retro_engine * engine, uint64_t * out_fingerprint) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state || !out_fingerprint) {
+            if (state) set_error("out_fingerprint is required");
+            return -1;
+        }
+        *out_fingerprint = model_fingerprint(state->model_path, state->model.get());
         return 0;
     });
 }

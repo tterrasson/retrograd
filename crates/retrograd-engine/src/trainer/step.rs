@@ -140,4 +140,49 @@ impl Trainer {
             ffi::retro_trainer_generation_request_free(self.raw.as_ptr(), request)
         })
     }
+
+    /// Whether the generation context's KV pool is unified (read back from the
+    /// built context's parameters). With a unified pool a [`Trainer::seq_cp`]
+    /// of any position range is metadata-only; a partitioned pool only
+    /// supports whole-sequence copies.
+    pub fn generation_kv_unified(&self) -> Result<bool> {
+        let mut unified = false;
+        // SAFETY: the `Trainer` invariant holds and `unified` is a valid out-pointer.
+        self.check(unsafe {
+            ffi::retro_trainer_generation_kv_unified(self.raw.as_ptr(), &mut unified)
+        })?;
+        Ok(unified)
+    }
+
+    /// The generation of the weights/adapters the generation context's resident
+    /// KV was computed under; bumped by every `forget_generation_kv` (optimizer
+    /// step, weight import, adapter change). A prefix cache keys its entries on
+    /// (model fingerprint, this version).
+    pub fn generation_weights_version(&self) -> Result<u64> {
+        let mut version = 0_u64;
+        // SAFETY: the `Trainer` invariant holds and `version` is a valid out-pointer.
+        self.check(unsafe {
+            ffi::retro_trainer_generation_weights_version(self.raw.as_ptr(), &mut version)
+        })?;
+        Ok(version)
+    }
+
+    /// Fingerprint of the loaded model (path and weight size).
+    pub fn model_fingerprint(&self) -> Result<u64> {
+        let mut fingerprint = 0_u64;
+        // SAFETY: the `Trainer` invariant holds and `fingerprint` is a valid out-pointer.
+        self.check(unsafe {
+            ffi::retro_trainer_model_fingerprint(self.raw.as_ptr(), &mut fingerprint)
+        })?;
+        Ok(fingerprint)
+    }
+
+    /// Whether the loaded model is hybrid (recurrent state beside the attention
+    /// KV).
+    pub fn is_hybrid(&self) -> Result<bool> {
+        let mut hybrid = false;
+        // SAFETY: the `Trainer` invariant holds and `hybrid` is a valid out-pointer.
+        self.check(unsafe { ffi::retro_trainer_is_hybrid(self.raw.as_ptr(), &mut hybrid) })?;
+        Ok(hybrid)
+    }
 }

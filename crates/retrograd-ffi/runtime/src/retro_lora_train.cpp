@@ -1151,6 +1151,55 @@ extern "C" int retro_trainer_generation_request_free(retro_trainer * trainer, in
     return retro::generation_request_free_impl(trainer, request);
 }
 
+extern "C" int retro_trainer_generation_kv_unified(retro_trainer * trainer, bool * out_unified) {
+    return retro::boundary([&]() -> int {
+        retro::trainer_state * state = retro::checked(trainer);
+        if (!state || !out_unified) {
+            if (state) retro::set_error("out_unified is required");
+            return -1;
+        }
+        // The parameters the contexts were built with.
+        *out_unified = state->generation_kv_unified;
+        return 0;
+    });
+}
+
+extern "C" int retro_trainer_generation_weights_version(retro_trainer * trainer, uint64_t * out_version) {
+    return retro::boundary([&]() -> int {
+        retro::trainer_state * state = retro::checked(trainer);
+        if (!state || !out_version) {
+            if (state) retro::set_error("out_version is required");
+            return -1;
+        }
+        *out_version = state->generation_weights_version;
+        return 0;
+    });
+}
+
+extern "C" int retro_trainer_is_hybrid(retro_trainer * trainer, bool * out_is_hybrid) {
+    return retro::boundary([&]() -> int {
+        retro::trainer_state * state = retro::checked(trainer);
+        if (!state || !out_is_hybrid) {
+            if (state) retro::set_error("out_is_hybrid is required");
+            return -1;
+        }
+        *out_is_hybrid = llama_model_is_hybrid(state->model.get());
+        return 0;
+    });
+}
+
+extern "C" int retro_trainer_model_fingerprint(retro_trainer * trainer, uint64_t * out_fingerprint) {
+    return retro::boundary([&]() -> int {
+        retro::trainer_state * state = retro::checked(trainer);
+        if (!state || !out_fingerprint) {
+            if (state) retro::set_error("out_fingerprint is required");
+            return -1;
+        }
+        *out_fingerprint = retro::model_fingerprint(state->model_path, state->model.get());
+        return 0;
+    });
+}
+
 extern "C" int retro_trainer_score_tokens(
         retro_trainer * trainer,
         const int32_t * tokens,

@@ -26,6 +26,7 @@ fn engine_config() -> EngineConfig {
         n_ubatch: 64,
         kv_dtype: EngineKvDtype::F16,
         flash_attn: true,
+        kv_unified: true,
         device: Device::Cpu,
         threads: 0,
         verbose: false,
