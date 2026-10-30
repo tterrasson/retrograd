@@ -772,6 +772,52 @@ fn step_loop_reproduces_the_reasoning_budget_forced_tokens() {
 }
 
 #[test]
+fn a_scoped_reasoning_budget_restores_each_selected_models_budget_after_an_error() {
+    use retrograd_engine::JudgeWeights;
+    let _guard = serialize_models();
+    let Some(model) = common::model_path_if_available() else {
+        return;
+    };
+    let train = train_config();
+    let mut trainer = Trainer::new(&model, train.clone()).unwrap();
+    trainer.attach_reference(&model, &train, None).unwrap();
+    let rendered = trainer
+        .format_chat_messages(r#"[{"role":"user","content":"Hi."}]"#, None, true)
+        .unwrap();
+    let prompt = trainer
+        .tokenize_text(&format!("{rendered}<think>"))
+        .unwrap();
+    let end = trainer.tokenize_fragment("</think>").unwrap();
+    let mut sampling = params(7);
+    sampling.max_new_tokens = u32::try_from(end.len() + 4).unwrap();
+    let wave = [(&prompt[..], sampling)];
+    for weights in [JudgeWeights::Policy, JudgeWeights::Reference] {
+        trainer
+            .with_weights(weights, None, |selected| {
+                // A zero initial budget makes the restored value observable in
+                // the generation mask, independently on the policy and anchor.
+                selected.set_reasoning_budget(Some(0))?;
+                let result: retrograd_core::Result<()> =
+                    selected.with_reasoning_budget(None, |selected| {
+                        let row = selected.generate_sampled_continuous(&wave)?.remove(0);
+                        assert!(row.forced.iter().all(|&forced| !forced));
+                        Err(retrograd_core::Error::runtime("deliberate judge failure"))
+                    });
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("deliberate judge failure")
+                );
+                let row = selected.generate_sampled_continuous(&wave)?.remove(0);
+                assert!(row.forced[..end.len()].iter().all(|&forced| forced));
+                selected.set_reasoning_budget(None)
+            })
+            .unwrap();
+    }
+}
+
+#[test]
 fn step_seq_ops_manage_the_kv_pool_as_documented() {
     let _guard = serialize_models();
     let Some(model) = common::model_path_if_available() else {

@@ -393,6 +393,12 @@ pub struct Trainer {
     /// The file that anchor was loaded from, kept for the checkpoint's
     /// fingerprint and diagnostics.
     reference_path: Option<std::path::PathBuf>,
+    /// The GGUF this trainer was built from. Kept so a caller that needs a
+    /// second, forward-only copy of the same base (a judge with frozen
+    /// weights, for instance) can load it without threading the path through
+    /// every layer.
+    model_path: std::path::PathBuf,
+    reasoning_budget: Option<u32>,
 }
 
 impl Trainer {
@@ -470,8 +476,13 @@ impl Trainer {
         })
     }
 
-    fn trains_base_weights(&self) -> bool {
+    pub fn trains_base_weights(&self) -> bool {
         self.trainable_policy.trains_base_weights()
+    }
+
+    /// The GGUF file this trainer loaded its base weights from.
+    pub fn model_path(&self) -> &std::path::Path {
+        &self.model_path
     }
 }
 
@@ -497,7 +508,7 @@ pub use rir::*;
 pub use stats::{DutyCycleStats, GenerationStats, OptimizerMemory, OptimizerTiming, ScoringStats};
 pub use step::{EngineMemory, STATE_SEQ_FLAGS_PARTIAL_ONLY, StepOutRow, StepOutput, StepRow};
 pub use trainer::{
-    SampledRow, VOCABULARY_WITNESSES, VocabularyMismatch, parse_assistant_output,
+    JudgeWeights, SampledRow, VOCABULARY_WITNESSES, VocabularyMismatch, parse_assistant_output,
     parse_assistant_output_partial, render_chat_template_source, tool_call_parser_from_source,
 };
 

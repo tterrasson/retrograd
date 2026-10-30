@@ -1,6 +1,57 @@
 use super::*;
 
+/// Which weights a forward-only caller reads: a judge is the main user, but
+/// any in-process consumer that must not disturb the training state picks its
+/// weights the same way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JudgeWeights {
+    /// The weights currently loaded: the adapter as it is being trained.
+    Policy,
+    /// The frozen base model, adapter disabled. Refused on a run that trains
+    /// base weights: the model it started from is the one being trained.
+    Base,
+    /// The run's reference policy: the attached anchor when there is one,
+    /// otherwise the base model with the adapter disabled. Distinct from
+    /// [`JudgeWeights::Base`] whenever the anchor is another file.
+    Reference,
+    /// A frozen snapshot of the policy, held by a *separate* engine passed as
+    /// `snapshot` to [`Trainer::with_weights`]. Never served by swapping the
+    /// anchor of this trainer: there is only one anchor and replacing it would
+    /// change the run's KL term.
+    Snapshot,
+}
+
 impl Trainer {
+    /// Runs `operation` against the selected weights, restoring the adapter
+    /// state afterwards even when `operation` fails.
+    ///
+    /// `Policy` needs no switch. `Base` and `Reference` disable the adapter for
+    /// the duration (see [`Trainer::with_base_model`] and
+    /// [`Trainer::with_reference_policy`]). `Snapshot` runs `operation` on the
+    /// separate frozen engine handed in as `snapshot`, which the caller owns
+    /// and refreshes; this trainer is not touched at all.
+    pub fn with_weights<T>(
+        &mut self,
+        weights: JudgeWeights,
+        snapshot: Option<&mut Trainer>,
+        operation: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        match weights {
+            JudgeWeights::Policy => operation(self),
+            JudgeWeights::Base => self.with_base_model(operation),
+            JudgeWeights::Reference => self.with_reference_policy(operation),
+            JudgeWeights::Snapshot => {
+                let engine = snapshot.ok_or_else(|| {
+                    Error::invalid(
+                        "snapshot judge weights need the frozen judge engine: load one and pass \
+                         it to with_weights",
+                    )
+                })?;
+                operation(engine)
+            }
+        }
+    }
+
     /// Teacher-forced scoring: returns `log p(tokens[i+1] | tokens[..=i])` for
     /// every position, i.e. `tokens.len() - 1` values. Forward only.
     pub fn score_tokens(&mut self, tokens: &[i32]) -> Result<Vec<f32>> {

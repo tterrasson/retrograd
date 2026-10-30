@@ -242,7 +242,9 @@ impl Trainer {
                 self.raw.as_ptr(),
                 variables.as_ref().map_or(std::ptr::null(), |v| v.as_ptr()),
             )
-        })
+        })?;
+        self.reasoning_budget = None;
+        Ok(())
     }
 
     /// Caps a reasoning block at `budget` tokens, after which the runtime
@@ -256,13 +258,31 @@ impl Trainer {
     /// [`Trainer::generate_sampled_continuous`] reports them, and the other
     /// generators refuse a row that has any.
     pub fn set_reasoning_budget(&mut self, budget: Option<u32>) -> Result<()> {
-        let budget = match budget {
+        let ffi_budget = match budget {
             None => -1,
             Some(budget) => i32::try_from(budget)
                 .map_err(|_| Error::invalid(format!("reasoning budget {budget} exceeds i32")))?,
         };
         // SAFETY: the `Trainer` invariant holds for this synchronous call.
-        self.check(unsafe { ffi::retro_trainer_set_reasoning_budget(self.raw.as_ptr(), budget) })
+        self.check(unsafe {
+            ffi::retro_trainer_set_reasoning_budget(self.raw.as_ptr(), ffi_budget)
+        })?;
+        self.reasoning_budget = budget;
+        Ok(())
+    }
+
+    /// Applies a temporary reasoning budget to this model and restores its
+    /// previous budget after the operation, including when it fails.
+    pub fn with_reasoning_budget<T>(
+        &mut self,
+        budget: Option<u32>,
+        operation: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        let previous = self.reasoning_budget;
+        self.set_reasoning_budget(budget)?;
+        let outcome = operation(self);
+        self.set_reasoning_budget(previous)?;
+        outcome
     }
 
     /// Whether the model's own chat template renders a tool catalog. Probed once

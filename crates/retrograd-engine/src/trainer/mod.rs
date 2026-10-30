@@ -6,7 +6,8 @@ impl Trainer {
     /// [`Trainer::load_lora`] before the first optimizer step.
     pub fn new(model_path: impl AsRef<Path>, config: TrainConfig) -> Result<Self> {
         let started = Instant::now();
-        let model_path = path_to_cstring(model_path.as_ref())?;
+        let model_path_ref = model_path.as_ref();
+        let model_path = path_to_cstring(model_path_ref)?;
         let ffi_config = train_config_to_ffi(&config)?;
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
         let raw = unsafe { ffi::retro_trainer_new(model_path.as_ptr(), &ffi_config) };
@@ -19,6 +20,8 @@ impl Trainer {
             master_weights: config.master_weights,
             reference: None,
             reference_path: None,
+            model_path: model_path_ref.to_path_buf(),
+            reasoning_budget: None,
         });
         test_timing("model_load", started);
         let trainer = result?;
@@ -300,6 +303,7 @@ mod tokenize;
 /// and [`Trainer::tool_call_parser`] for the model-backed equivalents.
 pub use generate::SampledRow;
 pub use reference::{VOCABULARY_WITNESSES, VocabularyMismatch};
+pub use score::JudgeWeights;
 pub(crate) use tokenize::read_optional_string;
 pub use tokenize::{
     parse_assistant_output, parse_assistant_output_partial, render_chat_template_source,
