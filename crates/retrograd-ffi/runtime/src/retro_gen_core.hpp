@@ -13,6 +13,7 @@
 #include "retro_runtime.hpp"
 
 #include <random>
+#include <unordered_map>
 
 namespace retro {
 
@@ -49,6 +50,46 @@ struct sampler_scratch {
     std::vector<int32_t> selected;
     float max = -INFINITY;
     double total = 0.0;
+    // v2 sampling only: the transformed logits (bias + penalties + masks), the
+    // candidate array the grammar sampler masks in place, and the per-token
+    // counts the penalties read.
+    std::vector<float> logits_v2;
+    std::vector<llama_token_data> candidates;
+    std::unordered_map<int32_t, int32_t> penalty_counts;
+};
+
+// A step row normalized across the v1 / v2 ABIs: both public step entry
+// points funnel into one step_impl over these. `sampling.v2` is non-null
+// exactly for v2 rows; `want_logprob` and `grammar` exist only on v2 rows.
+struct effective_sampling {
+    retro_sampling_params v1 {};
+    const retro_sampling_params_v2 * v2 = nullptr;
+};
+
+struct effective_step_row {
+    uint32_t struct_size;
+    int32_t request;
+    int32_t slot;
+    const int32_t * tokens;
+    uint32_t n;
+    int32_t pos0;
+    bool sample;
+    effective_sampling sampling;
+    uint32_t n_top_logprobs;
+    bool want_logprob;
+    int32_t adapter;
+    const retro_grammar * grammar = nullptr;
+};
+
+// What step_impl produces per row, before the public wrappers map it onto
+// retro_step_out_row (v1) or retro_step_out_row_v2 (v2).
+struct step_out_row_internal {
+    int32_t token = 0;
+    float logprob = 0.0f;
+    uint32_t n_top = 0;
+    uint8_t forced = 0;
+    uint8_t sampled = 0;
+    float sampled_logprob = 0.0f;
 };
 
 } // namespace gen_detail
@@ -112,6 +153,21 @@ struct gen_core {
             const reasoning_budget_plan * plan,
             llama_batch_ext * ext_batch);
 
+    // The v2 counterpart over retro_step_row_v2 / retro_step_out_row_v2: same
+    // residency, logits-validity and partial-mutation contract as step(), with
+    // extended sampling (top_k, min_p, penalties, logit_bias, grammar) on the
+    // sampling rows. See retro_lora_train.h for the v2 field contracts.
+    int step_v2(
+            const retro_step_row_v2 * rows,
+            size_t n_rows,
+            retro_step_out_row_v2 * out_rows,
+            int32_t * out_top_ids,
+            float * out_top_logprobs,
+            size_t n_top_stride,
+            step_request_table & requests,
+            const reasoning_budget_plan * plan,
+            llama_batch_ext * ext_batch);
+
     // Raw sequence operations on the context's memory, for callers that manage
     // placement themselves (the step API does). Each one invalidates the
     // prefix-cache bookkeeping: the mutation happened outside its protocol.
@@ -136,6 +192,23 @@ struct gen_core {
 
     bool validate_tokens(const int32_t * tokens, size_t n_tokens) const;
     bool validate_sampling(const retro_sampling_params & sampling) const;
+    bool validate_sampling_v2(const retro_sampling_params_v2 & sampling) const;
+
+    // The shared body of step() and step_v2(): validates and runs the
+    // normalized `rows`, writing gen_detail::step_out_row_internal per row.
+    // v1 rows keep the exact v1 sampling path (sample_token, raw temperature-1
+    // top-k); v2 rows go through sample_token_v2 with the request's history
+    // and grammar sampler.
+    int step_impl(
+            const gen_detail::effective_step_row * rows,
+            size_t n_rows,
+            gen_detail::step_out_row_internal * out_rows,
+            int32_t * out_top_ids,
+            float * out_top_logprobs,
+            size_t n_top_stride,
+            step_request_table & requests,
+            const reasoning_budget_plan * plan,
+            llama_batch_ext * ext_batch);
 
     // Decodes tokens at absolute positions pos0.. in n_batch chunks and returns
     // a borrowed pointer to the final requested logits row, through out_logits.
@@ -221,6 +294,29 @@ void top_token_logprobs(
         std::vector<double> & work,
         int32_t * out_ids,
         float * out_logprobs);
+
+// The v2 CPU sampling oracle: the pinned transformation order
+// logit_bias -> penalties(window) -> grammar mask -> top_k -> min_p ->
+// temperature -> top_p -> draw (see retro_lora_train.h). `history` is the
+// request's accepted tokens (penalty window source), `grammar_sampler` the
+// request's grammar (null = unconstrained). The caller accepts the emitted
+// token into both after applying the reasoning budget. Fills out_top_ids/out_top_logprobs
+// (k entries) with the top-k of the post-transformation distribution and
+// *out_sampled_logprob with the drawn token's logprob under it. Returns the
+// drawn token, or -1 with retro_last_error() set when the grammar allows no
+// token at this position.
+int32_t sample_token_v2(
+        const float * logits,
+        size_t n_vocab,
+        const retro_sampling_params_v2 & params,
+        std::mt19937 & rng,
+        gen_detail::sampler_scratch & scratch,
+        const std::vector<int32_t> & history,
+        llama_sampler * grammar_sampler,
+        float * out_sampled_logprob,
+        int32_t * out_top_ids,
+        float * out_top_logprobs,
+        size_t k);
 
 // Decodes states [0, n_states) at absolute positions 0.., emitting one output
 // row per state >= first_state, while keeping peak temporary outputs bounded

@@ -26,7 +26,8 @@ const SCORING_REQUEST: i32 = i32::MAX;
 
 /// The sampling params of a scoring row: the sampler runs (the runtime only
 /// exposes logits on sampling rows) but its token is discarded, so the values
-/// beyond validity do not matter.
+/// beyond validity do not matter. Neutral extended fields, so the top-k the
+/// row reads back is the raw temperature-1 distribution.
 const SCORING_SAMPLING: SamplingParams = SamplingParams {
     temperature: 1.0,
     top_p: 1.0,
@@ -110,8 +111,9 @@ impl Engine {
                     EngineError::Overflow("scoring position does not fit i32".into())
                 })?,
                 sample: true,
-                sampling: SCORING_SAMPLING,
+                sampling: SamplingParamsV2::from(SCORING_SAMPLING),
                 n_top_logprobs: vocab,
+                want_logprob: false,
             };
             self.step(std::slice::from_ref(&row), &mut out)?;
             if let &Some(target) = target {

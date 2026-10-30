@@ -89,6 +89,17 @@ bool fast_top_p_enabled() {
     return enabled;
 }
 
+// Forward: the draw half of the oracle, shared verbatim by sample_token (v1)
+// and sample_token_v2 (v2).
+int32_t draw_from_probs(
+        std::vector<double> & probs,
+        size_t n_vocab,
+        float top_p,
+        std::mt19937 & rng,
+        sampler_scratch & scratch,
+        double & out_denom,
+        bool truncate = false);
+
 int32_t sample_token(
         const float * logits,
         size_t n_vocab,
@@ -100,6 +111,10 @@ int32_t sample_token(
     for (size_t i = 0; i < n_vocab; ++i) {
         max = std::max(max, logits[i]);
     }
+    if (!std::isfinite(max)) {
+        set_error("sampling transformations left no finite logits");
+        return -1;
+    }
     scratch.max = max;
     std::vector<double> & probs = scratch.probs;
     probs.resize(n_vocab);
@@ -109,6 +124,26 @@ int32_t sample_token(
         total += probs[i];
     }
     scratch.total = total;
+    double denom = 0.0;
+    return draw_from_probs(probs, n_vocab, top_p, rng, scratch, denom);
+}
+
+// The draw half of the oracle, shared verbatim by sample_token (v1) and
+// sample_token_v2 (v2, over the transformed probs): the top_p truncation and
+// the categorical draw are the same code, so a v2 row with neutral extras
+// behaves exactly like v1's temperature + top_p. `out_denom` receives the mass
+// the draw was normalized over (the full total on the top_p == 1 fast path,
+// the kept mass otherwise), which is the renormalizer of the post-transformation
+// distribution the v2 outputs report.
+int32_t draw_from_probs(
+        std::vector<double> & probs,
+        size_t n_vocab,
+        float top_p,
+        std::mt19937 & rng,
+        sampler_scratch & scratch,
+        double & out_denom,
+        bool truncate) {
+    const double total = scratch.total;
 
     // Strictly on-policy Dr. GRPO uses top_p == 1. Avoid sorting the entire
     // vocabulary in that common path; a cumulative categorical draw is exact.
@@ -118,10 +153,12 @@ int32_t sample_token(
         double acc = 0.0;
         for (size_t i = 0; i < n_vocab; ++i) {
             acc += probs[i];
-            if (draw <= acc) {
+            if (probs[i] > 0.0 && draw <= acc) {
+                out_denom = total;
                 return static_cast<int32_t>(i);
             }
         }
+        out_denom = total;
         return static_cast<int32_t>(n_vocab - 1);
     }
 
@@ -164,15 +201,26 @@ int32_t sample_token(
         }
     }
 
+    if (truncate) {
+        // Preserve exactly the nucleus used by the draw for serving logprobs.
+        const size_t begin = fast_top_p_enabled() ? 0 : n_keep;
+        const size_t end = fast_top_p_enabled() ? n_vocab - n_keep : n_vocab;
+        for (size_t i = begin; i < end; ++i) {
+            probs[order[i]] = 0.0;
+        }
+    }
+
     std::uniform_real_distribution<double> uniform(0.0, kept);
     const double draw = uniform(rng);
     double acc = 0.0;
     for (size_t i = 0; i < n_keep; ++i) {
         acc += probs[(*candidates)[i]];
         if (draw <= acc) {
+            out_denom = kept;
             return (*candidates)[i];
         }
     }
+    out_denom = kept;
     return (*candidates)[n_keep - 1];
 }
 
@@ -659,6 +707,172 @@ bool prefill_continuous_prompts(
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// The v2 CPU sampling oracle: extended sampling on the step path. The
+// transformation order is pinned (retro_lora_train.h):
+//   logit_bias -> penalties(window) -> grammar mask -> top_k -> min_p
+//   -> temperature -> top_p -> draw.
+// Each stage mirrors the vendored llama-sampler.cpp apply it replaces.
+
+int32_t sample_token_v2(
+        const float * logits,
+        size_t n_vocab,
+        const retro_sampling_params_v2 & params,
+        std::mt19937 & rng,
+        gen_detail::sampler_scratch & scratch,
+        const std::vector<int32_t> & history,
+        llama_sampler * grammar_sampler,
+        float * out_sampled_logprob,
+        int32_t * out_top_ids,
+        float * out_top_logprobs,
+        size_t k) {
+    // (1) Copy the logits and apply the logit bias.
+    std::vector<float> & t = scratch.logits_v2;
+    t.resize(n_vocab);
+    std::memcpy(t.data(), logits, n_vocab * sizeof(float));
+    for (uint32_t i = 0; i < params.n_logit_bias; ++i) {
+        t[params.logit_bias_ids[i]] += params.logit_bias_values[i];
+    }
+
+    // (2) Penalties over the last penalty_window entries of the history
+    // (0 = the whole history). Mirrors llama_sampler_penalties_apply exactly:
+    // repeat multiplies non-positive logits and divides positive ones, then
+    // frequency and presence subtract count-scaled terms.
+    const bool any_penalty = params.repeat_penalty != 1.0f
+            || params.frequency_penalty != 0.0f
+            || params.presence_penalty != 0.0f;
+    if (any_penalty && !history.empty()) {
+        const size_t window = params.penalty_window == 0
+                ? history.size()
+                : std::min<size_t>(params.penalty_window, history.size());
+        std::unordered_map<int32_t, int32_t> & counts = scratch.penalty_counts;
+        counts.clear();
+        for (size_t i = history.size() - window; i < history.size(); ++i) {
+            counts[history[i]]++;
+        }
+        for (const auto & entry : counts) {
+            const int32_t id = entry.first;
+            const int32_t count = entry.second;
+            if (t[id] <= 0.0f) {
+                t[id] *= params.repeat_penalty;
+            } else {
+                t[id] /= params.repeat_penalty;
+            }
+            t[id] -= static_cast<float>(count) * params.frequency_penalty
+                    + static_cast<float>(count > 0) * params.presence_penalty;
+        }
+    }
+
+    // (3) Grammar mask. Candidates are built exactly as llama.cpp builds them
+    // from a logits row ({id, logit, 0}); the grammar apply sets the logit of
+    // every disallowed token to -INFINITY in place, so read it back.
+    if (grammar_sampler) {
+        std::vector<llama_token_data> & candidates = scratch.candidates;
+        candidates.resize(n_vocab);
+        for (size_t i = 0; i < n_vocab; ++i) {
+            candidates[i] = llama_token_data{
+                    static_cast<llama_token>(i), t[i], 0.0f};
+        }
+        llama_token_data_array arr = {
+            /* .data     = */ candidates.data(),
+            /* .size     = */ candidates.size(),
+            /* .selected = */ -1,
+            /* .sorted   = */ false,
+        };
+        llama_sampler_apply(grammar_sampler, &arr);
+        bool any_allowed = false;
+        for (size_t i = 0; i < n_vocab; ++i) {
+            t[i] = arr.data[i].logit;
+            if (t[i] != -INFINITY) {
+                any_allowed = true;
+            }
+        }
+        if (!any_allowed) {
+            set_error("grammar allows no token at this position");
+            return -1;
+        }
+    }
+
+    // (4) top_k: keep the top_k tokens by transformed logit, mirroring
+    // llama_sampler_top_k_impl (partial sort by logit descending, truncate).
+    if (params.top_k > 0 && static_cast<size_t>(params.top_k) < n_vocab) {
+        std::vector<int32_t> & order = scratch.order;
+        order.resize(n_vocab);
+        std::iota(order.begin(), order.end(), 0);
+        const size_t keep = static_cast<size_t>(params.top_k);
+        const auto by_logit = [&](int32_t a, int32_t b) {
+            return t[a] > t[b];
+        };
+        std::partial_sort(order.begin(), order.begin() + keep, order.end(), by_logit);
+        for (size_t i = keep; i < n_vocab; ++i) {
+            t[order[i]] = -INFINITY;
+        }
+    }
+
+    // (5) min_p: mirror llama_sampler_min_p_apply with min_keep = 1 (the first
+    // token always matches, so the filtered set is never empty here): the
+    // threshold is max_logit + log(min_p), tokens below it are dropped.
+    if (params.min_p > 0.0f) {
+        float max_logit = -INFINITY;
+        for (size_t i = 0; i < n_vocab; ++i) {
+            max_logit = std::max(max_logit, t[i]);
+        }
+        const float min_logit = max_logit + std::log(params.min_p);
+        for (size_t i = 0; i < n_vocab; ++i) {
+            if (t[i] < min_logit) {
+                t[i] = -INFINITY;
+            }
+        }
+    }
+
+    // (6) Temperature, in the oracle's existing style: probs[i] =
+    // exp((logit - max) / temp) in double, masked tokens contribute 0.
+    float max = -INFINITY;
+    for (size_t i = 0; i < n_vocab; ++i) {
+        max = std::max(max, t[i]);
+    }
+    scratch.max = max;
+    std::vector<double> & probs = scratch.probs;
+    probs.resize(n_vocab);
+    double total = 0.0;
+    for (size_t i = 0; i < n_vocab; ++i) {
+        probs[i] = std::exp((static_cast<double>(t[i]) - max) / params.temperature);
+        total += probs[i];
+    }
+    scratch.total = total;
+
+    // (7) top_p truncation + draw: the exact v1 code path over the transformed
+    // probs (including the top_p == 1.0 fast path).
+    double denom = 0.0;
+    const int32_t token = draw_from_probs(probs, n_vocab, params.top_p, rng, scratch, denom, true);
+    scratch.total = denom;
+
+    // (8) Report under the post-transformation distribution (renormalized over
+    // the mass the draw used). The caller advances history and grammar with
+    // the emitted token after the reasoning budget has chosen it.
+    if (k > 0 && out_top_ids && out_top_logprobs) {
+        std::vector<int32_t> & order = scratch.order;
+        order.resize(n_vocab);
+        std::iota(order.begin(), order.end(), 0);
+        const auto by_logit = [&](int32_t a, int32_t b) {
+            if (probs[a] != probs[b]) {
+                return probs[a] > probs[b];
+            }
+            return a < b;
+        };
+        std::partial_sort(order.begin(), order.begin() + k, order.end(), by_logit);
+        for (size_t j = 0; j < k; ++j) {
+            const int32_t id = order[j];
+            out_top_ids[j] = id;
+            out_top_logprobs[j] = static_cast<float>(std::log(probs[id] / denom));
+        }
+    }
+    if (out_sampled_logprob) {
+        *out_sampled_logprob = static_cast<float>(std::log(probs[token] / denom));
+    }
+    return token;
+}
 
 // ---------------------------------------------------------------------------
 // The reasoning budget: one llama.cpp state machine per row of a batched call,
@@ -1294,6 +1508,58 @@ bool gen_core::validate_sampling(const retro_sampling_params & sampling) const {
     return true;
 }
 
+bool gen_core::validate_sampling_v2(const retro_sampling_params_v2 & sampling) const {
+    // Read the evolution key before any other field.
+    if (sampling.struct_size < sizeof(retro_sampling_params_v2)) {
+        set_error("retro_sampling_params_v2.struct_size is too small for this build");
+        return false;
+    }
+    if (!(sampling.temperature > 0.0f) || !std::isfinite(sampling.temperature)) {
+        set_error("sampling temperature must be finite and greater than zero");
+        return false;
+    }
+    if (!(sampling.top_p > 0.0f && sampling.top_p <= 1.0f)) {
+        set_error("sampling top_p must be in (0, 1]");
+        return false;
+    }
+    if (!(sampling.repeat_penalty > 0.0f) || !std::isfinite(sampling.repeat_penalty)) {
+        set_error("sampling repeat_penalty must be finite and greater than zero");
+        return false;
+    }
+    if (!(sampling.min_p >= 0.0f && sampling.min_p <= 1.0f) || !std::isfinite(sampling.min_p)) {
+        set_error("sampling min_p must be in [0, 1]");
+        return false;
+    }
+    if (!std::isfinite(sampling.frequency_penalty)) {
+        set_error("sampling frequency_penalty must be finite");
+        return false;
+    }
+    if (!std::isfinite(sampling.presence_penalty)) {
+        set_error("sampling presence_penalty must be finite");
+        return false;
+    }
+    if (sampling.n_logit_bias > 4096) {
+        set_error("sampling n_logit_bias must not exceed 4096");
+        return false;
+    }
+    if (sampling.n_logit_bias > 0) {
+        if (!sampling.logit_bias_ids || !sampling.logit_bias_values) {
+            set_error("logit_bias ids and values are required when n_logit_bias is nonzero");
+            return false;
+        }
+        if (!validate_tokens(sampling.logit_bias_ids, sampling.n_logit_bias)) {
+            return false;
+        }
+        for (uint32_t i = 0; i < sampling.n_logit_bias; ++i) {
+            if (!std::isfinite(sampling.logit_bias_values[i])) {
+                set_error("logit_bias values must be finite");
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 // Decodes tokens at absolute positions pos0.. in n_batch chunks and returns a
 // borrowed pointer to the final requested logits row. The pointer remains valid
 // until the next llama_decode on this context, which is exactly the lifetime the
@@ -1784,6 +2050,122 @@ int gen_core::step(
         set_error("step rows and output rows are required");
         return -3;
     }
+    std::vector<gen_detail::effective_step_row> effective(n_rows);
+    for (size_t r = 0; r < n_rows; ++r) {
+        const retro_step_row & row = rows[r];
+        if (row.struct_size < offsetof(retro_step_row, adapter) + sizeof(int32_t)) {
+            set_error("retro_step_row.struct_size is too small for this build");
+            return -3;
+        }
+        gen_detail::effective_step_row & out = effective[r];
+        out.struct_size = row.struct_size;
+        out.request = row.request;
+        out.slot = row.slot;
+        out.tokens = row.tokens;
+        out.n = row.n;
+        out.pos0 = row.pos0;
+        out.sample = row.sample;
+        out.sampling.v1 = row.sampling;
+        out.sampling.v2 = nullptr;
+        out.n_top_logprobs = row.n_top_logprobs;
+        out.want_logprob = false;
+        out.adapter = row.adapter;
+        out.grammar = nullptr;
+    }
+    std::vector<gen_detail::step_out_row_internal> internal(n_rows);
+    const int status = step_impl(effective.data(), n_rows, internal.data(), out_top_ids,
+            out_top_logprobs, n_top_stride, requests, plan, ext_batch);
+    if (status != 0) {
+        return status;
+    }
+    // v1 output layout: the internal row minus the v2-only sampled_logprob.
+    for (size_t r = 0; r < n_rows; ++r) {
+        const gen_detail::step_out_row_internal & src = internal[r];
+        retro_step_out_row & out = out_rows[r];
+        out.struct_size = sizeof(retro_step_out_row);
+        out.token = src.token;
+        out.logprob = src.logprob;
+        out.n_top = src.n_top;
+        out.forced = src.forced;
+        out.sampled = src.sampled;
+    }
+    return 0;
+}
+
+int gen_core::step_v2(
+        const retro_step_row_v2 * rows,
+        size_t n_rows,
+        retro_step_out_row_v2 * out_rows,
+        int32_t * out_top_ids,
+        float * out_top_logprobs,
+        size_t n_top_stride,
+        step_request_table & requests,
+        const reasoning_budget_plan * plan,
+        llama_batch_ext * ext_batch) {
+    if (!rows || n_rows == 0 || !out_rows) {
+        set_error("step rows and output rows are required");
+        return -3;
+    }
+    std::vector<gen_detail::effective_step_row> effective(n_rows);
+    for (size_t r = 0; r < n_rows; ++r) {
+        const retro_step_row_v2 & row = rows[r];
+        if (row.struct_size < offsetof(retro_step_row_v2, adapter) + sizeof(int32_t)) {
+            set_error("retro_step_row_v2.struct_size is too small for this build");
+            return -3;
+        }
+        if (row.sampling.struct_size < sizeof(retro_sampling_params_v2)) {
+            set_error("retro_sampling_params_v2.struct_size is too small for this build");
+            return -3;
+        }
+        gen_detail::effective_step_row & out = effective[r];
+        out.struct_size = row.struct_size;
+        out.request = row.request;
+        out.slot = row.slot;
+        out.tokens = row.tokens;
+        out.n = row.n;
+        out.pos0 = row.pos0;
+        out.sample = row.sample;
+        out.sampling.v1 = retro_sampling_params{};
+        out.sampling.v2 = &row.sampling;
+        out.n_top_logprobs = row.n_top_logprobs;
+        out.want_logprob = row.want_logprob != 0;
+        out.adapter = row.adapter;
+        out.grammar = row.sampling.grammar;
+    }
+    std::vector<gen_detail::step_out_row_internal> internal(n_rows);
+    const int status = step_impl(effective.data(), n_rows, internal.data(), out_top_ids,
+            out_top_logprobs, n_top_stride, requests, plan, ext_batch);
+    if (status != 0) {
+        return status;
+    }
+    for (size_t r = 0; r < n_rows; ++r) {
+        const gen_detail::step_out_row_internal & src = internal[r];
+        retro_step_out_row_v2 & out = out_rows[r];
+        out.struct_size = sizeof(retro_step_out_row_v2);
+        out.token = src.token;
+        out.logprob = src.logprob;
+        out.n_top = src.n_top;
+        out.forced = src.forced;
+        out.sampled = src.sampled;
+        out.sampled_logprob = src.sampled_logprob;
+    }
+    return 0;
+}
+
+int gen_core::step_impl(
+        const gen_detail::effective_step_row * rows,
+        size_t n_rows,
+        gen_detail::step_out_row_internal * out_rows,
+        int32_t * out_top_ids,
+        float * out_top_logprobs,
+        size_t n_top_stride,
+        step_request_table & requests,
+        const reasoning_budget_plan * plan,
+        llama_batch_ext * ext_batch) {
+    if (!rows || n_rows == 0 || !out_rows) {
+        set_error("step rows and output rows are required");
+        return -3;
+    }
     const int32_t n_seq_max = llama_n_seq_max(ctx);
     const int32_t n_batch = llama_n_batch(ctx);
     const int64_t n_ctx_seq = llama_n_ctx_seq(ctx);
@@ -1793,14 +2175,18 @@ int gen_core::step(
         return -3;
     }
     // Read the evolution key before any other field: an older or truncated
-    // caller may not own sizeof(retro_step_row) bytes.
-    constexpr size_t row_prefix = offsetof(retro_step_row, adapter) + sizeof(int32_t);
+    // caller may not own sizeof(retro_step_row[_v2]) bytes.
+    constexpr size_t row_prefix_v1 = offsetof(retro_step_row, adapter) + sizeof(int32_t);
+    constexpr size_t row_prefix_v2 = offsetof(retro_step_row_v2, adapter) + sizeof(int32_t);
     std::vector<int32_t> seen_requests;
     size_t total = 0;
     for (size_t r = 0; r < n_rows; ++r) {
-        const retro_step_row & row = rows[r];
-        if (row.struct_size < row_prefix) {
-            set_error("retro_step_row.struct_size is too small for this build");
+        const gen_detail::effective_step_row & row = rows[r];
+        const bool is_v2 = row.sampling.v2 != nullptr;
+        if (row.struct_size < (is_v2 ? row_prefix_v2 : row_prefix_v1)) {
+            set_error(is_v2
+                    ? "retro_step_row_v2.struct_size is too small for this build"
+                    : "retro_step_row.struct_size is too small for this build");
             return -3;
         }
         if (!row.tokens || row.n == 0) {
@@ -1820,7 +2206,7 @@ int gen_core::step(
             return -3;
         }
         for (size_t previous = 0; previous < r; ++previous) {
-            const retro_step_row & other = rows[previous];
+            const gen_detail::effective_step_row & other = rows[previous];
             if (row.slot == other.slot
                     && row.pos0 < static_cast<int64_t>(other.pos0) + other.n
                     && other.pos0 < static_cast<int64_t>(row.pos0) + row.n) {
@@ -1850,12 +2236,18 @@ int gen_core::step(
                 set_error("a sampling step row requires a request id");
                 return -3;
             }
-            // The caller owns stopping; only the distribution parameters
-            // participate in this primitive's sampling contract.
-            retro_sampling_params sampling = row.sampling;
-            sampling.max_new_tokens = 1;
-            if (!validate_sampling(sampling)) {
-                return -3;
+            if (row.sampling.v2) {
+                if (!validate_sampling_v2(*row.sampling.v2)) {
+                    return -3;
+                }
+            } else {
+                // The caller owns stopping; only the distribution parameters
+                // participate in this primitive's sampling contract.
+                retro_sampling_params sampling = row.sampling.v1;
+                sampling.max_new_tokens = 1;
+                if (!validate_sampling(sampling)) {
+                    return -3;
+                }
             }
         }
         if (row.request >= 0) {
@@ -1866,6 +2258,27 @@ int gen_core::step(
             }
             seen_requests.push_back(row.request);
         }
+    }
+
+    using sampler_ptr = std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)>;
+    std::vector<sampler_ptr> compiled_grammars;
+    compiled_grammars.reserve(n_rows);
+    for (size_t r = 0; r < n_rows; ++r) {
+        const auto & row = rows[r];
+        sampler_ptr compiled(nullptr, llama_sampler_free);
+        if (row.sample && row.grammar) {
+            const char * gbnf = retro_grammar_gbnf(row.grammar);
+            const auto previous = requests.requests.find(row.request);
+            if (previous == requests.requests.end() || !previous->second.grammar
+                    || previous->second.grammar_gbnf != gbnf) {
+                compiled.reset(llama_sampler_init_grammar(this->vocab(), gbnf, "root"));
+                if (!compiled) {
+                    set_error("failed to compile the request's grammar (invalid GBNF)");
+                    return -3;
+                }
+            }
+        }
+        compiled_grammars.push_back(std::move(compiled));
     }
 
     // The step mutates raw KV outside the prefix-cache protocol: forget the
@@ -1883,7 +2296,7 @@ int gen_core::step(
     llama_batch_ext_clear(ext);
     std::vector<int32_t> last_index(n_rows, -1);
     for (size_t r = 0; r < n_rows; ++r) {
-        const retro_step_row & row = rows[r];
+        const gen_detail::effective_step_row & row = rows[r];
         for (uint32_t i = 0; i < row.n; ++i) {
             const int32_t index = llama_batch_ext_add_token(
                     ext, static_cast<llama_seq_id>(row.slot),
@@ -1913,7 +2326,7 @@ int gen_core::step(
     // caller resumes after seq_pos(), and the undecoded suffix must not have
     // primed the request's budget ahead of its KV state.
     for (size_t r = 0; r < n_rows; ++r) {
-        const retro_step_row & row = rows[r];
+        const gen_detail::effective_step_row & row = rows[r];
         if (row.request < 0) {
             continue;
         }
@@ -1955,14 +2368,14 @@ int gen_core::step(
     std::vector<int32_t> order;
     std::vector<double> work;
     for (size_t r = 0; r < n_rows; ++r) {
-        const retro_step_row & row = rows[r];
-        retro_step_out_row & out = out_rows[r];
-        out.struct_size = sizeof(retro_step_out_row);
+        const gen_detail::effective_step_row & row = rows[r];
+        gen_detail::step_out_row_internal & out = out_rows[r];
         out.token = 0;
         out.logprob = 0.0f;
         out.n_top = 0;
         out.forced = 0;
         out.sampled = 0;
+        out.sampled_logprob = 0.0f;
         if (!row.sample) {
             continue;
         }
@@ -1977,34 +2390,105 @@ int gen_core::step(
         }
         step_request_state & request = requests.requests[row.request];
         if (!request.seeded) {
-            request.rng.seed(row.sampling.seed);
+            request.rng.seed(row.sampling.v2 ? row.sampling.v2->seed : row.sampling.v1.seed);
             request.seeded = true;
         }
         if (request.budget.active() && !request.primed) {
             request.budget.prime(request.prompt_tail.data(), request.prompt_tail.size());
             request.primed = true;
         }
-        const retro_sampling_params & params = row.sampling;
-        const int32_t sampled = sample_token(
-                logits, n_vocab, params.temperature, params.top_p, request.rng, scratch);
-        bool forced = false;
-        const int32_t token = request.budget.next(sampled, forced);
-        out.token = token;
-        out.forced = forced ? 1 : 0;
-        out.sampled = 1;
-        // The same expression the batched generators report, so a step-wise
-        // loop reproduces their logprobs bit for bit.
-        out.logprob = params.temperature == 1.0f
-                ? static_cast<float>(
-                        static_cast<double>(logits[token]) - scratch.max - std::log(scratch.total))
-                : token_logprob(logits, n_vocab, token, scratch.probs);
-        const uint32_t k = std::min<uint32_t>(
-                row.n_top_logprobs,
-                static_cast<uint32_t>(std::min<size_t>(n_top_stride, n_vocab)));
-        if (k > 0) {
-            top_token_logprobs(logits, n_vocab, k, order, work,
-                    out_top_ids + r * n_top_stride, out_top_logprobs + r * n_top_stride);
+        if (row.sampling.v2) {
+            // v2 row: extended sampling through sample_token_v2. The grammar
+            // handle is copied into the per-request sampler state here (at the
+            // request's first sampling row, rebuilt when the GBNF text
+            // changes), so the caller may free the handle once this call
+            // returns.
+            const retro_sampling_params_v2 & params = *row.sampling.v2;
+            if (row.grammar) {
+                const char * gbnf = retro_grammar_gbnf(row.grammar);
+                if (!gbnf) {
+                    set_error("the sampling row's grammar handle is invalid");
+                    return -1;
+                }
+                if (!request.grammar || request.grammar_gbnf != gbnf) {
+                    llama_sampler * compiled = compiled_grammars[r].release();
+                    if (!compiled) {
+                        set_error("failed to compile the request's grammar (invalid GBNF)");
+                        return -1;
+                    }
+                    if (request.grammar) {
+                        llama_sampler_free(request.grammar);
+                    }
+                    request.grammar = compiled;
+                    request.grammar_gbnf = gbnf;
+                }
+            } else if (request.grammar) {
+                llama_sampler_free(request.grammar);
+                request.grammar = nullptr;
+                request.grammar_gbnf.clear();
+            }
+            const uint32_t k = std::min<uint32_t>(
+                    row.n_top_logprobs,
+                    static_cast<uint32_t>(std::min<size_t>(n_top_stride, n_vocab)));
+            float sampled_logprob = 0.0f;
+            const int32_t sampled = sample_token_v2(
+                    logits, n_vocab, params, request.rng, scratch, request.history,
+                    request.grammar,
+                    row.want_logprob ? &sampled_logprob : nullptr,
+                    k > 0 ? out_top_ids + r * n_top_stride : nullptr,
+                    k > 0 ? out_top_logprobs + r * n_top_stride : nullptr,
+                    k);
+            if (sampled < 0) {
+                // A grammar failure surfaces here; it is never faked.
+                return -1;
+            }
+            bool forced = false;
+            const int32_t token = request.budget.next(sampled, forced);
+            out.token = token;
+            out.forced = forced ? 1 : 0;
+            out.sampled = 1;
+            if (forced && request.grammar && scratch.probs[token] == 0.0) {
+                set_error("the reasoning budget forced a token excluded by the grammar");
+                return -1;
+            }
+            request.history.push_back(token);
+            if (request.grammar) {
+                llama_sampler_accept(request.grammar, token);
+            }
+            out.sampled_logprob = !row.want_logprob ? 0.0f : forced
+                    ? static_cast<float>(std::log(scratch.probs[token] / scratch.total))
+                    : sampled_logprob;
             out.n_top = k;
+            // The temperature-1 policy logprob of the emitted token, spelled
+            // exactly like the v1 temperature-1 path so both versions report
+            // the same value for the same token.
+            const log_softmax_terms terms = log_softmax_terms_scalar(logits, n_vocab);
+            out.logprob = static_cast<float>(
+                    static_cast<double>(logits[token]) - terms.max - terms.log_sum);
+        } else {
+            // v1 row: the untouched oracle path.
+            const retro_sampling_params & params = row.sampling.v1;
+            const int32_t sampled = sample_token(
+                    logits, n_vocab, params.temperature, params.top_p, request.rng, scratch);
+            bool forced = false;
+            const int32_t token = request.budget.next(sampled, forced);
+            out.token = token;
+            out.forced = forced ? 1 : 0;
+            out.sampled = 1;
+            // The same expression the batched generators report, so a step-wise
+            // loop reproduces their logprobs bit for bit.
+            out.logprob = params.temperature == 1.0f
+                    ? static_cast<float>(
+                            static_cast<double>(logits[token]) - scratch.max - std::log(scratch.total))
+                    : token_logprob(logits, n_vocab, token, scratch.probs);
+            const uint32_t k = std::min<uint32_t>(
+                    row.n_top_logprobs,
+                    static_cast<uint32_t>(std::min<size_t>(n_top_stride, n_vocab)));
+            if (k > 0) {
+                top_token_logprobs(logits, n_vocab, k, order, work,
+                        out_top_ids + r * n_top_stride, out_top_logprobs + r * n_top_stride);
+                out.n_top = k;
+            }
         }
     }
     return 0;

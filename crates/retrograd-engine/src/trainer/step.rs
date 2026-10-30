@@ -17,7 +17,7 @@ impl Trainer {
             |ffi_rows, n_rows, out_rows, top_ids, top_logprobs, stride| {
                 // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
                 unsafe {
-                    ffi::retro_trainer_generation_step(
+                    ffi::retro_trainer_generation_step_v2(
                         self.raw.as_ptr(),
                         ffi_rows,
                         n_rows,

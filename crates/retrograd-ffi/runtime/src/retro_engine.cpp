@@ -951,6 +951,48 @@ extern "C" int retro_engine_step(
     });
 }
 
+extern "C" int retro_engine_step_v2(
+        retro_engine * engine,
+        const retro_step_row_v2 * rows,
+        size_t n_rows,
+        retro_step_out_row_v2 * out_rows,
+        int32_t * out_top_ids,
+        float * out_top_logprobs,
+        size_t n_top_stride) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        const reasoning_budget_plan * plan = resolve_reasoning_budget(state->chat);
+        if (!plan) {
+            return -1;
+        }
+        gen_core core = engine_core(*state);
+        return core.step_v2(rows, n_rows, out_rows, out_top_ids, out_top_logprobs, n_top_stride,
+                state->step_requests, plan, state->step_batch.get(state->ctx.get()));
+    });
+}
+
+extern "C" int retro_engine_tool_call_grammar(
+        retro_engine * engine,
+        const char * tools_json,
+        int32_t mode,
+        const char * forced_name,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state || !out_n_bytes) {
+            if (state) set_error("out_n_bytes is required");
+            return -1;
+        }
+        return build_tool_call_grammar(
+                state->chat, tools_json, mode, forced_name, buffer, n_buffer, out_n_bytes);
+    });
+}
+
 extern "C" int retro_engine_seq_rm(retro_engine * engine, int32_t slot, int32_t p0, int32_t p1) {
     return boundary([&]() -> int {
         engine_state * state = checked_engine(engine);

@@ -12,7 +12,7 @@
 use std::borrow::Cow;
 use std::mem::size_of;
 
-use retrograd_core::SamplingParams;
+use retrograd_core::SamplingParamsV2;
 use retrograd_ffi as ffi;
 
 use crate::EngineError;
@@ -49,8 +49,11 @@ pub struct StepRow<'a> {
     pub tokens: Cow<'a, [i32]>,
     pub pos0: i32,
     pub sample: bool,
-    pub sampling: SamplingParams,
+    pub sampling: SamplingParamsV2,
     pub n_top_logprobs: u32,
+    /// Also report the sampled token's logprob under the post-transformation
+    /// distribution (serving logprobs without top-k).
+    pub want_logprob: bool,
 }
 
 impl<'a> StepRow<'a> {
@@ -62,23 +65,24 @@ impl<'a> StepRow<'a> {
             tokens: Cow::Borrowed(tokens),
             pos0,
             sample: false,
-            sampling: SamplingParams {
+            sampling: SamplingParamsV2::from(retrograd_core::SamplingParams {
                 temperature: 1.0,
                 top_p: 1.0,
                 max_new_tokens: 1,
                 seed: 0,
-            },
+            }),
             n_top_logprobs: 0,
+            want_logprob: false,
         }
     }
 
     /// A decode row: feed back one token at `pos0` and sample the next one.
-    pub fn decode(
+    pub fn decode<S: Clone + Into<SamplingParamsV2>>(
         request: i32,
         slot: i32,
         token: i32,
         pos0: i32,
-        sampling: &SamplingParams,
+        sampling: &S,
     ) -> Self {
         Self {
             request,
@@ -86,12 +90,18 @@ impl<'a> StepRow<'a> {
             tokens: Cow::Owned(vec![token]),
             pos0,
             sample: true,
-            sampling: *sampling,
+            sampling: sampling.clone().into(),
             n_top_logprobs: 0,
+            want_logprob: false,
         }
     }
 
-    fn to_ffi(&self) -> Result<ffi::RetroStepRow, EngineError> {
+    fn to_ffi_v2(
+        &self,
+        grammar: *const ffi::RetroGrammar,
+        logit_bias_ids: *const i32,
+        logit_bias_values: *const f32,
+    ) -> Result<ffi::RetroStepRowV2, EngineError> {
         if self.tokens.is_empty() {
             return Err(EngineError::invalid(
                 "a step row requires at least one token",
@@ -118,16 +128,25 @@ impl<'a> StepRow<'a> {
                 "a sampling step row requires a request id >= 0",
             ));
         }
-        Ok(ffi::RetroStepRow {
-            struct_size: size_of::<ffi::RetroStepRow>() as u32,
+        if self.sampling.logit_bias.len() > 4096 {
+            return Err(EngineError::invalid(
+                "logit_bias takes at most 4096 entries",
+            ));
+        }
+        let mut sampling =
+            crate::sampling_params_v2_to_ffi(&self.sampling, logit_bias_ids, logit_bias_values);
+        sampling.grammar = grammar;
+        Ok(ffi::RetroStepRowV2 {
+            struct_size: size_of::<ffi::RetroStepRowV2>() as u32,
             request: self.request,
             slot: self.slot,
             tokens: self.tokens.as_ptr(),
             n: self.tokens.len() as u32,
             pos0: self.pos0,
             sample: self.sample,
-            sampling: crate::sampling_params_to_ffi(&self.sampling),
+            sampling,
             n_top_logprobs: self.n_top_logprobs,
+            want_logprob: u8::from(self.want_logprob),
             // Reserved for per-line adapters; 0 is the active adapter.
             adapter: 0,
         })
@@ -143,6 +162,12 @@ pub struct StepOutRow {
     pub forced: bool,
     pub sampled: bool,
     pub n_top: usize,
+    /// Logprob of `token` under the post-transformation sampling distribution
+    /// (after logit_bias, penalties, grammar, top_k, min_p, temperature,
+    /// top_p). `0.0` when the row did not ask for it (`want_logprob` unset).
+    /// Distinct from `logprob`, which stays the temperature-1 policy value
+    /// the batched generators report.
+    pub sampled_logprob: f32,
 }
 
 /// KV-pool occupancy of a generation context, as reported by
@@ -179,8 +204,8 @@ impl From<ffi::RetroEngineMemoryInfo> for EngineMemory {
 /// arrays of stride `n_top_stride`. Allocated by [`StepOutput::with_capacity`],
 /// grown only when a call needs more.
 pub struct StepOutput {
-    ffi_rows: Vec<ffi::RetroStepRow>,
-    rows: Vec<ffi::RetroStepOutRow>,
+    ffi_rows: Vec<ffi::RetroStepRowV2>,
+    rows: Vec<ffi::RetroStepOutRowV2>,
     top_ids: Vec<i32>,
     top_logprobs: Vec<f32>,
     n_top_stride: usize,
@@ -193,7 +218,7 @@ impl StepOutput {
     pub fn with_capacity(n_rows: usize, n_top_stride: usize) -> Self {
         Self {
             ffi_rows: Vec::with_capacity(n_rows),
-            rows: vec![ffi::RetroStepOutRow::default(); n_rows],
+            rows: vec![ffi::RetroStepOutRowV2::default(); n_rows],
             top_ids: vec![0; n_rows.saturating_mul(n_top_stride)],
             top_logprobs: vec![0.0; n_rows.saturating_mul(n_top_stride)],
             n_top_stride,
@@ -205,12 +230,12 @@ impl StepOutput {
     /// stride. In steady state - same shape every step - this is a no-op.
     fn ensure(&mut self, n_rows: usize, n_top_stride: usize) -> Result<(), EngineError> {
         if n_rows > self.rows.len() {
-            self.rows.resize(n_rows, ffi::RetroStepOutRow::default());
+            self.rows.resize(n_rows, ffi::RetroStepOutRowV2::default());
         }
         if self.ffi_rows.len() < n_rows {
             // Zeroed staging rows are fully overwritten by `step_with` before
             // the call; `Default` is null pointers and zero scalars.
-            self.ffi_rows.resize(n_rows, ffi::RetroStepRow::default());
+            self.ffi_rows.resize(n_rows, ffi::RetroStepRowV2::default());
         }
         if n_top_stride > self.n_top_stride {
             self.n_top_stride = n_top_stride;
@@ -256,10 +281,10 @@ impl StepOutput {
         }
         // Grow-only, like `ensure`: in steady state this reuses the buffers.
         if self.rows.len() < n_rows {
-            self.rows.resize(n_rows, ffi::RetroStepOutRow::default());
+            self.rows.resize(n_rows, ffi::RetroStepOutRowV2::default());
         }
         if self.ffi_rows.len() < n_rows {
-            self.ffi_rows.resize(n_rows, ffi::RetroStepRow::default());
+            self.ffi_rows.resize(n_rows, ffi::RetroStepRowV2::default());
         }
         if self.top_ids.len() < needed {
             self.top_ids.resize(needed, 0);
@@ -267,14 +292,15 @@ impl StepOutput {
         }
         self.n_top_stride = stride;
         for (index, row) in rows.iter().enumerate() {
-            self.rows[index] = ffi::RetroStepOutRow {
-                struct_size: size_of::<ffi::RetroStepOutRow>() as u32,
+            self.rows[index] = ffi::RetroStepOutRowV2 {
+                struct_size: size_of::<ffi::RetroStepOutRowV2>() as u32,
                 token: row.token,
                 logprob: row.logprob,
                 // Checked for every row before mutating any buffer above.
                 n_top: row.n_top as u32,
                 forced: u8::from(row.forced),
                 sampled: u8::from(row.sampled),
+                sampled_logprob: row.sampled_logprob,
             };
         }
         self.top_ids[..needed].copy_from_slice(&top_ids);
@@ -294,6 +320,7 @@ impl StepOutput {
             forced: row.forced != 0,
             sampled: row.sampled != 0,
             n_top: row.n_top as usize,
+            sampled_logprob: row.sampled_logprob,
         }
     }
 
@@ -306,6 +333,7 @@ impl StepOutput {
             forced: row.forced != 0,
             sampled: row.sampled != 0,
             n_top: row.n_top as usize,
+            sampled_logprob: row.sampled_logprob,
         })
     }
 
@@ -325,13 +353,19 @@ impl StepOutput {
 /// Validates `rows`, stages them into `out`, and runs the step through `call`.
 /// Shared by the engine and trainer wrappers, which only differ in the FFI
 /// entry point and the handle.
+///
+/// Rows are staged in the versioned v2 layout; a row with neutral extended
+/// sampling runs the runtime's exact v1 behavior. Grammar handles are created
+/// from each row's GBNF text for the duration of the call only - the runtime
+/// copies what it needs into the per-request state at the request's first
+/// sampling row, so the handles may be freed when the call returns.
 pub(crate) fn step_with(
     rows: &[StepRow],
     out: &mut StepOutput,
     call: impl FnOnce(
-        *const ffi::RetroStepRow,
+        *const ffi::RetroStepRowV2,
         usize,
-        *mut ffi::RetroStepOutRow,
+        *mut ffi::RetroStepOutRowV2,
         *mut i32,
         *mut f32,
         usize,
@@ -348,8 +382,36 @@ pub(crate) fn step_with(
         .max()
         .unwrap_or(0);
     out.ensure(rows.len(), stride)?;
+    // One handle per distinct grammar text, and one staged id/value pair per
+    // row with a logit bias; both live until the call returns.
+    let mut grammars: Vec<(std::sync::Arc<str>, ffi::Grammar)> = Vec::new();
+    for row in rows {
+        if let Some(gbnf) = &row.sampling.grammar_gbnf
+            && !grammars.iter().any(|(text, _)| text == gbnf)
+        {
+            let handle = ffi::Grammar::from_gbnf(gbnf).map_err(EngineError::Runtime)?;
+            grammars.push((gbnf.clone(), handle));
+        }
+    }
+    let mut bias_staging: Vec<(Vec<i32>, Vec<f32>)> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut ids = Vec::with_capacity(row.sampling.logit_bias.len());
+        let mut values = Vec::with_capacity(row.sampling.logit_bias.len());
+        for &(id, value) in &row.sampling.logit_bias {
+            ids.push(id);
+            values.push(value);
+        }
+        bias_staging.push((ids, values));
+    }
     for (index, row) in rows.iter().enumerate() {
-        let ffi_row = row.to_ffi()?;
+        let grammar = row
+            .sampling
+            .grammar_gbnf
+            .as_ref()
+            .and_then(|gbnf| grammars.iter().find(|(text, _)| text == gbnf))
+            .map_or(std::ptr::null(), |(_, handle)| handle.as_ptr().cast_const());
+        let (ids, values) = &bias_staging[index];
+        let ffi_row = row.to_ffi_v2(grammar, ids.as_ptr(), values.as_ptr())?;
         if ffi_row.request >= 0
             && out.ffi_rows[..index]
                 .iter()
@@ -396,21 +458,25 @@ pub(crate) fn step_with(
 mod tests {
     use super::*;
 
-    fn sampling(seed: u32) -> SamplingParams {
-        SamplingParams {
+    fn sampling(seed: u32) -> SamplingParamsV2 {
+        SamplingParamsV2::from(retrograd_core::SamplingParams {
             temperature: 1.0,
             top_p: 1.0,
             max_new_tokens: 8,
             seed,
-        }
+        })
     }
 
     #[test]
     fn step_row_validation_catches_bad_shapes_before_the_ffi() {
         let tokens = [1, 2, 3];
-        let err = StepRow::prefill(0, 0, &[], 0).to_ffi().unwrap_err();
+        let err = StepRow::prefill(0, 0, &[], 0)
+            .to_ffi_v2(std::ptr::null(), std::ptr::null(), std::ptr::null())
+            .unwrap_err();
         assert!(matches!(err, EngineError::InvalidArgument(_)));
-        let err = StepRow::prefill(0, 0, &tokens, -1).to_ffi().unwrap_err();
+        let err = StepRow::prefill(0, 0, &tokens, -1)
+            .to_ffi_v2(std::ptr::null(), std::ptr::null(), std::ptr::null())
+            .unwrap_err();
         assert!(matches!(err, EngineError::InvalidArgument(_)));
         let err = StepRow {
             request: -1,
@@ -420,26 +486,31 @@ mod tests {
             sample: true,
             sampling: sampling(1),
             n_top_logprobs: 0,
+            want_logprob: false,
         }
-        .to_ffi()
+        .to_ffi_v2(std::ptr::null(), std::ptr::null(), std::ptr::null())
         .unwrap_err();
         assert!(matches!(err, EngineError::Overflow(_)));
         let err = StepRow {
             request: -1,
             ..StepRow::decode(0, 0, 1, 0, &sampling(1))
         }
-        .to_ffi()
+        .to_ffi_v2(std::ptr::null(), std::ptr::null(), std::ptr::null())
         .unwrap_err();
         assert!(matches!(err, EngineError::InvalidArgument(_)));
 
-        let ok = StepRow::prefill(7, 2, &tokens[..], 10).to_ffi().unwrap();
-        assert_eq!(ok.struct_size as usize, size_of::<ffi::RetroStepRow>());
+        let ok = StepRow::prefill(7, 2, &tokens[..], 10)
+            .to_ffi_v2(std::ptr::null(), std::ptr::null(), std::ptr::null())
+            .unwrap();
+        assert_eq!(ok.struct_size as usize, size_of::<ffi::RetroStepRowV2>());
         assert_eq!(ok.request, 7);
         assert_eq!(ok.slot, 2);
         assert_eq!(ok.n, 3);
         assert_eq!(ok.pos0, 10);
         assert!(!ok.sample);
         assert_eq!(ok.adapter, 0);
+        assert_eq!(ok.want_logprob, 0);
+        assert!(ok.sampling.grammar.is_null());
     }
 
     #[test]
@@ -473,6 +544,7 @@ mod tests {
                 forced: false,
                 sampled: true,
                 n_top: 2,
+                sampled_logprob: -0.6,
             },
             StepOutRow {
                 token: 8,
@@ -480,6 +552,7 @@ mod tests {
                 forced: true,
                 sampled: true,
                 n_top: 1,
+                sampled_logprob: -1.1,
             },
         ];
         out.fill(rows, 2, vec![1, 2, 3, 4], vec![-0.1, -0.2, -0.3, -0.4])
@@ -488,6 +561,7 @@ mod tests {
         assert_eq!(out.row(0).token, 7);
         assert!(!out.row(0).forced);
         assert!(out.row(1).forced);
+        assert_eq!(out.row(0).sampled_logprob, -0.6);
         assert_eq!(out.top(0).collect::<Vec<_>>(), vec![(1, -0.1), (2, -0.2)]);
         assert_eq!(out.top(1).collect::<Vec<_>>(), vec![(3, -0.3)]);
         // A second fill of the same shape reuses the buffers.
@@ -499,6 +573,7 @@ mod tests {
                 forced: false,
                 sampled: true,
                 n_top: 0,
+                sampled_logprob: -2.1,
             }],
             2,
             vec![0, 0],

@@ -321,6 +321,46 @@ impl Trainer {
         }
         Ok(parser)
     }
+
+    /// Derives, from the model's own chat template, the GBNF grammar that
+    /// constrains decoding to the requested tool-calling mode: at least one
+    /// call (`mode` 0), exactly the forced function named `forced_name`
+    /// (`mode` 1), or at most one call (`mode` 2). `Ok(None)` when the
+    /// template cannot express the mode. See
+    /// [`Engine::tool_call_grammar`](crate::Engine::tool_call_grammar).
+    pub fn tool_call_grammar(
+        &self,
+        tools_json: &str,
+        mode: i32,
+        forced_name: Option<&str>,
+    ) -> Result<Option<String>> {
+        let tools = CString::new(tools_json).map_err(nul_error)?;
+        let forced = forced_name
+            .map(|name| CString::new(name).map_err(nul_error))
+            .transpose()?;
+        let forced_ptr = forced
+            .as_ref()
+            .map_or(std::ptr::null(), |name| name.as_ptr());
+        // SAFETY: the `Trainer` invariant holds, all borrowed arguments live
+        // through this synchronous call, and the entry point writes the byte
+        // count it reports.
+        Ok(unsafe {
+            read_optional_string(
+                ffi::RETRO_TOOL_GRAMMAR_UNAVAILABLE,
+                |buffer, n_buffer, out| {
+                    ffi::retro_trainer_tool_call_grammar(
+                        self.raw.as_ptr(),
+                        tools.as_ptr(),
+                        mode,
+                        forced_ptr,
+                        buffer,
+                        n_buffer,
+                        out,
+                    )
+                },
+            )?
+        })
+    }
 }
 
 /// Runs a two-call string entry whose one documented status means "no value".

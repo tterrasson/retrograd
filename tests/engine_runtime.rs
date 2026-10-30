@@ -587,8 +587,9 @@ fn step_generate<M: StepApi>(
                 tokens: Cow::Borrowed(&prompt[pos..end]),
                 pos0: i32::try_from(pos).expect("position fits i32"),
                 sample: last,
-                sampling: rows[leader].sampling,
+                sampling: rows[leader].sampling.into(),
                 n_top_logprobs: 0,
+                want_logprob: false,
             };
             model.step(&[row], &mut out)?;
             if last {
@@ -610,8 +611,9 @@ fn step_generate<M: StepApi>(
                     tokens: Cow::Borrowed(&prompt[terminal..]),
                     pos0: i32::try_from(terminal).expect("position fits i32"),
                     sample: true,
-                    sampling: rows[member].sampling,
+                    sampling: rows[member].sampling.into(),
                     n_top_logprobs: 0,
+                    want_logprob: false,
                 })
                 .collect();
             model.step(&wave, &mut out)?;
@@ -805,8 +807,9 @@ fn step_seq_ops_manage_the_kv_pool_as_documented() {
                     tokens: Cow::Borrowed(&prompt[pos..end]),
                     pos0: i32::try_from(pos).expect("position fits i32"),
                     sample: last,
-                    sampling,
+                    sampling: sampling.into(),
                     n_top_logprobs: 0,
+                    want_logprob: false,
                 }],
                 &mut out,
             )
@@ -910,8 +913,9 @@ fn step_seq_ops_manage_the_kv_pool_as_documented() {
         tokens: Cow::Owned(vec![produced.token]),
         pos0: prompt_pos,
         sample: true,
-        sampling,
+        sampling: sampling.into(),
         n_top_logprobs: 0,
+        want_logprob: false,
     };
     let err = engine.step(&[no_request], &mut out).unwrap_err();
     assert!(matches!(err, EngineError::InvalidArgument(_)), "{err}");
@@ -977,8 +981,9 @@ fn step_budget_handles_chunked_prompt_tails_and_configuration_changes() {
                 tokens: Cow::Borrowed(&prompt),
                 pos0: 0,
                 sample: true,
-                sampling,
+                sampling: sampling.into(),
                 n_top_logprobs: 4,
+                want_logprob: false,
             }],
             &mut out,
         )
@@ -1014,4 +1019,69 @@ fn step_budget_handles_chunked_prompt_tails_and_configuration_changes() {
     assert_eq!(out.row(0).n_top, 0);
     assert_eq!(out.top(0).count(), 0);
     engine.request_free(50).unwrap();
+}
+
+#[test]
+fn v2_step_reports_the_truncated_distribution_and_releases_grammars() {
+    let _guard = serialize_models();
+    let Some(model) = common::model_path_if_available() else {
+        return;
+    };
+    let mut engine = Engine::new(&model, &engine_config(&train_config())).unwrap();
+    let prompt = engine.tokenize_text("Hello").unwrap();
+    let mut sampling = retrograd_core::SamplingParamsV2::from(params(17));
+    sampling.top_p = 1e-6;
+    let mut row = StepRow::prefill(70, 0, &prompt, 0);
+    row.sample = true;
+    row.sampling = sampling.clone();
+    row.n_top_logprobs = 4;
+    row.want_logprob = true;
+    let mut out = StepOutput::with_capacity(1, 4);
+
+    row.sampling.grammar_gbnf = Some("root ::= missing".into());
+    assert!(engine.step(&[row.clone()], &mut out).is_err());
+    assert_eq!(
+        engine.seq_pos(0).unwrap(),
+        (-1, -1),
+        "invalid grammar must not decode a prompt"
+    );
+
+    row.sampling.grammar_gbnf = None;
+    engine.step(&[row], &mut out).unwrap();
+    let first = out.row(0);
+    assert_eq!(first.sampled_logprob, 0.0);
+    let top: Vec<_> = out.top(0).collect();
+    assert_eq!(top[0], (first.token, 0.0));
+    assert!(
+        top[1..].iter().all(|(_, lp)| *lp == f32::NEG_INFINITY),
+        "tokens outside the nucleus have no mass: {top:?}"
+    );
+
+    // Constrain one generated position to a token different from the previous
+    // one, then remove the grammar without freeing the request.
+    let forced = (first.token + 1) % i32::try_from(engine.vocab_size().unwrap()).unwrap();
+    sampling.top_p = 1.0;
+    sampling.grammar_gbnf = Some(format!("root ::= <[{forced}]>").into());
+    let pos = i32::try_from(prompt.len()).unwrap();
+    let mut constrained = StepRow::decode(70, 0, first.token, pos, &sampling);
+    constrained.want_logprob = true;
+    engine.step(&[constrained], &mut out).unwrap();
+    assert_eq!(out.row(0).token, forced);
+    assert_eq!(out.row(0).sampled_logprob, 0.0);
+
+    sampling.grammar_gbnf = None;
+    sampling.top_k = 1;
+    sampling.logit_bias = vec![(first.token, 100.0)];
+    engine
+        .step(
+            &[StepRow::decode(70, 0, forced, pos + 1, &sampling)],
+            &mut out,
+        )
+        .unwrap();
+    assert_eq!(
+        out.row(0).token,
+        first.token,
+        "removing the grammar must restore unconstrained sampling"
+    );
+    engine.request_free(70).unwrap();
 }

@@ -23,7 +23,7 @@ impl Engine {
             |ffi_rows, n_rows, out_rows, top_ids, top_logprobs, stride| {
                 // SAFETY: the `Engine` invariant holds and all borrowed arguments live through this synchronous call.
                 unsafe {
-                    ffi::retro_engine_step(
+                    ffi::retro_engine_step_v2(
                         self.raw.as_ptr(),
                         ffi_rows,
                         n_rows,

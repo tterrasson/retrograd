@@ -8,6 +8,7 @@
 #include "retro_runtime.hpp"
 
 #include "chat.h"
+#include "json-schema-to-grammar.h"
 
 #include <cctype>
 #include <mutex>
@@ -300,6 +301,133 @@ int build_tool_call_parser(
     return copy_json_out(
             chat.tool_call_parser_cache, "failed to build tool-call parser",
             buffer, n_buffer, out_n_bytes);
+}
+
+// Derives the GBNF grammar of the model's own chat template for a tool
+// catalog, in one of three modes (retro_lora_train.h): 0 = at least one call
+// (tool_choice "required"), 1 = exactly the function named forced_name, 2 =
+// at most one call (parallel_tool_calls = false). The derivation is the same
+// one build_tool_call_parser runs; only the tool catalog and the tool-choice /
+// parallelism inputs differ. Mode 1 has no FORCED value in
+// common_chat_tool_choice (common_chat_tool_choice_parse_oaicompat only knows
+// auto/none/required), so it is expressed by narrowing the catalog to the
+// forced function and requiring it. Mode 2 gets its GBNF re-embedded from the
+// derived parser arena non-lazily, because with tool_choice auto llama.cpp
+// emits the lazy (trigger-rooted) variant whose root alone would over-constrain
+// when applied from the first generated token.
+int build_tool_call_grammar(
+        chat_model_state & chat,
+        const char * tools_json,
+        int32_t mode,
+        const char * forced_name,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes) {
+    if (!out_n_bytes) {
+        set_error("out_n_bytes is required");
+        return -1;
+    }
+    if (mode < 0 || mode > 2) {
+        set_error("tool-call grammar mode must be 0 (required), 1 (forced) or 2 (at most one)");
+        return -1;
+    }
+    const std::string tools_key = tools_json ? std::string(tools_json) : std::string();
+    json tools;
+    try {
+        tools = json::parse(tools_key.empty() ? "[]" : tools_key);
+    } catch (const std::exception & err) {
+        set_error(std::string("failed to parse tool catalog: ") + err.what());
+        return -1;
+    }
+    if (!tools.is_array() || tools.empty()) {
+        set_error("tool catalog must be a non-empty JSON array");
+        return -1;
+    }
+    std::vector<common_chat_tool> catalog;
+    try {
+        catalog = common_chat_tools_parse_oaicompat(tools);
+    } catch (const std::exception & err) {
+        set_error(std::string("failed to parse tool catalog: ") + err.what());
+        return -1;
+    }
+    if (mode == 1) {
+        if (!forced_name || forced_name[0] == '\0') {
+            set_error("forced_name is required for tool-call grammar mode 1");
+            return -1;
+        }
+        std::vector<common_chat_tool> forced;
+        for (const auto & tool : catalog) {
+            if (tool.name == forced_name) {
+                forced.push_back(tool);
+            }
+        }
+        if (forced.empty()) {
+            set_error(std::string("tool-call grammar mode 1: no function named '")
+                    + forced_name + "' in the catalog");
+            return RETRO_TOOL_GRAMMAR_UNAVAILABLE;
+        }
+        catalog = std::move(forced);
+    }
+
+    common_chat_templates_ptr templates;
+    try {
+        templates = common_chat_templates_init(chat.model, "");
+    } catch (const std::bad_alloc &) {
+        throw;
+    } catch (const std::exception & err) {
+        set_error(std::string("failed to initialize the model chat template: ") + err.what());
+        return -1;
+    }
+    if (!templates) {
+        set_error("model does not define a chat template usable for tool-call parsing");
+        return RETRO_TOOL_GRAMMAR_UNAVAILABLE;
+    }
+    std::string variables;
+    if (!resolve_derivation_variables(chat, variables)) {
+        return -1;
+    }
+    common_chat_templates_inputs inputs;
+    if (!derivation_inputs(variables, inputs)) {
+        return -1;
+    }
+    inputs.tools = catalog;
+    if (mode == 0 || mode == 1) {
+        inputs.tool_choice = COMMON_CHAT_TOOL_CHOICE_REQUIRED;
+    }
+    if (mode == 1 || mode == 2) {
+        inputs.parallel_tool_calls = false;
+    }
+    common_chat_params params;
+    try {
+        params = common_chat_templates_apply(templates.get(), inputs);
+    } catch (const std::bad_alloc &) {
+        throw;
+    } catch (const std::exception & err) {
+        set_error(std::string("failed to derive a tool-call grammar from the chat template: ")
+                + err.what());
+        return RETRO_TOOL_GRAMMAR_UNAVAILABLE;
+    }
+    if (params.parser.empty()) {
+        set_error("chat template yielded no tool-call parser");
+        return RETRO_TOOL_GRAMMAR_UNAVAILABLE;
+    }
+    std::string gbnf;
+    if (mode == 2) {
+        // tool_choice auto yields the lazy grammar; embed the full parser
+        // non-lazily so the GBNF is self-contained and allows at most one
+        // call (parallel_tool_calls = false removed the repetition).
+        gbnf = build_grammar([&](const common_grammar_builder & builder) {
+            params.parser.build_grammar(builder, /*lazy=*/false);
+        });
+    } else {
+        // tool_choice required: params.grammar is already the non-lazy GBNF.
+        gbnf = params.grammar;
+    }
+    if (gbnf.empty()) {
+        set_error("chat template yielded no grammar for the requested tool-call mode");
+        return RETRO_TOOL_GRAMMAR_UNAVAILABLE;
+    }
+    return copy_json_out(gbnf, "failed to build tool-call grammar", buffer, n_buffer, out_n_bytes);
 }
 
 int build_tool_call_parser_from_source(

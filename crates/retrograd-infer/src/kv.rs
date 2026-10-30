@@ -569,7 +569,10 @@ mod tests {
         tree.remove(node);
         // The top-level node is detached from the root, not left dangling.
         assert_eq!(tree.node_count(), 1);
-        assert_eq!(tree.longest_prefix(&[1, 2, 3], true, &mut |_, _| true), None);
+        assert_eq!(
+            tree.longest_prefix(&[1, 2, 3], true, &mut |_, _| true),
+            None
+        );
         // Its index is reused by the next insertion.
         let (reused, attached) = tree.insert(&[7, 8], 3);
         assert!(attached);

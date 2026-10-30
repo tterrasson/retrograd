@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use retrograd_infer::{
     ActorHandle, ActorOptions, AdmissionMode, DecodeBackend, Event, FakeBackend, FinishReason,
-    InferError, Poll, Request, SchedulerOptions, SharedFake, fake_sampling,
+    InferError, Poll, Request, SchedulerOptions, SharedFake, fake_sampling, fake_sampling_v2,
 };
 
 fn pieces(vocab: usize) -> Vec<String> {
@@ -258,9 +258,9 @@ fn n_greater_than_one_prefills_once_then_copies_to_each_member() {
     let handle = spawn_on(&fake, options(AdmissionMode::Continuous, 8));
     let mut request = Request::single(vec![5, 6, 7, 8, 9], fake_sampling(1, 2));
     request.sampling = vec![
-        fake_sampling(1, 2),
-        fake_sampling(2, 2),
-        fake_sampling(3, 2),
+        fake_sampling_v2(1, 2),
+        fake_sampling_v2(2, 2),
+        fake_sampling_v2(3, 2),
     ];
     let stream = handle.submit(request).expect("submit");
     let events = collect(stream);
@@ -594,7 +594,7 @@ fn top_logprobs_ride_along_when_requested() {
     assert_eq!(token_events.len(), 2);
     for token in token_events {
         assert_eq!(token.top_logprobs.len(), 3, "{token:?}");
-        assert_eq!(token.top_logprobs[0].0, 0);
+        assert_eq!(token.top_logprobs[0].token, 0);
     }
 }
 
@@ -654,4 +654,33 @@ fn shutdown_refuses_every_request_still_waiting_in_both_queues() {
         );
     }
     assert!(fake.lock().unwrap().steps.is_empty());
+}
+
+#[test]
+fn invalid_logit_bias_is_refused_without_failing_other_requests() {
+    let fake = fake();
+    let (handle, start) = spawn_paused(&fake, options(AdmissionMode::Lockstep, 8));
+    let mut invalid = Request::single(vec![1, 2], fake_sampling(1, 3));
+    invalid.sampling[0].logit_bias = vec![(100, 1.0)];
+    let refused = handle.submit(invalid).unwrap();
+    let valid = handle
+        .submit(Request::single(vec![3, 4], fake_sampling(2, 3)))
+        .unwrap();
+    start.send(()).unwrap();
+    assert!(
+        collect(refused)
+            .iter()
+            .any(|event| matches!(event, Event::Error(InferError::InvalidArgument(_))))
+    );
+    let events = collect(valid);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::Token(_)))
+            .count(),
+        3
+    );
+    assert!(events.iter().all(|event| !matches!(event, Event::Error(_))));
+    handle.shutdown();
+    handle.join().unwrap();
 }

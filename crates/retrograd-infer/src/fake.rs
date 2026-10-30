@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use retrograd_core::SamplingParams;
+use retrograd_core::{SamplingParams, SamplingParamsV2};
 use retrograd_engine::{
     EngineMemory, STATE_SEQ_FLAGS_PARTIAL_ONLY, StepOutRow, StepOutput, StepRow,
 };
@@ -308,6 +308,7 @@ impl DecodeBackend for FakeBackend {
                 forced: false,
                 sampled: true,
                 n_top,
+                sampled_logprob: if row.want_logprob { -0.7 } else { 0.0 },
             });
         }
         out.fill(out_rows, stride, top_ids, top_logprobs)?;
@@ -530,6 +531,12 @@ pub fn sampling(seed: u32, max_new_tokens: u32) -> SamplingParams {
         max_new_tokens,
         seed,
     }
+}
+
+/// [`sampling`] as the serving type, extended fields neutral (the exact v1
+/// contract) - for building a [`Request`]'s sampling entries.
+pub fn sampling_v2(seed: u32, max_new_tokens: u32) -> SamplingParamsV2 {
+    SamplingParamsV2::from(sampling(seed, max_new_tokens))
 }
 
 /// A [`FakeBackend`] behind a mutex, so a test can keep a handle to it and

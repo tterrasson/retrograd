@@ -24,14 +24,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::{Duration, Instant};
 
-use retrograd_core::{RolloutAdmission, SamplingParams};
+use retrograd_core::{RolloutAdmission, SamplingParamsV2};
 use retrograd_engine::{EngineMemory, StepOutRow, StepOutput, StepRow};
 
 use crate::backend::DecodeBackend;
 use crate::detok::Detokenizer;
 use crate::error::InferError;
 use crate::kv::{KvCacheKey, KvStats, PinId, PrefixTree};
-use crate::request::{Event, EventStream, FinishReason, Request, TokenEvent};
+use crate::request::{Event, EventStream, FinishReason, Request, TokenEvent, TopLogprob};
 
 /// Consecutive pumps without progress after which a synchronous driver gives
 /// up: every admissible request is admitted, refused or retired within a few
@@ -156,7 +156,9 @@ struct LiveMember {
     /// The completion index within the member's own request (0..n), used in
     /// events - not the member's position in a merged group.
     index: usize,
-    sampling: SamplingParams,
+    sampling: SamplingParamsV2,
+    /// Whether token events also carry the sampled token's own logprob.
+    want_logprob: bool,
     /// `min(max_new_tokens, n_ctx_seq - prompt.len())`: the stop budget.
     limit: usize,
     /// This member's share of the group's cell reservation (prompt minus the
@@ -210,7 +212,7 @@ enum RowKind {
 /// The cells one member reserves: the prompt plus its generation budget,
 /// clamped to the per-sequence context. `None` when the prompt leaves no
 /// room to generate at all.
-fn member_need(prompt_len: usize, sampling: &SamplingParams, n_ctx_seq: usize) -> Option<u64> {
+fn member_need(prompt_len: usize, sampling: &SamplingParamsV2, n_ctx_seq: usize) -> Option<u64> {
     if prompt_len >= n_ctx_seq {
         return None;
     }
@@ -240,12 +242,25 @@ fn canonical_cmp(a: &Request, b: &Request) -> Ordering {
         .then_with(|| sampling_cmp(sa, sb))
 }
 
-fn sampling_cmp(a: &SamplingParams, b: &SamplingParams) -> Ordering {
+fn sampling_cmp(a: &SamplingParamsV2, b: &SamplingParamsV2) -> Ordering {
     a.seed
         .cmp(&b.seed)
         .then_with(|| a.max_new_tokens.cmp(&b.max_new_tokens))
         .then_with(|| a.temperature.total_cmp(&b.temperature))
         .then_with(|| a.top_p.total_cmp(&b.top_p))
+        .then_with(|| a.top_k.cmp(&b.top_k))
+        .then_with(|| a.min_p.total_cmp(&b.min_p))
+        .then_with(|| a.repeat_penalty.total_cmp(&b.repeat_penalty))
+        .then_with(|| a.frequency_penalty.total_cmp(&b.frequency_penalty))
+        .then_with(|| a.presence_penalty.total_cmp(&b.presence_penalty))
+        .then_with(|| a.penalty_window.cmp(&b.penalty_window))
+        .then_with(|| {
+            a.logit_bias
+                .iter()
+                .map(|&(id, bias)| (id, bias.to_bits()))
+                .cmp(b.logit_bias.iter().map(|&(id, bias)| (id, bias.to_bits())))
+        })
+        .then_with(|| a.grammar_gbnf.cmp(&b.grammar_gbnf))
 }
 
 /// Sends one event to a request's bounded stream: `try_send` in a loop
@@ -780,8 +795,9 @@ impl<B: DecodeBackend> Scheduler<B> {
                 tokens: Cow::Borrowed(&scratch_ref[offset..offset + 1]),
                 pos0: position(pos)?,
                 sample: true,
-                sampling: member.sampling,
+                sampling: member.sampling.clone(),
                 n_top_logprobs: member.n_top_logprobs,
+                want_logprob: member.want_logprob,
             });
             kinds.push(RowKind::Decode {
                 group: gi,
@@ -813,12 +829,13 @@ impl<B: DecodeBackend> Scheduler<B> {
                         tokens: Cow::Borrowed(&group.prompt[*pos..end]),
                         pos0: position(*pos)?,
                         sample: sampled_member.is_some(),
-                        sampling: leader.sampling,
+                        sampling: leader.sampling.clone(),
                         n_top_logprobs: if sampled_member.is_some() {
                             leader.n_top_logprobs
                         } else {
                             0
                         },
+                        want_logprob: sampled_member.is_some() && leader.want_logprob,
                     });
                     kinds.push(RowKind::Prefill {
                         group: gi,
@@ -842,8 +859,9 @@ impl<B: DecodeBackend> Scheduler<B> {
                             tokens: Cow::Borrowed(&group.prompt[last..]),
                             pos0: position(last)?,
                             sample: true,
-                            sampling: member.sampling,
+                            sampling: member.sampling.clone(),
                             n_top_logprobs: member.n_top_logprobs,
+                            want_logprob: member.want_logprob,
                         });
                         kinds.push(RowKind::Terminal {
                             group: gi,
@@ -928,11 +946,18 @@ impl<B: DecodeBackend> Scheduler<B> {
                 .prompt
                 .iter()
                 .any(|&token| token < 0 || token as usize >= vocab);
+            let invalid_bias = queued.request.sampling.iter().any(|params| {
+                params
+                    .logit_bias
+                    .iter()
+                    .any(|&(token, _)| token < 0 || token as usize >= vocab)
+            });
             let need = reservation(&queued.request, n_ctx_seq);
             if prompt_too_long
                 || too_many_members
                 || top_too_wide
                 || invalid_token
+                || invalid_bias
                 || need > cells_total
             {
                 let queued = self.queue.remove(index).expect("index in range");
@@ -949,6 +974,8 @@ impl<B: DecodeBackend> Scheduler<B> {
                     )
                 } else if top_too_wide {
                     format!("n_top_logprobs exceeds the vocabulary ({vocab})")
+                } else if invalid_bias {
+                    format!("logit_bias token ids must be in 0..{vocab}")
                 } else if invalid_token {
                     format!("prompt tokens must be in 0..{vocab}")
                 } else {
@@ -1310,6 +1337,7 @@ impl<B: DecodeBackend> Scheduler<B> {
                     request_id,
                     index,
                     sampling,
+                    want_logprob: request.logprobs || request.n_top_logprobs > 0,
                     limit,
                     // Set once the cache hit is known (the shared prefix is
                     // not re-allocated).
@@ -1407,7 +1435,25 @@ impl<B: DecodeBackend> Scheduler<B> {
                 };
             let (text, stop_hit) = member_ref.detok.push_bytes(&piece);
             let top_logprobs = if member_ref.n_top_logprobs > 0 {
-                self.out.top(row_index).collect()
+                self.out
+                    .top(row_index)
+                    .map(|(token, logprob)| {
+                        // The piece of each top entry, read back the same way
+                        // as the sampled token's own piece.
+                        let piece = self
+                            .backend
+                            .detokenize_bytes(
+                                std::slice::from_ref(&token),
+                                member_ref.unparse_special,
+                            )
+                            .unwrap_or_default();
+                        TopLogprob {
+                            token,
+                            logprob,
+                            piece,
+                        }
+                    })
+                    .collect()
             } else {
                 Vec::new()
             };
@@ -1415,8 +1461,10 @@ impl<B: DecodeBackend> Scheduler<B> {
                 index: member_ref.index,
                 token: produced.token,
                 logprob: produced.logprob,
+                sampled_logprob: member_ref.want_logprob.then_some(produced.sampled_logprob),
                 forced: produced.forced,
                 text,
+                piece,
                 top_logprobs,
             });
             // Bounded backpressure: a full stream is waited on for at most
@@ -1664,7 +1712,7 @@ pub(crate) enum Envelope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EventStream, FakeBackend, Poll, fake_sampling};
+    use crate::{EventStream, FakeBackend, Poll, fake_sampling, fake_sampling_v2};
     use std::sync::mpsc;
 
     fn scheduler(n_batch: usize) -> Scheduler<FakeBackend> {
@@ -1853,7 +1901,7 @@ mod tests {
         finished(&short, 1);
         scheduler.options.mode = AdmissionMode::Continuous;
         let mut request = Request::single(vec![3], fake_sampling(3, 1));
-        request.sampling = vec![fake_sampling(3, 1); 3];
+        request.sampling = vec![fake_sampling_v2(3, 1); 3];
         let next = enqueue(&mut scheduler, request);
         scheduler.step_once().unwrap();
         assert!(
@@ -1911,7 +1959,7 @@ mod tests {
     fn single_token_prompts_and_more_members_than_batch_tokens_make_progress() {
         let mut scheduler = scheduler(1);
         let mut request = Request::single(vec![1], fake_sampling(1, 3));
-        request.sampling = vec![fake_sampling(1, 3); 3];
+        request.sampling = vec![fake_sampling_v2(1, 3); 3];
         let stream = enqueue(&mut scheduler, request);
         drain(&mut scheduler);
         let events: Vec<_> = stream.collect();
@@ -1971,7 +2019,7 @@ mod tests {
         );
         scheduler.step_once().unwrap();
         let mut request = Request::single(vec![2], fake_sampling(2, 2));
-        request.sampling = vec![fake_sampling(2, 2); 4];
+        request.sampling = vec![fake_sampling_v2(2, 2); 4];
         let large = enqueue(&mut scheduler, request);
         let small = enqueue(
             &mut scheduler,

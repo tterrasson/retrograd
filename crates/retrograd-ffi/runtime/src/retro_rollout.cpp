@@ -157,6 +157,30 @@ int generation_step_impl(
     });
 }
 
+int generation_step_v2_impl(
+        retro_trainer * trainer,
+        const retro_step_row_v2 * rows,
+        size_t n_rows,
+        retro_step_out_row_v2 * out_rows,
+        int32_t * out_top_ids,
+        float * out_top_logprobs,
+        size_t n_top_stride) {
+    return boundary([&]() -> int {
+        trainer_state * state = checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        const reasoning_budget_plan * plan = resolve_reasoning_budget(state->chat);
+        if (!plan) {
+            return -1;
+        }
+        llama_context * ctx = generation_ctx_of(*state);
+        gen_core core = core_over(*state, ctx);
+        return core.step_v2(rows, n_rows, out_rows, out_top_ids, out_top_logprobs, n_top_stride,
+                state->step_requests, plan, state->step_batch.get(ctx));
+    });
+}
+
 int generation_seq_rm_impl(retro_trainer * trainer, int32_t slot, int32_t p0, int32_t p1) {
     return boundary([&]() -> int {
         trainer_state * state = checked(trainer);

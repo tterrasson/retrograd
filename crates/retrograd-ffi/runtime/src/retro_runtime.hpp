@@ -165,6 +165,23 @@ struct step_request_state {
     // machine can be primed exactly as the batched generators prime from the
     // prompt tail.
     std::vector<int32_t> prompt_tail;
+    // v2 rows only: the accepted tokens of this request, which the repetition
+    // penalties see (the last penalty_window of them; 0 = all of them).
+    std::vector<int32_t> history;
+    // v2 rows only: the grammar sampler built from the row's retro_grammar
+    // handle, rebuilt when the GBNF text changes. Owned here, so erasing the
+    // table entry (retro_*_request_free) releases it.
+    llama_sampler * grammar = nullptr;
+    std::string grammar_gbnf;
+
+    step_request_state() = default;
+    ~step_request_state() {
+        if (grammar) {
+            llama_sampler_free(grammar);
+        }
+    }
+    step_request_state(const step_request_state &) = delete;
+    step_request_state & operator=(const step_request_state &) = delete;
 };
 
 struct step_request_table {
@@ -591,6 +608,21 @@ int build_tool_call_parser(
         size_t n_buffer,
         size_t * out_n_bytes);
 
+// Derives the GBNF grammar of the model's own chat template for a tool
+// catalog, in one of three modes (see retro_lora_train.h): 0 = at least one
+// call, 1 = exactly the function named `forced_name`, 2 = at most one call.
+// Defined in retro_chat_parser.cpp next to build_tool_call_parser. Follows the
+// render_string_out two-call contract; RETRO_TOOL_GRAMMAR_UNAVAILABLE when the
+// template cannot express the mode.
+int build_tool_call_grammar(
+        chat_model_state & chat,
+        const char * tools_json,
+        int32_t mode,
+        const char * forced_name,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes);
+
 // Same derivation over a template given as source. The counterpart of
 // render_chat_template_source: together they let the agreement between what a
 // template writes and what its parser reads be checked without a model.
@@ -892,6 +924,16 @@ int generation_step_impl(
         const retro_step_row * rows,
         size_t n_rows,
         retro_step_out_row * out_rows,
+        int32_t * out_top_ids,
+        float * out_top_logprobs,
+        size_t n_top_stride);
+// The v2 counterpart: same contracts, over retro_step_row_v2 /
+// retro_step_out_row_v2 (extended sampling; see retro_lora_train.h).
+int generation_step_v2_impl(
+        retro_trainer * trainer,
+        const retro_step_row_v2 * rows,
+        size_t n_rows,
+        retro_step_out_row_v2 * out_rows,
         int32_t * out_top_ids,
         float * out_top_logprobs,
         size_t n_top_stride);

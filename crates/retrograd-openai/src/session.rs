@@ -510,12 +510,14 @@ impl Worker {
         let prompt_tokens = rendered.tokens.len();
         // `n` completions of one prompt is the `generate_batch` shape: one
         // prefill, then one copy of the prompt per further choice.
-        let sampling = vec![request.sampling; request.n as usize];
+        let sampling =
+            vec![retrograd_core::SamplingParamsV2::from(request.sampling); request.n as usize];
         let request = Request {
             prompt: rendered.tokens,
             sampling,
             stop: request.stop,
             n_top_logprobs: request.logprobs.unwrap_or(0),
+            logprobs: request.logprobs.is_some(),
             adapter,
             unparse_special: rendered.unparse_special,
         };

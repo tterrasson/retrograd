@@ -4,25 +4,28 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
-use retrograd_core::SamplingParams;
+use retrograd_core::SamplingParamsV2;
 
 use crate::InferError;
 
 /// One generation request: a prompt and `n` sampling parameter sets, i.e.
 /// `n` completions of the same prompt (the `generate_batch` shape - one
-/// prefill, then `n` `seq_cp`), plus stop strings and an optional top-logprob
-/// count per emitted token.
+/// prefill, then `n` `seq_cp`), plus stop strings and optional logprob output
+/// per emitted token.
 #[derive(Clone, Debug)]
 pub struct Request {
     /// The prompt tokens (BOS included, as the tokenizer produced them).
     pub prompt: Vec<i32>,
     /// One entry per completion; at least one. Entry `i` seeds completion `i`.
-    pub sampling: Vec<SamplingParams>,
+    pub sampling: Vec<SamplingParamsV2>,
     /// Stop strings, matched on the detokenized text (sliding suffix). The
     /// matched text is not emitted.
     pub stop: Vec<String>,
     /// How many top-logprob pairs each token event carries; 0 for none.
     pub n_top_logprobs: u32,
+    /// Also report each sampled token's own logprob (under the
+    /// post-transformation distribution) even when `n_top_logprobs` is 0.
+    pub logprobs: bool,
     /// The named adapter (a LoRA checkpoint of the same base model) this
     /// request runs under, or `None` for the base model. The scheduler
     /// serializes per adapter: one step never mixes adapters, and switching
@@ -35,12 +38,13 @@ pub struct Request {
 
 impl Request {
     /// A single-completion request.
-    pub fn single(prompt: Vec<i32>, sampling: SamplingParams) -> Self {
+    pub fn single(prompt: Vec<i32>, sampling: impl Into<SamplingParamsV2>) -> Self {
         Self {
             prompt,
-            sampling: vec![sampling],
+            sampling: vec![sampling.into()],
             stop: Vec::new(),
             n_top_logprobs: 0,
+            logprobs: false,
             adapter: None,
             unparse_special: false,
         }
@@ -99,6 +103,28 @@ impl Request {
         {
             return Err(InferError::invalid("top_p must be in (0, 1]"));
         }
+        if self.sampling.iter().any(|params| {
+            !params.min_p.is_finite()
+                || params.min_p < 0.0
+                || params.min_p > 1.0
+                || !params.repeat_penalty.is_finite()
+                || params.repeat_penalty <= 0.0
+                || !params.frequency_penalty.is_finite()
+                || !params.presence_penalty.is_finite()
+                || params.logit_bias.iter().any(|&(_, bias)| !bias.is_finite())
+        }) {
+            return Err(InferError::invalid(
+                "min_p must be in [0, 1], repeat_penalty finite and > 0, frequency/presence \
+                 penalties and logit biases finite",
+            ));
+        }
+        if self
+            .sampling
+            .iter()
+            .any(|params| params.logit_bias.len() > 4096)
+        {
+            return Err(InferError::invalid("logit_bias takes at most 4096 entries"));
+        }
         if self.stop.iter().any(|stop| stop.is_empty()) {
             return Err(InferError::invalid("stop strings must not be empty"));
         }
@@ -115,14 +141,34 @@ pub struct TokenEvent {
     /// Which completion of the request this token belongs to.
     pub index: usize,
     pub token: i32,
+    /// The temperature-1 policy logprob of `token` (the training semantic).
     pub logprob: f32,
+    /// The logprob of `token` under the post-transformation sampling
+    /// distribution (after logit_bias, penalties, grammar, top_k, min_p,
+    /// temperature, top_p) - the serving logprobs semantic. `None` when the
+    /// request did not ask for logprobs.
+    pub sampled_logprob: Option<f32>,
     /// Set when the reasoning budget forced this token, not the sampler.
     pub forced: bool,
     /// The text newly emittable after this token (may be empty: partial
     /// UTF-8 or a possible stop prefix is held back).
     pub text: String,
-    /// The `n_top_logprobs` pairs of this position, empty when not requested.
-    pub top_logprobs: Vec<(i32, f32)>,
+    /// The UTF-8 bytes of this token's own piece (special tokens render as
+    /// their text when `unparse_special` is set, empty for EOG).
+    pub piece: Vec<u8>,
+    /// The `n_top_logprobs` entries of this position (post-transformation
+    /// distribution), empty when not requested.
+    pub top_logprobs: Vec<TopLogprob>,
+}
+
+/// One top-logprob entry of a sampled position: the token id, its logprob
+/// under the post-transformation distribution, and the UTF-8 bytes of its
+/// piece (what a client reads as `token`/`bytes` in the logprobs output).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TopLogprob {
+    pub token: i32,
+    pub logprob: f32,
+    pub piece: Vec<u8>,
 }
 
 /// Why a completion ended.

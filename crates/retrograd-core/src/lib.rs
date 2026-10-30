@@ -70,6 +70,6 @@ pub use types::{
     Generation, GenerationKvDtype, ImportanceSamplingLevel, KernelImpl, KernelReject,
     KernelRunInfo, KvDtype, LoraConfig, LoraDtype, LrScheduler, MasterWeights, MemoryReport,
     ModelInfo, ProbeOp, Progress, ResumeInfo, RewardMode, RewardProtocol, RirCounters, RirMode,
-    RolloutAdmission, SamplingParams, SharedPrefixFanout, TargetSet, TrainConfig, TrainMetrics,
-    WeightedBatch, checkpoint_stride_for,
+    RolloutAdmission, SamplingParams, SamplingParamsV2, SharedPrefixFanout, TargetSet, TrainConfig,
+    TrainMetrics, WeightedBatch, checkpoint_stride_for,
 };

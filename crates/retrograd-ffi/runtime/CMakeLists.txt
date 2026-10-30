@@ -10,9 +10,25 @@ else()
     set(LLAMA_CPP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/llama.cpp)
 endif()
 
+# The built-in any-JSON grammar, embedded as a raw string literal pinned to
+# the vendored grammars/json.gbnf (see retro_grammar.cpp). The delimiter is
+# asserted not to occur in the grammar before the file is generated.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${LLAMA_CPP_DIR}/grammars/json.gbnf")
+file(READ "${LLAMA_CPP_DIR}/grammars/json.gbnf" RETRO_JSON_GBNF_CONTENT)
+string(FIND "${RETRO_JSON_GBNF_CONTENT}" ")RETRO_JSON_GBNF\"" RETRO_JSON_GBNF_DELIM_HIT)
+if(NOT RETRO_JSON_GBNF_DELIM_HIT EQUAL -1)
+    message(FATAL_ERROR "json.gbnf contains the raw-string delimiter )RETRO_JSON_GBNF\"")
+endif()
+configure_file(
+    cmake/retro_json_gbnf.cpp.in
+    "${CMAKE_CURRENT_BINARY_DIR}/retro_json_gbnf_embed.cpp"
+    @ONLY)
+
 # Keep this list in sync with `runtime_sources` in build.rs (the build that
 # actually ships); this CMake target only serves IDE/tooling integration.
 add_library(retro_lora_train STATIC
+    src/retro_grammar.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/retro_json_gbnf_embed.cpp"
     src/retro_runtime.cpp
     src/retro_duty_cycle.cpp
     src/retro_backend.cpp

@@ -26,7 +26,8 @@ use retrograd_core::{
     CheckpointMetadata, Device, FusedCeProbe, FusedCeWeightType, Generation, KernelImpl,
     KernelReject, KernelRunInfo, LoraConfig, MemoryReport, ModelInfo, OpPlacement, OptimizerKind,
     PreflightReport, PreflightWarning, ProbeOp, ResumeInfo, RirCounters, RirMode, SamplingParams,
-    TensorDesc, TensorDtype, TensorInventory, TrainConfig, TrainMetrics, WeightedBatch,
+    SamplingParamsV2, TensorDesc, TensorDtype, TensorInventory, TrainConfig, TrainMetrics,
+    WeightedBatch,
 };
 use retrograd_core::{Error, Result};
 #[cfg(feature = "train")]
@@ -175,6 +176,36 @@ fn sampling_params_to_ffi(params: &SamplingParams) -> ffi::RetroSamplingParams {
         top_p: params.top_p,
         max_new_tokens: params.max_new_tokens,
         seed: params.seed,
+    }
+}
+
+/// The versioned v2 mirror of [`sampling_params_to_ffi`]: every extended field
+/// maps one to one. `logit_bias_ids`/`logit_bias_values` are caller-staged
+/// arrays (the `Vec<(i32, f32)>` of pairs is not FFI-layout) that must outlive
+/// the FFI call, and `grammar` is a handle created by `step_with` (null for
+/// unconstrained rows).
+fn sampling_params_v2_to_ffi(
+    params: &SamplingParamsV2,
+    logit_bias_ids: *const i32,
+    logit_bias_values: *const f32,
+) -> ffi::RetroSamplingParamsV2 {
+    ffi::RetroSamplingParamsV2 {
+        struct_size: std::mem::size_of::<ffi::RetroSamplingParamsV2>() as u32,
+        temperature: params.temperature,
+        top_p: params.top_p,
+        max_new_tokens: params.max_new_tokens,
+        seed: params.seed,
+        top_k: params.top_k,
+        min_p: params.min_p,
+        repeat_penalty: params.repeat_penalty,
+        frequency_penalty: params.frequency_penalty,
+        presence_penalty: params.presence_penalty,
+        penalty_window: params.penalty_window,
+        // step_with validates the runtime cap of 4096 before this conversion.
+        n_logit_bias: params.logit_bias.len() as u32,
+        logit_bias_ids,
+        logit_bias_values,
+        grammar: std::ptr::null(),
     }
 }
 
@@ -446,6 +477,7 @@ impl Trainer {
 
 mod engine;
 mod generation;
+pub mod grammar;
 mod packed;
 mod probe;
 mod quant;
@@ -455,6 +487,7 @@ pub mod step;
 mod trainer;
 
 pub use engine::{Engine, EngineError, engine_config_from_train_config, generation_batch};
+pub use grammar::{grammar_from_gbnf, grammar_from_json_schema, json_object_grammar};
 pub use packed::PackedSequenceBatch;
 pub use probe::*;
 pub use quant::*;

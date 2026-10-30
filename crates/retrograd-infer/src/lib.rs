@@ -35,8 +35,10 @@ pub use actor::{ActorHandle, ActorOptions};
 pub use backend::{DecodeBackend, TrainerBackend};
 pub use detok::Detokenizer;
 pub use error::InferError;
-pub use fake::{FakeBackend, SharedFake, sampling as fake_sampling};
+pub use fake::{
+    FakeBackend, SharedFake, sampling as fake_sampling, sampling_v2 as fake_sampling_v2,
+};
 pub use kv::{KvCacheKey, KvStats, PinId};
-pub use request::{Event, EventStream, FinishReason, Poll, Request, TokenEvent};
+pub use request::{Event, EventStream, FinishReason, Poll, Request, TokenEvent, TopLogprob};
 pub use scheduler::{AdmissionMode, Scheduler, SchedulerOptions, SchedulerStats};
 pub use sync::{Completion, RequestOutcome, run_requests, run_requests_with};

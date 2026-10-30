@@ -609,6 +609,164 @@ pub struct RetroStepOutRow {
     pub sampled: u8,
 }
 
+/// Mirror of `retro_grammar` (opaque): an owned GBNF string. See [`Grammar`].
+#[repr(C)]
+pub struct RetroGrammar {
+    _private: [u8; 0],
+}
+
+/// Mirror of `RETRO_TOOL_GRAMMAR_UNAVAILABLE`: the chat template cannot
+/// express the requested tool-call grammar mode.
+pub const RETRO_TOOL_GRAMMAR_UNAVAILABLE: c_int = -2;
+
+/// Mirror of `retro_sampling_params_v2`: extended sampling parameters for v2
+/// step rows. See the published header for the field contracts and the pinned
+/// transformation order.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RetroSamplingParamsV2 {
+    /// Filled by the caller: the evolution key. Must be `size_of::<Self>()`.
+    pub struct_size: u32,
+    /// Finite, > 0.
+    pub temperature: c_float,
+    /// In (0, 1].
+    pub top_p: c_float,
+    /// > 0; the caller's stop criterion, not read by the runtime.
+    pub max_new_tokens: u32,
+    /// Seeds the request's RNG once, at its first sampling row.
+    pub seed: u32,
+    /// <= 0: disabled.
+    pub top_k: i32,
+    /// In [0, 1]; <= 0: disabled.
+    pub min_p: c_float,
+    /// > 0 finite; 1.0: disabled.
+    pub repeat_penalty: c_float,
+    /// Finite; 0.0: disabled.
+    pub frequency_penalty: c_float,
+    /// Finite; 0.0: disabled.
+    pub presence_penalty: c_float,
+    /// Last N accepted tokens the penalties see; 0 = the whole history.
+    pub penalty_window: u32,
+    /// 0 = none.
+    pub n_logit_bias: u32,
+    /// `n_logit_bias` entries, each a valid token id.
+    pub logit_bias_ids: *const i32,
+    /// `n_logit_bias` finite values.
+    pub logit_bias_values: *const c_float,
+    /// NULL: unconstrained.
+    pub grammar: *const RetroGrammar,
+}
+
+/// Mirror of `retro_step_row_v2`, versioned by `struct_size`: one row of a v2
+/// step plan, same row contracts as [`RetroStepRow`] plus extended sampling.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RetroStepRowV2 {
+    /// Filled by the caller: the evolution key. Must be `size_of::<Self>()`.
+    pub struct_size: u32,
+    /// Per-request state id; >= 0 required on sampling rows.
+    pub request: i32,
+    /// Sequence id in the context's KV pool.
+    pub slot: i32,
+    pub tokens: *const i32,
+    pub n: u32,
+    /// Absolute position of `tokens[0]`.
+    pub pos0: i32,
+    /// Request logits on the last token and sample it.
+    pub sample: bool,
+    /// Read when `sample` is set.
+    pub sampling: RetroSamplingParamsV2,
+    pub n_top_logprobs: u32,
+    /// Also fill `sampled_logprob`.
+    pub want_logprob: u8,
+    /// Must be 0 in this build.
+    pub adapter: i32,
+}
+
+/// Mirror of `retro_step_out_row_v2`: what one v2 step produced for one row.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RetroStepOutRowV2 {
+    /// Filled by the runtime.
+    pub struct_size: u32,
+    /// The emitted token; valid when `sampled` is set.
+    pub token: i32,
+    /// Temperature-1 policy logprob of `token` (unchanged contract).
+    pub logprob: c_float,
+    /// Top entries written at the row's slice of the top output buffers.
+    pub n_top: u32,
+    /// The reasoning budget forced `token`.
+    pub forced: u8,
+    /// A sample was produced for this row.
+    pub sampled: u8,
+    /// Post-transformation logprob of `token`; 0 when `want_logprob` was 0.
+    pub sampled_logprob: c_float,
+}
+
+/// Safe handle to a `retro_grammar`: an owned GBNF string. Dropping it frees
+/// the handle; the runtime copies the GBNF into the per-request sampler state
+/// at the request's first sampling row, so a handle may be dropped as soon as
+/// the step call that carried it has returned.
+pub struct Grammar {
+    raw: *mut RetroGrammar,
+}
+
+impl Grammar {
+    /// The raw handle, for embedding in a `RetroSamplingParamsV2` row for the
+    /// duration of one FFI call (see the struct's safety note above).
+    pub fn as_ptr(&self) -> *mut RetroGrammar {
+        self.raw
+    }
+
+    /// Converts a JSON schema to a GBNF grammar (`retro_grammar_from_json_schema`).
+    pub fn from_json_schema(schema: &str) -> Result<Grammar, String> {
+        let schema = std::ffi::CString::new(schema).map_err(|err| err.to_string())?;
+        let raw = unsafe { retro_grammar_from_json_schema(schema.as_ptr()) };
+        if raw.is_null() {
+            return Err(last_error());
+        }
+        Ok(Grammar { raw })
+    }
+
+    /// Takes the GBNF text as-is (`retro_grammar_from_gbnf`).
+    pub fn from_gbnf(gbnf: &str) -> Result<Grammar, String> {
+        let gbnf = std::ffi::CString::new(gbnf).map_err(|err| err.to_string())?;
+        let raw = unsafe { retro_grammar_from_gbnf(gbnf.as_ptr()) };
+        if raw.is_null() {
+            return Err(last_error());
+        }
+        Ok(Grammar { raw })
+    }
+
+    /// The built-in any-JSON grammar (`retro_grammar_json_object`).
+    pub fn json_object() -> Grammar {
+        let raw = unsafe { retro_grammar_json_object() };
+        assert!(
+            !raw.is_null(),
+            "retro_grammar_json_object failed: {}",
+            last_error()
+        );
+        Grammar { raw }
+    }
+
+    /// The owned GBNF text (`retro_grammar_gbnf`).
+    pub fn gbnf(&self) -> String {
+        unsafe {
+            let ptr = retro_grammar_gbnf(self.raw);
+            if ptr.is_null() {
+                return String::new();
+            }
+            CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        }
+    }
+}
+
+impl Drop for Grammar {
+    fn drop(&mut self) {
+        unsafe { retro_grammar_free(self.raw) }
+    }
+}
+
 /// Mirror of `retro_engine_memory_info`: KV-pool occupancy of a generation
 /// context.
 #[repr(C)]
@@ -1715,6 +1873,74 @@ unsafe extern "C" {
         n_top_stride: usize,
     ) -> c_int;
 
+    /// Mirror of `retro_engine_step_v2`: the v2 step entry point over
+    /// `RetroStepRowV2` / `RetroStepOutRowV2` (extended sampling).
+    #[allow(clippy::too_many_arguments)]
+    pub fn retro_engine_step_v2(
+        engine: *mut RetroEngine,
+        rows: *const RetroStepRowV2,
+        n_rows: usize,
+        out_rows: *mut RetroStepOutRowV2,
+        out_top_ids: *mut i32,
+        out_top_logprobs: *mut c_float,
+        n_top_stride: usize,
+    ) -> c_int;
+
+    /// Mirror of `retro_trainer_generation_step_v2`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn retro_trainer_generation_step_v2(
+        trainer: *mut RetroTrainer,
+        rows: *const RetroStepRowV2,
+        n_rows: usize,
+        out_rows: *mut RetroStepOutRowV2,
+        out_top_ids: *mut i32,
+        out_top_logprobs: *mut c_float,
+        n_top_stride: usize,
+    ) -> c_int;
+
+    /// Mirror of `retro_grammar_from_json_schema`; NULL on failure with
+    /// `retro_last_error()` set.
+    pub fn retro_grammar_from_json_schema(json_schema: *const c_char) -> *mut RetroGrammar;
+
+    /// Mirror of `retro_grammar_from_gbnf`; NULL on failure with
+    /// `retro_last_error()` set.
+    pub fn retro_grammar_from_gbnf(gbnf: *const c_char) -> *mut RetroGrammar;
+
+    /// Mirror of `retro_grammar_json_object` (the built-in any-JSON grammar).
+    pub fn retro_grammar_json_object() -> *mut RetroGrammar;
+
+    /// Mirror of `retro_grammar_gbnf`; owned by the handle, NUL-terminated.
+    pub fn retro_grammar_gbnf(grammar: *const RetroGrammar) -> *const c_char;
+
+    /// Mirror of `retro_grammar_free`.
+    pub fn retro_grammar_free(grammar: *mut RetroGrammar);
+
+    /// Mirror of `retro_engine_tool_call_grammar`; returns
+    /// `RETRO_TOOL_GRAMMAR_UNAVAILABLE` when the template cannot express the
+    /// mode.
+    #[allow(clippy::too_many_arguments)]
+    pub fn retro_engine_tool_call_grammar(
+        engine: *mut RetroEngine,
+        tools_json: *const c_char,
+        mode: i32,
+        forced_name: *const c_char,
+        buffer: *mut c_char,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
+    /// Mirror of `retro_trainer_tool_call_grammar`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn retro_trainer_tool_call_grammar(
+        trainer: *mut RetroTrainer,
+        tools_json: *const c_char,
+        mode: i32,
+        forced_name: *const c_char,
+        buffer: *mut c_char,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
     pub fn retro_engine_seq_rm(engine: *mut RetroEngine, slot: i32, p0: i32, p1: i32) -> c_int;
 
     pub fn retro_engine_seq_cp(
@@ -2291,6 +2517,49 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroStepOutRow, n_top), 12);
         assert_eq!(offset_of!(RetroStepOutRow, forced), 16);
         assert_eq!(offset_of!(RetroStepOutRow, sampled), 17);
+
+        // The v2 step structs, pinned the same way: sizes and offsets computed
+        // from the C layout (64-bit, 8-byte pointers).
+        assert_eq!(size_of::<RetroSamplingParamsV2>(), 72);
+        assert_eq!(align_of::<RetroSamplingParamsV2>(), 8);
+        assert_eq!(offset_of!(RetroSamplingParamsV2, struct_size), 0);
+        assert_eq!(offset_of!(RetroSamplingParamsV2, temperature), 4);
+        assert_eq!(offset_of!(RetroSamplingParamsV2, top_p), 8);
+        assert_eq!(offset_of!(RetroSamplingParamsV2, max_new_tokens), 12);
+        assert_eq!(offset_of!(RetroSamplingParamsV2, seed), 16);
+        assert_eq!(offset_of!(RetroSamplingParamsV2, top_k), 20);
+        assert_eq!(offset_of!(RetroSamplingParamsV2, min_p), 24);
+        assert_eq!(offset_of!(RetroSamplingParamsV2, repeat_penalty), 28);
+        assert_eq!(offset_of!(RetroSamplingParamsV2, frequency_penalty), 32);
+        assert_eq!(offset_of!(RetroSamplingParamsV2, presence_penalty), 36);
+        assert_eq!(offset_of!(RetroSamplingParamsV2, penalty_window), 40);
+        assert_eq!(offset_of!(RetroSamplingParamsV2, n_logit_bias), 44);
+        assert_eq!(offset_of!(RetroSamplingParamsV2, logit_bias_ids), 48);
+        assert_eq!(offset_of!(RetroSamplingParamsV2, logit_bias_values), 56);
+        assert_eq!(offset_of!(RetroSamplingParamsV2, grammar), 64);
+        assert_eq!(size_of::<RetroStepRowV2>(), 128);
+        assert_eq!(align_of::<RetroStepRowV2>(), 8);
+        assert_eq!(offset_of!(RetroStepRowV2, struct_size), 0);
+        assert_eq!(offset_of!(RetroStepRowV2, request), 4);
+        assert_eq!(offset_of!(RetroStepRowV2, slot), 8);
+        assert_eq!(offset_of!(RetroStepRowV2, tokens), 16);
+        assert_eq!(offset_of!(RetroStepRowV2, n), 24);
+        assert_eq!(offset_of!(RetroStepRowV2, pos0), 28);
+        assert_eq!(offset_of!(RetroStepRowV2, sample), 32);
+        assert_eq!(offset_of!(RetroStepRowV2, sampling), 40);
+        assert_eq!(offset_of!(RetroStepRowV2, n_top_logprobs), 112);
+        assert_eq!(offset_of!(RetroStepRowV2, want_logprob), 116);
+        assert_eq!(offset_of!(RetroStepRowV2, adapter), 120);
+        assert_eq!(size_of::<RetroStepOutRowV2>(), 24);
+        assert_eq!(align_of::<RetroStepOutRowV2>(), 4);
+        assert_eq!(offset_of!(RetroStepOutRowV2, struct_size), 0);
+        assert_eq!(offset_of!(RetroStepOutRowV2, token), 4);
+        assert_eq!(offset_of!(RetroStepOutRowV2, logprob), 8);
+        assert_eq!(offset_of!(RetroStepOutRowV2, n_top), 12);
+        assert_eq!(offset_of!(RetroStepOutRowV2, forced), 16);
+        assert_eq!(offset_of!(RetroStepOutRowV2, sampled), 17);
+        assert_eq!(offset_of!(RetroStepOutRowV2, sampled_logprob), 20);
+        assert_eq!(RETRO_TOOL_GRAMMAR_UNAVAILABLE, -2);
         assert_eq!(size_of::<RetroEngineMemoryInfo>(), 40);
         assert_eq!(align_of::<RetroEngineMemoryInfo>(), 8);
         assert_eq!(offset_of!(RetroEngineMemoryInfo, struct_size), 0);
@@ -2350,6 +2619,59 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroOptimizerState, gefen_beta1), 88);
         assert_eq!(offset_of!(RetroOptimizerState, gefen_block_size), 100);
         assert_eq!(size_of::<RetroOptimizerState>(), 104);
+    }
+
+    #[test]
+    fn v2_step_structs_default_to_a_null_grammar_and_zeroed_fields() {
+        let sampling = RetroSamplingParamsV2::default();
+        assert_eq!(sampling.struct_size, 0);
+        assert!(sampling.grammar.is_null());
+        assert!(sampling.logit_bias_ids.is_null());
+        assert!(sampling.logit_bias_values.is_null());
+        let row = RetroStepRowV2::default();
+        assert_eq!(row.struct_size, 0);
+        assert!(row.tokens.is_null());
+        assert!(!row.sample);
+        assert_eq!(row.adapter, 0);
+        assert!(row.sampling.grammar.is_null());
+        let out = RetroStepOutRowV2::default();
+        assert_eq!(out.struct_size, 0);
+        assert_eq!(out.token, 0);
+        assert_eq!(out.sampled, 0);
+        assert_eq!(out.sampled_logprob, 0.0);
+    }
+
+    #[test]
+    fn grammar_from_json_schema_round_trips_and_rejects_invalid_input() {
+        let grammar = Grammar::from_json_schema(
+            r#"{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}"#,
+        )
+        .expect("a small object schema converts");
+        let gbnf = grammar.gbnf();
+        assert!(!gbnf.is_empty());
+        assert!(gbnf.contains("root"), "GBNF names its root rule: {gbnf}");
+
+        assert!(Grammar::from_json_schema("not json at all").is_err());
+        assert!(Grammar::from_json_schema(r#"{"type":"definitely-not-a-type"}"#).is_err());
+        assert!(Grammar::from_gbnf("").is_err());
+    }
+
+    #[test]
+    fn grammar_from_gbnf_keeps_the_text_and_json_object_is_any_json() {
+        let grammar = Grammar::from_gbnf("root ::= \"a\"").expect("non-empty GBNF is accepted");
+        assert_eq!(grammar.gbnf(), "root ::= \"a\"");
+
+        let json = Grammar::json_object();
+        let gbnf = json.gbnf();
+        // The embedded grammars/json.gbnf names its value rule.
+        assert!(
+            gbnf.contains("root"),
+            "any-JSON grammar has a root rule: {gbnf}"
+        );
+        assert!(
+            gbnf.contains("value"),
+            "any-JSON grammar has a value rule: {gbnf}"
+        );
     }
 
     /// `retro_read_tensor_inventory` on its error paths only, for the same

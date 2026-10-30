@@ -1190,6 +1190,115 @@ typedef struct retro_step_out_row {
     uint8_t  sampled;       // a sample was produced for this row
 } retro_step_out_row;
 
+// --- Step-wise generation API, version 2 (extended sampling) -----------------
+//
+// Additive only: every v1 declaration above is byte-identical and keeps its
+// exact behavior. The v2 rows below add top_k, min_p, penalties, logit_bias and
+// grammar-constrained decoding on the step path, behind their own versioned
+// structs so the v1 structs never move a field.
+
+// retro_engine is only declared with its own section below; the v2 engine
+// entry points live in this section, so forward-declare it here (a repeated
+// typedef of the same type is legal).
+typedef struct retro_engine retro_engine;
+
+typedef struct retro_grammar retro_grammar;
+
+typedef struct retro_sampling_params_v2 {
+    uint32_t struct_size;   // evolution key: sizeof(retro_sampling_params_v2)
+    float    temperature;   // finite, > 0
+    float    top_p;         // (0, 1]
+    uint32_t max_new_tokens;// > 0; the caller's stop criterion, not read by the runtime here
+    uint32_t seed;          // seeds the request's RNG once, at its first sampling row
+    int32_t  top_k;         // <= 0: disabled
+    float    min_p;         // in [0,1]; <= 0: disabled
+    float    repeat_penalty;    // > 0 finite; 1.0: disabled
+    float    frequency_penalty; // finite; 0.0: disabled
+    float    presence_penalty;  // finite; 0.0: disabled
+    uint32_t penalty_window;    // last N accepted tokens the penalties see; 0 = the whole history
+    uint32_t n_logit_bias;      // 0 = none
+    const int32_t * logit_bias_ids;     // n_logit_bias entries, each a valid token id
+    const float   * logit_bias_values;  // n_logit_bias finite values
+    const retro_grammar * grammar;      // NULL: unconstrained
+} retro_sampling_params_v2;
+
+// Transformation order for v2 rows, pinned and documented in the header comment:
+// logit_bias -> penalties(window) -> grammar mask -> top_k -> min_p -> temperature -> top_p -> draw.
+// For v2 rows, out_top_ids/out_top_logprobs carry the top-k of the POST-transformation
+// distribution (log-softmax over the transformed, renormalized logits) and
+// retro_step_out_row_v2.sampled_logprob is the sampled token's logprob under that same
+// distribution. For v1 rows everything stays exactly as today (raw temperature-1 top-k).
+
+typedef struct retro_step_row_v2 {
+    uint32_t struct_size;   // evolution key: sizeof(retro_step_row_v2)
+    int32_t  request;       // per-request state id; >= 0 required on sampling rows
+    int32_t  slot;
+    const int32_t * tokens;
+    uint32_t n;
+    int32_t  pos0;
+    bool     sample;
+    retro_sampling_params_v2 sampling;
+    uint32_t n_top_logprobs;
+    uint8_t  want_logprob;  // also fill sampled_logprob
+    int32_t  adapter;       // must be 0 in this build
+} retro_step_row_v2;
+
+typedef struct retro_step_out_row_v2 {
+    uint32_t struct_size;   // filled by the runtime: sizeof(retro_step_out_row_v2)
+    int32_t  token;
+    float    logprob;       // temperature-1 policy logprob of token (unchanged contract)
+    uint32_t n_top;
+    uint8_t  forced;
+    uint8_t  sampled;
+    float    sampled_logprob; // post-transformation logprob of token; 0 when want_logprob was 0
+} retro_step_out_row_v2;
+
+// Grammar handles: an owned GBNF string. from_json_schema converts with the already
+// compiled common/json-schema-to-grammar.cpp (json_schema_to_grammar). from_gbnf takes
+// the GBNF text as-is. retro_grammar_json_object() returns the built-in any-JSON grammar
+// (embed vendor/llama.cpp/grammars/json.gbnf content at build time, pinned to that
+// file - e.g. CMake file(READ)+configure_file generating a .cpp with a raw string literal
+// with a delimiter that cannot occur in GBNF). All return NULL with retro_last_error() set
+// on failure (invalid schema / empty gbnf). The handle may be freed as soon as the step
+// call that carried it returns: the runtime copies the GBNF into the per-request sampler
+// state at the request's first sampling row.
+retro_grammar * retro_grammar_from_json_schema(const char * json_schema);
+retro_grammar * retro_grammar_from_gbnf(const char * gbnf);
+retro_grammar * retro_grammar_json_object(void);
+const char *    retro_grammar_gbnf(const retro_grammar * grammar); // owned by the handle, NUL-terminated
+void            retro_grammar_free(retro_grammar * grammar);
+
+int retro_engine_step_v2(
+    retro_engine * engine,
+    const retro_step_row_v2 * rows,
+    size_t n_rows,
+    retro_step_out_row_v2 * out_rows,
+    int32_t * out_top_ids,
+    float * out_top_logprobs,
+    size_t n_top_stride);
+int retro_trainer_generation_step_v2(
+    retro_trainer * trainer,
+    const retro_step_row_v2 * rows,
+    size_t n_rows,
+    retro_step_out_row_v2 * out_rows,
+    int32_t * out_top_ids,
+    float * out_top_logprobs,
+    size_t n_top_stride);
+
+// Tool-call grammar derived from the model's own chat template (the same derivation
+// build_tool_call_parser in retro_chat_parser.cpp uses). Two-call string contract like
+// the parser entry points. mode: 0 = at least one call (tool_choice "required"),
+// 1 = exactly the forced function named forced_name, 2 = at most one call
+// (parallel_tool_calls=false). Returns 0 + GBNF written, RETRO_TOOL_GRAMMAR_UNAVAILABLE
+// when the template cannot express the mode, -1 on error (retro_last_error()).
+#define RETRO_TOOL_GRAMMAR_UNAVAILABLE (-2)
+int retro_engine_tool_call_grammar(
+    retro_engine * engine, const char * tools_json, int32_t mode, const char * forced_name,
+    char * buffer, size_t n_buffer, size_t * out_n_bytes);
+int retro_trainer_tool_call_grammar(
+    retro_trainer * trainer, const char * tools_json, int32_t mode, const char * forced_name,
+    char * buffer, size_t n_buffer, size_t * out_n_bytes);
+
 // KV-pool occupancy of an engine / trainer generation context.
 typedef struct retro_engine_memory_info {
     uint32_t struct_size;    // filled by the runtime

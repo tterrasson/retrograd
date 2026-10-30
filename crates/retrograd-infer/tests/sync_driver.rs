@@ -9,7 +9,7 @@ use std::time::Duration;
 use retrograd_engine::{StepOutput, StepRow};
 use retrograd_infer::{
     AdmissionMode, DecodeBackend, FakeBackend, FinishReason, InferError, Request, Scheduler,
-    SchedulerOptions, SharedFake, fake_sampling, run_requests,
+    SchedulerOptions, SharedFake, fake_sampling, fake_sampling_v2, run_requests,
 };
 
 fn pieces(vocab: usize) -> Vec<String> {
@@ -57,12 +57,13 @@ fn run_requests_collects_every_completion_in_submission_order() {
         Request {
             prompt: vec![4, 5],
             sampling: vec![
-                fake_sampling(1, 4),
-                fake_sampling(2, 4),
-                fake_sampling(3, 4),
+                fake_sampling_v2(1, 4),
+                fake_sampling_v2(2, 4),
+                fake_sampling_v2(3, 4),
             ],
             stop: Vec::new(),
             n_top_logprobs: 0,
+            logprobs: false,
             adapter: None,
             unparse_special: false,
         },

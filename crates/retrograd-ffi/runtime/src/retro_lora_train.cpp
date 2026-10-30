@@ -1132,6 +1132,37 @@ extern "C" int retro_trainer_generation_step(
             trainer, rows, n_rows, out_rows, out_top_ids, out_top_logprobs, n_top_stride);
 }
 
+extern "C" int retro_trainer_generation_step_v2(
+        retro_trainer * trainer,
+        const retro_step_row_v2 * rows,
+        size_t n_rows,
+        retro_step_out_row_v2 * out_rows,
+        int32_t * out_top_ids,
+        float * out_top_logprobs,
+        size_t n_top_stride) {
+    return retro::generation_step_v2_impl(
+            trainer, rows, n_rows, out_rows, out_top_ids, out_top_logprobs, n_top_stride);
+}
+
+extern "C" int retro_trainer_tool_call_grammar(
+        retro_trainer * trainer,
+        const char * tools_json,
+        int32_t mode,
+        const char * forced_name,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes) {
+    return retro::boundary([&]() -> int {
+        retro::trainer_state * state = retro::checked(trainer);
+        if (!state || !out_n_bytes) {
+            if (state) retro::set_error("out_n_bytes is required");
+            return -1;
+        }
+        return retro::build_tool_call_grammar(
+                state->chat, tools_json, mode, forced_name, buffer, n_buffer, out_n_bytes);
+    });
+}
+
 extern "C" int retro_trainer_generation_seq_rm(
         retro_trainer * trainer, int32_t slot, int32_t p0, int32_t p1) {
     return retro::generation_seq_rm_impl(trainer, slot, p0, p1);

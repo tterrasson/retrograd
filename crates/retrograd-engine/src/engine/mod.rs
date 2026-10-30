@@ -21,7 +21,7 @@ use std::ptr::NonNull;
 
 use retrograd_core::{
     EngineConfig, EngineKvDtype, Generation, GenerationKvDtype, MemoryReport, SamplingParams,
-    TrainConfig,
+    SamplingParamsV2, TrainConfig,
 };
 use retrograd_ffi as ffi;
 

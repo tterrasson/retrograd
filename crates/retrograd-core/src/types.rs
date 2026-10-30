@@ -1209,6 +1209,83 @@ pub struct SamplingParams {
     pub seed: u32,
 }
 
+/// Serving sampling parameters: the rollout fields plus the knobs the
+/// OpenAI-compatible surfaces accept. Training stays on [`SamplingParams`] -
+/// this type is the serving path's, and [`SamplingParamsV2::from`] maps the
+/// rollout fields to their neutral extended values.
+///
+/// The transformation order applied to the logits is pinned (the runtime's
+/// contract): logit_bias, then penalties over the window, then the grammar
+/// mask, then top_k, min_p, temperature, top_p, then the draw. `grammar_gbnf`
+/// is the grammar text (GBNF) constraining the output, shared so every choice
+/// of one request clones it cheaply.
+#[derive(Clone, Debug)]
+pub struct SamplingParamsV2 {
+    pub temperature: f32,
+    pub top_p: f32,
+    pub max_new_tokens: u32,
+    pub seed: u32,
+    /// `<= 0` disables top-k.
+    pub top_k: i32,
+    /// In `[0, 1]`; `<= 0` disables min-p.
+    pub min_p: f32,
+    /// `1.0` disables the repeat penalty.
+    pub repeat_penalty: f32,
+    /// `0.0` disables the frequency penalty.
+    pub frequency_penalty: f32,
+    /// `0.0` disables the presence penalty.
+    pub presence_penalty: f32,
+    /// Last N accepted tokens the penalties see; `0` is the whole history.
+    pub penalty_window: u32,
+    /// `(token id, bias)` pairs added to the logits before everything else.
+    pub logit_bias: Vec<(i32, f32)>,
+    /// GBNF grammar constraining the sampled tokens, if any.
+    pub grammar_gbnf: Option<std::sync::Arc<str>>,
+}
+
+impl SamplingParamsV2 {
+    /// Whether every extended field holds its neutral value: such a request
+    /// runs on the exact v1 sampling contract.
+    pub fn is_v1(&self) -> bool {
+        self.top_k <= 0
+            && self.min_p <= 0.0
+            && self.repeat_penalty == 1.0
+            && self.frequency_penalty == 0.0
+            && self.presence_penalty == 0.0
+            && self.penalty_window == 0
+            && self.logit_bias.is_empty()
+            && self.grammar_gbnf.is_none()
+    }
+
+    /// The choice `index` of a request asking for `n` completions: same
+    /// parameters, a derived seed, so the choices differ instead of repeating
+    /// one sample `n` times.
+    pub fn for_choice(&self, index: u32) -> Self {
+        let mut params = self.clone();
+        params.seed = self.seed.wrapping_add(index);
+        params
+    }
+}
+
+impl From<SamplingParams> for SamplingParamsV2 {
+    fn from(params: SamplingParams) -> Self {
+        Self {
+            temperature: params.temperature,
+            top_p: params.top_p,
+            max_new_tokens: params.max_new_tokens,
+            seed: params.seed,
+            top_k: 0,
+            min_p: 0.0,
+            repeat_penalty: 1.0,
+            frequency_penalty: 0.0,
+            presence_penalty: 0.0,
+            penalty_window: 0,
+            logit_bias: Vec::new(),
+            grammar_gbnf: None,
+        }
+    }
+}
+
 /// A sampled completion plus the rollout-time policy logprob of each token.
 #[derive(Clone, Debug)]
 pub struct Generation {

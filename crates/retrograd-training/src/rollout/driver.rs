@@ -28,7 +28,9 @@
 
 use std::time::Duration;
 
-use retrograd_core::{Error, Result, RolloutAdmission, SamplingParams, TrainConfig};
+use retrograd_core::{
+    Error, Result, RolloutAdmission, SamplingParams, SamplingParamsV2, TrainConfig,
+};
 use retrograd_engine::Trainer;
 use retrograd_infer::{
     DecodeBackend, KvStats, Request, RequestOutcome, Scheduler, SchedulerOptions, TrainerBackend,
@@ -242,9 +244,13 @@ pub(crate) fn run_rollout_groups<B: DecodeBackend>(
                         base,
                         Request {
                             prompt: prompt.clone(),
-                            sampling: params[base..base + take].to_vec(),
+                            sampling: params[base..base + take]
+                                .iter()
+                                .map(|params| SamplingParamsV2::from(*params))
+                                .collect(),
                             stop: Vec::new(),
                             n_top_logprobs: 0,
+                            logprobs: false,
                             adapter: None,
                             unparse_special: false,
                         },

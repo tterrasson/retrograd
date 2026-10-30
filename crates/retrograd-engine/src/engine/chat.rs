@@ -129,4 +129,47 @@ impl Engine {
         }
         Ok(parser)
     }
+
+    /// Derives, from the model's own chat template, the GBNF grammar that
+    /// constrains decoding to the requested tool-calling mode: at least one
+    /// call (`mode` 0, `tool_choice: "required"`), exactly the forced function
+    /// named `forced_name` (`mode` 1), or at most one call (`mode` 2,
+    /// `parallel_tool_calls: false`). The grammar names the catalog's
+    /// functions, so it is keyed by `tools_json` exactly like the parser.
+    ///
+    /// `Ok(None)` when the template cannot express the mode - the caller
+    /// refuses the request rather than sampling unconstrained.
+    pub fn tool_call_grammar(
+        &self,
+        tools_json: &str,
+        mode: i32,
+        forced_name: Option<&str>,
+    ) -> std::result::Result<Option<String>, EngineError> {
+        let tools = CString::new(tools_json).map_err(nul_error)?;
+        let forced = forced_name
+            .map(|name| CString::new(name).map_err(nul_error))
+            .transpose()?;
+        let forced_ptr = forced
+            .as_ref()
+            .map_or(std::ptr::null(), |name| name.as_ptr());
+        // SAFETY: the `Engine` invariant holds, all borrowed arguments live
+        // through this synchronous call, and the entry point writes the byte
+        // count it reports.
+        Ok(unsafe {
+            read_optional_string(
+                ffi::RETRO_TOOL_GRAMMAR_UNAVAILABLE,
+                |buffer, n_buffer, out| {
+                    ffi::retro_engine_tool_call_grammar(
+                        self.raw.as_ptr(),
+                        tools.as_ptr(),
+                        mode,
+                        forced_ptr,
+                        buffer,
+                        n_buffer,
+                        out,
+                    )
+                },
+            )?
+        })
+    }
 }

@@ -180,7 +180,7 @@ fn n_greater_than_one_request_matches_generate_batch_bit_for_bit() {
     )
     .expect("actor spawns");
     let mut request = Request::single(prompt.clone(), sampling[0]);
-    request.sampling = sampling.clone();
+    request.sampling = sampling.iter().copied().map(Into::into).collect();
     let stream = handle.submit(request).expect("submit");
     let events: Vec<Event> = stream.collect();
     for index in 0..3 {
@@ -227,7 +227,9 @@ fn trainer_backend_reports_its_generation_context_instead_of_its_training_contex
     assert!(trainer.model_fingerprint().unwrap() != 0);
     // A weight mutation (adapter load/enable, optimizer step, import) bumps
     // the version through forget_generation_kv, which drops the prefix tree.
-    trainer.create_lora(&retrograd::LoraConfig::qv(2, 4.0)).unwrap();
+    trainer
+        .create_lora(&retrograd::LoraConfig::qv(2, 4.0))
+        .unwrap();
     let tmp = common::scratch("infer-trainer-lora");
     let adapter = tmp.path().join("adapter.gguf");
     trainer.save_lora(&adapter).unwrap();
@@ -274,8 +276,10 @@ fn dense_prefix_cache_full_prompt_hit_matches_cold_bit_for_bit() {
     // (fully cached prompt).
     let suffix_b = reference.tokenize_fragment("Capital of Japan?").unwrap();
     let prompt_b: Vec<i32> = [shared.as_slice(), suffix_b.as_slice()].concat();
-    let wave2: Vec<(Vec<i32>, SamplingParams)> =
-        vec![(prompt_b.clone(), params(82, 5)), (shared.clone(), params(83, 5))];
+    let wave2: Vec<(Vec<i32>, SamplingParams)> = vec![
+        (prompt_b.clone(), params(82, 5)),
+        (shared.clone(), params(83, 5)),
+    ];
     let ref_b = reference
         .generate_sampled_continuous(
             &wave2
@@ -303,7 +307,11 @@ fn dense_prefix_cache_full_prompt_hit_matches_cold_bit_for_bit() {
 
     let mut streams = Vec::new();
     for (prompt, sampling) in &wave2 {
-        streams.push(handle.submit(Request::single(prompt.clone(), *sampling)).unwrap());
+        streams.push(
+            handle
+                .submit(Request::single(prompt.clone(), *sampling))
+                .unwrap(),
+        );
     }
     for (index, stream) in streams.into_iter().enumerate() {
         let events: Vec<Event> = stream.collect();
@@ -400,19 +408,28 @@ fn prefix_cache_reuse_matches_cold_generation_bit_for_bit() {
         )]
     } else {
         vec![
-            ([shared.as_slice(), suffix_b.as_slice()].concat(), params(72, 6)),
+            (
+                [shared.as_slice(), suffix_b.as_slice()].concat(),
+                params(72, 6),
+            ),
             // The whole prompt is cached: only the last token is replayed.
             (shared.clone(), params(73, 6)),
         ]
     };
     let ref_b = reference_engine
-        .generate_sampled_continuous(&wave2.iter().map(|(p, s)| (p.as_slice(), *s)).collect::<Vec<_>>())
+        .generate_sampled_continuous(
+            &wave2
+                .iter()
+                .map(|(p, s)| (p.as_slice(), *s))
+                .collect::<Vec<_>>(),
+        )
         .expect("wave 2 reference");
 
     let actor_model = model.clone();
     let handle = ActorHandle::spawn(
         move || {
-            Engine::new(&actor_model, &engine_config()).map_err(retrograd_infer::InferError::Backend)
+            Engine::new(&actor_model, &engine_config())
+                .map_err(retrograd_infer::InferError::Backend)
         },
         actor_options(AdmissionMode::Lockstep),
     )
@@ -437,7 +454,10 @@ fn prefix_cache_reuse_matches_cold_generation_bit_for_bit() {
     assert_eq!(reason, Some(expected_reason), "wave 1: finish reason");
     let stats_after_wave1 = handle.kv_stats().expect("stats");
     assert_eq!(stats_after_wave1.misses, 1);
-    assert_eq!(stats_after_wave1.nodes, 1, "the finished slot is a dormant node");
+    assert_eq!(
+        stats_after_wave1.nodes, 1,
+        "the finished slot is a dormant node"
+    );
 
     // Wave 2: shares the prefix with the node.
     let mut streams = Vec::new();
@@ -467,7 +487,11 @@ fn prefix_cache_reuse_matches_cold_generation_bit_for_bit() {
         } else {
             FinishReason::MaxTokens
         };
-        assert_eq!(reason, Some(expected_reason), "wave 2 request {index}: finish reason");
+        assert_eq!(
+            reason,
+            Some(expected_reason),
+            "wave 2 request {index}: finish reason"
+        );
     }
 
     let stats = handle.kv_stats().expect("stats");
