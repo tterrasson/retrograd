@@ -85,6 +85,10 @@ mod tests {
     use super::*;
     use crate::tools::ToolCall;
     use crate::trajectory::Role;
+    // The round-trip tests derive a parser from a template fixture through the
+    // engine, so they only run with the `template-parser` feature.
+    #[cfg(feature = "template-parser")]
+    use crate::template_parser::TemplateToolCallParser;
 
     #[test]
     fn an_observation_carries_its_call_id_and_a_sampled_action_never_reaches_the_template() {
@@ -189,6 +193,7 @@ mod tests {
         assert!(error.to_string().contains("did not render assistant turn"));
     }
 
+    #[cfg(feature = "template-parser")]
     fn fixture(name: &str) -> String {
         let path = format!(
             "{}/../retrograd-engine/tests/fixtures/chat-templates/{name}.jinja",
@@ -197,6 +202,7 @@ mod tests {
         std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path}: {error}"))
     }
 
+    #[cfg(feature = "template-parser")]
     fn move_tool() -> Vec<ToolSpec> {
         vec![ToolSpec {
             name: "move".into(),
@@ -256,6 +262,7 @@ mod tests {
     /// derived from the same template reads back, for every family that
     /// declares tools. A multi-turn history re-rendered through the template
     /// must be one the model could have sampled.
+    #[cfg(feature = "template-parser")]
     #[test]
     fn a_verbatim_call_reads_back_through_the_template_s_own_parser() {
         let tools = template_tools(&move_tool()).unwrap();
@@ -302,8 +309,8 @@ mod tests {
             let parser =
                 retrograd_engine::tool_call_parser_from_source(&template, Some(&tools), None)
                     .unwrap();
-            let parsed = crate::TemplateToolCallParser::new(parser);
-            let parsed = crate::tools::ToolCallParser::parse(&parsed, body);
+            let parsed = TemplateToolCallParser::new(parser);
+            let parsed = crate::parser::ToolCallParser::parse(&parsed, body);
             assert_eq!(parsed.tool_calls.len(), 1, "{name}: {body:?} -> {parsed:?}");
             assert_eq!(parsed.tool_calls[0].name, "move", "{name}");
             assert_eq!(

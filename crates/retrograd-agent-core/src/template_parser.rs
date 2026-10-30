@@ -1,7 +1,7 @@
 //! Reading an assistant turn back in the format the model's own template
 //! taught it.
 //!
-//! [`HermesToolCallParser`](crate::tools::HermesToolCallParser) reads one
+//! [`HermesToolCallParser`](crate::parser::HermesToolCallParser) reads one
 //! format, `<tool_call>{…}</tool_call>`, and retrograd renders in whichever
 //! format the model's template writes. The pair only agrees for the families
 //! whose template happens to be the Hermes one; for LFM2,
@@ -13,15 +13,15 @@
 //! template the rendering comes from, so the two halves cannot be chosen
 //! separately. The derivation itself lives in llama.cpp and is reached through
 //! [`retrograd_engine::parse_assistant_output`]; what is here is the
-//! translation into [`ParsedAssistant`].
+//! translation into [`ParsedAssistant`](crate::parser::ParsedAssistant).
 //!
-//! The type is deliberately not in `retrograd-tools`, which stays free of the
-//! FFI bridge.
+//! Running the derived grammar needs the C ABI, so this module - and only
+//! this module - is behind the `template-parser` feature that links
+//! `retrograd-engine`; the rest of the crate stays free of the FFI bridge.
 
 use retrograd_dataset::chat_template::{DocumentError, decode_parsed_assistant};
-use retrograd_tools::parser::parse_error;
 
-use crate::tools::{ParsedAssistant, ToolCallParser};
+use crate::parser::{ParsedAssistant, ToolCallParser, parse_error};
 
 /// A serialized PEG parser produced from one model's chat template and one tool
 /// catalog, ready to run on any thread.
@@ -83,7 +83,7 @@ fn decode(document: &str) -> Result<ParsedAssistant, DocumentError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::ToolCallParseError;
+    use crate::parser::ToolCallParseError;
 
     // The FFI half needs a model; what is testable without one is the
     // translation, which is where a call can silently go missing.

@@ -1,11 +1,15 @@
 //! Vocabulary and contracts shared by the agent stack.
 //!
 //! Everything here is data or a trait: no HTTP client, no subprocess, no
-//! tokenizer, and - the property this crate exists to hold - **no dependency on
-//! the training engine**. Turning a trajectory into a `TrainSequence` lives in
-//! `retrograd-agent`, which is the only crate that links the C++/FFI bridge.
-//! That is what lets an environment, a container backend, a tool or a judge be
-//! compiled and tested without a model.
+//! tokenizer, and - the property this crate exists to hold - **no dependency
+//! on the training engine by default**. Turning a trajectory into a
+//! `TrainSequence` lives in `retrograd-agent`, which is the crate that links
+//! the C++/FFI bridge. That is what lets an environment, a container backend,
+//! a tool or a judge be compiled and tested without a model. The one
+//! exception is opt-in: [`template_parser`] runs a template-derived grammar
+//! through the C ABI and sits behind the `template-parser` feature, which the
+//! crates that render with a model's own template (`retrograd-agent`,
+//! `retrograd-openai`) enable.
 //!
 //! The split every implementation in the stack must respect:
 //!
@@ -16,12 +20,17 @@
 //! Blurring the two lets a rollout continue, be scored and be trained against a
 //! world that cannot answer. See [`Environment::step`] and [`Sandbox::exec`].
 
+pub mod chat;
 pub mod config;
 pub mod env;
 pub mod error;
 pub mod interrupt;
+pub mod parser;
+pub mod rendering;
 pub mod sandbox;
 pub mod scenario;
+#[cfg(feature = "template-parser")]
+pub mod template_parser;
 pub mod text;
 pub mod tools;
 pub mod trajectory;
@@ -34,5 +43,7 @@ pub use sandbox::{
     SandboxProvider, relative_path,
 };
 pub use scenario::{RolloutLimits, Scenario, TruncationPolicy};
+#[cfg(feature = "template-parser")]
+pub use template_parser::TemplateToolCallParser;
 pub use tools::{ToolCall, ToolProvider, ToolResult, ToolSpec};
 pub use trajectory::{Message, Role, Step, StepKind, Trajectory, TrajectoryGroup};

@@ -9,7 +9,7 @@ publish = false
 [dependencies]
 async-trait.workspace = true
 futures-util.workspace = true
-retrograd-agent-core.workspace = true
+retrograd-agent-core = { workspace = true, features = ["template-parser"] }
 retrograd-core.workspace = true
 retrograd-dataset.workspace = true
 retrograd-engine.workspace = true

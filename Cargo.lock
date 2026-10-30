@@ -1881,10 +1881,12 @@ dependencies = [
  "async-trait",
  "retrograd-core",
  "retrograd-dataset",
+ "retrograd-engine",
  "retrograd-metrics",
  "serde",
  "serde_json",
  "thiserror",
+ "tracing",
  "utoipa",
 ]
 

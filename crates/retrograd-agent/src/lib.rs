@@ -8,14 +8,14 @@
 //! [`retrograd_agent_core`], which environments, tools,
 //! containers and judges build on without ever pulling in the FFI bridge.
 
-pub mod chat;
+pub use retrograd_agent_core::chat;
 pub mod collect;
 pub mod export;
 mod grpo;
 pub mod policy;
 pub mod rendering;
 pub mod rollout;
-pub mod template_parser;
+pub use retrograd_agent_core::template_parser;
 pub mod train;
 
 pub use retrograd_agent_core::trajectory;

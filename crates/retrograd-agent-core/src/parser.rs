@@ -1,5 +1,6 @@
-use retrograd_agent_core::tools::{ToolCall, ToolResult};
 use retrograd_dataset::chat_template::{ParsedCalls, parse_hermes};
+
+use crate::tools::{ToolCall, ToolResult};
 
 pub use retrograd_dataset::chat_template::ToolCallParseError;
 

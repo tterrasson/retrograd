@@ -29,7 +29,10 @@ pub mod exec_tool;
 pub mod local;
 #[cfg(feature = "mcp")]
 pub mod mcp;
-pub mod parser;
+// The parsers live in `retrograd-agent-core`, which stays free of the FFI
+// bridge; only the template-derived parser needs it, and that one lives
+// behind agent-core's `template-parser` feature.
+pub use retrograd_agent_core::parser;
 pub mod registry;
 pub mod session;
 

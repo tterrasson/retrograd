@@ -6,10 +6,11 @@ license.workspace = true
 description = "Retrograd - vocabulary and contracts of the agent stack, with no transport"
 publish = false
 
-# Vocabulary and contracts for the agent stack: no I/O, no transport, and above
-# all no dependency on the training engine. Everything above this crate
-# (environments, containers, tools, judges) is therefore compilable and testable
-# without the C++/FFI bridge; `retrograd-agent` is the only crate that links it.
+# Vocabulary and contracts for the agent stack: no I/O, no transport, and -
+# with one opt-in exception below - no dependency on the training engine.
+# Everything above this crate (environments, containers, tools, judges) is
+# therefore compilable and testable without the C++/FFI bridge;
+# `retrograd-agent` is the crate that links it by default.
 #
 # `retrograd-dataset` owns the chat-template contract a rollout and an SFT
 # record are both rendered through; it depends on nothing but core, serde and
@@ -18,16 +19,25 @@ publish = false
 # Schemas of the policies a configuration document spells. See
 # `retrograd-config`'s feature of the same name.
 openapi = ["dep:utoipa", "retrograd-core/openapi"]
+# `template_parser` runs the template-derived tool-call grammar through the
+# C ABI, so it is the one module here that links `retrograd-engine` (and with
+# it the FFI bridge). The crates that render with a model's own template -
+# `retrograd-agent`, `retrograd-openai` - enable this feature; the rest of the
+# stack (tools, environments, judges, scenario generation) does not, and so
+# still compiles without the native runtime.
+template-parser = ["dep:retrograd-engine"]
 
 [dependencies]
 utoipa = { workspace = true, optional = true }
 async-trait.workspace = true
 retrograd-core.workspace = true
 retrograd-dataset.workspace = true
+retrograd-engine = { workspace = true, optional = true }
 retrograd-metrics.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true
