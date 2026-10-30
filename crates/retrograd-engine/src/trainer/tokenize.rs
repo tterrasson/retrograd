@@ -331,7 +331,10 @@ impl Trainer {
 /// # Safety
 ///
 /// Same obligation as [`read_string`].
-unsafe fn read_optional_string<F>(unavailable: i32, mut call: F) -> Result<Option<String>>
+pub(crate) unsafe fn read_optional_string<F>(
+    unavailable: i32,
+    mut call: F,
+) -> Result<Option<String>>
 where
     F: FnMut(*mut std::ffi::c_char, usize, *mut usize) -> i32,
 {

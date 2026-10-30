@@ -42,6 +42,31 @@ impl Engine {
             .ok_or_else(|| EngineError::Runtime("generation batch returned no sequence".into()))
     }
 
+    /// Samples a completion under the frozen base model: any attached LoRA
+    /// adapter is disabled for the call and re-enabled afterwards. This is
+    /// the engine's counterpart of the trainer's adapter-free
+    /// [`Trainer::generate_base`](crate::Trainer::generate_base) (an engine has no reference anchor).
+    ///
+    /// Enabling with no adapter attached is the runtime's one error here,
+    /// which is how this call learns there is nothing to disable: it then
+    /// generates directly. With an adapter attached both toggles are real,
+    /// and a failure to re-enable is reported rather than leaving the engine
+    /// silently on base weights.
+    pub fn generate_base(
+        &mut self,
+        prompt: &[i32],
+        sampling: &SamplingParams,
+    ) -> std::result::Result<Generation, EngineError> {
+        if self.set_lora_enabled(true).is_err() {
+            // No adapter attached: the base model is what `generate` runs.
+            return self.generate(prompt, sampling);
+        }
+        self.set_lora_enabled(false)?;
+        let generated = self.generate(prompt, sampling);
+        self.set_lora_enabled(true)?;
+        generated
+    }
+
     /// Samples independent completions for one shared prompt. Each entry
     /// keeps its own parameters and RNG seed.
     pub fn generate_batch(

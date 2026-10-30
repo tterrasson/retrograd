@@ -1616,6 +1616,50 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn retro_engine_set_reasoning_budget(engine: *mut RetroEngine, budget: i32) -> c_int;
 
+    /// Mirror of `retro_engine_format_chat`: render messages through the
+    /// GGUF's chat template, same contract as `retro_trainer_format_chat`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn retro_engine_format_chat(
+        engine: *mut RetroEngine,
+        roles: *const *const c_char,
+        contents: *const *const c_char,
+        n_messages: usize,
+        add_assistant: bool,
+        buffer: *mut c_char,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
+    /// Mirror of `retro_engine_format_chat_messages`, the JSON-messages
+    /// counterpart of `retro_trainer_format_chat_messages`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn retro_engine_format_chat_messages(
+        engine: *mut RetroEngine,
+        messages_json: *const c_char,
+        tools_json: *const c_char,
+        add_assistant: bool,
+        buffer: *mut c_char,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
+    /// Mirror of `retro_engine_chat_template_supports_tools`.
+    pub fn retro_engine_chat_template_supports_tools(
+        engine: *mut RetroEngine,
+        out_supports: *mut bool,
+    ) -> c_int;
+
+    /// Mirror of `retro_engine_tool_call_parser`; returns
+    /// `RETRO_CHAT_PARSER_UNAVAILABLE` when the template yields no parser.
+    #[allow(clippy::too_many_arguments)]
+    pub fn retro_engine_tool_call_parser(
+        engine: *mut RetroEngine,
+        tools_json: *const c_char,
+        buffer: *mut c_char,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
     pub fn retro_engine_memory_report(
         engine: *mut RetroEngine,
         out_report: *mut RetroMemoryReport,

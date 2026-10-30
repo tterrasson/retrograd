@@ -703,6 +703,90 @@ extern "C" int retro_engine_set_reasoning_budget(retro_engine * engine, int32_t 
     });
 }
 
+extern "C" int retro_engine_format_chat(
+        retro_engine * engine,
+        const char * const * roles,
+        const char * const * contents,
+        size_t n_messages,
+        bool add_assistant,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state || !out_n_bytes) {
+            if (state) set_error("out_n_bytes is required");
+            return -1;
+        }
+        if (n_messages > 0 && (!roles || !contents)) {
+            set_error("roles and contents are required");
+            return -1;
+        }
+        for (size_t i = 0; i < n_messages; ++i) {
+            if (is_blank(roles[i]) || contents[i] == nullptr) {
+                set_error("chat roles and contents must not be empty");
+                return -1;
+            }
+        }
+        return render_chat_template(
+                state->chat, roles, contents, n_messages, add_assistant,
+                buffer, n_buffer, out_n_bytes);
+    });
+}
+
+extern "C" int retro_engine_format_chat_messages(
+        retro_engine * engine,
+        const char * messages_json,
+        const char * tools_json,
+        bool add_assistant,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state || !out_n_bytes) {
+            if (state) set_error("out_n_bytes is required");
+            return -1;
+        }
+        if (is_blank(messages_json)) {
+            set_error("chat messages JSON is required");
+            return -1;
+        }
+        return render_chat_messages(
+                state->chat, messages_json, tools_json, add_assistant,
+                buffer, n_buffer, out_n_bytes);
+    });
+}
+
+extern "C" int retro_engine_chat_template_supports_tools(
+        retro_engine * engine,
+        bool * out_supports) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state || !out_supports) {
+            if (state) set_error("out_supports is required");
+            return -1;
+        }
+        return chat_template_supports_tools(state->chat, out_supports);
+    });
+}
+
+extern "C" int retro_engine_tool_call_parser(
+        retro_engine * engine,
+        const char * tools_json,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state || !out_n_bytes) {
+            if (state) set_error("out_n_bytes is required");
+            return -1;
+        }
+        return build_tool_call_parser(state->chat, tools_json, buffer, n_buffer, out_n_bytes);
+    });
+}
+
 extern "C" int retro_engine_memory_report(
         retro_engine * engine,
         retro_memory_report * out_report) {

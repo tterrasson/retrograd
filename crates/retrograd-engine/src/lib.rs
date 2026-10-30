@@ -454,7 +454,7 @@ mod stats;
 pub mod step;
 mod trainer;
 
-pub use engine::{Engine, EngineError};
+pub use engine::{Engine, EngineError, engine_config_from_train_config, generation_batch};
 pub use packed::PackedSequenceBatch;
 pub use probe::*;
 pub use quant::*;

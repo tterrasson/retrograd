@@ -2259,6 +2259,39 @@ int retro_engine_set_chat_template_variables(
     const char * variables_json);
 int retro_engine_set_reasoning_budget(retro_engine * engine, int32_t budget);
 
+// The model-backed chat-template operations, with the same contracts as their
+// retro_trainer_* counterparts: the engine's chat state is built from the same
+// GGUF `tokenizer.chat_template` metadata, so a model renders identically
+// through either handle.
+int retro_engine_format_chat(
+    retro_engine * engine,
+    const char * const * roles,
+    const char * const * contents,
+    size_t n_messages,
+    bool add_assistant,
+    char * buffer,
+    size_t n_buffer,
+    size_t * out_n_bytes);
+int retro_engine_format_chat_messages(
+    retro_engine * engine,
+    const char * messages_json,
+    const char * tools_json,
+    bool add_assistant,
+    char * buffer,
+    size_t n_buffer,
+    size_t * out_n_bytes);
+int retro_engine_chat_template_supports_tools(
+    retro_engine * engine,
+    bool * out_supports);
+// Same status contract as retro_trainer_tool_call_parser:
+// RETRO_CHAT_PARSER_UNAVAILABLE when the template yields no parser.
+int retro_engine_tool_call_parser(
+    retro_engine * engine,
+    const char * tools_json,
+    char * buffer,
+    size_t n_buffer,
+    size_t * out_n_bytes);
+
 // Structured memory breakdown of this engine: weights, KV, compute buffers,
 // adapter. The optimizer-state and gradient fields are always zero - that is
 // the point of the handle, and a report is how a caller checks it. Same

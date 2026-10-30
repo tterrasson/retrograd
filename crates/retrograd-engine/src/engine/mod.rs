@@ -8,7 +8,9 @@
 //! checks the "no training state" property (zero optimizer state, zero
 //! gradient).
 
+mod chat;
 mod generate;
+mod score;
 mod step;
 
 use std::ffi::CString;
@@ -16,13 +18,71 @@ use std::mem::size_of;
 use std::path::Path;
 use std::ptr::NonNull;
 
-use retrograd_core::{EngineConfig, Generation, MemoryReport, SamplingParams};
+use retrograd_core::{
+    EngineConfig, EngineKvDtype, Generation, GenerationKvDtype, MemoryReport, SamplingParams,
+    TrainConfig,
+};
 use retrograd_ffi as ffi;
 
 use crate::{
     GenerationStats, SampledRow, ffi_out_vec, nul_error, path_to_cstring, read_bytes_sized,
     read_string_sized_lossy, runtime_error, sampling_params_to_ffi,
 };
+
+/// The `n_batch` of a run's dedicated generation context, resolved exactly as
+/// the runtime resolves it when it builds that context: an explicit
+/// `generation_batch` wins; zero derives the smaller of the context and a
+/// 512-token launch, capped by what a 64 MiB logits budget affords the
+/// vocabulary; the result is then raised to one row per concurrent sequence,
+/// since a decode wave submits one row per live sequence and has to fit a
+/// single launch. A scheduler composing steps over that context must use this
+/// same budget to reproduce the batched generators' step shapes.
+pub fn generation_batch(training: &TrainConfig, n_vocab: u32) -> u32 {
+    let batch = match training.generation_batch {
+        0 => {
+            // The quotient is at most 2^24 (64 MiB over a four-byte row), so
+            // the conversion back to u32 cannot fail; the min with 512 bounds
+            // the result regardless.
+            let affordable = ((64_u64 << 20) / (u64::from(n_vocab.max(1)) * 4)).max(1);
+            let affordable = u32::try_from(affordable).unwrap_or(u32::MAX);
+            training.n_ctx.min(512).min(affordable)
+        }
+        explicit => explicit,
+    };
+    batch.max(training.effective_generation_concurrency())
+}
+
+/// The [`EngineConfig`] that reproduces a run's dedicated generation context:
+/// `n_ctx * effective_generation_concurrency` KV cells, one slot per concurrent
+/// sequence, the [`generation_batch`] geometry for the model's `n_vocab`, and
+/// the fast context's KV dtype with flash attention when the run asks for one.
+/// At this geometry the engine's generation is bit-identical to the trainer's
+/// (see `tests/engine_runtime.rs`), which is what lets generation-only commands
+/// run on the lightweight handle without changing a single token they print.
+pub fn engine_config_from_train_config(training: &TrainConfig, n_vocab: u32) -> EngineConfig {
+    let concurrency = training.effective_generation_concurrency();
+    let n_batch = generation_batch(training, n_vocab);
+    EngineConfig {
+        n_ctx: training.n_ctx.saturating_mul(concurrency),
+        n_seq_max: concurrency,
+        n_batch,
+        n_ubatch: n_batch,
+        kv_dtype: if training.fast_generation_context {
+            match training.generation_kv_dtype {
+                GenerationKvDtype::F16 => EngineKvDtype::F16,
+                GenerationKvDtype::Q8_0 => EngineKvDtype::Q8_0,
+                GenerationKvDtype::Q4_0 => EngineKvDtype::Q4_0,
+            }
+        } else {
+            EngineKvDtype::F32
+        },
+        flash_attn: training.fast_generation_context,
+        kv_unified: true,
+        device: training.device,
+        threads: training.threads,
+        verbose: training.verbose,
+    }
+}
 
 /// Errors of the inference engine. Converted into
 /// [`retrograd_core::Error`](retrograd_core::Error) by the `From` impl below,
@@ -133,6 +193,22 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Loads a GGUF model with the geometry of `training`'s dedicated
+    /// generation context ([`engine_config_from_train_config`]). The model's
+    /// vocabulary, which that geometry depends on, is read first from the
+    /// GGUF metadata alone - no weights are offloaded for it.
+    pub fn from_train_config(
+        model_path: impl AsRef<Path>,
+        training: &TrainConfig,
+    ) -> retrograd_core::Result<Self> {
+        let model_path = model_path.as_ref();
+        let n_vocab = crate::model_info(model_path, training.device)?.n_vocab;
+        Ok(Self::new(
+            model_path,
+            &engine_config_from_train_config(training, n_vocab),
+        )?)
+    }
+
     /// Loads a GGUF model (mapped, never written) and builds one forward-only
     /// context with the requested geometry. No adapter is attached; call
     /// [`Engine::load_lora`] to attach one.
@@ -406,6 +482,36 @@ mod tests {
         let core = retrograd_core::Error::tokenize("empty prompt");
         let round: retrograd_core::Error = EngineError::from(core).into();
         assert!(matches!(round, retrograd_core::Error::Tokenize(_)));
+    }
+
+    #[test]
+    fn generation_batch_follows_the_runtime_default_and_the_logits_budget() {
+        let training = TrainConfig {
+            n_ctx: 1024,
+            generation_concurrency: 4,
+            ..TrainConfig::default()
+        };
+        // A small vocabulary: the 512-token launch binds.
+        assert_eq!(generation_batch(&training, 1000), 512);
+        // A 151 936-token vocabulary affords 110 rows of logits in 64 MiB.
+        assert_eq!(generation_batch(&training, 151_936), 110);
+        // A context below 512 binds first.
+        let short = TrainConfig {
+            n_ctx: 64,
+            ..training.clone()
+        };
+        assert_eq!(generation_batch(&short, 1000), 64);
+        // An explicit value wins, but never below one row per sequence.
+        let explicit = TrainConfig {
+            generation_batch: 2,
+            ..training.clone()
+        };
+        assert_eq!(generation_batch(&explicit, 151_936), 4);
+
+        let config = engine_config_from_train_config(&training, 151_936);
+        assert_eq!((config.n_batch, config.n_ubatch), (110, 110));
+        assert_eq!(config.n_ctx, 1024 * 4);
+        assert_eq!(config.n_seq_max, 4);
     }
 
     #[test]

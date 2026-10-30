@@ -300,6 +300,7 @@ mod tokenize;
 /// and [`Trainer::tool_call_parser`] for the model-backed equivalents.
 pub use generate::SampledRow;
 pub use reference::{VOCABULARY_WITNESSES, VocabularyMismatch};
+pub(crate) use tokenize::read_optional_string;
 pub use tokenize::{
     parse_assistant_output, render_chat_template_source, tool_call_parser_from_source,
 };
