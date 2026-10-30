@@ -1,7 +1,7 @@
-//! The Responses API surface: `POST /v1/responses`, stateless (`store:
-//! false` only - storing responses and `previous_response_id` continuations
-//! are not served yet, and the request is refused rather than answered as if
-//! they were).
+//! The Responses API surface: `POST /v1/responses` with its store
+//! (`store: true` is the API default, on the endpoint's [`ResponseStore`]),
+//! `previous_response_id` continuations, and the read routes
+//! `GET/DELETE /v1/responses/{id}` and `GET /v1/responses/{id}/input_items`.
 //!
 //! The wire documents are [`wire`], the translation to the common
 //! [`GenerationRequest`](crate::request::GenerationRequest) is [`convert`],
@@ -17,21 +17,28 @@ pub mod wire;
 
 pub use convert::{Prepared, prepare};
 pub use events::{ResponseEvent, Sequencer};
+pub use store::{
+    FileStore, MemoryStore, ResponseId, ResponseStore, StoreOptions, StoreOwner, StoredResponse,
+};
 pub use wire::{Input, ReasoningParam, Response, ResponsesRequest, Status, Usage};
 
 use std::convert::Infallible;
+use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{Extension, Path, Query, State};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response as AxumResponse};
-use axum::routing::post;
+use axum::routing::{get, post};
 use retrograd_infer::{Event, FinishReason};
+use serde::Deserialize;
+use serde_json::Value;
 
 use crate::error::OpenAiError;
 use crate::render::{Completion, finish};
 use crate::responses::events::ResponseEvent as Ev;
+use crate::responses::store::valid_id;
 use crate::responses::wire::{
     EventLogprob, IncompleteDetails, InputTokensDetails, OutputContent, OutputItem,
     OutputTokensDetails, ReasoningTextPart, ResponseError, SummaryPart, TextEcho,
@@ -54,7 +61,13 @@ const EVENT_FORWARD: usize = 64;
 /// The responses routes, relative to wherever the caller mounts them - `/v1`
 /// for every OpenAI client.
 pub fn router() -> Router<Endpoint> {
-    Router::new().route("/responses", post(responses_create))
+    Router::new()
+        .route("/responses", post(responses_create))
+        .route(
+            "/responses/{id}",
+            get(responses_get).delete(responses_delete),
+        )
+        .route("/responses/{id}/input_items", get(responses_input_items))
 }
 
 /// The fields of the `response` object that do not depend on the answer: the
@@ -113,9 +126,9 @@ impl Template {
                 format: self.prepared.text_format.clone(),
             },
             reasoning: self.prepared.reasoning.clone(),
-            store: false,
+            store: self.prepared.store,
             background: false,
-            previous_response_id: None,
+            previous_response_id: self.prepared.previous_response_id.clone(),
             truncation: "disabled",
             service_tier: "default",
             access_programs: Vec::new(),
@@ -199,19 +212,204 @@ fn status_of(completion: &Completion) -> Status {
     }
 }
 
+/// What a successful answer needs to be written to the store: the store
+/// itself, the ownership and weights identity of the request, and the input
+/// items a continuation of this response replays.
+struct StoreCtx {
+    store: Arc<dyn ResponseStore>,
+    owner: Option<String>,
+    model: String,
+    weights: String,
+    fingerprint: String,
+    base_model: Option<String>,
+    input_items: Vec<Value>,
+    previous_response_id: Option<String>,
+    store_response: bool,
+    created_at: u64,
+}
+
+impl StoreCtx {
+    /// Writes one finished response to the store. A store that refuses (full,
+    /// chain too deep) does not fail the answer: the client got it, and a
+    /// later read answers 404 with the eviction message - logged here so the
+    /// operator sees the store is the problem.
+    fn record(&self, response: &Response) {
+        if !self.store_response {
+            return;
+        }
+        let mut input_items = self.input_items.clone();
+        ensure_item_ids(&mut input_items);
+        let response_value = serde_json::to_value(response).unwrap_or(Value::Null);
+        let bytes = response_value.to_string().len()
+            + input_items
+                .iter()
+                .map(|item| item.to_string().len())
+                .sum::<usize>();
+        let chain_depth = self
+            .store
+            .get(self.previous_response_id.as_deref().unwrap_or(""))
+            .map(|parent| parent.chain_depth + 1)
+            .unwrap_or(1);
+        let stored = StoredResponse {
+            response: response_value,
+            input_items,
+            created_at: self.created_at,
+            bytes,
+            previous_response_id: self.previous_response_id.clone(),
+            chain_depth,
+            model: self.model.clone(),
+            weights: self.weights.clone(),
+            fingerprint: self.fingerprint.clone(),
+            base_model: self.base_model.clone(),
+            owner: self.owner.clone(),
+        };
+        if let Err(error) = self.store.put(stored) {
+            tracing::warn!(error = %error, "could not store a response the client asked to keep");
+        }
+    }
+}
+
+/// Gives an `id` to every input item that lacks one, so pagination cursors
+/// (`before`/`after`) and the `first_id`/`last_id` of the list envelope can
+/// name every item - the way the hosted API assigns item ids server-side.
+fn ensure_item_ids(items: &mut [Value]) {
+    for (index, item) in items.iter_mut().enumerate() {
+        if let Some(object) = item.as_object_mut()
+            && !object.contains_key("id")
+        {
+            object.insert("id".to_owned(), Value::String(format!("item_{index}")));
+        }
+    }
+}
+
+/// The weights identity a target runs on: `cold:<model path>|<adapter>` for
+/// weights on disk, `live:<model id>` for a run that is training. A
+/// continuation refuses a different base model instead of replaying tokens
+/// computed under another one.
+fn weights_identity(target: &Target, model: &str) -> (String, Option<String>) {
+    match target {
+        Target::Cold { spec, .. } => {
+            let adapter = spec
+                .adapter
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default();
+            (
+                format!("cold:{}|{adapter}", spec.model.display()),
+                Some(spec.model.display().to_string()),
+            )
+        }
+        Target::Live { .. } => (format!("live:{model}"), None),
+    }
+}
+
+/// Whether `owner` may read a response stored under `stored`'s owner.
+fn visible_to(owner: &Option<String>, stored: &StoredResponse) -> bool {
+    stored.owner == *owner
+}
+
+/// A continuation replays the stored chain only when the model and the base
+/// weights are the ones the stored response was produced with. A different
+/// adapter or a live run that advanced is fine (its pinned KV would be
+/// invalidated - none is pinned yet); a different base model is refused.
+fn check_continuation(
+    stored: &StoredResponse,
+    model: &str,
+    target: &Target,
+) -> Result<(), OpenAiError> {
+    let id = stored
+        .response
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("resp_?");
+    if stored.model != model {
+        return Err(OpenAiError::invalid_param(
+            "previous_response_id",
+            format!(
+                "the response `{id}` was created for model `{}`; continue it with the same model",
+                stored.model
+            ),
+        ));
+    }
+    if let (Some(stored_base), Target::Cold { spec, .. }) = (&stored.base_model, target)
+        && *stored_base != spec.model.display().to_string()
+    {
+        return Err(OpenAiError::invalid_param(
+            "previous_response_id",
+            format!(
+                "the response `{id}` was produced from the base model `{stored_base}`, but \
+                 `{model}` runs on `{}`; a different base model cannot replay its tokens",
+                spec.model.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The 404 a `previous_response_id` gets when the store does not know it.
+fn evicted_or_unknown(id: &str) -> OpenAiError {
+    OpenAiError::response_not_found(
+        id,
+        "it is unknown to this server's response store, or it was evicted from the in-memory \
+         store (it is bounded)",
+    )
+    .with_param("previous_response_id")
+}
+
 async fn responses_create(
     State(endpoint): State<Endpoint>,
+    owner: Option<Extension<StoreOwner>>,
     body: Bytes,
 ) -> Result<AxumResponse, OpenAiError> {
     endpoint.check_enabled()?;
+    let owner = owner.map(|Extension(owner)| owner.0);
     let request = serde_json::from_slice::<wire::ResponsesRequest>(&body).map_err(|error| {
         OpenAiError::invalid(format!("the body is not a responses request: {error}"))
     })?;
-    let prepared = prepare(request)?;
-    let model = prepared.model.clone();
+    let model = request.model.clone();
     let target = endpoint.source.resolve(&model).await?;
+    // A continuation merges the stored chain's items in front of the new
+    // `input` - without re-injecting the previous request's `instructions`,
+    // which stay echoed on the stored response; the new ones apply to the new
+    // turn.
+    let mut effective = request.clone();
+    let mut replay_items: Vec<Value> = Vec::new();
+    if let Some(previous_id) = &request.previous_response_id {
+        let stored = endpoint
+            .store
+            .get(previous_id)
+            .filter(|stored| visible_to(&owner, stored))
+            .ok_or_else(|| evicted_or_unknown(previous_id))?;
+        check_continuation(&stored, &model, &target)?;
+        let mut items = stored.input_items;
+        if let Some(output) = stored.response.get("output").and_then(Value::as_array) {
+            items.extend(output.iter().cloned());
+        }
+        let Some(input) = &request.input else {
+            return Err(OpenAiError::invalid_param("input", "`input` is required"));
+        };
+        items.extend(convert::input_items_of(input));
+        replay_items = items;
+        effective.input = Some(Input::Items(replay_items.clone()));
+    } else if let Some(input) = &request.input {
+        replay_items = convert::input_items_of(input);
+    }
+    let prepared = prepare(effective)?;
     let id = format!("resp_{}", uuid::Uuid::new_v4().simple());
     let created = unix_seconds();
+    let (weights, base_model) = weights_identity(&target, &model);
+    let store_ctx = StoreCtx {
+        store: endpoint.store.clone(),
+        owner,
+        model: model.clone(),
+        weights,
+        fingerprint: String::new(),
+        base_model,
+        input_items: replay_items,
+        previous_response_id: prepared.previous_response_id.clone(),
+        store_response: prepared.store,
+        created_at: created,
+    };
     let template = Template {
         id,
         created,
@@ -220,12 +418,12 @@ async fn responses_create(
         prepared,
     };
     if template.prepared.stream {
-        return Ok(responses_stream(endpoint, target, template).into_response());
+        return Ok(responses_stream(endpoint, target, template, store_ctx).into_response());
     }
     let Prepared { request, .. } = template.prepared.clone();
     let (answers, fingerprint) = endpoint.sample(target, request).await?;
     let mut template = template;
-    template.fingerprint = fingerprint;
+    template.fingerprint = fingerprint.clone();
     // Responses asks for a single completion (`n` is not a field).
     let answer = answers
         .into_iter()
@@ -239,31 +437,227 @@ async fn responses_create(
         completion.reasoning_tokens,
     );
     let output = output_items(&completion);
-    Ok(axum::Json(template.response(status, output, usage)).into_response())
+    let response = template.response(status, output, usage);
+    let mut store_ctx = store_ctx;
+    store_ctx.fingerprint = fingerprint;
+    store_ctx.record(&response);
+    Ok(axum::Json(response).into_response())
+}
+
+/// `GET /v1/responses/{id}`: the stored response object, as it was answered.
+async fn responses_get(
+    State(endpoint): State<Endpoint>,
+    owner: Option<Extension<StoreOwner>>,
+    Path(id): Path<String>,
+) -> Result<AxumResponse, OpenAiError> {
+    endpoint.check_enabled()?;
+    if !valid_id(&id) {
+        return Err(OpenAiError::response_not_found(&id, "not a response id"));
+    }
+    let owner = owner.map(|Extension(owner)| owner.0);
+    let stored = endpoint
+        .store
+        .get(&id)
+        .filter(|stored| visible_to(&owner, stored))
+        .ok_or_else(|| {
+            OpenAiError::response_not_found(
+                &id,
+                "it is unknown, or it was evicted from the in-memory store (it is bounded)",
+            )
+        })?;
+    Ok(axum::Json(stored.response).into_response())
+}
+
+/// `DELETE /v1/responses/{id}`: removes the response and releases the pin it
+/// held on its ancestor.
+async fn responses_delete(
+    State(endpoint): State<Endpoint>,
+    owner: Option<Extension<StoreOwner>>,
+    Path(id): Path<String>,
+) -> Result<AxumResponse, OpenAiError> {
+    endpoint.check_enabled()?;
+    if !valid_id(&id) {
+        return Err(OpenAiError::response_not_found(&id, "not a response id"));
+    }
+    let owner = owner.map(|Extension(owner)| owner.0);
+    let visible = endpoint
+        .store
+        .get(&id)
+        .is_some_and(|stored| visible_to(&owner, &stored));
+    if !visible {
+        return Err(OpenAiError::response_not_found(
+            &id,
+            "it is unknown, or it was evicted from the in-memory store (it is bounded)",
+        ));
+    }
+    endpoint.store.delete(&id);
+    Ok(axum::Json(serde_json::json!({
+        "id": id,
+        "object": "response",
+        "deleted": true,
+    }))
+    .into_response())
+}
+
+/// The query parameters of `GET /v1/responses/{id}/input_items`: the list
+/// envelope's pagination.
+#[derive(Deserialize)]
+struct InputItemsQuery {
+    limit: Option<u64>,
+    order: Option<String>,
+    before: Option<String>,
+    after: Option<String>,
+}
+
+const MAX_INPUT_ITEMS_PAGE: u64 = 100;
+const DEFAULT_INPUT_ITEMS_PAGE: u64 = 20;
+
+/// `GET /v1/responses/{id}/input_items`: the input items of one response -
+/// the chain it continues included - in the list envelope, paginated.
+async fn responses_input_items(
+    State(endpoint): State<Endpoint>,
+    owner: Option<Extension<StoreOwner>>,
+    Path(id): Path<String>,
+    query: Result<Query<InputItemsQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<AxumResponse, OpenAiError> {
+    endpoint.check_enabled()?;
+    if !valid_id(&id) {
+        return Err(OpenAiError::response_not_found(&id, "not a response id"));
+    }
+    let owner = owner.map(|Extension(owner)| owner.0);
+    let stored = endpoint
+        .store
+        .get(&id)
+        .filter(|stored| visible_to(&owner, stored))
+        .ok_or_else(|| {
+            OpenAiError::response_not_found(
+                &id,
+                "it is unknown, or it was evicted from the in-memory store (it is bounded)",
+            )
+        })?;
+    let Query(query) = query.map_err(|error| {
+        OpenAiError::invalid(format!("invalid input-items query: {}", error.body_text()))
+    })?;
+    let mut items = stored.input_items;
+    let limit = match query.limit {
+        None => DEFAULT_INPUT_ITEMS_PAGE,
+        Some(0) => {
+            return Err(OpenAiError::invalid_param(
+                "limit",
+                "`limit` must be between 1 and 100",
+            ));
+        }
+        Some(value) if value > MAX_INPUT_ITEMS_PAGE => {
+            return Err(OpenAiError::invalid_param(
+                "limit",
+                format!("`limit` must be at most {MAX_INPUT_ITEMS_PAGE}"),
+            ));
+        }
+        Some(value) => value,
+    };
+    let descending = match query.order.as_deref() {
+        None | Some("asc") => false,
+        Some("desc") => true,
+        Some(other) => {
+            return Err(OpenAiError::invalid_param(
+                "order",
+                format!("`order` must be `asc` or `desc`; got `{other}`"),
+            ));
+        }
+    };
+    if descending {
+        items.reverse();
+    }
+    // `before`/`after` are item ids: the page ends before / starts after the
+    // item that id names.
+    let position_of = |cursor: &str| -> Option<usize> {
+        items
+            .iter()
+            .position(|item| item.get("id").and_then(Value::as_str) == Some(cursor))
+    };
+    if let Some(before) = &query.before
+        && position_of(before).is_none()
+    {
+        return Err(OpenAiError::invalid_param(
+            "before",
+            format!("no input item has id `{before}`"),
+        ));
+    }
+    if let Some(after) = &query.after
+        && position_of(after).is_none()
+    {
+        return Err(OpenAiError::invalid_param(
+            "after",
+            format!("no input item has id `{after}`"),
+        ));
+    }
+    let mut start = 0_usize;
+    let mut end = items.len();
+    if let Some(after) = &query.after {
+        start = position_of(after).expect("checked above") + 1;
+    }
+    if let Some(before) = &query.before {
+        end = position_of(before).expect("checked above");
+    }
+    let window = &items[start.min(end)..end];
+    // The limit is bounded by MAX_INPUT_ITEMS_PAGE: the narrowing is exact.
+    let has_more = window.len() > limit as usize;
+    let page: Vec<Value> = window.iter().take(limit as usize).cloned().collect();
+    let first_id = page
+        .first()
+        .and_then(|item| item.get("id"))
+        .and_then(Value::as_str);
+    let last_id = page
+        .last()
+        .and_then(|item| item.get("id"))
+        .and_then(Value::as_str);
+    Ok(axum::Json(serde_json::json!({
+        "object": "list",
+        "data": page,
+        "first_id": first_id,
+        "last_id": last_id,
+        "has_more": has_more,
+    }))
+    .into_response())
 }
 
 /// The streamed sequence. A cold target streams live; a live run answers
 /// buffered (its answer exists only once its thread is free), and the same
 /// event sequence is cut from it whole.
-fn responses_stream(endpoint: Endpoint, target: Target, template: Template) -> AxumResponse {
+fn responses_stream(
+    endpoint: Endpoint,
+    target: Target,
+    template: Template,
+    store_ctx: StoreCtx,
+) -> AxumResponse {
     match target {
         Target::Cold { spec, fingerprint } => {
             let mut template = template;
-            template.fingerprint = fingerprint;
-            stream_events(endpoint, spec, template).into_response()
+            template.fingerprint = fingerprint.clone();
+            let mut store_ctx = store_ctx;
+            store_ctx.fingerprint = fingerprint;
+            stream_events(endpoint, spec, template, store_ctx).into_response()
         }
-        Target::Live { .. } => stream_buffered(endpoint, target, template).into_response(),
+        Target::Live { .. } => {
+            stream_buffered(endpoint, target, template, store_ctx).into_response()
+        }
     }
 }
 
 /// The buffered sequence: the whole answer exists, and the event sequence is
 /// cut from it in the protocol's order.
-fn stream_buffered(endpoint: Endpoint, target: Target, template: Template) -> AxumResponse {
+fn stream_buffered(
+    endpoint: Endpoint,
+    target: Target,
+    template: Template,
+    mut store_ctx: StoreCtx,
+) -> AxumResponse {
     let events = async_stream::stream! {
         match endpoint.sample(target, template.prepared.request.clone()).await {
             Ok((answers, fingerprint)) => {
                 let mut template = template;
-                template.fingerprint = fingerprint;
+                template.fingerprint = fingerprint.clone();
+                store_ctx.fingerprint = fingerprint;
                 let answer = answers.into_iter().next().expect("a live run answers one choice");
                 let completion = finish(answer, &[]);
                 let status = status_of(&completion);
@@ -274,6 +668,9 @@ fn stream_buffered(endpoint: Endpoint, target: Target, template: Template) -> Ax
                 );
                 let output = output_items(&completion);
                 let mut sequencer = Sequencer::new();
+                // Store before yielding the terminal event: the client may
+                // fetch the response immediately or disconnect at that event.
+                store_ctx.record(&template.response(status, output.clone(), usage.clone()));
                 for event in buffered_events(&template, &completion, status, output, usage) {
                     if let Some(event) = sequencer.push(event) {
                         yield Ok::<_, Infallible>(response_event(&event));
@@ -505,9 +902,14 @@ fn buffered_events(
 
 /// The live sequence: the session's event stream is consumed as it is
 /// produced and each stable delta becomes the protocol's events.
-fn stream_events(endpoint: Endpoint, spec: WeightsSpec, template: Template) -> AxumResponse {
+fn stream_events(
+    endpoint: Endpoint,
+    spec: WeightsSpec,
+    template: Template,
+    store_ctx: StoreCtx,
+) -> AxumResponse {
     let events = async_stream::stream! {
-        let mut builder = StreamBuilder::new(template);
+        let mut builder = StreamBuilder::new(template, Some(store_ctx));
         for event in builder.open() {
             yield Ok::<_, Infallible>(response_event(&event));
         }
@@ -653,6 +1055,8 @@ struct StreamBuilder {
     items: Vec<ItemTrack>,
     /// The message item's accumulated logprobs, when asked for.
     logprobs: Vec<crate::chat::wire::TokenLogprobs>,
+    /// Where the finished answer goes when the request asked to store it.
+    store_ctx: Option<StoreCtx>,
     done: bool,
 }
 
@@ -700,12 +1104,13 @@ impl ItemTrack {
 }
 
 impl StreamBuilder {
-    fn new(template: Template) -> Self {
+    fn new(template: Template, store_ctx: Option<StoreCtx>) -> Self {
         Self {
             template,
             sequencer: Sequencer::new(),
             items: Vec::new(),
             logprobs: Vec::new(),
+            store_ctx,
             done: false,
         }
     }
@@ -1036,18 +1441,24 @@ impl StreamBuilder {
             FinishReason::Eog | FinishReason::Stop => Status::Completed,
             _ => Status::Incomplete,
         };
+        let response = self.template.response(status, output, usage);
         let terminal = match status {
             Status::Completed => Ev::Completed {
                 sequence_number: 0,
-                response: self.template.response(status, output, usage),
+                response: response.clone(),
             },
             _ => Ev::Incomplete {
                 sequence_number: 0,
-                response: self.template.response(status, output, usage),
+                response: response.clone(),
             },
         };
         if let Some(event) = self.sequencer.push(terminal) {
             events.push(event);
+        }
+        // The terminal event went out carrying the full response: that is
+        // the moment a stored answer exists.
+        if let Some(store_ctx) = &self.store_ctx {
+            store_ctx.record(&response);
         }
         self.done = true;
         events
@@ -1200,7 +1611,7 @@ mod regression_tests {
 
     #[test]
     fn flushing_a_text_tail_does_not_repeat_the_previous_logprob() {
-        let mut builder = StreamBuilder::new(template());
+        let mut builder = StreamBuilder::new(template(), None);
         builder.open();
         builder.push(
             StreamDelta::Content("a".into()),

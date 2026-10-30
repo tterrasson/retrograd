@@ -11,8 +11,8 @@
 //! [`GenerationRequest`]: every surface translates its wire body into it, and
 //! every surface is served by the same backend - the [`Session`] for weights on
 //! disk, a live run's own thread for a run that is training. The surfaces live
-//! in their own subtrees: [`chat`] (Chat Completions, served today) and
-//! [`responses`] (the Responses API, stateless: `store: false` only).
+//! in their own subtrees: [`chat`] (Chat Completions), [`responses`] (the
+//! Responses API, with its store).
 //!
 //! The answer is rendered and parsed by the same code as the agentic rollouts
 //! ([`retrograd_agent::rendering`]), so a model evaluated through this endpoint
@@ -48,6 +48,9 @@ pub use render::{
     render_prompt,
 };
 pub use request::GenerationRequest;
+pub use responses::store::{
+    FileStore, MemoryStore, ResponseStore, StoreOptions, StoreOwner, StoredResponse,
+};
 pub use session::{
     DeviceLease, EngineStats, Lease, ServingJob, Session, SessionOptions, Unshared, WeightsSpec,
 };
@@ -104,11 +107,14 @@ pub struct Endpoint {
     pub timeout: Duration,
     /// Off, every route answers 404 in the OpenAI envelope.
     pub enabled: bool,
+    /// Where `store: true` responses live. The default is a bounded in-memory
+    /// LRU ([`MemoryStore`]); a file store is chosen by the frontend's config.
+    pub store: Arc<dyn ResponseStore>,
 }
 
 /// `GET /models`, `GET /models/{model}`, and the generation surfaces
-/// (`POST /chat/completions` today), relative to wherever the caller mounts
-/// them - `/v1` for every OpenAI client.
+/// (`POST /chat/completions`, `POST /responses`),
+/// relative to wherever the caller mounts them - `/v1` for every OpenAI client.
 ///
 /// No timeout layer belongs over these: a stream stays open until its answer
 /// exists, and the bound is [`Endpoint::timeout`], applied by the handler.

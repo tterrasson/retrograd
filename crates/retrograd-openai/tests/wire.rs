@@ -51,6 +51,7 @@ fn router_with(reply: &str) -> (Router, FakeLoader, Arc<Session>) {
             session: session.clone(),
             timeout: Duration::from_secs(30),
             enabled: true,
+            store: Arc::new(retrograd_openai::MemoryStore::default()),
         }),
     );
     (router, loader, session)
@@ -348,6 +349,7 @@ async fn a_disconnected_stream_frees_the_slot() {
             session: session.clone(),
             timeout: Duration::from_secs(30),
             enabled: true,
+            store: Arc::new(retrograd_openai::MemoryStore::default()),
         }),
     );
     let mut request = open_webui();
@@ -407,6 +409,7 @@ async fn a_stream_timeout_does_not_wait_for_a_blocked_backend() {
         session,
         timeout: Duration::from_millis(200),
         enabled: true,
+        store: Arc::new(retrograd_openai::MemoryStore::default()),
     });
     let mut request = open_webui();
     request["max_tokens"] = json!(60_000);
@@ -529,6 +532,7 @@ async fn a_disabled_endpoint_is_a_404_in_the_envelope() {
         session: Arc::new(session),
         timeout: Duration::from_secs(1),
         enabled: false,
+        store: Arc::new(retrograd_openai::MemoryStore::default()),
     });
     let (status, body) = get(&router, "/models").await;
     assert_eq!(status, StatusCode::NOT_FOUND);

@@ -132,6 +132,13 @@ pub struct ServingConfig {
     /// Largest chat request accepted. A long conversation outgrows the
     /// small-request ceiling of the rest of the API.
     pub max_body_bytes: Option<usize>,
+    /// Directory of the on-disk Responses store (one JSON per response, atomic
+    /// writes, TTL purge). Absent: the bounded in-memory LRU, which never
+    /// writes to disk.
+    pub responses_store_dir: Option<PathBuf>,
+    /// Seconds a stored response lives before the purge removes it. Default
+    /// 86400 (a day); pinned ancestors of living chains are never purged.
+    pub responses_store_ttl_seconds: Option<u64>,
 }
 
 impl ServingConfig {
@@ -162,6 +169,11 @@ impl ServingConfig {
 
     pub fn max_body_bytes(&self) -> usize {
         self.max_body_bytes.unwrap_or(4 * 1024 * 1024)
+    }
+
+    /// How long a stored response lives before the purge removes it.
+    pub fn responses_store_ttl(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.responses_store_ttl_seconds.unwrap_or(86400))
     }
 }
 
@@ -737,6 +749,9 @@ pub struct AppState {
     /// The thread that loads a run's weights to answer chat requests, on the
     /// device permit the runs queue on.
     pub serving: Arc<retrograd_openai::Session>,
+    /// Where `store: true` responses live: the bounded in-memory LRU by
+    /// default, the on-disk store when `serving.responses_store_dir` is set.
+    pub responses_store: Arc<dyn retrograd_openai::ResponseStore>,
     /// What signs download links. Drawn at startup: a restart invalidates them.
     pub link_key: crate::links::LinkKey,
     /// The last listing of `GET /v1/model-files`, reused for a few seconds.
@@ -766,6 +781,22 @@ impl AppState {
             // trainer: no optimizer, no training state on the device.
             Arc::new(retrograd_openai::EngineLoader),
         );
+        let responses_store: Arc<dyn retrograd_openai::ResponseStore> =
+            match &config.serving.responses_store_dir {
+                Some(dir) => {
+                    // A store directory that cannot be created is a startup
+                    // configuration error, like a serving thread that cannot
+                    // spawn: fail here rather than on a client's first
+                    // `store: true` request.
+                    let store = retrograd_openai::FileStore::new(
+                        dir,
+                        retrograd_openai::StoreOptions::default(),
+                    )
+                    .expect("the responses store directory can be created");
+                    Arc::new(store)
+                }
+                None => Arc::new(retrograd_openai::MemoryStore::default()),
+            };
         Self {
             catalog: Arc::new(catalog),
             baseline: measure_baseline(),
@@ -781,6 +812,7 @@ impl AppState {
             model_fingerprints: Arc::new(RwLock::new(BTreeMap::new())),
             datasets: Arc::new(datasets),
             serving,
+            responses_store,
             link_key: crate::links::LinkKey::generate(),
             model_files: Arc::new(std::sync::Mutex::new(None)),
             config: Arc::new(config),

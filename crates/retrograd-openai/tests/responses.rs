@@ -52,6 +52,7 @@ fn router_with(reply: &str) -> (Router, Arc<Session>) {
             session: session.clone(),
             timeout: Duration::from_secs(30),
             enabled: true,
+            store: Arc::new(retrograd_openai::MemoryStore::default()),
         }),
     );
     (router, session)
@@ -217,19 +218,13 @@ async fn a_json_schema_format_is_accepted_and_an_unsupported_keyword_is_refused(
     assert_eq!(body["error"]["param"], "text.format.schema/not", "{body}");
 }
 
-/// The stateless path only: `store: true` (the API default), a continuation
-/// id, truncation, background mode and hosted includes are refused with the
-/// field named, in the OpenAI error envelope.
+/// The hosted fields that stay out of perimeter are refused with the field
+/// named, in the OpenAI error envelope. `store: true` (the API default) is
+/// served now; an unknown `previous_response_id` is a 404, not a 400.
 #[tokio::test]
-async fn stateful_and_hosted_fields_are_refused_with_the_field_named() {
+async fn hosted_fields_are_refused_with_the_field_named() {
     let (router, _) = router_with("hi");
     for (field, value, param) in [
-        ("store", json!(true), "store"),
-        (
-            "previous_response_id",
-            json!("resp_1"),
-            "previous_response_id",
-        ),
         ("truncation", json!("auto"), "truncation"),
         ("background", json!(true), "background"),
         ("max_tool_calls", json!(2), "max_tool_calls"),
@@ -241,12 +236,21 @@ async fn stateful_and_hosted_fields_are_refused_with_the_field_named() {
         assert_eq!(body["error"]["type"], "invalid_request_error");
         assert_eq!(body["error"]["param"], param, "{field}: {body}");
     }
-    // Omitting `store` means the API default `true`: refused the same way.
+    // A continuation id the store does not know: 404 in the envelope, with
+    // the eviction message.
     let mut body = base();
-    body.as_object_mut().unwrap().remove("store");
+    body["previous_response_id"] = json!("resp_missing");
     let (status, body) = post(&router, body).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"]["param"], "store", "{body}");
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"]["code"], "response_not_found", "{body}");
+    assert_eq!(body["error"]["param"], "previous_response_id", "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("evicted"),
+        "{body}"
+    );
 
     // Non-text content parts are refused, not dropped.
     let mut body = base();

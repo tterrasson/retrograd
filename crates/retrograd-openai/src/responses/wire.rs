@@ -8,9 +8,10 @@
 //! fields and their bounds, the input item shapes that carry text only, the
 //! response object's required keys, and the streamed event types with their
 //! `sequence_number`. Anything the pinned schema offers but this server does
-//! not serve - non-text content parts, hosted tools, background mode,
-//! `store: true`, `previous_response_id` - is declared here and refused with
-//! the field named, never ignored.
+//! not serve - non-text content parts, hosted tools, background mode, hosted
+//! conversations, prefix truncation - is declared here and refused with the
+//! field named, never ignored. `store` and `previous_response_id` are served:
+//! they go to the endpoint's store.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -53,10 +54,12 @@ pub struct ResponsesRequest {
     /// Declared only to be refused: KV pinning across responses is not served
     /// yet.
     pub truncation: Option<String>,
-    /// Declared only to be refused: there is no store to continue from.
+    /// The stored response this one continues.
     pub previous_response_id: Option<String>,
     /// Background (asynchronous) responses are out of perimeter.
     pub background: Option<bool>,
+    /// Declared only to be refused: hosted conversations are out of perimeter.
+    pub conversation: Option<Value>,
 }
 
 /// `input`: a string, or a list of items.

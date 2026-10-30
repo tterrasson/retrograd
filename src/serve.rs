@@ -133,6 +133,9 @@ pub(crate) fn serve(args: Vec<String>) -> Result<()> {
             api_key,
             timeout: REQUEST_TIMEOUT,
             max_body_bytes: 4 * 1024 * 1024,
+            // The CLI serves one model from a command line: the bounded
+            // in-memory store, no write to disk unless configured.
+            responses_store: None,
             on_loaded: Some(Arc::new(on_loaded)),
         };
         retrograd_serve::serve(server).await?;

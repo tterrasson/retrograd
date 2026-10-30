@@ -51,6 +51,10 @@ pub struct ServeConfig {
     /// Seconds a loaded model may sit unused before it is dropped. Default 300.
     #[serde(default)]
     pub idle_seconds: Option<u64>,
+    /// Directory of the on-disk Responses store (one JSON per response, atomic
+    /// writes). Absent: the bounded in-memory LRU, which never writes to disk.
+    #[serde(default)]
+    pub responses_store_dir: Option<PathBuf>,
 }
 
 fn default_host() -> String {

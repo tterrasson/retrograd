@@ -290,6 +290,28 @@ async fn run(args: &[String]) -> Result<()> {
     );
     let router = build_router(state.clone());
 
+    // The stored responses' TTL purge: every minute, drop what the store
+    // considers older than the configured TTL. Ancestors a living chain still
+    // points at are pinned, and the store's purge leaves them alone.
+    {
+        let store = state.responses_store.clone();
+        let ttl = state.config.serving.responses_store_ttl();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let cutoff = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_secs().saturating_sub(ttl.as_secs()))
+                    .unwrap_or(0);
+                let removed = store.purge(cutoff);
+                if removed > 0 {
+                    tracing::info!(removed, "purged stored responses past their TTL");
+                }
+            }
+        });
+    }
+
     let listener = tokio::net::TcpListener::bind(&address)
         .await
         .map_err(|error| Error::runtime(format!("could not bind {address}: {error}")))?;

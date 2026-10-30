@@ -112,6 +112,7 @@ pub fn build_router(state: AppState) -> Router {
         session: state.serving.clone(),
         timeout: config.command_timeout(),
         enabled: config.serving.enabled(),
+        store: state.responses_store.clone(),
     })
     .layer(RequestBodyLimitLayer::new(config.serving.max_body_bytes()));
 

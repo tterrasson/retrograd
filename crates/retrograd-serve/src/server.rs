@@ -36,6 +36,9 @@ pub struct Serve {
     pub timeout: Duration,
     /// Largest chat request accepted.
     pub max_body_bytes: usize,
+    /// Where `store: true` responses live: `None` for the bounded in-memory
+    /// LRU (no write ever touches the disk), a directory for the on-disk store.
+    pub responses_store: Option<std::path::PathBuf>,
     /// Called once the preload finished, with the load duration or the error:
     /// what a CLI draws its spinner from.
     pub on_loaded: Option<Arc<dyn Fn(LoadOutcome) + Send + Sync>>,
@@ -128,11 +131,19 @@ pub async fn serve(serve: Serve) -> Result<(), ServeError> {
     preload?;
     let session = Arc::new(session);
 
+    let store: std::sync::Arc<dyn retrograd_openai::ResponseStore> = match &serve.responses_store {
+        Some(dir) => std::sync::Arc::new(retrograd_openai::FileStore::new(
+            dir,
+            retrograd_openai::StoreOptions::default(),
+        )?),
+        None => std::sync::Arc::new(retrograd_openai::MemoryStore::default()),
+    };
     let endpoint = Endpoint {
         source: serve.source,
         session: session.clone(),
         timeout: serve.timeout,
         enabled: true,
+        store,
     };
     let mut v1 = retrograd_openai::router(endpoint);
     // Outside the OpenAI contract: the serving session's own report.

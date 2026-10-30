@@ -98,6 +98,19 @@ impl OpenAiError {
         error
     }
 
+    /// A stored response id that is unknown, evicted, or owned by someone
+    /// else. 404 either way: which of the three it was is not information the
+    /// caller is entitled to.
+    pub fn response_not_found(id: &str, detail: impl std::fmt::Display) -> Self {
+        let mut error = Self::new(
+            StatusCode::NOT_FOUND,
+            ErrorType::NotFound,
+            format!("the response `{id}` does not exist: {detail}"),
+        );
+        error.code = Some("response_not_found");
+        error
+    }
+
     /// The code lm-eval and Open WebUI recognise, raised before anything is
     /// sampled.
     pub fn context_length_exceeded(prompt: usize, requested: u32, context: usize) -> Self {

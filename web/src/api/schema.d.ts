@@ -355,8 +355,43 @@ export interface paths {
     }
     get?: never
     put?: never
-    /** OpenAI: a response from a run's weights (Responses API, stateless: store must be false), streamed or not */
+    /** OpenAI: a response from a run's weights (Responses API, stored by default, previous_response_id continuations), streamed or not */
     post: operations['post_responses']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/v1/responses/{id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** OpenAI: one stored response */
+    get: operations['get_responses_id']
+    put?: never
+    post?: never
+    /** OpenAI: delete one stored response */
+    delete: operations['delete_responses_id']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/v1/responses/{id}/input_items': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** OpenAI: the input items of one stored response, paginated (limit, order, before, after) */
+    get: operations['get_responses_id_input_items']
+    put?: never
+    post?: never
     delete?: never
     options?: never
     head?: never
@@ -3920,6 +3955,102 @@ export interface operations {
         'application/json': string
       }
     }
+    responses: {
+      /** @description ok */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description a problem document (RFC 9457) */
+      default: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['Problem']
+        }
+      }
+    }
+  }
+  get_responses_id: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description ok */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description a problem document (RFC 9457) */
+      default: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['Problem']
+        }
+      }
+    }
+  }
+  delete_responses_id: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description ok */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description a problem document (RFC 9457) */
+      default: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['Problem']
+        }
+      }
+    }
+  }
+  get_responses_id_input_items: {
+    parameters: {
+      query?: {
+        /** @description How many items to return (1-100, default 20) */
+        limit?: number
+        /** @description `asc` (the default) or `desc` */
+        order?: string
+        /** @description The item id to end before */
+        before?: string
+        /** @description The item id to start after */
+        after?: string
+      }
+      header?: never
+      path: {
+        id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
     responses: {
       /** @description ok */
       200: {

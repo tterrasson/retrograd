@@ -46,6 +46,7 @@ use crate::state::AppState;
 pub fn is_openai_path(path: &str) -> bool {
     path == "/v1/chat/completions"
         || path == "/v1/responses"
+        || path.starts_with("/v1/responses/")
         || path == "/v1/models"
         || path.starts_with("/v1/models/")
 }
@@ -527,6 +528,8 @@ mod tests {
     fn only_the_openai_routes_answer_in_its_envelope() {
         assert!(is_openai_path("/v1/chat/completions"));
         assert!(is_openai_path("/v1/responses"));
+        assert!(is_openai_path("/v1/responses/resp_1"));
+        assert!(is_openai_path("/v1/responses/resp_1/input_items"));
         assert!(is_openai_path("/v1/models"));
         assert!(is_openai_path("/v1/models/abc@best"));
         assert!(!is_openai_path("/v1/modelsx"));

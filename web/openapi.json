@@ -6584,7 +6584,143 @@
             "description": "a problem document (RFC 9457)"
           }
         },
-        "summary": "OpenAI: a response from a run's weights (Responses API, stateless: store must be false), streamed or not",
+        "summary": "OpenAI: a response from a run's weights (Responses API, stored by default, previous_response_id continuations), streamed or not",
+        "tags": [
+          "openai"
+        ]
+      }
+    },
+    "/v1/responses/{id}": {
+      "delete": {
+        "operationId": "delete_responses_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem document (RFC 9457)"
+          }
+        },
+        "summary": "OpenAI: delete one stored response",
+        "tags": [
+          "openai"
+        ]
+      },
+      "get": {
+        "operationId": "get_responses_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem document (RFC 9457)"
+          }
+        },
+        "summary": "OpenAI: one stored response",
+        "tags": [
+          "openai"
+        ]
+      }
+    },
+    "/v1/responses/{id}/input_items": {
+      "get": {
+        "operationId": "get_responses_id_input_items",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "How many items to return (1-100, default 20)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "`asc` (the default) or `desc`",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The item id to end before",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The item id to start after",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem document (RFC 9457)"
+          }
+        },
+        "summary": "OpenAI: the input items of one stored response, paginated (limit, order, before, after)",
         "tags": [
           "openai"
         ]

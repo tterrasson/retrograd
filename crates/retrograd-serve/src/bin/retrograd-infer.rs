@@ -92,6 +92,7 @@ fn run(args: &[String]) -> Result<(), ServeError> {
         api_key: config.api_key.clone(),
         timeout: REQUEST_TIMEOUT,
         max_body_bytes: 4 * 1024 * 1024,
+        responses_store: config.responses_store_dir.clone(),
         on_loaded: None,
     };
 

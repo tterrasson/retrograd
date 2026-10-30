@@ -57,6 +57,9 @@ struct Operation {
     /// One of the OpenAI-compatible routes: tagged `openai`, and failing with
     /// an OpenAI error envelope rather than a problem document.
     openai: bool,
+    /// A `delete` that answers `200` with a body (the OpenAI deletes do),
+    /// rather than the bare `204`.
+    deleted: bool,
 }
 
 const fn op(
@@ -77,6 +80,7 @@ const fn op(
         created: false,
         repeat: None,
         openai: false,
+        deleted: false,
     }
 }
 
@@ -105,6 +109,12 @@ impl Operation {
 
     const fn openai(mut self) -> Self {
         self.openai = true;
+        self
+    }
+
+    /// A `delete` that answers `200` with a body.
+    const fn deleted(mut self) -> Self {
+        self.deleted = true;
         self
     }
 }
@@ -507,12 +517,45 @@ const OPERATIONS: &[Operation] = &[
     op(
         "post",
         "/v1/responses",
-        "OpenAI: a response from a run's weights (Responses API, stateless: store must be false), streamed or not",
+        "OpenAI: a response from a run's weights (Responses API, stored by default, previous_response_id continuations), streamed or not",
         None,
         None,
     )
     .accepts(&["application/json"])
     .openai(),
+    op(
+        "get",
+        "/v1/responses/{id}",
+        "OpenAI: one stored response",
+        None,
+        None,
+    )
+    .openai(),
+    op(
+        "delete",
+        "/v1/responses/{id}",
+        "OpenAI: delete one stored response",
+        None,
+        None,
+    )
+    .deleted()
+    .openai(),
+    op(
+        "get",
+        "/v1/responses/{id}/input_items",
+        "OpenAI: the input items of one stored response, paginated (limit, order, before, after)",
+        None,
+        None,
+    )
+    .with_query(&[
+        query("limit", "integer", "How many items to return (1-100, default 20)"),
+        query("order", "string", "`asc` (the default) or `desc`"),
+        query("before", "string", "The item id to end before"),
+        query("after", "string", "The item id to start after"),
+    ])
+    .openai(),
+
+
 ];
 
 /// The paths object, built from [`OPERATIONS`].
@@ -599,7 +642,7 @@ fn parameters(operation: &Operation) -> Vec<Value> {
 
 fn responses(operation: &Operation) -> Value {
     let mut success = match (operation.method, operation.response) {
-        ("delete", _) => json!({"204": {"description": "deleted"}}),
+        ("delete", _) if !operation.deleted => json!({"204": {"description": "deleted"}}),
         (_, Some(schema)) if operation.created => {
             json!({
                 "201": {

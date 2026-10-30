@@ -5,9 +5,11 @@
 //! `function_call_output` items reconciled by their `call_id`.
 //!
 //! Anything but text - an image, a file - is refused with the field named,
-//! never dropped, exactly as the chat conversion does. The stateless path is
-//! served here: `store: false` only; `previous_response_id` and `truncation`
-//! are refused because there is no store to continue from yet.
+//! never dropped, exactly as the chat conversion does. `store` defaults to
+//! `true` (the API default) and writes the response to the endpoint's store;
+//! `previous_response_id` replays a stored response's input items and output;
+//! `truncation` is still refused - prefix reuse across responses is not served
+//! yet.
 
 use retrograd_agent_core::tools::ToolSpec;
 use retrograd_agent_core::trajectory::{Message, Role};
@@ -49,6 +51,10 @@ pub struct Prepared {
     pub max_output_tokens: Option<u64>,
     pub text_format: Value,
     pub reasoning: Option<Value>,
+    /// Whether the response is written to the store (`store`, default `true`).
+    pub store: bool,
+    /// The stored response this one continues, when it does.
+    pub previous_response_id: Option<String>,
 }
 
 /// The documented local policy mapping a Responses `reasoning.effort` to a
@@ -295,7 +301,9 @@ pub fn prepare(request: ResponsesRequest) -> Result<Prepared, OpenAiError> {
         reasoning: request
             .reasoning
             .map(|reasoning| serde_json::to_value(reasoning).unwrap_or(Value::Null)),
-        model: request.model,
+        model: request.model.clone(),
+        store: request.store.unwrap_or(true),
+        previous_response_id: request.previous_response_id.clone(),
         request: GenerationRequest {
             messages,
             tools,
@@ -322,25 +330,23 @@ pub fn prepare(request: ResponsesRequest) -> Result<Prepared, OpenAiError> {
     })
 }
 
-/// What this server refuses outright, with the field named: the stateful and
-/// background paths (no store yet), hosted-tool plumbing, and the metadata
-/// bounds of the pinned schema.
+/// The `input` of a request as a list of input items: a string is one user
+/// message item. Used to prepend a stored chain's items on a continuation.
+pub fn input_items_of(input: &Input) -> Vec<Value> {
+    match input {
+        Input::Text(text) => vec![serde_json::json!({
+            "type": "message",
+            "role": "user",
+            "content": text,
+        })],
+        Input::Items(items) => items.clone(),
+    }
+}
+
+/// What this server refuses outright, with the field named: the background
+/// path, hosted-tool plumbing, prefix truncation (not served yet), and the
+/// metadata bounds of the pinned schema.
 fn refuse_unsupported(request: &ResponsesRequest) -> Result<(), OpenAiError> {
-    // `store` defaults to `true` in the API; only the stateless path exists.
-    if request.store != Some(false) {
-        return Err(OpenAiError::unsupported(
-            "store",
-            "only `store: false` is served: responses are not stored yet",
-        ));
-    }
-    if let Some(id) = &request.previous_response_id {
-        return Err(OpenAiError::unsupported(
-            "previous_response_id",
-            format!(
-                "there is no store to continue `{id}` from yet; send `store: false` without it"
-            ),
-        ));
-    }
     if let Some(truncation) = &request.truncation {
         return Err(OpenAiError::unsupported(
             "truncation",
@@ -353,6 +359,15 @@ fn refuse_unsupported(request: &ResponsesRequest) -> Result<(), OpenAiError> {
         return Err(OpenAiError::unsupported(
             "background",
             "background (asynchronous) responses are not served",
+        ));
+    }
+    if let Some(conversation) = &request.conversation
+        && !conversation.is_null()
+    {
+        return Err(OpenAiError::unsupported(
+            "conversation",
+            "hosted conversations are not served: continue a stored response with \
+             `previous_response_id` instead",
         ));
     }
     if request.max_tool_calls.is_some() {
@@ -821,11 +836,35 @@ mod tests {
     }
 
     #[test]
-    fn store_and_continuation_fields_are_refused_until_the_store_lands() {
+    fn store_defaults_to_true_and_hosted_fields_are_refused() {
+        // `store: true` (and absent) is the API default and is served by the
+        // endpoint's store; `previous_response_id` is looked up there.
+        for body in [
+            {
+                let mut body = base();
+                body.as_object_mut().unwrap().remove("store");
+                body
+            },
+            {
+                let mut body = base();
+                body["store"] = json!(true);
+                body
+            },
+        ] {
+            let prepared = prep(body).unwrap();
+            assert!(prepared.store);
+            assert!(prepared.previous_response_id.is_none());
+        }
+        let mut body = base();
+        body["store"] = json!(false);
+        assert!(!prep(body).unwrap().store);
+
+        let mut body = base();
+        body["previous_response_id"] = json!("resp_1");
+        let prepared = prep(body).unwrap();
+        assert_eq!(prepared.previous_response_id.as_deref(), Some("resp_1"));
+
         for (field, value) in [
-            ("store", json!(true)),
-            ("store", json!(null)),
-            ("previous_response_id", json!("resp_1")),
             ("truncation", json!("auto")),
             ("background", json!(true)),
             ("max_tool_calls", json!(4)),
