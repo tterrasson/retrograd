@@ -1011,11 +1011,114 @@ pub fn trainable_parameters(model: &ModelInfo, lora: Option<&LoraConfig>) -> u64
     product([per_layer, model.n_layer.max(1) as u64])
 }
 
+/// The inference-side cost of one engine context, extending this module's
+/// training cost model to serving: weights + attention KV + recurrent state +
+/// compute (the logits buffer plus one wave of activations), split the way a
+/// budget reads it. The per-token KV formula itself lives in `retrograd-core`
+/// (`ModelInfo::kv_bytes_per_token`), next to the widths it multiplies.
+pub struct InferenceEstimate {
+    pub footprint: retrograd_core::InferenceFootprint,
+}
+
+impl InferenceEstimate {
+    pub fn total_bytes(&self) -> u64 {
+        self.footprint.total_bytes()
+    }
+
+    /// "Holds N sequences of L tokens": the capacity answer the engine reports
+    /// at startup for a per-request length.
+    pub fn sequences_of(&self, tokens_per_seq: u64) -> u64 {
+        self.footprint.sequences_of(tokens_per_seq)
+    }
+
+    /// Whether the whole footprint fits a device budget of `device_bytes`.
+    pub fn fits(&self, device_bytes: u64) -> bool {
+        self.total_bytes() <= device_bytes
+    }
+}
+
+/// Estimates one forward-only inference context of `n_ctx` cells over
+/// `n_seq_max` slots with an `n_batch`-token compute wave.
+pub fn inference_estimate(
+    model: &ModelInfo,
+    n_ctx: u64,
+    n_seq_max: u64,
+    n_batch: u64,
+    kv_dtype: retrograd_core::EngineKvDtype,
+) -> InferenceEstimate {
+    InferenceEstimate {
+        footprint: retrograd_core::inference_footprint(model, n_ctx, n_seq_max, n_batch, kv_dtype),
+    }
+}
+
+/// Refuses a KV-storage / geometry combination the backend cannot serve
+/// *before* any allocation: the support matrix lives in `retrograd-core`
+/// (`validate_kv_dtype_support`); this applies it to the model's head
+/// dimensions.
+pub fn check_inference_kv(
+    model: &ModelInfo,
+    kv_dtype: retrograd_core::EngineKvDtype,
+    flash_attn: bool,
+) -> retrograd_core::Result<()> {
+    retrograd_core::validate_kv_dtype_support(
+        kv_dtype,
+        model.n_embd_head_k,
+        model.n_embd_head_v,
+        flash_attn,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::{sft_workload, tiny_model};
-    use retrograd_core::GenerationKvDtype;
+    use retrograd_core::{EngineKvDtype, GenerationKvDtype};
+
+    #[test]
+    fn inference_estimate_splits_weights_kv_recurrent_compute_and_answers_capacity() {
+        let model = tiny_model();
+        let est = inference_estimate(&model, 4096, 8, 512, EngineKvDtype::F16);
+        let fp = est.footprint;
+        assert_eq!(fp.n_ctx, 4096);
+        assert_eq!(fp.n_seq_max, 8);
+        // KV = layers * (K+V widths) * 2 bytes * n_ctx, from the core formula.
+        assert_eq!(
+            fp.kv_bytes,
+            model.kv_bytes_per_token(EngineKvDtype::F16) * 4096
+        );
+        // Logits + one activation wave.
+        assert_eq!(fp.logits_bytes, 512 * model.n_vocab as u64 * 4);
+        assert!(fp.activation_bytes > 0);
+        assert_eq!(
+            est.total_bytes(),
+            fp.weight_bytes + fp.kv_bytes + fp.recurrent_bytes + fp.compute_bytes()
+        );
+        // Capacity: min(n_seq_max, n_ctx / L).
+        assert_eq!(est.sequences_of(1024), 4);
+        assert_eq!(est.sequences_of(512), 8);
+        assert_eq!(est.sequences_of(8192), 0);
+        assert!(est.fits(est.total_bytes()));
+        assert!(!est.fits(est.total_bytes() - 1));
+        // Quantized KV shrinks the cache and is block-accounted.
+        let q8 = inference_estimate(&model, 4096, 8, 512, EngineKvDtype::Q8_0);
+        assert!(q8.footprint.kv_bytes < fp.kv_bytes);
+        assert_eq!(
+            q8.footprint.kv_bytes,
+            model.kv_bytes_per_token(EngineKvDtype::Q8_0) * 4096
+        );
+    }
+
+    #[test]
+    fn check_inference_kv_applies_the_support_matrix() {
+        let model = tiny_model(); // head dims 64/64
+        assert!(check_inference_kv(&model, EngineKvDtype::Q8_0, true).is_ok());
+        assert!(check_inference_kv(&model, EngineKvDtype::Q8_0, false).is_err());
+        assert!(check_inference_kv(&model, EngineKvDtype::F16, false).is_ok());
+        let mut odd = tiny_model();
+        odd.n_embd_head_k = 100;
+        assert!(check_inference_kv(&odd, EngineKvDtype::Q8_0, true).is_err());
+        assert!(check_inference_kv(&odd, EngineKvDtype::F16, true).is_ok());
+    }
 
     fn rollout_training(n_ctx: u32) -> TrainConfig {
         TrainConfig {
