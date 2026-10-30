@@ -1,9 +1,15 @@
-//! The safe trainer API over the C++ runtime.
+//! The safe trainer and inference-engine APIs over the C++ runtime.
 //!
 //! [`Trainer`] owns one loaded model with its LoRA adapter and optimizer, and
 //! turns each call into the `retrograd-ffi` entry point that performs it, with
 //! typed errors instead of status codes. The training loops of
 //! `retrograd-training` drive it; nothing here knows what an algorithm is.
+//!
+//! [`Engine`] is its sibling for inference: same model, same generation code
+//! in the runtime, but no optimizer, no training result cache and no
+//! trainable flags. Its errors are [`EngineError`], converted into
+//! [`retrograd_core::Error`] by the `From` below (written here, in the crate
+//! that owns the error, per the repo's error rules).
 
 #![warn(clippy::undocumented_unsafe_blocks)]
 
@@ -14,14 +20,16 @@ use std::ptr::NonNull;
 use std::time::Instant;
 
 use retrograd_checkpoint as checkpoint;
+#[cfg(feature = "train")]
+use retrograd_core::EvalMetrics;
 use retrograd_core::{
-    CheckpointMetadata, Device, EvalMetrics, FusedCeProbe, FusedCeWeightType, Generation,
-    KernelImpl, KernelReject, KernelRunInfo, LoraConfig, MemoryReport, ModelInfo, OpPlacement,
-    OptimizerKind, PreflightReport, PreflightWarning, ProbeOp, ResumeInfo, RirCounters, RirMode,
-    SamplingParams, TensorDesc, TensorDtype, TensorInventory, TrainConfig, TrainMetrics,
-    WeightedBatch,
+    CheckpointMetadata, Device, FusedCeProbe, FusedCeWeightType, Generation, KernelImpl,
+    KernelReject, KernelRunInfo, LoraConfig, MemoryReport, ModelInfo, OpPlacement, OptimizerKind,
+    PreflightReport, PreflightWarning, ProbeOp, ResumeInfo, RirCounters, RirMode, SamplingParams,
+    TensorDesc, TensorDtype, TensorInventory, TrainConfig, TrainMetrics, WeightedBatch,
 };
 use retrograd_core::{Error, Result};
+#[cfg(feature = "train")]
 use retrograd_dataset::PreparedDataset;
 use retrograd_ffi as ffi;
 
@@ -436,6 +444,8 @@ impl Trainer {
     }
 }
 
+mod engine;
+mod generation;
 mod packed;
 mod probe;
 mod quant;
@@ -443,6 +453,7 @@ mod rir;
 mod stats;
 mod trainer;
 
+pub use engine::{Engine, EngineError};
 pub use packed::PackedSequenceBatch;
 pub use probe::*;
 pub use quant::*;
@@ -632,6 +643,43 @@ fn nul_error(err: NulError) -> Error {
 
 fn runtime_error() -> Error {
     Error::runtime(ffi::last_error())
+}
+
+/// Maps the runtime's memory report to the public struct. Shared by the
+/// trainer's and the engine's reports - both FFI entry points fill the same
+/// C struct, so the mapping exists exactly once.
+pub(crate) fn memory_report_from_ffi(report: ffi::RetroMemoryReport) -> MemoryReport {
+    MemoryReport {
+        model_weight_bytes: report.model_weight_bytes,
+        optimizer_kv_bytes: report.optimizer_kv_bytes,
+        optimizer_compute_bytes: report.optimizer_compute_bytes,
+        generation_kv_bytes: report.generation_kv_bytes,
+        generation_compute_bytes: report.generation_compute_bytes,
+        has_generation_context: report.has_generation_context,
+        trainable_parameter_bytes: report.trainable_parameter_bytes,
+        trainable_gradient_bytes: report.trainable_gradient_bytes,
+        optimizer_state_bytes: report.optimizer_state_bytes,
+        trainable_parameters_are_model_subset: report.trainable_parameters_are_model_subset,
+        adapter_on_host: report.adapter_on_host,
+        base_trainable_on_host: report.base_trainable_on_host,
+        device_bytes: report.device_bytes,
+        host_bytes: report.host_bytes,
+        device_total_bytes: report.device_total_bytes,
+        device_used_bytes: report.device_used_bytes,
+        device_peak_used_bytes: report.device_peak_used_bytes,
+        backend_scratch_bytes: report.backend_scratch_bytes,
+        backend_scratch_peak_bytes: report.backend_scratch_peak_bytes,
+        device_memory_samples: report.device_memory_samples,
+        checkpoint_count: report.checkpoint_count,
+        checkpoint_retained_bytes: report.checkpoint_retained_bytes,
+        checkpoint_live_peak_bytes: report.checkpoint_live_peak_bytes,
+        checkpoint_live_peak_count: report.checkpoint_live_peak_count,
+        checkpoint_long_lived_bytes: report.checkpoint_long_lived_bytes,
+        checkpoint_long_lived_count: report.checkpoint_long_lived_count,
+        checkpoint_graph_nodes: report.checkpoint_graph_nodes,
+        checkpoint_max_span_nodes: report.checkpoint_max_span_nodes,
+        checkpoint_total_span_nodes: report.checkpoint_total_span_nodes,
+    }
 }
 
 #[cfg(test)]

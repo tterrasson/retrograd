@@ -47,7 +47,7 @@ retrograd-checkpoint.workspace = true
 retrograd-config.workspace = true
 retrograd-core.workspace = true
 retrograd-dataset.workspace = true
-retrograd-engine.workspace = true
+retrograd-engine = { workspace = true, features = ["train"] }
 retrograd-memory.workspace = true
 retrograd-metrics.workspace = true
 # The reader of `observe.jsonl`, behind the trajectory routes.

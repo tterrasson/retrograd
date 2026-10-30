@@ -92,37 +92,7 @@ impl Trainer {
         let mut report = ffi::RetroMemoryReport::default();
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
         self.check(unsafe { ffi::retro_trainer_memory_report(self.raw.as_ptr(), &mut report) })?;
-        Ok(MemoryReport {
-            model_weight_bytes: report.model_weight_bytes,
-            optimizer_kv_bytes: report.optimizer_kv_bytes,
-            optimizer_compute_bytes: report.optimizer_compute_bytes,
-            generation_kv_bytes: report.generation_kv_bytes,
-            generation_compute_bytes: report.generation_compute_bytes,
-            has_generation_context: report.has_generation_context,
-            trainable_parameter_bytes: report.trainable_parameter_bytes,
-            trainable_gradient_bytes: report.trainable_gradient_bytes,
-            optimizer_state_bytes: report.optimizer_state_bytes,
-            trainable_parameters_are_model_subset: report.trainable_parameters_are_model_subset,
-            adapter_on_host: report.adapter_on_host,
-            base_trainable_on_host: report.base_trainable_on_host,
-            device_bytes: report.device_bytes,
-            host_bytes: report.host_bytes,
-            device_total_bytes: report.device_total_bytes,
-            device_used_bytes: report.device_used_bytes,
-            device_peak_used_bytes: report.device_peak_used_bytes,
-            backend_scratch_bytes: report.backend_scratch_bytes,
-            backend_scratch_peak_bytes: report.backend_scratch_peak_bytes,
-            device_memory_samples: report.device_memory_samples,
-            checkpoint_count: report.checkpoint_count,
-            checkpoint_retained_bytes: report.checkpoint_retained_bytes,
-            checkpoint_live_peak_bytes: report.checkpoint_live_peak_bytes,
-            checkpoint_live_peak_count: report.checkpoint_live_peak_count,
-            checkpoint_long_lived_bytes: report.checkpoint_long_lived_bytes,
-            checkpoint_long_lived_count: report.checkpoint_long_lived_count,
-            checkpoint_graph_nodes: report.checkpoint_graph_nodes,
-            checkpoint_max_span_nodes: report.checkpoint_max_span_nodes,
-            checkpoint_total_span_nodes: report.checkpoint_total_span_nodes,
-        })
+        Ok(crate::memory_report_from_ffi(report))
     }
 
     read_string_method!(describe_lora, retro_trainer_describe_lora);

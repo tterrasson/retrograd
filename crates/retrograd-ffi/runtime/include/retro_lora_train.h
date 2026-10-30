@@ -81,6 +81,17 @@ typedef enum retro_generation_kv_dtype {
     RETRO_GENERATION_KV_DTYPE_Q4_0 = 2,
 } retro_generation_kv_dtype;
 
+// Storage of an engine context's KV cache. Unlike the trainer's generation
+// cache, F32 is a first-class choice: the engine is the bit-exactness
+// reference for the trainer's fast context, so it must be able to reproduce
+// an F32 / no-flash-attention context exactly.
+typedef enum retro_engine_kv_dtype {
+    RETRO_ENGINE_KV_DTYPE_F32  = 0,
+    RETRO_ENGINE_KV_DTYPE_F16  = 1,
+    RETRO_ENGINE_KV_DTYPE_Q8_0 = 2,
+    RETRO_ENGINE_KV_DTYPE_Q4_0 = 3,
+} retro_engine_kv_dtype;
+
 // Identifies a single training-backward op for the correctness probe API.
 typedef enum retro_probe_op {
     RETRO_PROBE_OP_SILU_BACK = 1,
@@ -2023,6 +2034,118 @@ int retro_trainer_model_signature(
     size_t * out_n_bytes);
 
 void retro_trainer_free(retro_trainer * trainer);
+
+// ---------------------------------------------------------------------------
+// Inference engine: the same generation code as the trainer (one shared
+// core in the runtime), behind a handle that owns no optimizer, no training
+// result cache and no trainable flags. The model is mapped (never written),
+// and every context it builds is forward-only.
+// ---------------------------------------------------------------------------
+
+typedef struct retro_engine retro_engine;
+
+// Engine geometry. Versioned by `struct_size` rather than by adding fields:
+// the runtime reads only the prefix a caller's struct_size covers, so a
+// caller compiled against an older header keeps working.
+typedef struct retro_engine_config {
+    uint32_t struct_size;   // filled by the caller: the evolution key
+    uint32_t n_ctx;         // total KV cells across all sequences
+    uint32_t n_seq_max;     // sequence slots
+    uint32_t n_batch;       // physical batch: prefill chunk width
+    uint32_t n_ubatch;      // micro-batch: rows per emitting decode
+    int32_t  kv_dtype;      // one of retro_engine_kv_dtype
+    bool     flash_attn;    // request flash attention; required for quantized kv_dtype
+    int32_t  device;        // one of retro_device
+    uint32_t threads;       // 0 = resolve like the trainer (RETRO_THREADS included)
+    bool     verbose;
+} retro_engine_config;
+
+// Loads `model_path` mapped and builds one forward-only context with the
+// requested geometry. Returns NULL with retro_last_error() set on failure.
+retro_engine * retro_engine_new(
+    const char * model_path,
+    const retro_engine_config * config);
+
+void retro_engine_free(retro_engine * engine);
+
+// Same sampling contract as retro_trainer_generate_batch(): the engine's
+// output is bit-identical to the trainer's generation context with the same
+// geometry, seeds and weights.
+int retro_engine_generate_batch(
+    retro_engine * engine,
+    const int32_t * prompt_tokens,
+    size_t n_prompt,
+    const retro_sampling_params * sampling,
+    size_t n_sequences,
+    int32_t * out_tokens,
+    float * out_logprobs,
+    size_t n_out_max,
+    size_t * out_n_tokens,
+    uint8_t * out_forced);
+
+int retro_engine_generate_continuous_batch(
+    retro_engine * engine,
+    const retro_generation_sequence * sequences,
+    size_t n_sequences,
+    int32_t * out_tokens,
+    float * out_logprobs,
+    size_t n_out_max,
+    size_t * out_n_tokens,
+    uint8_t * out_forced);
+
+// Tokenization and vocabulary introspection, same contracts as the
+// retro_trainer_* counterparts.
+int retro_engine_tokenize_text(
+    retro_engine * engine,
+    const char * text,
+    int32_t * tokens,
+    size_t n_tokens_max,
+    size_t * out_n_tokens);
+int retro_engine_tokenize_fragment(
+    retro_engine * engine,
+    const char * text,
+    int32_t * tokens,
+    size_t n_tokens_max,
+    size_t * out_n_tokens);
+int retro_engine_eos_token(retro_engine * engine, int32_t * out_token);
+int retro_engine_vocab_size(retro_engine * engine, uint32_t * out_n_vocab);
+int retro_engine_is_eog_token(retro_engine * engine, int32_t token, bool * out_is_eog);
+int retro_engine_context_size(retro_engine * engine, uint32_t * out_n_ctx);
+int retro_engine_detokenize(
+    retro_engine * engine,
+    const int32_t * tokens,
+    size_t n_tokens,
+    bool unparse_special,
+    char * buffer,
+    size_t n_buffer,
+    size_t * out_n_bytes);
+
+// Attaches a LoRA adapter loaded from a GGUF file, replacing any adapter
+// already attached, and applies it to the context. Unlike the trainer's
+// load, no tensor is flagged as an optimizer parameter: the engine has none.
+int retro_engine_load_lora(retro_engine * engine, const char * adapter_path);
+int retro_engine_set_lora_enabled(retro_engine * engine, bool enabled);
+
+// Same chat-template variable and reasoning-budget contracts as the trainer's
+// counterparts; forced tokens are reported through the generators' out_forced.
+int retro_engine_set_chat_template_variables(
+    retro_engine * engine,
+    const char * variables_json);
+int retro_engine_set_reasoning_budget(retro_engine * engine, int32_t budget);
+
+// Structured memory breakdown of this engine: weights, KV, compute buffers,
+// adapter. The optimizer-state and gradient fields are always zero - that is
+// the point of the handle, and a report is how a caller checks it. Same
+// `retro_memory_report` layout as retro_trainer_memory_report().
+int retro_engine_memory_report(
+    retro_engine * engine,
+    retro_memory_report * out_report);
+
+// Monotonic prefix-reuse counters of the engine's generation context, same
+// contract as retro_trainer_generation_stats().
+int retro_engine_generation_stats(
+    retro_engine * engine,
+    retro_generation_stats * out_stats);
 
 const char * retro_last_error(void);
 

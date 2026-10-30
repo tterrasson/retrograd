@@ -243,7 +243,7 @@ std::shared_ptr<const common_chat_parser_params> cached_parser(const std::string
 }  // namespace
 
 int build_tool_call_parser(
-        trainer_state & state,
+        chat_model_state & chat,
         const char * tools_json,
         char * buffer,
         size_t n_buffer,
@@ -251,15 +251,15 @@ int build_tool_call_parser(
     // Key the cache by the tool catalog because the generated grammar may name
     // functions. This avoids re-deriving the parser for every frontend call.
     const std::string tools_key = tools_json ? std::string(tools_json) : std::string();
-    if (!state.tool_call_parser_cache.empty() && state.tool_call_parser_tools == tools_key) {
+    if (!chat.tool_call_parser_cache.empty() && chat.tool_call_parser_tools == tools_key) {
         return copy_json_out(
-                state.tool_call_parser_cache, "failed to build tool-call parser",
+                chat.tool_call_parser_cache, "failed to build tool-call parser",
                 buffer, n_buffer, out_n_bytes);
     }
 
     common_chat_templates_ptr templates;
     try {
-        templates = common_chat_templates_init(state.model.get(), "");
+        templates = common_chat_templates_init(chat.model, "");
     } catch (const std::bad_alloc &) {
         throw;
     } catch (const std::exception & err) {
@@ -271,7 +271,7 @@ int build_tool_call_parser(
         return RETRO_CHAT_PARSER_UNAVAILABLE;
     }
     parser_recipe recipe;
-    if (!resolve_derivation_variables(state, recipe.variables_json)) {
+    if (!resolve_derivation_variables(chat, recipe.variables_json)) {
         return -1;
     }
     common_chat_params params;
@@ -287,7 +287,7 @@ int build_tool_call_parser(
 
     // The same bos/eos text common_chat_templates_init gives the template when
     // it reads them from the vocabulary.
-    const llama_vocab * vocab = llama_model_get_vocab(state.model.get());
+    const llama_vocab * vocab = llama_model_get_vocab(chat.model);
     const auto piece = [&](llama_token token) {
         return token == LLAMA_TOKEN_NULL ? std::string() : common_token_to_piece(vocab, token, true);
     };
@@ -295,10 +295,10 @@ int build_tool_call_parser(
     recipe.eos_token = piece(llama_vocab_eos(vocab));
     recipe.tools_json = tools_key;
 
-    state.tool_call_parser_cache = encode_parser_blob(recipe);
-    state.tool_call_parser_tools = tools_key;
+    chat.tool_call_parser_cache = encode_parser_blob(recipe);
+    chat.tool_call_parser_tools = tools_key;
     return copy_json_out(
-            state.tool_call_parser_cache, "failed to build tool-call parser",
+            chat.tool_call_parser_cache, "failed to build tool-call parser",
             buffer, n_buffer, out_n_bytes);
 }
 
@@ -384,35 +384,35 @@ int parse_assistant_output(
     return copy_json_out(out.dump(), "failed to render parsed assistant output", buffer, n_buffer, out_n_bytes);
 }
 
-int set_reasoning_budget(trainer_state & state, int32_t budget) {
+int set_reasoning_budget(chat_model_state & chat, int32_t budget) {
     if (budget < -1) {
         set_error("reasoning budget must be -1 (the model decides) or a token count");
         return -1;
     }
-    state.reasoning_budget = budget;
-    state.reasoning_plan = reasoning_budget_plan{};
-    return resolve_reasoning_budget(state) ? 0 : -1;
+    chat.reasoning_budget = budget;
+    chat.reasoning_plan = reasoning_budget_plan{};
+    return resolve_reasoning_budget(chat) ? 0 : -1;
 }
 
 // The tags are the ones llama-server would budget with: those the chat parser
 // derived for this template under these variables declares. No tag is
 // spelled here, which is the point - a template whose parser knows no
 // reasoning block is refused, not guessed at.
-const reasoning_budget_plan * resolve_reasoning_budget(trainer_state & state) {
-    reasoning_budget_plan & plan = state.reasoning_plan;
+const reasoning_budget_plan * resolve_reasoning_budget(chat_model_state & chat) {
+    reasoning_budget_plan & plan = chat.reasoning_plan;
     if (plan.resolved) {
         return &plan;
     }
     plan = reasoning_budget_plan{};
-    plan.budget = state.reasoning_budget;
-    if (state.reasoning_budget < 0) {
+    plan.budget = chat.reasoning_budget;
+    if (chat.reasoning_budget < 0) {
         plan.resolved = true;
         return &plan;
     }
 
     common_chat_templates_ptr templates;
     try {
-        templates = common_chat_templates_init(state.model.get(), "");
+        templates = common_chat_templates_init(chat.model, "");
     } catch (const std::bad_alloc &) {
         throw;
     } catch (const std::exception & err) {
@@ -425,7 +425,7 @@ const reasoning_budget_plan * resolve_reasoning_budget(trainer_state & state) {
     }
     std::string variables;
     common_chat_templates_inputs inputs;
-    if (!resolve_derivation_variables(state, variables) || !derivation_inputs(variables, inputs)) {
+    if (!resolve_derivation_variables(chat, variables) || !derivation_inputs(variables, inputs)) {
         return nullptr;
     }
     common_chat_params params;
@@ -438,7 +438,7 @@ const reasoning_budget_plan * resolve_reasoning_budget(trainer_state & state) {
         return nullptr;
     }
 
-    const llama_vocab * vocab = llama_model_get_vocab(state.model.get());
+    const llama_vocab * vocab = llama_model_get_vocab(chat.model);
     const auto tokens = [&](const std::string & text) {
         return common_tokenize(vocab, text, /*add_special=*/false, /*parse_special=*/true);
     };
@@ -470,7 +470,7 @@ const reasoning_budget_plan * resolve_reasoning_budget(trainer_state & state) {
         }
     }
     plan.n_prompt_tail = tail;
-    plan.budget = state.reasoning_budget;
+    plan.budget = chat.reasoning_budget;
     plan.active = true;
     plan.resolved = true;
     return &plan;

@@ -239,6 +239,10 @@ impl Drop for Trainer {
     }
 }
 
+// The dataset-backend impl needs the dataset crate, so it lives behind the
+// `train` feature with the SFT methods that consume it; the inference path does
+// not activate that feature.
+#[cfg(feature = "train")]
 impl retrograd_dataset::DatasetBackend for Trainer {
     fn tokenize_text(&self, text: &str) -> Result<Vec<i32>> {
         Trainer::tokenize_text(self, text)

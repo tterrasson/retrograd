@@ -184,7 +184,9 @@ retrograd-cli-ui = { workspace = true, optional = true }
 retrograd-config.workspace = true
 retrograd-core.workspace = true
 retrograd-dataset.workspace = true
-retrograd-engine.workspace = true
+# The CLI runs SFT and dataset preparation through the trainer, so it takes the
+# engine's `train` feature; an inference-only consumer does not.
+retrograd-engine = { workspace = true, features = ["train"] }
 retrograd-ffi.workspace = true
 retrograd-memory.workspace = true
 retrograd-metrics.workspace = true

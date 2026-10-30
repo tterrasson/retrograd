@@ -65,16 +65,16 @@ std::unique_ptr<chat_template_state> parse_chat_template(const char * source) {
     return owned;
 }
 
-chat_template_state * ensure_chat_template(trainer_state & state) {
-    if (state.chat_template_cache) {
-        return state.chat_template_cache.get();
+chat_template_state * ensure_chat_template(chat_model_state & chat) {
+    if (chat.chat_template_cache) {
+        return chat.chat_template_cache.get();
     }
-    const char * tmpl = llama_model_chat_template(state.model.get(), nullptr);
+    const char * tmpl = llama_model_chat_template(chat.model, nullptr);
     if (!tmpl || tmpl[0] == '\0') {
         set_error("model does not define tokenizer.chat_template");
         return nullptr;
     }
-    const llama_vocab * vocab = llama_model_get_vocab(state.model.get());
+    const llama_vocab * vocab = llama_model_get_vocab(chat.model);
 
     auto owned = parse_chat_template(tmpl);
     if (!owned) {
@@ -83,8 +83,8 @@ chat_template_state * ensure_chat_template(trainer_state & state) {
     owned->bos_token = token_to_text(vocab, llama_vocab_bos(vocab));
     owned->eos_token = token_to_text(vocab, llama_vocab_eos(vocab));
 
-    state.chat_template_cache = chat_template_state_ptr(owned.release());
-    return state.chat_template_cache.get();
+    chat.chat_template_cache = chat_template_state_ptr(owned.release());
+    return chat.chat_template_cache.get();
 }
 
 using json = common_json;
@@ -242,9 +242,9 @@ bool derivation_variables(const chat_template_state & tmpl, const std::string & 
 
 }  // namespace
 
-bool resolve_derivation_variables(trainer_state & state, std::string & out_variables) {
-    const chat_template_state * tmpl = ensure_chat_template(state);
-    return tmpl && derivation_variables(*tmpl, state.chat_template_variables, out_variables);
+bool resolve_derivation_variables(chat_model_state & chat, std::string & out_variables) {
+    const chat_template_state * tmpl = ensure_chat_template(chat);
+    return tmpl && derivation_variables(*tmpl, chat.chat_template_variables, out_variables);
 }
 
 bool resolve_derivation_variables_source(
@@ -259,26 +259,26 @@ bool resolve_derivation_variables_source(
     return tmpl && derivation_variables(*tmpl, validated, out_variables);
 }
 
-int set_chat_template_variables(trainer_state & state, const char * variables_json) {
+int set_chat_template_variables(chat_model_state & chat, const char * variables_json) {
     std::string validated;
     if (!validate_template_variables(variables_json, validated)) {
         return -1;
     }
-    state.chat_template_variables = std::move(validated);
+    chat.chat_template_variables = std::move(validated);
     // Everything derived from the variables: the tool-support probe, the
     // parser (whose generation prompt they decide) and the reasoning budget's
     // tags.
-    if (state.chat_template_cache) {
-        state.chat_template_cache->supports_tools = -1;
+    if (chat.chat_template_cache) {
+        chat.chat_template_cache->supports_tools = -1;
     }
-    state.tool_call_parser_cache.clear();
-    state.tool_call_parser_tools.clear();
-    state.reasoning_plan = reasoning_budget_plan{};
+    chat.tool_call_parser_cache.clear();
+    chat.tool_call_parser_tools.clear();
+    chat.reasoning_plan = reasoning_budget_plan{};
     return 0;
 }
 
 int render_chat_template(
-        trainer_state & state,
+        chat_model_state & chat,
         const char * const * roles,
         const char * const * contents,
         size_t n_messages,
@@ -286,7 +286,7 @@ int render_chat_template(
         char * buffer,
         size_t n_buffer,
         size_t * out_n_bytes) {
-    chat_template_state * tmpl = ensure_chat_template(state);
+    chat_template_state * tmpl = ensure_chat_template(chat);
     if (!tmpl) {
         return -1;
     }
@@ -300,21 +300,21 @@ int render_chat_template(
     }
 
     std::string rendered;
-    if (!apply_template(*tmpl, messages, nullptr, add_assistant, state.chat_template_variables, rendered)) {
+    if (!apply_template(*tmpl, messages, nullptr, add_assistant, chat.chat_template_variables, rendered)) {
         return -1;
     }
     return copy_rendered_out(rendered, buffer, n_buffer, out_n_bytes);
 }
 
 int render_chat_messages(
-        trainer_state & state,
+        chat_model_state & chat,
         const char * messages_json,
         const char * tools_json,
         bool add_assistant,
         char * buffer,
         size_t n_buffer,
         size_t * out_n_bytes) {
-    chat_template_state * tmpl = ensure_chat_template(state);
+    chat_template_state * tmpl = ensure_chat_template(chat);
     if (!tmpl) {
         return -1;
     }
@@ -341,7 +341,7 @@ int render_chat_messages(
 
     std::string rendered;
     if (!apply_template(*tmpl, messages, tools_json ? &tools : nullptr, add_assistant,
-                        state.chat_template_variables, rendered)) {
+                        chat.chat_template_variables, rendered)) {
         return -1;
     }
     return copy_rendered_out(rendered, buffer, n_buffer, out_n_bytes);
@@ -395,8 +395,8 @@ int render_chat_template_source(
     return copy_rendered_out(rendered, buffer, n_buffer, out_n_bytes);
 }
 
-int chat_template_supports_tools(trainer_state & state, bool * out_supports) {
-    chat_template_state * tmpl = ensure_chat_template(state);
+int chat_template_supports_tools(chat_model_state & chat, bool * out_supports) {
+    chat_template_state * tmpl = ensure_chat_template(chat);
     if (!tmpl) {
         return -1;
     }
@@ -425,7 +425,7 @@ int chat_template_supports_tools(trainer_state & state, bool * out_supports) {
         // A template that throws on any of that does not support tools; the probe
         // must not turn the refusal into a hard error for the caller.
         const bool rendered_ok = apply_template(*tmpl, messages, &tools, /*add_assistant=*/true,
-                                                state.chat_template_variables, rendered);
+                                                chat.chat_template_variables, rendered);
         const bool renders_tools = rendered_ok
                 && rendered.find(catalog_sentinel) != std::string::npos
                 && rendered.find(result_sentinel) != std::string::npos;

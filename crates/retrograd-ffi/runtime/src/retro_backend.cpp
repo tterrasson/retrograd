@@ -35,7 +35,9 @@ ggml_backend_dev_t first_gpu_device() {
     return nullptr;
 }
 
-namespace {
+// The load-path helpers shared with the engine (declared in retro_runtime.hpp)
+// sit at namespace scope, outside the anonymous namespace, so they get the
+// external linkage those declarations promise.
 
 // validate_train_config has already refused any other value.
 ggml_type generation_kv_type(int32_t dtype) {
@@ -94,20 +96,9 @@ const char * buffer_type_label(const ggml_tensor * tensor) {
     return ggml_backend_buft_name(ggml_backend_buffer_get_type(tensor->buffer));
 }
 
-// Byte-level memory accounting for one llama_context, aggregated per backend
-// buffer type. `model` is the weight allocation (shared with any other context
-// built on the same model, so it must be counted once), `kv` is the KV / recurrent
-// cache, `compute` is the scheduler's reserved activation buffer (only non-zero
-// once a graph has been reserved -- i.e. after preflight).
-struct context_memory {
-    size_t model   = 0;
-    size_t kv      = 0;
-    size_t compute = 0;
-    bool   is_host = false;
-};
-
 // Keyed by backend buffer-type label (e.g. "CUDA0", "CPU", "Metal"). Ordered so
-// the report is stable across runs.
+// the report is stable across runs. Declared in retro_runtime.hpp so the engine
+// reports from the same computation.
 std::map<std::string, context_memory> context_memory_by_buffer(const llama_context * ctx) {
     std::map<std::string, context_memory> by_label;
     if (!ctx) {
@@ -380,6 +371,8 @@ bool supports_device_logprob_gather(ggml_backend_dev_t device) {
             && ggml_backend_dev_supports_op(device, softmax)
             && ggml_backend_dev_supports_op(device, gathered);
 }
+
+namespace {
 
 // Whether `device` can run `optimizer`'s update step on a parameter of `type`.
 // Asking ggml rather than reading a name keeps the answer true when a kernel
@@ -937,6 +930,9 @@ bool load_model_and_context(trainer_state & state) {
         set_error("failed to load model GGUF: " + state.model_path);
         return false;
     }
+    // The chat-template/parser/budget helpers read the model through the
+    // shared chat_model_state rather than through trainer_state.
+    state.chat.model = model.get();
 
     // The requested micro-batch is used as asked. Whether this device evaluates
     // it to finite values is measured below, once the context exists, and the

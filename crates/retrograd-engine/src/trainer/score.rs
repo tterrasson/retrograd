@@ -282,7 +282,9 @@ impl Trainer {
     }
 
     /// Scores completion targets and extracts the corresponding pre-token
-    /// hidden states in one teacher-forced forward pass. `logprobs` is
+    /// hidden states in one teacher-forced forward pass when the model's
+    /// embeddings graph keeps its LM head, otherwise in two (logprobs, then
+    /// hidden states) with bit-identical values. `logprobs` is
     /// refilled with one value per completion token; the feature rows are
     /// appended to `features`, so a batch can accumulate rollouts in place.
     pub fn score_token_suffix_and_hidden_states_into(

@@ -55,6 +55,7 @@ if [[ "${RETRO_PROFILE_TESTS:-0}" == "1" ]]; then
     --test checkpoint_resume \
     --test cli \
     --test engine_contracts \
+    --test engine_runtime \
     --test kv_projection_gradients \
     --test recurrent_families \
     --test lora_resume \
@@ -79,6 +80,7 @@ timed_step run:capabilities-suite cargo test --no-default-features --features ag
   --test checkpoint_resume \
   --test cli \
   --test engine_contracts \
+  --test engine_runtime \
   --test kv_projection_gradients \
   --test recurrent_families \
   --test trainable_inventory \

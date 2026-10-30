@@ -7,6 +7,7 @@
 //! The safe API over these calls is `retrograd-engine`.
 
 use std::ffi::{CStr, c_char, c_double, c_float, c_int, c_void};
+use std::mem::size_of;
 
 /// Commit of the vendored `llama.cpp` fork this crate was built against, set
 /// by `build.rs` (`cargo:rustc-env=RETRO_LLAMA_CPP_COMMIT`).
@@ -669,6 +670,63 @@ pub struct RetroTrainer {
     _private: [u8; 0],
 }
 
+/// The inference engine handle: a mapped model with one forward-only context,
+/// no optimizer. Opaque, like [`RetroTrainer`].
+#[repr(C)]
+pub struct RetroEngine {
+    _private: [u8; 0],
+}
+
+/// One of `RETRO_ENGINE_KV_DTYPE_*`: the engine context's KV-cache storage.
+pub const RETRO_ENGINE_KV_DTYPE_F32: c_int = 0;
+pub const RETRO_ENGINE_KV_DTYPE_F16: c_int = 1;
+pub const RETRO_ENGINE_KV_DTYPE_Q8_0: c_int = 2;
+pub const RETRO_ENGINE_KV_DTYPE_Q4_0: c_int = 3;
+
+/// Mirror of `retro_engine_config`. Versioned by `struct_size`: the runtime
+/// reads only the prefix a caller's `struct_size` covers.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RetroEngineConfig {
+    /// Filled by the caller: the evolution key. Must be `size_of::<Self>()`.
+    pub struct_size: u32,
+    /// Total KV cells across all sequences.
+    pub n_ctx: u32,
+    /// Sequence slots.
+    pub n_seq_max: u32,
+    /// Physical batch: prefill chunk width.
+    pub n_batch: u32,
+    /// Micro-batch: rows per emitting decode.
+    pub n_ubatch: u32,
+    /// One of `RETRO_ENGINE_KV_DTYPE_*`.
+    pub kv_dtype: c_int,
+    /// Request flash attention; required for a quantized `kv_dtype`.
+    pub flash_attn: bool,
+    /// One of the `RETRO_DEVICE_*` values.
+    pub device: i32,
+    /// 0 resolves like the trainer (RETRO_THREADS included).
+    pub threads: u32,
+    pub verbose: bool,
+}
+
+impl Default for RetroEngineConfig {
+    fn default() -> Self {
+        Self {
+            // The ABI layout is 40 bytes, checked in contract_tests below.
+            struct_size: size_of::<Self>() as u32,
+            n_ctx: 4096,
+            n_seq_max: 8,
+            n_batch: 512,
+            n_ubatch: 512,
+            kv_dtype: RETRO_ENGINE_KV_DTYPE_F16,
+            flash_attn: true,
+            device: 0, // RETRO_DEVICE_AUTO
+            threads: 0,
+            verbose: false,
+        }
+    }
+}
+
 pub type RetroTrainProgressCallback =
     unsafe extern "C" fn(u32, *const RetroTrainMetrics, *mut c_void) -> bool;
 
@@ -1327,6 +1385,91 @@ unsafe extern "C" {
 
     pub fn retro_trainer_free(trainer: *mut RetroTrainer);
 
+    pub fn retro_engine_new(
+        model_path: *const c_char,
+        config: *const RetroEngineConfig,
+    ) -> *mut RetroEngine;
+
+    pub fn retro_engine_free(engine: *mut RetroEngine);
+
+    pub fn retro_engine_generate_batch(
+        engine: *mut RetroEngine,
+        prompt_tokens: *const i32,
+        n_prompt: usize,
+        sampling: *const RetroSamplingParams,
+        n_sequences: usize,
+        out_tokens: *mut i32,
+        out_logprobs: *mut c_float,
+        n_out_max: usize,
+        out_n_tokens: *mut usize,
+        out_forced: *mut u8,
+    ) -> c_int;
+
+    pub fn retro_engine_generate_continuous_batch(
+        engine: *mut RetroEngine,
+        sequences: *const RetroGenerationSequence,
+        n_sequences: usize,
+        out_tokens: *mut i32,
+        out_logprobs: *mut c_float,
+        n_out_max: usize,
+        out_n_tokens: *mut usize,
+        out_forced: *mut u8,
+    ) -> c_int;
+
+    pub fn retro_engine_tokenize_text(
+        engine: *mut RetroEngine,
+        text: *const c_char,
+        tokens: *mut i32,
+        n_tokens_max: usize,
+        out_n_tokens: *mut usize,
+    ) -> c_int;
+
+    pub fn retro_engine_tokenize_fragment(
+        engine: *mut RetroEngine,
+        text: *const c_char,
+        tokens: *mut i32,
+        n_tokens_max: usize,
+        out_n_tokens: *mut usize,
+    ) -> c_int;
+
+    pub fn retro_engine_eos_token(engine: *mut RetroEngine, out_token: *mut i32) -> c_int;
+    pub fn retro_engine_vocab_size(engine: *mut RetroEngine, out_n_vocab: *mut u32) -> c_int;
+    pub fn retro_engine_is_eog_token(
+        engine: *mut RetroEngine,
+        token: i32,
+        out_is_eog: *mut bool,
+    ) -> c_int;
+    pub fn retro_engine_context_size(engine: *mut RetroEngine, out_n_ctx: *mut u32) -> c_int;
+
+    pub fn retro_engine_detokenize(
+        engine: *mut RetroEngine,
+        tokens: *const i32,
+        n_tokens: usize,
+        unparse_special: bool,
+        buffer: *mut c_char,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
+    pub fn retro_engine_load_lora(engine: *mut RetroEngine, adapter_path: *const c_char) -> c_int;
+    pub fn retro_engine_set_lora_enabled(engine: *mut RetroEngine, enabled: bool) -> c_int;
+
+    pub fn retro_engine_set_chat_template_variables(
+        engine: *mut RetroEngine,
+        variables_json: *const c_char,
+    ) -> c_int;
+    pub fn retro_engine_set_reasoning_budget(engine: *mut RetroEngine, budget: i32) -> c_int;
+
+    pub fn retro_engine_memory_report(
+        engine: *mut RetroEngine,
+        out_report: *mut RetroMemoryReport,
+    ) -> c_int;
+
+    pub fn retro_engine_generation_stats(
+        engine: *mut RetroEngine,
+        out_stats: *mut RetroGenerationStats,
+    ) -> c_int;
+
     pub fn retro_last_error() -> *const c_char;
 }
 
@@ -1632,21 +1775,23 @@ mod contract_tests {
     #[test]
     fn every_training_owned_decode_in_the_rollout_goes_through_the_limiter() {
         // A source-level coverage assertion, because a new raw `llama_decode`
-        // in retro_rollout.cpp would be a silent hole in the duty cycle rather
-        // than a compile error: generation and scoring would keep running
-        // unthrottled while the report said the limiter was active.
-        // The three lines the helper itself owns are the only exemption; probe,
+        // in the generation core would be a silent hole in the duty cycle
+        // rather than a compile error: generation and scoring would keep
+        // running unthrottled while the report said the limiter was active.
+        // The two lines the helper itself owns are the only exemption; probe,
         // preflight and calibration decodes live in other files and stay
-        // unthrottled on purpose.
-        let source = include_str!("../runtime/src/retro_rollout.cpp");
-        let raw: Vec<&str> = source
+        // unthrottled on purpose. The core lives in retro_gen_core.cpp since the
+        // engine extraction; retro_rollout.cpp keeps only wrappers and must
+        // hold no decode of its own.
+        let core = include_str!("../runtime/src/retro_gen_core.cpp");
+        let raw: Vec<&str> = core
             .lines()
             .filter(|line| line.contains("llama_decode(") && !line.trim_start().starts_with("//"))
             .collect();
         assert_eq!(
             raw.len(),
             2,
-            "raw llama_decode calls outside decode_with_duty_cycle: {raw:#?}"
+            "raw llama_decode calls outside gen_core::decode: {raw:#?}"
         );
         for line in &raw {
             assert!(
@@ -1655,6 +1800,15 @@ mod contract_tests {
                 "unexpected raw decode: {line}"
             );
         }
+        let rollout = include_str!("../runtime/src/retro_rollout.cpp");
+        let rollout_raw: Vec<&str> = rollout
+            .lines()
+            .filter(|line| line.contains("llama_decode(") && !line.trim_start().starts_with("//"))
+            .collect();
+        assert!(
+            rollout_raw.is_empty(),
+            "retro_rollout.cpp must delegate decodes to gen_core: {rollout_raw:#?}"
+        );
     }
 
     #[test]
@@ -1725,6 +1879,21 @@ mod contract_tests {
         assert_eq!(align_of::<RetroGenerationStats>(), 8);
         assert_eq!(offset_of!(RetroGenerationStats, prefilled_tokens), 24);
         assert_eq!(offset_of!(RetroGenerationStats, reused_tokens), 32);
+
+        // The engine config is versioned by struct_size, so its layout is part
+        // of the ABI like every other caller-filled struct here.
+        assert_eq!(size_of::<RetroEngineConfig>(), 40);
+        assert_eq!(align_of::<RetroEngineConfig>(), 4);
+        assert_eq!(offset_of!(RetroEngineConfig, struct_size), 0);
+        assert_eq!(offset_of!(RetroEngineConfig, n_ctx), 4);
+        assert_eq!(offset_of!(RetroEngineConfig, n_seq_max), 8);
+        assert_eq!(offset_of!(RetroEngineConfig, n_batch), 12);
+        assert_eq!(offset_of!(RetroEngineConfig, n_ubatch), 16);
+        assert_eq!(offset_of!(RetroEngineConfig, kv_dtype), 20);
+        assert_eq!(offset_of!(RetroEngineConfig, flash_attn), 24);
+        assert_eq!(offset_of!(RetroEngineConfig, device), 28);
+        assert_eq!(offset_of!(RetroEngineConfig, threads), 32);
+        assert_eq!(offset_of!(RetroEngineConfig, verbose), 36);
 
         // These introspection structs are caller-allocated C values, so their
         // layout is part of the ABI. The fixed name arrays remain at the end so
@@ -2322,6 +2491,66 @@ mod contract_tests {
                 &mut bytes,
             ));
             assert_null_trainer(retro_trainer_eos_token(ptr::null_mut(), &mut token));
+        }
+    }
+
+    #[test]
+    fn engine_creation_rejects_a_truncated_config_before_reading_its_fields() {
+        let path = CString::new("definitely-not-a-model.gguf").unwrap();
+        let header = Box::new(size_of::<u32>() as u32);
+        // SAFETY: the allocation contains the complete struct_size prefix. The
+        // versioned ABI must reject it before reading any subsequent field.
+        let engine = unsafe { retro_engine_new(path.as_ptr(), (&*header as *const u32).cast()) };
+        assert!(engine.is_null());
+        assert!(last_error().contains("struct_size is too small"));
+    }
+
+    #[test]
+    fn engine_creation_validates_native_dimensions_before_loading_a_model() {
+        let path = CString::new("definitely-not-a-model.gguf").unwrap();
+        let base = RetroEngineConfig::default();
+        for config in [
+            RetroEngineConfig {
+                n_ctx: u32::MAX,
+                ..base
+            },
+            RetroEngineConfig {
+                n_batch: u32::MAX,
+                ..base
+            },
+            RetroEngineConfig {
+                n_ubatch: u32::MAX,
+                n_batch: u32::MAX,
+                ..base
+            },
+            RetroEngineConfig {
+                threads: u32::MAX,
+                ..base
+            },
+            RetroEngineConfig {
+                n_seq_max: 257,
+                ..base
+            },
+            RetroEngineConfig {
+                n_ctx: 1,
+                n_seq_max: 2,
+                ..base
+            },
+            RetroEngineConfig {
+                n_seq_max: 65,
+                n_batch: 64,
+                n_ubatch: 64,
+                ..base
+            },
+        ] {
+            // SAFETY: both pointers remain valid for this synchronous call.
+            let engine = unsafe { retro_engine_new(path.as_ptr(), &config) };
+            assert!(engine.is_null());
+            let error = last_error();
+            assert!(
+                error.contains("int32_t") || error.contains("n_seq_max"),
+                "{error}"
+            );
         }
     }
 

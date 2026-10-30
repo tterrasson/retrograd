@@ -98,6 +98,98 @@ impl GenerationKvDtype {
     }
 }
 
+/// Storage of an inference engine context's KV cache. Unlike the trainer's
+/// generation cache, F32 is a first-class choice: the engine is the
+/// bit-exactness reference for the trainer's fast generation context, so it
+/// must be able to reproduce an F32 / no-flash-attention context exactly.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum EngineKvDtype {
+    /// Full precision: the bit-exact reference configuration.
+    F32,
+    /// Two bytes per element.
+    #[default]
+    F16,
+    /// ggml's Q8_0: 34 bytes per block of 32 elements. Requires flash attention.
+    Q8_0,
+    /// ggml's Q4_0: 18 bytes per block of 32 elements. Requires flash attention.
+    Q4_0,
+}
+
+impl EngineKvDtype {
+    pub fn as_ffi(self) -> i32 {
+        match self {
+            Self::F32 => 0,
+            Self::F16 => 1,
+            Self::Q8_0 => 2,
+            Self::Q4_0 => 3,
+        }
+    }
+
+    /// The spelling a document writes and a report prints.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::F32 => "f32",
+            Self::F16 => "f16",
+            Self::Q8_0 => "q8_0",
+            Self::Q4_0 => "q4_0",
+        }
+    }
+
+    /// Whether the type needs the Flash Attention path to be read at all.
+    pub fn is_quantized(self) -> bool {
+        matches!(self, Self::Q8_0 | Self::Q4_0)
+    }
+}
+
+/// Geometry of an inference engine: one forward-only context, no optimizer.
+///
+/// `n_ctx` is the total KV pool shared by all `n_seq_max` sequences. To
+/// reproduce a trainer's dedicated
+/// generation context bit for bit, set `n_ctx = train.n_ctx *
+/// effective_generation_concurrency`, `n_seq_max =
+/// effective_generation_concurrency`, `n_batch`/`n_ubatch` to the trainer's
+/// generation batch, and the same KV dtype and flash-attention setting as its
+/// `fast_generation_context` implies.
+// Not serde-derived, like `TrainConfig`: the TOML schema for it lives in
+// `retrograd-config`, which maps documents onto these structs field by field.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EngineConfig {
+    /// Total KV cells across all sequences.
+    pub n_ctx: u32,
+    /// Sequence slots.
+    pub n_seq_max: u32,
+    /// Physical batch: prefill chunk width.
+    pub n_batch: u32,
+    /// Micro-batch: rows per emitting decode.
+    pub n_ubatch: u32,
+    /// KV-cache storage of the engine context.
+    pub kv_dtype: EngineKvDtype,
+    /// Request flash attention. Required for a quantized `kv_dtype`.
+    pub flash_attn: bool,
+    pub device: Device,
+    /// 0 resolves like the trainer (`RETRO_THREADS` included).
+    pub threads: u32,
+    pub verbose: bool,
+}
+
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            n_ctx: 4096,
+            n_seq_max: 8,
+            n_batch: 512,
+            n_ubatch: 512,
+            kv_dtype: EngineKvDtype::F16,
+            flash_attn: true,
+            device: Device::Auto,
+            threads: 0,
+            verbose: false,
+        }
+    }
+}
+
 /// Storage precision for the layer outputs retained by gradient checkpointing.
 ///
 /// A 16-bit checkpoint halves that term, and would halve the host-transfer traffic

@@ -17,6 +17,7 @@
 #include <cstring>
 #include <exception>
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -107,6 +108,78 @@ struct reasoning_budget_plan {
     size_t n_prompt_tail = 0;
 };
 
+// Chat-template, tool-call-parser and reasoning-budget state of one loaded
+// model, shared by every owner of a generation core (trainer_state and the
+// engine alike) so the renderer, the parser derivation and the budget have a
+// single signature. `model` is not owned; it is set once the model is loaded.
+struct chat_model_state {
+    llama_model * model = nullptr;
+    // Lexed/parsed once per owner (the model's chat template never changes for
+    // its lifetime) and reused across every format_chat call.
+    chat_template_state_ptr chat_template_cache;
+    // Extra variables handed to the chat template on every render, as a JSON
+    // object, empty for none. Parser derivation reads the same ones (see
+    // resolve_derivation_variables).
+    std::string chat_template_variables;
+    // Serialized PEG tool-call parser and the catalog it was derived from. The
+    // generated grammar may name the tools, so the catalog is the cache key and
+    // not merely a detail: a parser built for one catalog does not read another.
+    // Cleared by set_chat_template_variables: the variables are part of the
+    // derivation as much as the catalog is.
+    std::string tool_call_parser_cache;
+    std::string tool_call_parser_tools;
+    // Tokens a reasoning block may run before the runtime forces its end tag;
+    // -1 lets the model decide, which is llama.cpp's default too.
+    int32_t reasoning_budget = -1;
+    // What the budget needs from the template, derived on first use and
+    // dropped whenever the variables or the budget change.
+    reasoning_budget_plan reasoning_plan;
+};
+
+// Prefix-cache bookkeeping for one generation context, owned by the state that
+// outlives the generation calls (trainer_state or the engine state) and handed
+// to gen_core by pointer. `slots[slot]` is exactly the tokens occupying
+// positions `0..slots[slot].size()` of that sequence. The invariant is the
+// whole design: it is what lets the next call decide, by comparing tokens,
+// that a prompt extends what is already resident and that only the tail has
+// to be decoded. Every path that can break it - an explicit clear, a weight
+// change, an error - goes through forget_bookkeeping, because a stale entry is
+// not a slow cache but a wrong one: it would attend over cells computed for
+// other tokens, or under other weights.
+struct gen_cache {
+    std::vector<std::vector<int32_t>> slots;
+    // Last call that touched each slot, for the eviction order. A rollout with
+    // more live trajectories than the context has sequences has to lose some;
+    // losing the least recently extended one costs one prefill, and losing a
+    // trajectory that is still advancing every turn would cost one per turn.
+    std::vector<uint64_t> used_at;
+    uint64_t clock = 0;
+    // Monotonic counters of that reuse, reported by
+    // retro_trainer_generation_stats / retro_engine_generation_stats. Lifetime
+    // totals, differenced by the caller around one update.
+    retro_generation_stats stats {};
+
+    void forget_bookkeeping() {
+        for (auto & resident : slots) {
+            resident.clear();
+        }
+        std::fill(used_at.begin(), used_at.end(), 0);
+    }
+};
+
+// The ambient execution policy of a gen_core's owner. The core itself knows
+// nothing about who owns it: the trainer lends its duty-cycle limiter and
+// device capabilities, the engine passes none.
+struct gen_core_env {
+    // Null means unthrottled: exactly `llama_decode(ctx, batch)`.
+    duty_cycle_limiter * duty_cycle = nullptr;
+    bool gpu_active = false;
+    bool cap_device_sampling = false;
+    bool cap_device_logprobs = false;
+    // Scoring counters of the owner, null when the owner does not report them.
+    retro_scoring_stats * scoring_stats = nullptr;
+};
+
 struct trainer_state {
     std::string model_path;
     retro_train_config train_config {};
@@ -148,16 +221,6 @@ struct trainer_state {
     // Results persist across calls; datasets are synchronous caller-owned views.
     opt_result_ptr weighted_train_result_cache;
     opt_result_ptr weighted_eval_result_cache;
-    // Extra variables handed to the chat template on every render, as a JSON
-    // object, empty for none. Parser derivation reads the same ones (see
-    // resolve_derivation_variables).
-    std::string chat_template_variables;
-    // Tokens a reasoning block may run before the runtime forces its end tag;
-    // -1 lets the model decide, which is llama.cpp's default too.
-    int32_t reasoning_budget = -1;
-    // What the budget needs from the template, derived on first use and
-    // dropped whenever the variables or the budget change.
-    reasoning_budget_plan reasoning_plan;
     bool training_failed = false; // backend failure requires a new trainer
     uint64_t scheduler_step = 0;
     uint64_t scheduler_total_steps = 0;
@@ -235,27 +298,10 @@ struct trainer_state {
     // retro_trainer_scoring_stats. Accumulated for the trainer's lifetime so a
     // caller can attribute one update by differencing two snapshots.
     retro_scoring_stats scoring_stats {};
-    // What each sequence of the *generation* context currently holds, so a
-    // multi-turn rollout can extend a prompt instead of re-decoding it.
-    // `generation_kv[slot]` is exactly the tokens occupying positions
-    // `0.. generation_kv[slot].size()` of that sequence. The invariant is the
-    // whole design: it is what lets the next call decide, by comparing tokens,
-    // that a prompt extends what is already resident and that only the tail has
-    // to be decoded. Every path that can break it - an explicit clear, a weight
-    // change, an error - goes through `forget_generation_kv`, because a stale
-    // entry is not a slow cache but a wrong one: it would attend over cells
-    // computed for other tokens, or under other weights.
-    std::vector<std::vector<int32_t>> generation_kv;
-    // Last call that touched each slot, for the eviction order. A rollout with
-    // more live trajectories than the context has sequences has to lose some;
-    // losing the least recently extended one costs one prefill, and losing a
-    // trajectory that is still advancing every turn would cost one per turn.
-    std::vector<uint64_t> generation_kv_used_at;
-    uint64_t generation_kv_clock = 0;
-    // Monotonic counters of that reuse, reported by
-    // retro_trainer_generation_stats. Same contract as `scoring_stats`:
-    // lifetime totals, differenced by the caller around one update.
-    retro_generation_stats generation_stats {};
+    // Prefix-cache bookkeeping of the *generation* context, owned here so it
+    // outlives the individual generation calls and is handed to gen_core.
+    // See gen_cache for the invariant.
+    gen_cache generation_cache;
     // Execution policy, not training geometry: how much of its own wall time
     // this trainer is allowed to spend waiting on submitted GPU work, so
     // another workload can use the device in between. Disabled unless
@@ -284,16 +330,10 @@ struct trainer_state {
     // goes stale and is deliberately left out of
     // invalidate_report_caches().
     std::string lora_candidate_targets_cache;
-    // Lexed/parsed once per trainer (the model's chat template never changes
-    // for its lifetime) and reused across every format_chat call.
-    chat_template_state_ptr chat_template_cache;
-    // Serialized PEG tool-call parser and the catalog it was derived from. The
-    // generated grammar may name the tools, so the catalog is the cache key and
-    // not merely a detail: a parser built for one catalog does not read another.
-    // Cleared by set_chat_template_variables: the variables are part of the
-    // derivation as much as the catalog is.
-    std::string tool_call_parser_cache;
-    std::string tool_call_parser_tools;
+    // Chat-template / parser / reasoning-budget state of the loaded model,
+    // shared with the engine through chat_model_state. `chat.model` is set
+    // once the model is loaded.
+    chat_model_state chat;
 
     // Single owner of report-cache coherence: every mutation that can change
     // any report calls this. Recomputing a still-valid report is harmless,
@@ -324,10 +364,7 @@ struct trainer_state {
                 llama_memory_clear(memory, false);
             }
         }
-        for (auto & resident : generation_kv) {
-            resident.clear();
-        }
-        std::fill(generation_kv_used_at.begin(), generation_kv_used_at.end(), 0);
+        generation_cache.forget_bookkeeping();
     }
 
 };
@@ -384,7 +421,7 @@ int render_string_out(
 }
 
 // Replaces chat-template variables; null or `{}` clears them. Reserved keys are rejected.
-int set_chat_template_variables(trainer_state & state, const char * variables_json);
+int set_chat_template_variables(chat_model_state & chat, const char * variables_json);
 
 // Validates configured variables: null or empty for none, which leaves
 // `out_validated` empty. False, with the error set, on a non-object, a reserved
@@ -397,7 +434,7 @@ bool validate_template_variables(const char * variables_json, std::string & out_
 // unset, it is set to whichever of true and false renders the generation
 // prompt the unset variable renders. The parser then starts from the prompt a
 // rollout actually ends with. False, with the error set, when neither does.
-bool resolve_derivation_variables(trainer_state & state, std::string & out_variables);
+bool resolve_derivation_variables(chat_model_state & chat, std::string & out_variables);
 bool resolve_derivation_variables_source(
         const char * template_src,
         const char * variables_json,
@@ -405,18 +442,18 @@ bool resolve_derivation_variables_source(
 
 // Sets the reasoning budget (-1 for none) and derives its plan eagerly, so a
 // template with no reasoning block is refused here rather than ignored later.
-int set_reasoning_budget(trainer_state & state, int32_t budget);
+int set_reasoning_budget(chat_model_state & chat, int32_t budget);
 
 // The plan of the current budget, derived on first use (defined in
 // retro_chat_parser.cpp). Null, with the error set, when it cannot be derived.
-const reasoning_budget_plan * resolve_reasoning_budget(trainer_state & state);
+const reasoning_budget_plan * resolve_reasoning_budget(chat_model_state & chat);
 
 // Renders `messages` through the model's own tokenizer.chat_template by
 // actually executing its Jinja program (defined in retro_chat_template.cpp),
 // rather than matching it against a fixed list of known template families.
 // Follows the render_string_out two-call contract.
 int render_chat_template(
-        trainer_state & state,
+        chat_model_state & chat,
         const char * const * roles,
         const char * const * contents,
         size_t n_messages,
@@ -430,7 +467,7 @@ int render_chat_template(
 // template expects of it (tool_call_id, name, tool_calls) and the tool catalog
 // can be passed as `tools`. `tools_json` may be null.
 int render_chat_messages(
-        trainer_state & state,
+        chat_model_state & chat,
         const char * messages_json,
         const char * tools_json,
         bool add_assistant,
@@ -455,13 +492,13 @@ int render_chat_template_source(
 // rendering with a sentinel tool and looking for it in the output. Templates
 // that ignore `tools` - most non-agentic ones - report false, and the caller
 // falls back to describing the tools in the system prompt.
-int chat_template_supports_tools(trainer_state & state, bool * out_supports);
+int chat_template_supports_tools(chat_model_state & chat, bool * out_supports);
 
 // Derives the PEG tool-call parser of the model's own chat template for this
 // catalog and writes it serialized (defined in retro_chat_parser.cpp). Follows
 // the render_string_out two-call contract. `tools_json` may be null.
 int build_tool_call_parser(
-        trainer_state & state,
+        chat_model_state & chat,
         const char * tools_json,
         char * buffer,
         size_t n_buffer,
@@ -492,6 +529,33 @@ int parse_assistant_output(
 
 ggml_backend_dev_t first_gpu_device();
 bool load_model_and_context(trainer_state & state);
+
+// Byte-level memory accounting for one llama_context, aggregated per backend
+// buffer type. `model` is the weight allocation (shared with any other context
+// built on the same model, so it must be counted once), `kv` is the KV /
+// recurrent cache, `compute` is the scheduler's reserved activation buffer
+// (only non-zero once a graph has been reserved).
+struct context_memory {
+    size_t model   = 0;
+    size_t kv      = 0;
+    size_t compute = 0;
+    bool   is_host = false;
+};
+// Keyed by backend buffer-type label (e.g. "CUDA0", "CPU", "Metal"). Ordered so
+// the report is stable across runs. Defined in retro_backend.cpp.
+std::map<std::string, context_memory> context_memory_by_buffer(const llama_context * ctx);
+
+// Device capability probes, shared by the trainer's load path and the
+// engine's. Defined in retro_backend.cpp.
+ggml_type generation_kv_type(int32_t dtype);
+uint32_t automatic_thread_count();
+bool resolve_thread_count(const retro_train_config & config, uint32_t & out);
+const char * device_name(ggml_backend_dev_t device);
+bool supports_flash_attn_back(
+        ggml_backend_dev_t device, const llama_model & model, uint32_t n_tokens,
+        ggml_type kv_type);
+bool supports_device_sampling(ggml_backend_dev_t device);
+bool supports_device_logprob_gather(ggml_backend_dev_t device);
 // Single computation behind both memory views: the text `backend_report` renders
 // it for humans, `retro_trainer_memory_report` hands it to callers as data. Two
 // independent computations would drift, and the drift would only surface as a

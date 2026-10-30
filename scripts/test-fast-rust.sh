@@ -81,10 +81,16 @@ timed_step compile:rir-f16 cargo test -p rir-kernels --test f16_oracles --no-run
 timed_step compile:contracts cargo test \
   -p retrograd-agent --test train_sequences \
   -p retrograd-engine --test chat_parser_roundtrip --test tool_sft_render \
+  -p retrograd-engine --test dependency_boundary \
   -p retrograd-judge --test reward_batch \
   -p retrograd-openai --test wire \
   -p retrograd-training --test value_head \
   --no-run
+
+# The inference build of the engine crate must compile without the dataset
+# crate: `Engine` alone is the inference path, and a regression here would drag
+# `retrograd-dataset` into every inference-only consumer.
+timed_step compile:engine-no-train cargo check -p retrograd-engine --no-default-features
 
 timed_step run cargo test "${workspace_cpu[@]}" --lib --bins
 timed_step run:root cargo test "${root_cpu[@]}" --lib --bins --test profile_cli
@@ -106,6 +112,7 @@ timed_step run:rir-f16 cargo test -p rir-kernels --test f16_oracles
 timed_step run:contracts cargo test \
   -p retrograd-agent --test train_sequences \
   -p retrograd-engine --test chat_parser_roundtrip --test tool_sft_render \
+  -p retrograd-engine --test dependency_boundary \
   -p retrograd-judge --test reward_batch \
   -p retrograd-openai --test wire \
   -p retrograd-training --test value_head

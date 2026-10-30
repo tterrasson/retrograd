@@ -55,6 +55,7 @@ impl Trainer {
     }
 
     /// Runs the SFT algorithm over rows prepared by [`retrograd_dataset::prepare`].
+    #[cfg(feature = "train")]
     pub fn train_sft_with_progress<F>(
         &mut self,
         train: &PreparedDataset,
@@ -72,6 +73,7 @@ impl Trainer {
 
     /// Runs SFT with a synchronous callback that can inspect the trainer at
     /// safe callback points and stop the loop by returning `false`.
+    #[cfg(feature = "train")]
     pub fn train_sft_controlled<F>(
         &mut self,
         train: &PreparedDataset,
@@ -156,6 +158,7 @@ impl Trainer {
     /// Scores every non-ignored label in fixed-size SFT rows without creating
     /// an optimizer. This works with the base model alone and automatically
     /// includes a loaded LoRA adapter when present.
+    #[cfg(feature = "train")]
     pub fn eval_sft(&mut self, data: &PreparedDataset) -> Result<EvalMetrics> {
         if data.is_empty() || data.n_ctx == 0 {
             return Err(Error::invalid("evaluation dataset must contain rows"));

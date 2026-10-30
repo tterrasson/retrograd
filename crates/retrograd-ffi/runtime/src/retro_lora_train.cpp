@@ -514,7 +514,7 @@ extern "C" int retro_trainer_format_chat(
             }
         }
         return retro::render_chat_template(
-                *state, roles, contents, n_messages, add_assistant,
+                state->chat, roles, contents, n_messages, add_assistant,
                 buffer, n_buffer, out_n_bytes);
     });
 }
@@ -538,7 +538,7 @@ extern "C" int retro_trainer_format_chat_messages(
             return -1;
         }
         return retro::render_chat_messages(
-                *state, messages_json, tools_json, add_assistant,
+                state->chat, messages_json, tools_json, add_assistant,
                 buffer, n_buffer, out_n_bytes);
     });
 }
@@ -551,7 +551,7 @@ extern "C" int retro_trainer_set_chat_template_variables(
         if (!state) {
             return -1;
         }
-        return retro::set_chat_template_variables(*state, variables_json);
+        return retro::set_chat_template_variables(state->chat, variables_json);
     });
 }
 
@@ -563,7 +563,7 @@ extern "C" int retro_trainer_set_reasoning_budget(
         if (!state) {
             return -1;
         }
-        return retro::set_reasoning_budget(*state, budget);
+        return retro::set_reasoning_budget(state->chat, budget);
     });
 }
 
@@ -576,7 +576,7 @@ extern "C" int retro_trainer_chat_template_supports_tools(
             if (state) retro::set_error("out_supports is required");
             return -1;
         }
-        return retro::chat_template_supports_tools(*state, out_supports);
+        return retro::chat_template_supports_tools(state->chat, out_supports);
     });
 }
 
@@ -592,7 +592,7 @@ extern "C" int retro_trainer_tool_call_parser(
             if (state) retro::set_error("out_n_bytes is required");
             return -1;
         }
-        return retro::build_tool_call_parser(*state, tools_json, buffer, n_buffer, out_n_bytes);
+        return retro::build_tool_call_parser(state->chat, tools_json, buffer, n_buffer, out_n_bytes);
     });
 }
 
@@ -1308,7 +1308,7 @@ extern "C" int retro_trainer_generation_stats(
             }
             return -1;
         }
-        *out_stats = state->generation_stats;
+        *out_stats = state->generation_cache.stats;
         return 0;
     });
 }

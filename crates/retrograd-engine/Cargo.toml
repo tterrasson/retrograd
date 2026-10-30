@@ -3,20 +3,33 @@ name = "retrograd-engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Retrograd - safe trainer API over the C++ runtime"
+description = "Retrograd - safe trainer and inference-engine APIs over the C++ runtime"
 publish = false
 
 [dependencies]
 retrograd-checkpoint.workspace = true
 retrograd-core.workspace = true
-retrograd-dataset.workspace = true
+# Optional: the SFT methods that take a `PreparedDataset` and the
+# `DatasetBackend` impl for `Trainer` sit behind the `train` feature. The
+# inference path (`Engine` alone) builds without the dataset crate.
+retrograd-dataset = { workspace = true, optional = true }
 retrograd-ffi.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
+
+[features]
+# Training-facing surface of the engine crate: SFT over prepared datasets and
+# the dataset-backend trait impl. Off by default so an inference-only consumer
+# (`Engine`) does not pull `retrograd-dataset`.
+train = ["dep:retrograd-dataset"]
 
 [dev-dependencies]
 # The round-trip test reads the JSON document the parser entry emits; the crate
 # itself hands that document out as a string and needs no JSON of its own.
 serde_json.workspace = true
+# Tests use the dataset crate directly (fixture backends); a dev-dependency
+# never reaches a consumer's normal dependency graph.
+retrograd-dataset.workspace = true
 
 [lints]
 workspace = true

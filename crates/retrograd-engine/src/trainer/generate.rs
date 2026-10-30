@@ -1,4 +1,5 @@
 use super::*;
+use crate::generation::{check_lengths, refuse_forced, split_rows};
 
 /// One sampled row and, token for token, whether the reasoning budget forced
 /// it (see [`Trainer::set_reasoning_budget`]). A forced token was the
@@ -8,19 +9,6 @@ use super::*;
 pub struct SampledRow {
     pub tokens: Vec<i32>,
     pub forced: Vec<bool>,
-}
-
-/// The generators that hand back bare tokens have nowhere to say which ones
-/// the budget forced, and a caller training on them would credit the policy
-/// with an end tag it never chose.
-fn refuse_forced(forced: &[Vec<bool>]) -> Result<()> {
-    match forced.iter().any(|row| row.contains(&true)) {
-        true => Err(Error::invalid(
-            "the reasoning budget forced tokens into a generation whose caller cannot mask them; \
-             use generate_sampled_continuous",
-        )),
-        false => Ok(()),
-    }
 }
 
 impl Trainer {
@@ -84,11 +72,7 @@ impl Trainer {
         sequences: &[(&[i32], SamplingParams)],
     ) -> Result<Vec<Vec<i32>>> {
         let rows = self.generate_sampled_continuous(sequences)?;
-        let forced = rows
-            .iter()
-            .map(|row| row.forced.clone())
-            .collect::<Vec<_>>();
-        refuse_forced(&forced)?;
+        refuse_forced(rows.iter().map(|row| &row.forced))?;
         Ok(rows.into_iter().map(|row| row.tokens).collect())
     }
 
@@ -114,6 +98,10 @@ impl Trainer {
             .map(|(_, params)| params.max_new_tokens as usize)
             .max()
             .expect("non-empty continuous generation batch");
+        let capacity = sequences
+            .len()
+            .checked_mul(stride)
+            .ok_or_else(|| Error::Overflow("continuous generation shape overflows usize".into()))?;
         let mut ffi_sequences = sequences
             .iter()
             .map(|(prompt, params)| ffi::RetroGenerationSequence {
@@ -122,8 +110,8 @@ impl Trainer {
                 sampling: sampling_params_to_ffi(params),
             })
             .collect::<Vec<_>>();
-        let mut tokens = vec![0_i32; sequences.len() * stride];
-        let mut forced = vec![0_u8; sequences.len() * stride];
+        let mut tokens = vec![0_i32; capacity];
+        let mut forced = vec![0_u8; capacity];
         let mut lengths = vec![0_usize; sequences.len()];
         // SAFETY: the `Trainer` invariant holds and all borrowed arguments live through this synchronous call.
         self.check(unsafe {
@@ -138,22 +126,18 @@ impl Trainer {
                 forced.as_mut_ptr(),
             )
         })?;
-        lengths
+        check_lengths(&lengths, stride)?;
+        Ok(lengths
             .into_iter()
             .enumerate()
             .map(|(row, len)| {
-                if len == 0 || len > stride {
-                    return Err(Error::runtime(
-                        "continuous generation runtime returned an invalid sequence length",
-                    ));
-                }
                 let span = row * stride..row * stride + len;
-                Ok(SampledRow {
+                SampledRow {
                     tokens: tokens[span.clone()].to_vec(),
                     forced: forced[span].iter().map(|&flag| flag != 0).collect(),
-                })
+                }
             })
-            .collect()
+            .collect())
     }
 
     fn generate_batch_raw(
@@ -208,32 +192,12 @@ impl Trainer {
         // An empty row is rejected here, like in `generate_tokens_continuous`:
         // it would otherwise become a rollout whose train mask is entirely
         // false, surfacing much later as "rollout has no trainable token".
-        if lengths.iter().any(|&len| len == 0 || len > stride) {
-            return Err(Error::runtime(
-                "generation runtime returned an invalid sequence length",
-            ));
-        }
-        let rows = lengths
-            .iter()
-            .enumerate()
-            .map(|(row, &len)| flat_tokens[row * stride..row * stride + len].to_vec())
-            .collect();
-        let logprobs = flat_logprobs.map(|values| {
-            lengths
-                .iter()
-                .enumerate()
-                .map(|(row, &len)| values[row * stride..row * stride + len].to_vec())
-                .collect()
-        });
-        let forced = lengths
-            .iter()
-            .enumerate()
-            .map(|(row, &len)| {
-                flat_forced[row * stride..row * stride + len]
-                    .iter()
-                    .map(|&flag| flag != 0)
-                    .collect()
-            })
+        check_lengths(&lengths, stride)?;
+        let rows = split_rows(&lengths, stride, &flat_tokens);
+        let logprobs = flat_logprobs.map(|values| split_rows(&lengths, stride, &values));
+        let forced = split_rows(&lengths, stride, &flat_forced)
+            .into_iter()
+            .map(|row| row.into_iter().map(|flag| flag != 0).collect())
             .collect();
         Ok((rows, logprobs, forced))
     }
