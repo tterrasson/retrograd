@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use axum::extract::State;
 use retrograd_openai::{
     DeviceLease, Lease, LiveRunner, ModelCard, ModelSource, OpenAiError, Target, TrainerJob,
     WeightsSpec,
@@ -34,7 +35,7 @@ use uuid::Uuid;
 use super::artifacts::scan_checkpoints;
 use super::inference::{dispatch, wait};
 use crate::dto;
-use crate::error::{ApiError, ProblemKind};
+use crate::error::{ApiError, ApiResult, ProblemKind};
 use crate::runtime::control::RunCommand;
 use crate::runtime::registry::ServingSpec;
 use crate::runtime::{RunHandle, RunRegistry};
@@ -114,6 +115,7 @@ fn weights(serving: &ServingSpec, model: &Path, adapter: Option<PathBuf>) -> Wei
         // Written by this server from a `Device`; anything else is a hand-edited
         // `run.json`, and letting the runtime pick is the safe reading of it.
         device: serving.device.parse().unwrap_or_default(),
+        n_seq_max: None,
         chat_template_variables: serving.chat_template_variables.clone(),
     }
 }
@@ -347,6 +349,44 @@ impl LiveRunner for LiveRun {
         );
         Ok(format!("{}@step-{}", self.handle.id, at.global_step))
     }
+}
+
+/// `GET /v1/engine/stats`: the serving session's report - prefix-cache
+/// counters, pool occupancy, queue/live lengths, active adapter. Outside the
+/// OpenAI contract; answers a problem document when no model is loaded.
+pub async fn engine_stats(
+    State(state): State<AppState>,
+) -> ApiResult<axum::Json<dto::EngineStats>> {
+    let stats = state
+        .serving
+        .stats()
+        .await
+        .ok_or_else(|| ApiError::not_found("no model is loaded in the serving session"))?;
+    Ok(axum::Json(dto::EngineStats {
+        model: stats.spec.model.to_string_lossy().into_owned(),
+        adapter: stats.adapter,
+        adapters: stats.adapters,
+        queued: stats.queued,
+        live: stats.live,
+        kv: dto::EngineKvStats {
+            hits: stats.kv.hits,
+            misses: stats.kv.misses,
+            prompt_cells: stats.kv.prompt_cells,
+            prefilled_cells: stats.kv.prefilled_cells,
+            evictions: stats.kv.evictions,
+            swaps: stats.kv.swaps,
+            nodes: stats.kv.nodes,
+            resident_slots: stats.kv.resident_slots,
+            snapshot_bytes: stats.kv.snapshot_bytes,
+        },
+        memory: dto::EngineMemory {
+            n_slots: stats.memory.n_slots,
+            cells_total: stats.memory.cells_total,
+            cells_used: stats.memory.cells_used,
+            kv_bytes: stats.memory.kv_bytes,
+            recurrent_bytes: stats.memory.recurrent_bytes,
+        },
+    }))
 }
 
 /// The device permit the runs queue on, lent to the serving session.

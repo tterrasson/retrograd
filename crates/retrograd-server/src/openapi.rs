@@ -120,6 +120,13 @@ const OPERATIONS: &[Operation] = &[
     ),
     op(
         "get",
+        "/v1/engine/stats",
+        "The serving session's scheduler: prefix-cache counters, pool occupancy, queue and adapter",
+        None,
+        Some("EngineStats"),
+    ),
+    op(
+        "get",
         "/v1/capabilities",
         "Devices, memory and effective budgets",
         None,
@@ -660,6 +667,9 @@ pub fn render() -> Value {
     #[derive(OpenApi)]
     #[openapi(components(schemas(
         crate::dto::Health,
+        crate::dto::EngineStats,
+        crate::dto::EngineKvStats,
+        crate::dto::EngineMemory,
         crate::dto::DeviceInfo,
         crate::dto::Capabilities,
         crate::dto::Features,

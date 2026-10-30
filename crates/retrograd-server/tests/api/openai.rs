@@ -96,41 +96,33 @@ async fn each_id_loads_the_weights_it_names() {
     let (router, loader, _) = serving(&fixture, FakeEngine::succeeding());
     let id = finished(&fixture, &router).await;
     let model = fixture.dir.path().join("model.gguf");
-    let checkpoint = |name: &str| fixture.dir.path().join("ckpt").join(format!("{name}.gguf"));
 
-    for (suffix, fingerprint, adapter) in [
-        ("", "final", None),
-        ("@final", "final", None),
-        ("@best", "best", Some(checkpoint("best"))),
-        (
-            "@step-10",
-            "step-000000000010",
-            Some(checkpoint("step-000000000010")),
-        ),
-        (
-            "@latest",
-            "step-000000000010",
-            Some(checkpoint("step-000000000010")),
-        ),
-        ("@base", "base", None),
+    for (suffix, fingerprint) in [
+        ("", "final"),
+        ("@final", "final"),
+        ("@best", "best"),
+        ("@step-10", "step-000000000010"),
+        ("@latest", "step-000000000010"),
+        ("@base", "base"),
     ] {
         let (status, body) = post_chat(&router, &format!("{id}{suffix}")).await;
         assert_eq!(status, StatusCode::OK, "{suffix}: {body}");
         assert_eq!(body["system_fingerprint"], format!("{id}@{fingerprint}"));
         assert_eq!(body["choices"][0]["message"]["content"], "from the run");
-        let loaded = loader.specs().pop().expect("a load");
-        assert_eq!(loaded.model, model, "{suffix}");
-        match (suffix, adapter) {
-            ("" | "@final", _) => assert!(
-                loaded
-                    .adapter
-                    .as_ref()
-                    .is_some_and(|adapter| adapter.ends_with("adapter.gguf")),
-                "{suffix}: {loaded:?}"
-            ),
-            (_, expected) => assert_eq!(loaded.adapter, expected, "{suffix}"),
-        }
     }
+    // The base model was loaded exactly once: switching between the run's
+    // checkpoints activates the adapter, it does not reload the base.
+    let specs = loader.specs();
+    assert_eq!(specs.len(), 1, "one load for every id: {specs:?}");
+    assert_eq!(specs[0].model, model);
+    assert!(
+        specs[0]
+            .adapter
+            .as_ref()
+            .is_some_and(|adapter| adapter.ends_with("adapter.gguf")),
+        "the preloaded weights are the run's final ones: {:?}",
+        specs[0]
+    );
 
     let (status, body) = post_chat(&router, &format!("{id}@step-99")).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");

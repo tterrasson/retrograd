@@ -117,6 +117,8 @@ pub fn build_router(state: AppState) -> Router {
 
     let v1 = Router::new()
         .route("/health", get(api::discovery::health))
+        // Outside the OpenAI contract: the serving session's own report.
+        .route("/engine/stats", get(api::openai::engine_stats))
         .route("/capabilities", get(api::discovery::capabilities))
         .route("/defaults", get(api::discovery::defaults))
         .route("/rewards", get(api::discovery::rewards))

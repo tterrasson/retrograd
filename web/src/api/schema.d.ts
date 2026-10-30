@@ -142,6 +142,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/v1/engine/stats': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** The serving session's scheduler: prefix-cache counters, pool occupancy, queue and adapter */
+    get: operations['get_engine_stats']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/v1/environments': {
     parameters: {
       query?: never
@@ -1356,6 +1373,56 @@ export interface components {
        *     `prompts_per_update`. Must be at least 2 (1 would allow no resampling).
        */
       max_resample_factor: number
+    }
+    /** @description Prefix-cache counters of the serving scheduler. */
+    EngineKvStats: {
+      /** Format: int64 */
+      evictions: number
+      /** Format: int64 */
+      hits: number
+      /** Format: int64 */
+      misses: number
+      nodes: number
+      /** Format: int64 */
+      prefilled_cells: number
+      /** Format: int64 */
+      prompt_cells: number
+      resident_slots: number
+      /** Format: int64 */
+      snapshot_bytes: number
+      /** Format: int64 */
+      swaps: number
+    }
+    /** @description KV-pool occupancy of the serving engine. */
+    EngineMemory: {
+      /** Format: int64 */
+      cells_total: number
+      /** Format: int64 */
+      cells_used: number
+      /** Format: int64 */
+      kv_bytes: number
+      /** Format: int32 */
+      n_slots: number
+      /** Format: int64 */
+      recurrent_bytes: number
+    }
+    /**
+     * @description `GET /v1/engine/stats`: the serving session's scheduler - outside the OpenAI
+     *     contract, answered with a problem document on failure.
+     */
+    EngineStats: {
+      /** @description The active adapter, absent for the base model. */
+      adapter?: string | null
+      /** @description Every adapter registered on the backend, by name. */
+      adapters: string[]
+      kv: components['schemas']['EngineKvStats']
+      /** @description Live sequences. */
+      live: number
+      memory: components['schemas']['EngineMemory']
+      /** @description The base model currently loaded. */
+      model: string
+      /** @description Requests waiting for admission. */
+      queued: number
     }
     /**
      * @description A declared environment. No image, no limits, no mount: the operator chose
@@ -3458,6 +3525,35 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['Defaults']
+        }
+      }
+      /** @description a problem document (RFC 9457) */
+      default: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['Problem']
+        }
+      }
+    }
+  }
+  get_engine_stats: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description ok */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['EngineStats']
         }
       }
       /** @description a problem document (RFC 9457) */

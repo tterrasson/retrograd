@@ -53,6 +53,55 @@ pub struct Health {
 }
 
 schema! {
+/// `GET /v1/engine/stats`: the serving session's scheduler - outside the OpenAI
+/// contract, answered with a problem document on failure.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct EngineStats {
+    /// The base model currently loaded.
+    pub model: String,
+    /// The active adapter, absent for the base model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<String>,
+    /// Every adapter registered on the backend, by name.
+    pub adapters: Vec<String>,
+    /// Requests waiting for admission.
+    pub queued: usize,
+    /// Live sequences.
+    pub live: usize,
+    pub kv: EngineKvStats,
+    pub memory: EngineMemory,
+}
+}
+
+schema! {
+/// Prefix-cache counters of the serving scheduler.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct EngineKvStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub prompt_cells: u64,
+    pub prefilled_cells: u64,
+    pub evictions: u64,
+    pub swaps: u64,
+    pub nodes: usize,
+    pub resident_slots: usize,
+    pub snapshot_bytes: u64,
+}
+}
+
+schema! {
+/// KV-pool occupancy of the serving engine.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct EngineMemory {
+    pub n_slots: u32,
+    pub cells_total: u64,
+    pub cells_used: u64,
+    pub kv_bytes: u64,
+    pub recurrent_bytes: u64,
+}
+}
+
+schema! {
 /// One ggml device visible to this build.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct DeviceInfo {

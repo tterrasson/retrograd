@@ -123,8 +123,12 @@ pub struct ServingConfig {
     /// Seconds a load waits for the device a run holds. Zero, the default,
     /// refuses at once with a 503 naming the run.
     pub device_wait_seconds: Option<u64>,
-    /// Chat requests waiting for the serving thread.
+    /// Chat requests waiting for admission.
     pub queue: Option<usize>,
+    /// How queued chat requests are admitted: `continuous` (the default; a
+    /// freed slot is refilled at the next step) or `lockstep` (canonical waves,
+    /// for evaluation and tests).
+    pub admission: Option<String>,
     /// Largest chat request accepted. A long conversation outgrows the
     /// small-request ceiling of the rest of the API.
     pub max_body_bytes: Option<usize>,
@@ -145,6 +149,15 @@ impl ServingConfig {
 
     pub fn queue(&self) -> usize {
         self.queue.unwrap_or(8)
+    }
+
+    pub fn admission(&self) -> retrograd_infer::AdmissionMode {
+        match self.admission.as_deref() {
+            Some("lockstep") => retrograd_infer::AdmissionMode::Lockstep,
+            // `continuous` is the serving default; anything else falls back to
+            // it rather than refusing to start over a typo'd string.
+            _ => retrograd_infer::AdmissionMode::Continuous,
+        }
     }
 
     pub fn max_body_bytes(&self) -> usize {
@@ -207,6 +220,13 @@ impl ServerConfig {
                     "{name} must be greater than zero"
                 )));
             }
+        }
+        if let Some(admission) = &self.serving.admission
+            && !matches!(admission.as_str(), "continuous" | "lockstep")
+        {
+            return Err(retrograd_core::Error::invalid(format!(
+                "serving.admission must be `continuous` or `lockstep`; got `{admission}`"
+            )));
         }
         for (name, value) in [
             ("command_timeout_seconds", self.command_timeout_seconds),
@@ -652,6 +672,7 @@ fn serving_session(
         retrograd_openai::SessionOptions {
             idle: Some(config.serving.idle()),
             queue: config.serving.queue(),
+            admission: config.serving.admission(),
         },
     )
     // Spawning one thread only fails when the process is out of resources, and
@@ -741,7 +762,9 @@ impl AppState {
             &config,
             &device,
             &registry,
-            Arc::new(retrograd_openai::TrainerLoader),
+            // Cold targets are served by the inference engine, not a full
+            // trainer: no optimizer, no training state on the device.
+            Arc::new(retrograd_openai::EngineLoader),
         );
         Self {
             catalog: Arc::new(catalog),

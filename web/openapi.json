@@ -1500,6 +1500,152 @@
         ],
         "type": "object"
       },
+      "EngineKvStats": {
+        "description": "Prefix-cache counters of the serving scheduler.",
+        "properties": {
+          "evictions": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "hits": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "misses": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "nodes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prefilled_cells": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prompt_cells": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "resident_slots": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "snapshot_bytes": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "swaps": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "hits",
+          "misses",
+          "prompt_cells",
+          "prefilled_cells",
+          "evictions",
+          "swaps",
+          "nodes",
+          "resident_slots",
+          "snapshot_bytes"
+        ],
+        "type": "object"
+      },
+      "EngineMemory": {
+        "description": "KV-pool occupancy of the serving engine.",
+        "properties": {
+          "cells_total": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cells_used": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kv_bytes": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "n_slots": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "recurrent_bytes": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "n_slots",
+          "cells_total",
+          "cells_used",
+          "kv_bytes",
+          "recurrent_bytes"
+        ],
+        "type": "object"
+      },
+      "EngineStats": {
+        "description": "`GET /v1/engine/stats`: the serving session's scheduler - outside the OpenAI\ncontract, answered with a problem document on failure.",
+        "properties": {
+          "adapter": {
+            "description": "The active adapter, absent for the base model.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "adapters": {
+            "description": "Every adapter registered on the backend, by name.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "kv": {
+            "$ref": "#/components/schemas/EngineKvStats"
+          },
+          "live": {
+            "description": "Live sequences.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "memory": {
+            "$ref": "#/components/schemas/EngineMemory"
+          },
+          "model": {
+            "description": "The base model currently loaded.",
+            "type": "string"
+          },
+          "queued": {
+            "description": "Requests waiting for admission.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model",
+          "adapters",
+          "queued",
+          "live",
+          "kv",
+          "memory"
+        ],
+        "type": "object"
+      },
       "EnvironmentEntry": {
         "description": "A declared environment. No image, no limits, no mount: the operator chose\nthose, and publishing them would be one step from letting a client choose\nthem.",
         "properties": {
@@ -6052,6 +6198,34 @@
           }
         },
         "summary": "Derivation rules and the settings applied by default"
+      }
+    },
+    "/v1/engine/stats": {
+      "get": {
+        "operationId": "get_engine_stats",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineStats"
+                }
+              }
+            },
+            "description": "ok"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem document (RFC 9457)"
+          }
+        },
+        "summary": "The serving session's scheduler: prefix-cache counters, pool occupancy, queue and adapter"
       }
     },
     "/v1/environments": {
