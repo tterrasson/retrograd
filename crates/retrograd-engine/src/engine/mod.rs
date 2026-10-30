@@ -9,6 +9,7 @@
 //! gradient).
 
 mod generate;
+mod step;
 
 use std::ffi::CString;
 use std::mem::size_of;

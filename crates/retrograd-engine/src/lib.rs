@@ -451,6 +451,7 @@ mod probe;
 mod quant;
 mod rir;
 mod stats;
+pub mod step;
 mod trainer;
 
 pub use engine::{Engine, EngineError};
@@ -459,6 +460,7 @@ pub use probe::*;
 pub use quant::*;
 pub use rir::*;
 pub use stats::{DutyCycleStats, GenerationStats, OptimizerMemory, OptimizerTiming, ScoringStats};
+pub use step::{EngineMemory, StepOutRow, StepOutput, StepRow};
 pub use trainer::{
     SampledRow, VOCABULARY_WITNESSES, VocabularyMismatch, parse_assistant_output,
     render_chat_template_source, tool_call_parser_from_source,

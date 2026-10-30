@@ -292,6 +292,7 @@ mod introspect;
 mod persistence;
 mod reference;
 mod score;
+mod step;
 mod tokenize;
 
 /// Chat-template and tool-call-parsing helpers that take a template or parser
