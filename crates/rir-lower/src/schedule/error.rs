@@ -109,15 +109,22 @@ pub fn check_schedule_table(kernel: &Kernel, schedules: &[Schedule]) -> Result<(
             continue;
         }
 
-        let mut seen: Vec<Option<&'static str>> = Vec::new();
+        fn name_of(s: &Schedule) -> &str {
+            s.variant
+                .as_ref()
+                .map(VariantName::as_str)
+                .unwrap_or("<fallback>")
+        }
+        let mut seen: Vec<Option<&str>> = Vec::new();
         for s in &group {
-            if seen.contains(&s.variant) {
+            let name = s.variant.as_ref().map(VariantName::as_str);
+            if seen.contains(&name) {
                 return Err(ScheduleError::DuplicateVariant {
                     backend,
-                    variant: s.variant.unwrap_or("<fallback>").to_string(),
+                    variant: name_of(s).to_string(),
                 });
             }
-            seen.push(s.variant);
+            seen.push(name);
         }
 
         // The pair's fallback is the **unnamed** lowering: identity decides,
@@ -143,7 +150,10 @@ pub fn check_schedule_table(kernel: &Kernel, schedules: &[Schedule]) -> Result<(
             });
         }
 
-        for (s, variant) in group.iter().filter_map(|s| s.variant.map(|v| (s, v))) {
+        for (s, variant) in group
+            .iter()
+            .filter_map(|s| s.variant.as_ref().map(|v| (s, v.as_str())))
+        {
             let name = variant.to_string();
             if !s.claims() {
                 return Err(ScheduleError::UnselectableVariant {
@@ -207,11 +217,8 @@ pub fn check_schedule_table(kernel: &Kernel, schedules: &[Schedule]) -> Result<(
             if s.eligible_when.covered_by(&claims) == Some(true) {
                 return Err(ScheduleError::ShadowedVariant {
                     backend,
-                    variant: s.variant.unwrap_or("<fallback>").to_string(),
-                    by: above
-                        .iter()
-                        .map(|o| o.variant.unwrap_or("<fallback>").to_string())
-                        .collect(),
+                    variant: name_of(s).to_string(),
+                    by: above.iter().map(|o| name_of(o).to_string()).collect(),
                 });
             }
         }
@@ -221,9 +228,9 @@ pub fn check_schedule_table(kernel: &Kernel, schedules: &[Schedule]) -> Result<(
         // exists to replace. Refusing the tie outright is stronger than proving
         // their rules disjoint, and it costs nothing: giving one of them a
         // different number is always possible and always says which wins.
-        let mut ranks: Vec<(u8, &'static str)> = group
+        let mut ranks: Vec<(u8, &str)> = group
             .iter()
-            .filter_map(|s| s.variant.map(|v| (s.priority, v)))
+            .filter_map(|s| s.variant.as_ref().map(|v| (s.priority, v.as_str())))
             .collect();
         ranks.sort_unstable();
         for pair in ranks.windows(2) {

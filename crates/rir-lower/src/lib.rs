@@ -25,6 +25,6 @@ pub use schedule::{
     Family, GPU_REFUSED, GPU_TARGETS, GpuBackend, HIER_REDUCE, MATRIX_COLS, MATRIX_ROWS,
     MATRIX_SUBGROUPS, MATRIX_TARGETS, MATRIX_TILE, PARTITION_TARGETS, ParallelMapping,
     ReductionStrategy, SHARED_REDUCE, STRIDED_SCAN, SUBGROUP_LANES, ScanStrategy, Schedule,
-    ScheduleError, ShapeRule, TILED_SCAN, check_schedule, check_schedule_table, family_refusal,
-    matrix_targets_for, partitions_subgroups, schedules_for, targets_for,
+    ScheduleError, ShapeRule, TILED_SCAN, VariantName, check_schedule, check_schedule_table,
+    family_refusal, matrix_targets_for, partitions_subgroups, schedules_for, targets_for,
 };

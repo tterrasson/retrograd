@@ -774,8 +774,8 @@ fn a_metal_schedule_lowers_like_its_vulkan_twin() {
         // first Metal one": with several variants per pair that would only
         // ever compare the fallbacks, and a Metal specialization could
         // diverge from its Vulkan twin unnoticed.
-        let variants: Vec<Option<&'static str>> = {
-            let mut v: Vec<Option<&'static str>> = schedules
+        let variants: Vec<Option<&str>> = {
+            let mut v: Vec<Option<&str>> = schedules
                 .iter()
                 .filter(|s| s.backend() != Backend::Cpu)
                 .map(|s| s.variant())

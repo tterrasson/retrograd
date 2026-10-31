@@ -1,6 +1,8 @@
 //! Declarative schedules, handwritten per kernel and backend.
 //! The domain is finite, so there is no autotuning.
 
+use std::borrow::Cow;
+
 pub mod backend;
 pub mod bench;
 pub mod error;
@@ -175,7 +177,7 @@ pub struct Schedule {
     /// The name is part of the emitted identity - file name, entrypoint,
     /// `variant_id`, SPIR-V symbol - so two variants of one kernel can coexist
     /// as artifacts instead of overwriting each other.
-    pub(crate) variant: Option<&'static str>,
+    pub(crate) variant: Option<VariantName>,
     /// Selection priority among the variants eligible for a given shape.
     /// Set by the schedule table, not by the constructor: it is a policy about
     /// which lowering to prefer, not a property of the lowering.
@@ -273,8 +275,8 @@ impl Schedule {
     }
 
     /// Variant name, or `None` for the pair's fallback.
-    pub fn variant(&self) -> Option<&'static str> {
-        self.variant
+    pub fn variant(&self) -> Option<&str> {
+        self.variant.as_ref().map(VariantName::as_str)
     }
 
     pub fn priority(&self) -> u8 {
@@ -415,12 +417,12 @@ impl Schedule {
     /// name has to say which is which. The default name a constructor gives
     /// describes its lowering ("vec4"); this says what distinguishes it from
     /// its twin.
-    pub fn as_variant(self, variant: &'static str) -> Self {
+    pub fn as_variant(self, variant: impl Into<VariantName>) -> Self {
         self.named(variant)
     }
 
-    fn named(mut self, variant: &'static str) -> Self {
-        self.variant = Some(variant);
+    fn named(mut self, variant: impl Into<VariantName>) -> Self {
+        self.variant = Some(variant.into());
         self
     }
 
@@ -486,7 +488,7 @@ impl Schedule {
     /// fallback, `kernel_variant` otherwise. One string behind every per-variant
     /// name the pipeline emits, so they cannot drift apart.
     pub fn artifact_name(&self, kernel: &str) -> String {
-        match self.variant {
+        match &self.variant {
             Some(v) => format!("{kernel}_{v}"),
             None => kernel.to_string(),
         }
@@ -975,6 +977,39 @@ impl Schedule {
     /// `gpu_grid_tiled` on Metal.
     pub fn metal_grid_tiled(block: [u32; 3], depth: u32, width: u32) -> Self {
         Self::gpu_grid_tiled(GpuBackend::Metal, block, depth, width)
+    }
+}
+
+/// A variant's name as one value: borrowed when it is a constant the table
+/// carries, owned when it is derived from a geometry at runtime.
+///
+/// The name is part of the emitted identity - file name, entrypoint,
+/// `variant_id`, SPIR-V symbol, registry row - so it travels one type rather
+/// than a `&'static str` only some callers can produce.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct VariantName(Cow<'static, str>);
+
+impl VariantName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&'static str> for VariantName {
+    fn from(name: &'static str) -> Self {
+        Self(Cow::Borrowed(name))
+    }
+}
+
+impl From<String> for VariantName {
+    fn from(name: String) -> Self {
+        Self(Cow::Owned(name))
+    }
+}
+
+impl std::fmt::Display for VariantName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
