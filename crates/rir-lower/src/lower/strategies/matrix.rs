@@ -9,7 +9,8 @@ use crate::schedule::{
     MATRIX_COLS, MATRIX_ROWS, MATRIX_SUBGROUPS, ParallelMapping, SUBGROUP_LANES, Schedule,
 };
 
-use crate::lower::strategies::tiled::{collect_contraction_reads, stage_loader};
+use crate::lower::strategies::stage::stage_loader;
+use crate::lower::strategies::tiled::collect_contraction_reads;
 use crate::lower::{Analysis, LowerError, Lowerer, lower_writes};
 
 /// Fragments one subgroup owns along the rows of the tile: its half of

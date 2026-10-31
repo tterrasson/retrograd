@@ -6,4 +6,5 @@ pub mod matrix;
 pub mod reduction;
 pub mod scan;
 pub mod serial;
+pub mod stage;
 pub mod tiled;
