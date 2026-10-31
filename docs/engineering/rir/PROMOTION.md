@@ -40,6 +40,14 @@ Two properties make the number usable:
   MoltenVK, where the barrier costs more than most kernels, that latency can
   hide the difference between two schedules.
 
+The harness drives Vulkan, CUDA (`--features cuda`) and, on an Apple target,
+Metal. The Metal arm compiles the generated `kernel.metal` at run time, at the
+language version its manifest claims, and binds it the way the fork does:
+tensors at buffer indices `0..n` in manifest order, the params struct right
+after them. It records the N runs in one serial compute encoder, which orders
+them the way the Vulkan barrier does, so the number means the same thing. On a
+Mac this measures MSL natively instead of through MoltenVK.
+
 Level 1 compares RIR to RIR. It never decides a promotion: it has no native
 kernel to compare against, and it does not take the ggml path.
 
@@ -47,6 +55,8 @@ kernel to compare against, and it does not take the ggml path.
 
 ```sh
 cargo run --release -p rir-sweep -- --kernel rms_norm_back --backend vulkan --reps 9
+cargo run --release -p rir-sweep -- --kernel rms_norm --backend metal
+cargo run --release -p rir-sweep -- --kernel rms_norm --backend metal --profile qwen3-0.6b-q8_0 --regime decode
 ```
 
 `rir-sweep` runs the level-1 loop over a small product of valid candidates and
@@ -63,6 +73,14 @@ prints a proposal in `schedules_for`'s vocabulary. It refuses a candidate:
 Nothing is written automatically. The last block of a sweep is a proposal to
 review and commit by hand, and a table change then goes through the promotion
 lane like any other.
+
+`--profile` derives the shapes from a reference model's dimensions in
+`rir_core::profiles`: hidden and head norms, FFN activations, residuals and
+weight projections. Decode covers 1, 4, 8, 16 and 32 tokens; prefill covers
+512. Without `--regime`, the two are reported separately. The catalogue
+publishes the profiles and validates their selections against its variants;
+their selections are currently empty, and no model-specific dispatch choice
+is installed by this change.
 
 ### Level 2 - the promotion lane
 
@@ -98,6 +116,24 @@ Three properties the script enforces on itself: MoltenVK is configured by
 detection, a requested device that is missing fails the lane instead of
 skipping it, and every run is bounded by a watchdog, because a candidate kernel
 can be a hundred times slower and "too slow to measure" is a verdict.
+
+### Pairs scoped to one regime
+
+A dispatch site may offer RIR only part of an op. `MUL_MAT` is the case: the
+Metal and Vulkan sites offer a node only when `src1` has at most
+`RIR_DECODE_MAX_TOKENS` columns (the decode regime, published in the generated
+registry header from `rir_core::catalog::Regime`) and when the backend fuses
+nothing into it. A prefill or fused node never reaches the chain, so it is
+neither counted nor declared.
+
+The lane follows the same scope when it times the pair. Upstream's perf matrix
+times `MUL_MAT` over every format and up to 512 columns; the lane passes
+`test-backend-ops` a `-p` filter that keeps the decode steps in the formats the
+registry's variants claim, so no row compares the native kernel with itself. The
+decode cases themselves are the projections of a profiled model layer at the
+step sizes decode is profiled at. Every timed shape carries its regime, and a
+second table gives the worst median ratio per pair and regime: a promotion
+in one regime rests on that number and says nothing about the other.
 
 The lane runs `repeat x 2` matrices per pair. Aim a high `--repeat` at the pair
 being promoted (`--op`), not at the whole lane.

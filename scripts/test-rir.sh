@@ -148,7 +148,10 @@ if [[ $force_build -eq 1 || ! -x "$bin" ]]; then
     cmake -B "$build" -S "$fork" -DCMAKE_BUILD_TYPE=Release \
         -DGGML_METAL=$metal -DGGML_VULKAN=ON -DGGML_CUDA=$cuda \
         ${cuda_cmake[@]+"${cuda_cmake[@]}"} \
-        -DLLAMA_BUILD_TESTS=ON >/dev/null
+        -DLLAMA_BUILD_TESTS=ON -DLLAMA_BUILD_COMMON=ON \
+        -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
+        -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_APP=OFF \
+        -DLLAMA_OPENSSL=OFF >/dev/null
     cmake --build "$build" --target test-backend-ops -j "$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 fi
 [[ -x "$bin" ]] || { echo "test-backend-ops not found after build" >&2; exit 1; }
@@ -287,6 +290,59 @@ matrix_op_filter() {
     esac
 }
 
+# The step size, in tokens, up to which a dispatch site counts a node as
+# decoding - the bound a regime-scoped site offers RIR, read from the generated
+# header so the lane and the sites cannot disagree.
+decode_max_tokens="$(awk '$1 == "#define" && $2 == "RIR_DECODE_MAX_TOKENS" { print $3 }' \
+    "$(dirname "$registry")/rir_registry.h")"
+[[ -n "$decode_max_tokens" ]] || { echo "RIR_DECODE_MAX_TOKENS absent from the registry header" >&2; exit 1; }
+
+# The `src0` dtypes the registry's variants claim for one (op, backend), as a
+# regex alternation: the binding whose source is 0, on every row of the pair.
+registry_src0_dtypes() {
+    local op="$1" be="$2"
+    awk -v op="\"GGML_OP_$op\"" -v be="RIR_BACKEND_$(tr '[:lower:]' '[:upper:]' <<<"$be")" '
+        /^ *\{"[^"]*", "GGML_OP_/ { cur = (index($0, op) > 0 && index($0, be) > 0) }
+        cur && match($0, /\{"[^"]*", 0, RIR_ACCESS_[A-Z]+, "[^"]*"/) {
+            b = substr($0, RSTART, RLENGTH); n = split(b, f, "\""); print f[n - 1]
+        }' "$registry" | sort -u | paste -sd'|' -
+}
+
+# The regime a timed shape belongs to, for the ops whose site serves one regime
+# only; `-` for every other op. MUL_MAT names its step `n=` (src1 columns).
+regime_of() {
+    local op="$1" label="$2" n
+    case "$op" in
+        MUL_MAT)
+            n="$(sed -nE 's/.*[(,]n=([0-9]+),.*/\1/p' <<<"$label")"
+            if [[ -z "$n" ]]; then echo "-"
+            elif [[ "$n" -le "$decode_max_tokens" ]]; then echo "decode"
+            else echo "prefill"; fi ;;
+        *) echo "-" ;;
+    esac
+}
+
+# What `-p` must be given to time only the cases the pair can claim, or nothing.
+#
+# MUL_MAT is the reason it exists. Upstream's perf matrix times the op over
+# every format and up to 512 columns, and its sites offer RIR a decode step in a
+# profiled weight format only: everything else would be the native kernel timed
+# against itself - hundreds of rows of noise, a few of which would cross the
+# tolerance by chance. The formats come from the registry, the step bound from
+# its header, and the layout is the one a decode step multiplies: one
+# contiguous, unbatched weight matrix.
+perf_params_filter() {
+    local op="$1" be="$2" types steps
+    case "$op" in
+        MUL_MAT)
+            types="$(registry_src0_dtypes "$op" "$be")"
+            steps="$(seq 1 "$decode_max_tokens" | paste -sd'|' -)"
+            echo "type_a=($types),type_b=f32,m=[0-9]+,n=($steps),k=[0-9]+,bs=\\[1,1\\],nr=\\[1,1\\],per=\\[0,1,2,3\\],k_v=0,"
+            ;;
+        *) ;;
+    esac
+}
+
 run_matrix() {
     local mode="$1" op="$2" be="$3" policy="$4" what="$5" out="$6"
     local -a envs=(RETRO_RIR_STATS=1)
@@ -300,6 +356,9 @@ run_matrix() {
     local -a cmd=("$bin")
     [[ "$what" == "perf" ]] && cmd+=(perf)
     cmd+=(-o "$(matrix_op_filter "$op")" -b "$(ggml_backend_name "$be")")
+    local params
+    params="$(perf_params_filter "$op" "$be")"
+    [[ "$what" == "perf" && -n "$params" ]] && cmd+=(-p "$params")
 
     # A lane must be bounded, and the thing being measured is precisely a kernel
     # that may be far slower than the one it wants to replace: a sequential scan
@@ -750,7 +809,8 @@ for pair in ${pairs[@]+"${pairs[@]}"}; do
         fi
         # Braces around the two bounds: the separator is an en dash, and bash 3.2
         # reads its bytes as part of the name of the variable before it.
-        perf_rows+=("$op/$be	$label	$nat_us	$rir_us	$ratio	${rmin}–${rmax}	$n	$verdict")
+        regime="$(regime_of "$op" "$label")"
+        perf_rows+=("$op/$be	$regime	$label	$nat_us	$rir_us	$ratio	${rmin}–${rmax}	$n	$verdict")
     done < <(awk -F'\t' '!seen[$1]++ { print $1 }' "$tmp/$tag.samples")
 done
 
@@ -798,8 +858,24 @@ if [[ ${#perf_rows[@]} -gt 0 ]]; then
          "$tolerance ; \u201cparity\u201d = the gap fits within the passes' spread)"
     echo "   both columns come from this session; a ratio cited without it"
     echo "   means nothing"
-    { printf 'pair\tshape\tnative\tRIR\tratio\tmin–max\tpasses\tverdict\n'
+    { printf 'pair\tregime\tshape\tnative\tRIR\tratio\tmin–max\tpasses\tverdict\n'
       printf '%s\n' "${perf_rows[@]}"; } | column -t -s$'\t'
+
+    # A pair is promoted per regime: a kernel may win every decode shape and
+    # lose prefill, and a site that serves one regime only is judged on that
+    # one. So the shapes are also counted per (pair, regime), with the worst
+    # median ratio among them - the number a promotion in that regime rests on.
+    # Ops whose site does not scope a regime show `-`.
+    echo
+    echo "== per regime (worst median ratio over the regime's shapes)"
+    { printf 'pair\tregime\tshapes\tworst\tregressions\twork items\tparity\n'
+      printf '%s\n' "${perf_rows[@]}" | awk -F'\t' '
+          { k = $1 "\t" $2; if (!(k in n)) order[++m] = k; n[k]++
+            if (!(k in worst) || $6 + 0 > worst[k]) worst[k] = $6 + 0
+            if ($9 == "REGRESSION") reg[k]++; else if ($9 == "work item") wi[k]++; else if ($9 == "parity") par[k]++ }
+          END { for (i = 1; i <= m; i++) { k = order[i]
+                    printf "%s\t%d\t%.2f\t%d\t%d\t%d\n", k, n[k], worst[k], reg[k], wi[k], par[k] } }'
+    } | column -t -s$'\t'
 fi
 
 echo
