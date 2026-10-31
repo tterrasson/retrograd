@@ -125,6 +125,9 @@ pub struct ServingConfig {
     pub device_wait_seconds: Option<u64>,
     /// Chat requests waiting for admission.
     pub queue: Option<usize>,
+    /// Sequence slots of the serving pool: how many answers decode at once.
+    /// Absent: the serving default.
+    pub n_seq_max: Option<u32>,
     /// How queued chat requests are admitted: `continuous` (the default; a
     /// freed slot is refilled at the next step) or `lockstep` (canonical waves,
     /// for evaluation and tests).
@@ -221,6 +224,10 @@ impl ServerConfig {
             ("max_concurrent_requests", self.max_concurrent_requests),
             ("max_body_bytes", self.max_body_bytes),
             ("serving.queue", self.serving.queue),
+            (
+                "serving.n_seq_max",
+                self.serving.n_seq_max.map(|value| value as usize),
+            ),
             ("serving.max_body_bytes", self.serving.max_body_bytes),
             (
                 "observe_target_updates",

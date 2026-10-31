@@ -281,8 +281,9 @@ impl ModelSource for RunModels {
                  cannot be reloaded"
             ))
         })?;
+        let n_seq_max = self.state.config.serving.n_seq_max;
         let cold = |spec: WeightsSpec, name: &str| Target::Cold {
-            spec,
+            spec: WeightsSpec { n_seq_max, ..spec },
             fingerprint: format!("{run}@{name}"),
         };
         match suffix {

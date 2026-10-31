@@ -32,7 +32,7 @@ pub struct ServeConfig {
     /// Per-sequence context, in tokens. Default 8192.
     #[serde(default)]
     pub n_ctx: Option<u32>,
-    /// Sequence slots of the KV pool. Default 8.
+    /// Sequence slots of the KV pool. Absent: the serving default, 8.
     #[serde(default)]
     pub n_seq_max: Option<u32>,
     #[serde(default = "default_host")]

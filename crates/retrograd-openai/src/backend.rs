@@ -114,6 +114,12 @@ pub fn adapter_name(adapter: &std::path::Path) -> String {
     adapter.to_string_lossy().into_owned()
 }
 
+/// Sequence slots of a serving pool when the configuration names none.
+///
+/// The pool's KV holds `n_ctx` cells per slot, so this is also a memory
+/// multiplier; every frontend lets the operator lower it.
+pub const DEFAULT_SERVING_SLOTS: u32 = 8;
+
 /// Loads with a [`retrograd_engine::Engine`], configured for inference the way
 /// `retrograd chat` configures it: the geometry of a run's dedicated generation
 /// context, so serving is bit-identical to what a trainer would generate.
@@ -135,7 +141,7 @@ impl Loader for EngineLoader {
             n_batch,
             n_ubatch: defaults.n_ubatch.min(n_batch),
             device: spec.device,
-            generation_concurrency: spec.n_seq_max.unwrap_or(defaults.generation_concurrency),
+            generation_concurrency: spec.n_seq_max.unwrap_or(DEFAULT_SERVING_SLOTS),
             ..defaults
         };
         let mut engine = Engine::from_train_config(&spec.model, &training)?;

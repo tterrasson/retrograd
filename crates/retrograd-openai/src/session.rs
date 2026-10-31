@@ -58,7 +58,7 @@ pub struct WeightsSpec {
     pub n_ctx: u32,
     pub device: Device,
     /// Sequence slots of the serving pool (the `n_seq_max` of the engine).
-    /// `None` lets the loader's default geometry decide.
+    /// `None` is [`DEFAULT_SERVING_SLOTS`](crate::backend::DEFAULT_SERVING_SLOTS).
     pub n_seq_max: Option<u32>,
     /// The chat-template variables the run rendered its data with, as JSON.
     pub chat_template_variables: Option<String>,
