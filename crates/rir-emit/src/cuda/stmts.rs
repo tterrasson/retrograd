@@ -83,6 +83,17 @@ impl MemoryModel for crate::dialect::Cuda {
         ));
     }
 
+    fn read_at(p: &Printer<'_, Self>, arg: rir_core::ArgId, ty: MemType, at: &str) -> String {
+        let arg_name = &p.k.args[arg.0 as usize].name;
+        let (mem_ty, _) = CudaPrinter::mem_ty(ty);
+        let raw = format!("*(const {mem_ty} *)({arg_name} + ({at}))");
+        match ty {
+            MemType::F32 => raw,
+            MemType::F16 => format!("__half2float({raw})"),
+            _ => format!("float({raw})"),
+        }
+    }
+
     fn store(p: &mut Printer<'_, Self>, op: &StoreOp<'_>) {
         let StoreOp {
             arg,

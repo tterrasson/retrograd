@@ -132,6 +132,28 @@ pub(crate) fn lower_accum_loop(
         })
         .cloned()
         .collect();
+    let run = lo.reduce_run;
+    let runs = if run > 1 {
+        if plan.span <= 1 || reads.is_empty() {
+            return Err(LowerError::ReduceRunUnsupported {
+                why: "no segmented quantized read for the run to divide",
+            });
+        }
+        if !plan.span.is_multiple_of(run) {
+            return Err(LowerError::ReduceRunUnsupported {
+                why: "the run does not divide the segment",
+            });
+        }
+        let runs = run_reads(lo.k, inner_axis, accs);
+        if runs.is_empty() {
+            return Err(LowerError::ReduceRunUnsupported {
+                why: "no dense operand is read along the reduced axis",
+            });
+        }
+        runs
+    } else {
+        Vec::new()
+    };
     if plan.span <= 1 || reads.is_empty() {
         let col = lo.new_var(&inner_name, VarKind::Idx);
         lo.axis_vars.insert(inner_axis, col);
@@ -156,6 +178,44 @@ pub(crate) fn lower_accum_loop(
     }
 
     let span = plan.span;
+    if runs.is_empty() {
+        return lower_segments(lo, span, &reads, inner_axis, accs, traversal, tile, &[]);
+    }
+    // The run half and the element half, into the same accumulators, behind
+    // one uniform test on the operands' contiguous stride.
+    let unit = lower_segments(lo, span, &reads, inner_axis, accs, traversal, tile, &runs)?;
+    let strided = lower_segments(lo, span, &reads, inner_axis, accs, traversal, tile, &[])?;
+    let mut args = Vec::new();
+    for rv in &runs {
+        let Op::Read { tensor, .. } = &lo.k.ops()[rv.0 as usize] else {
+            unreachable!("run_reads returns reads only");
+        };
+        let dense = (*tensor, Lowerer::elem_mem_type(lo.k, *tensor)?);
+        if !args.contains(&dense) {
+            args.push(dense);
+        }
+    }
+    Ok(vec![Stmt::UnitStride {
+        args,
+        unit,
+        strided,
+    }])
+}
+
+/// The segment loop of one level: the block headers once per segment, then the
+/// element loop - or, given `runs`, the run groups.
+#[expect(clippy::too_many_arguments)]
+fn lower_segments(
+    lo: &mut Lowerer,
+    span: u32,
+    reads: &[QuantRead],
+    inner_axis: AxisId,
+    accs: &[Accum],
+    traversal: Traversal,
+    tile: Option<&TiledAccums>,
+    runs: &[ValueId],
+) -> Result<Vec<Stmt>, LowerError> {
+    let inner_name = lo.k.axes()[inner_axis.0 as usize].name.clone();
     // The loop's starting index, computed before it: `lane · span`, so a lane's
     // segments are aligned on the span and its blocks are its own.
     let mut out = Vec::new();
@@ -179,7 +239,7 @@ pub(crate) fn lower_accum_loop(
     // first element.
     lo.axis_vars.remove(&inner_axis);
     let mut heads = Vec::new();
-    for read in &reads {
+    for read in reads {
         let be = read.format.desc().block_elements;
         let block = lo.emit("blk", VarKind::Idx, LExpr::IDivC(seg, be));
         let inb0 = lo.emit("inb0", VarKind::Idx, LExpr::IModC(seg, be));
@@ -199,6 +259,14 @@ pub(crate) fn lower_accum_loop(
         });
     }
     let mut body = lo.take_body();
+
+    if !runs.is_empty() {
+        body.push(lower_run_groups(
+            lo, &heads, runs, seg, span, inner_axis, accs, tile,
+        )?);
+        out.push(segment_loop(traversal, start, seg, inner_axis, span, body));
+        return Ok(out);
+    }
 
     let elem = lo.new_var(&format!("{inner_name}_e"), VarKind::Idx);
     lo.begin_scope(true);
@@ -226,7 +294,20 @@ pub(crate) fn lower_accum_loop(
         body: inner_body,
     });
 
-    out.push(match (traversal, start) {
+    out.push(segment_loop(traversal, start, seg, inner_axis, span, body));
+    Ok(out)
+}
+
+/// The loop over a lane's (or the invocation's) segments.
+fn segment_loop(
+    traversal: Traversal,
+    start: Option<VarId>,
+    seg: VarId,
+    inner_axis: AxisId,
+    span: u32,
+    body: Vec<Stmt>,
+) -> Stmt {
+    match (traversal, start) {
         // `ForTiled` is the strided-from-zero loop the whole-axis traversal
         // needs, and it is already the one the tiled contraction walks its
         // rounds with: `seg = 0; seg < n; seg += span`.
@@ -244,8 +325,172 @@ pub(crate) fn lower_accum_loop(
             body,
         },
         (Traversal::Lanes { .. }, None) => unreachable!("lane traversal without a start"),
-    });
-    Ok(out)
+    }
+}
+
+/// The dense reads of a level that a run can serve: an F32 or F16 operand
+/// whose first index *is* the reduced axis and whose other indices do not
+/// move with it, so element `c` of the run is `c` strides along dimension 0.
+///
+/// Anything else the level reads along the reduced axis is still read element
+/// by element, which is correct and only slower.
+fn run_reads(k: &Kernel, inner_axis: AxisId, accs: &[Accum]) -> Vec<ValueId> {
+    k.ops()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, op)| {
+            let v = ValueId(i as u32);
+            let Op::Read { tensor, idx } = op else {
+                return None;
+            };
+            let dense = matches!(
+                k.args()[tensor.0 as usize].ty.dtype,
+                rir_core::DType::F32 | rir_core::DType::F16
+            );
+            let first_is_axis = idx
+                .first()
+                .is_some_and(|i| matches!(k.ops()[i.0 as usize], Op::Index(a) if a == inner_axis));
+            let rest_fixed = idx
+                .iter()
+                .skip(1)
+                .all(|i| !depends_on_axis(k, *i, inner_axis));
+            let read_here = accs.iter().any(|(_, _, rin, _)| reaches(k, *rin, v));
+            (dense && first_is_axis && rest_fixed && read_here).then_some(v)
+        })
+        .collect()
+}
+
+/// The element loop of a segment when the dense operands are read in runs.
+///
+/// ```text
+/// for g in 0..span/run:                       // constant trip count
+///   col_c = seg + g·run + c; w_c = dequant(col_c)   for c in 0..run
+///   per tiled index:
+///     x_0..x_{run-1} = run of x at col_0       // one access
+///     acc += f(w_0, x_0, …); …; acc += f(w_{run-1}, x_{run-1}, …)
+/// ```
+///
+/// Each accumulator still receives its terms in column order, one per element,
+/// so the sum is the one the element loop computes; what changes is that a
+/// dense operand is read once per run instead of once per element. The decoded
+/// weights do not depend on the tiled axis and are computed once for every
+/// index, as in the element loop.
+#[expect(clippy::too_many_arguments)]
+fn lower_run_groups(
+    lo: &mut Lowerer,
+    heads: &[SegmentHeader],
+    runs: &[ValueId],
+    seg: VarId,
+    span: u32,
+    inner_axis: AxisId,
+    accs: &[Accum],
+    tile: Option<&TiledAccums>,
+) -> Result<Stmt, LowerError> {
+    let run = lo.reduce_run;
+    let inner_name = lo.k.axes()[inner_axis.0 as usize].name.clone();
+    let group = lo.new_var(&format!("{inner_name}_g"), VarKind::Idx);
+    lo.begin_scope(true);
+    let e0 = lo.emit("e0", VarKind::Idx, LExpr::IMulC(group, run));
+    let mut cols = Vec::new();
+    let mut seeds: Vec<(ValueId, Vec<VarId>)> =
+        heads.iter().map(|h| (h.read.value, Vec::new())).collect();
+    for c in 0..run {
+        let elem = if c == 0 {
+            e0
+        } else {
+            lo.emit("e", VarKind::Idx, LExpr::IAddC(e0, c))
+        };
+        cols.push(lo.emit(&inner_name, VarKind::Idx, LExpr::IAdd(seg, elem)));
+        for (head, (_, values)) in heads.iter().zip(seeds.iter_mut()) {
+            let inb = lo.emit("inb", VarKind::Idx, LExpr::IAdd(head.inb0, elem));
+            values.push(lo.lower_dequant_element(
+                head.read.arg,
+                head.read.format,
+                &head.base,
+                &head.header,
+                inb,
+            )?);
+        }
+    }
+    let ctx = RunCtx {
+        inner_axis,
+        cols,
+        seeds,
+        runs,
+    };
+    match tile {
+        None => emit_run_accums(lo, accs, &ctx)?,
+        Some(tile) => emit_tiled_with(lo, tile, &mut |lo, accs| emit_run_accums(lo, accs, &ctx))?,
+    }
+    let body = lo.take_body();
+    Ok(Stmt::ForConst {
+        var: group,
+        count: span / run,
+        body,
+    })
+}
+
+/// What one run group resolved before its accumulations: the column of every
+/// element, the decoded weight of every element, and the dense reads to serve
+/// in runs.
+struct RunCtx<'a> {
+    inner_axis: AxisId,
+    cols: Vec<VarId>,
+    seeds: Vec<(ValueId, Vec<VarId>)>,
+    runs: &'a [ValueId],
+}
+
+/// One index's accumulations over a run group: the runs read at the group's
+/// first column, then the level once per element, each seeing its own column,
+/// weight and run element.
+///
+/// Every value that depends on the reduced axis is dropped from the memo
+/// between elements, or element `c` would reuse a register computed at `c - 1`.
+fn emit_run_accums(lo: &mut Lowerer, accs: &[Accum], ctx: &RunCtx) -> Result<(), LowerError> {
+    let k = lo.k;
+    let inner = ctx.inner_axis;
+    let keep = |env: &HashMap<ValueId, VarId>| -> HashMap<ValueId, VarId> {
+        env.iter()
+            .filter(|(v, _)| !depends_on_axis(k, **v, inner))
+            .map(|(v, r)| (*v, *r))
+            .collect()
+    };
+    lo.env = keep(&lo.env);
+    lo.axis_vars.insert(inner, ctx.cols[0]);
+    let mut run_regs = Vec::with_capacity(ctx.runs.len());
+    for &rv in ctx.runs {
+        let Op::Read { tensor, idx } = k.ops()[rv.0 as usize].clone() else {
+            unreachable!("run_reads returns reads only");
+        };
+        let idx_vars = match lo.linear {
+            Some(_) => Vec::new(),
+            None => lo.lower_idx(&idx)?,
+        };
+        let dsts: Vec<VarId> = (0..ctx.cols.len())
+            .map(|_| lo.new_var("t", VarKind::F32))
+            .collect();
+        lo.body.push(Stmt::LoadRun {
+            dsts: dsts.clone(),
+            arg: tensor,
+            ty: Lowerer::elem_mem_type(k, tensor)?,
+            addr: lo.dense_addr(tensor, &idx_vars),
+        });
+        run_regs.push(dsts);
+    }
+    let base = keep(&lo.env);
+    for (c, &col) in ctx.cols.iter().enumerate() {
+        lo.env = base.clone();
+        lo.axis_vars.insert(inner, col);
+        for (v, regs) in &ctx.seeds {
+            lo.env.insert(*v, regs[c]);
+        }
+        for (v, regs) in ctx.runs.iter().zip(&run_regs) {
+            lo.env.insert(*v, regs[c]);
+        }
+        emit_accums(lo, accs)?;
+    }
+    lo.env = keep(&lo.env);
+    Ok(())
 }
 
 /// The accumulations of one level, tiled or not.
@@ -270,13 +515,26 @@ fn emit_level(
 /// may be partial and its reads must not leave the tensor; the first needs no
 /// guard because the grid already returned past the axis.
 fn emit_tiled_accums(lo: &mut Lowerer, tile: &TiledAccums) -> Result<(), LowerError> {
+    emit_tiled_with(lo, tile, &mut emit_accums)
+}
+
+/// The accumulations of one index, as `emit_tiled_with` asks for them.
+type EmitIndex<'f> = dyn FnMut(&mut Lowerer, &[Accum]) -> Result<(), LowerError> + 'f;
+
+/// `emit_tiled_accums` with the accumulations of one index supplied by the
+/// caller: the plain level, or a run group's.
+fn emit_tiled_with(
+    lo: &mut Lowerer,
+    tile: &TiledAccums,
+    emit: &mut EmitIndex<'_>,
+) -> Result<(), LowerError> {
     let k = lo.k;
     let mut shared: HashMap<ValueId, VarId> = HashMap::new();
     for (r, (&idx, accs)) in tile.idx.iter().zip(tile.accs).enumerate() {
         lo.axis_vars.insert(tile.axis, idx);
         lo.results_env = tile.results[r].clone();
         if r == 0 {
-            emit_accums(lo, accs)?;
+            emit(lo, accs)?;
             shared = lo
                 .env
                 .iter()
@@ -287,7 +545,7 @@ fn emit_tiled_accums(lo: &mut Lowerer, tile: &TiledAccums) -> Result<(), LowerEr
         }
         let outer = lo.take_body();
         lo.env = shared.clone();
-        emit_accums(lo, accs)?;
+        emit(lo, accs)?;
         let guarded = lo.take_body();
         lo.body = outer;
         lo.body.push(Stmt::InBounds {

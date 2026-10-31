@@ -118,6 +118,20 @@ mod tests {
     /// Runs one case under `schedule` against the definition of the format:
     /// rows decoded by the portable oracle, then a plain dot product.
     fn run_case(format: QuantType, schedule: Schedule, blocks: usize, n_row: usize, n_tok: usize) {
+        run_case_strided(format, schedule, blocks, n_row, n_tok, 1);
+    }
+
+    /// The same, with consecutive columns of `b` `step` elements apart: a
+    /// step of one is the contiguous layout, anything else the one a run may
+    /// not read as consecutive elements.
+    fn run_case_strided(
+        format: QuantType,
+        schedule: Schedule,
+        blocks: usize,
+        n_row: usize,
+        n_tok: usize,
+        step: usize,
+    ) {
         let d = format.desc();
         let (be, bb) = (d.block_elements as usize, d.block_bytes as usize);
         let n_col = blocks * be;
@@ -132,6 +146,10 @@ mod tests {
             raw.extend_from_slice(&bytes);
         }
         let x = fill(&mut seed, n_col * n_tok);
+        let mut spread = vec![0f32; n_col * n_tok * step];
+        for (i, v) in x.iter().enumerate() {
+            spread[i * step] = *v;
+        }
 
         let mut expected = vec![0f32; n_row * n_tok];
         for t in 0..n_tok {
@@ -152,7 +170,16 @@ mod tests {
                 shape: [n_col, n_row, 1, 1],
                 nb: [bb, row_bytes, row_bytes * n_row, row_bytes * n_row],
             }),
-            BoundArg::In(TensorView::strided_2d(&x, n_col, n_tok, n_col)),
+            BoundArg::In(TensorView {
+                data: &spread,
+                shape: [n_col, n_tok, 1, 1],
+                nb: [
+                    4 * step,
+                    4 * step * n_col,
+                    4 * step * n_col * n_tok,
+                    4 * step * n_col * n_tok,
+                ],
+            }),
             BoundArg::Out(TensorViewMut::contiguous_2d(&mut got, n_row, n_tok)),
         ];
         run(&lk, &mut args, &[]).unwrap();
@@ -208,6 +235,108 @@ mod tests {
                     run_case(format, schedule, blocks, rows, toks);
                 }
             }
+        }
+    }
+
+    /// Runs: a segment reads its four activations in one access. The sum each
+    /// accumulator receives is the element loop's, term for term, with or
+    /// without a lane tile, and partial tiles stay guarded. A `b` whose columns
+    /// are not consecutive takes the element half of the guard.
+    #[test]
+    fn parity_of_the_run_lowering_against_the_reference() {
+        use rir_lower::GpuBackend;
+        for format in variants() {
+            for cols in [1u32, 4] {
+                for &(blocks, rows, toks) in &[(1usize, 1usize, 1usize), (2, 5, 3), (33, 3, 9)] {
+                    let schedule = if cols == 1 {
+                        Schedule::gpu_subgroup(GpuBackend::Metal)
+                    } else {
+                        Schedule::gpu_subgroup_cols(GpuBackend::Metal, cols)
+                    };
+                    for step in [1, 2] {
+                        let schedule = schedule.clone().with_reduce_run(4);
+                        run_case_strided(format, schedule, blocks, rows, toks, step);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A run divides the segment of the quantized read; one it does not divide
+    /// is refused, not read element by element under a name that says runs.
+    #[test]
+    fn a_run_that_does_not_divide_the_segment_is_refused() {
+        use rir_lower::{GpuBackend, LowerError};
+        let kernel = build(QuantType::Q8_0).unwrap();
+        let err = rir_lower::lower(
+            &kernel,
+            Schedule::gpu_subgroup(GpuBackend::Metal).with_reduce_run(3),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, LowerError::ReduceRunUnsupported { .. }),
+            "{err}"
+        );
+    }
+
+    /// The shipped GPU schedules read their activations in runs where `b` is
+    /// contiguous: one `UnitStride`, whose unit half reads `b` in one
+    /// `LoadRun` of four per segment and per tiled index and never element by
+    /// element, and whose strided half is the element loop. The CPU keeps the
+    /// serial element loop, which is the oracle's own order.
+    #[test]
+    fn the_shipped_schedules_read_the_activations_in_runs() {
+        use rir_lower::{Stmt, child_blocks_of};
+        /// `(runs of b, element reads of b)` under `stmts`.
+        fn count(stmts: &[Stmt]) -> (usize, usize) {
+            let mut n = (0, 0);
+            for s in stmts {
+                match s {
+                    Stmt::LoadRun { dsts, arg, .. } => {
+                        assert_eq!((dsts.len(), arg.0), (4, 1));
+                        n.0 += 1;
+                    }
+                    Stmt::Load { arg, .. } if arg.0 == 1 => n.1 += 1,
+                    _ => {
+                        for b in child_blocks_of(s) {
+                            let (r, e) = count(b);
+                            n = (n.0 + r, n.1 + e);
+                        }
+                    }
+                }
+            }
+            n
+        }
+        fn guards(stmts: &[Stmt], out: &mut Vec<(usize, usize, usize, usize)>) {
+            for s in stmts {
+                if let Stmt::UnitStride {
+                    args,
+                    unit,
+                    strided,
+                } = s
+                {
+                    assert_eq!(args.len(), 1);
+                    let (u, s) = (count(unit), count(strided));
+                    out.push((u.0, u.1, s.0, s.1));
+                } else {
+                    for b in child_blocks_of(s) {
+                        guards(b, out);
+                    }
+                }
+            }
+        }
+        let kernel = build(QuantType::Q4_K).unwrap();
+        for schedule in rir_lower::schedules_for(rir_lower::Family::MulMatVec) {
+            if schedule.backend() == rir_lower::Backend::Cpu {
+                assert_eq!(schedule.reduce_run(), 1);
+                continue;
+            }
+            let tile = schedule.lane_tile() as usize;
+            assert_eq!(schedule.reduce_run(), 4);
+            let lk = rir_lower::lower(&kernel, schedule).unwrap();
+            let mut found = Vec::new();
+            guards(&lk.body, &mut found);
+            assert_eq!(found, [(tile, 0, 0, tile)]);
         }
     }
 

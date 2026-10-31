@@ -333,26 +333,36 @@ pub fn candidates(subject: &Subject, gpu: GpuBackend) -> Vec<Candidate> {
         // could not reproduce the refusal.
         Family::RowReduce | Family::RmsNorm | Family::MulMatVec => {
             // The GEMV's own question first: how many tokens one workgroup
-            // should own, so the weight row is decoded once for all of them.
+            // should own, so the weight row is decoded once for all of them -
+            // with the activation read in runs of four, as the table does, so
+            // a geometry is compared with the lowering it would ship with.
             if family == Family::MulMatVec {
+                v.push(Candidate::new(
+                    "subgroup 32 run4",
+                    format!("Schedule::gpu_subgroup({gpu_name}).with_reduce_run(4)"),
+                    Schedule::gpu_subgroup(gpu).with_reduce_run(4),
+                ));
                 for cols in [2u32, 4, 8, 16] {
                     v.push(Candidate::new(
-                        format!("subgroup cols{cols}"),
-                        format!("Schedule::gpu_subgroup_cols({gpu_name}, {cols})"),
-                        Schedule::gpu_subgroup_cols(gpu, cols),
+                        format!("subgroup cols{cols} run4"),
+                        format!(
+                            "Schedule::gpu_subgroup_cols({gpu_name}, {cols}).with_reduce_run(4)"
+                        ),
+                        Schedule::gpu_subgroup_cols(gpu, cols).with_reduce_run(4),
                     ));
                 }
                 for lanes in [64u32, 128] {
                     for cols in [4u32, 8] {
                         v.push(Candidate::new(
-                            format!("hier {lanes} cols{cols}"),
+                            format!("hier {lanes} cols{cols} run4"),
                             format!(
                                 "Schedule::gpu_hier_reduce({gpu_name}).with_block([{lanes}, 1, \
-                                 1]).with_lane_tile({cols})"
+                                 1]).with_lane_tile({cols}).with_reduce_run(4)"
                             ),
                             Schedule::gpu_hier_reduce(gpu)
                                 .with_block([lanes, 1, 1])
-                                .with_lane_tile(cols),
+                                .with_lane_tile(cols)
+                                .with_reduce_run(4),
                         ));
                     }
                 }

@@ -36,6 +36,9 @@ pub(crate) struct Lowerer<'k> {
     /// proved on the semantic graph that the access *is* that point of the
     /// flattened space. `None` is the ordinary Σ `idx[d] · nb[d]`.
     pub(crate) linear: Option<(VarId, u32)>,
+    /// `Schedule::reduce_run`: elements of the reduced axis a segment reads
+    /// from a dense operand per access.
+    pub(crate) reduce_run: u32,
 }
 
 impl<'k> Lowerer<'k> {

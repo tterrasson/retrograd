@@ -74,6 +74,15 @@ impl MemoryModel for crate::dialect::Vulkan {
         p.line(&l);
     }
 
+    fn read_at(p: &Printer<'_, Self>, arg: rir_core::ArgId, ty: MemType, at: &str) -> String {
+        let view = view_name(&p.k.args[arg.0 as usize].name, ty);
+        let idx = index_expr(at, ty.size_bytes());
+        match ty {
+            MemType::F32 => format!("{view}[{idx}]"),
+            _ => format!("float({view}[{idx}])"),
+        }
+    }
+
     fn store(p: &mut Printer<'_, Self>, op: &StoreOp<'_>) {
         let StoreOp {
             arg,

@@ -305,6 +305,15 @@ fn regroup_len(lk: &LoopKernel, ext: &[usize]) -> usize {
 /// regroups nothing, `n` is one and the bound is a handful of ULPs - a
 /// vectorized band member that disagrees at all is a bug, not a rounding.
 ///
+/// When terms are regrouped, the bound scales with the larger of the element
+/// and the output's root mean square. A reassociation error is proportional to
+/// the partial sums, not to the result: a sum that cancels - q6_K's
+/// offset-centred weights do, routinely - ends far below the partial sums it
+/// went through, and a bound relative to the element alone calls every
+/// regrouping of it a disagreement. The sweep has no `Σ|terms|` per element;
+/// the RMS of the whole output is its scale for a random fixture, and it
+/// cannot hide a wrong formula, which is off by the output's own magnitude.
+///
 /// This is **not** the parity lane's check, and cannot replace it: it compares
 /// RIR to RIR, so a formula wrong in both is invisible here. `family_parity`
 /// compares to the interpreted oracle, and `scripts/test-rir.sh` to the native
@@ -314,11 +323,42 @@ pub fn agrees(reference: &[f32], got: &[f32], regroup_len: usize) -> bool {
         return false;
     }
     let rel = 8.0 * f32::EPSILON as f64 * (regroup_len as f64).sqrt();
+    let scale = if regroup_len > 1 { rms(reference) } else { 0.0 };
     reference.iter().zip(got).all(|(a, b)| {
         if a.is_nan() || b.is_nan() {
             return a.is_nan() == b.is_nan();
         }
-        let bound = rel * (1.0 + f64::from(a.abs()));
+        let bound = rel * (1.0 + f64::from(a.abs()).max(scale));
         (f64::from(*a) - f64::from(*b)).abs() <= bound
     })
+}
+
+/// Root mean square of the finite elements; zero when there are none.
+fn rms(values: &[f32]) -> f64 {
+    let (sum, n) = values
+        .iter()
+        .filter(|v| v.is_finite())
+        .fold((0.0f64, 0usize), |(s, n), v| {
+            (s + f64::from(*v).powi(2), n + 1)
+        });
+    if n == 0 { 0.0 } else { (sum / n as f64).sqrt() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::agrees;
+
+    #[test]
+    fn a_regrouped_sum_is_bounded_by_the_output_scale_not_the_element() {
+        // One element cancelled to near zero among peers of magnitude 600: a
+        // reassociation moves it by a few ULPs of 600, not of 0.01.
+        let reference = [600.0, -590.0, 0.01, 610.0];
+        let regrouped = [600.0, -590.0, 0.0103, 610.0];
+        assert!(agrees(&reference, &regrouped, 1024));
+        // A wrong value is still wrong at that scale.
+        let wrong = [600.0, -590.0, 1.0, 610.0];
+        assert!(!agrees(&reference, &wrong, 1024));
+        // Without regrouping the element alone sets the bound.
+        assert!(!agrees(&reference, &regrouped, 1));
+    }
 }

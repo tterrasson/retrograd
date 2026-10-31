@@ -54,6 +54,15 @@ pub(crate) struct StoreOp<'a> {
     pub bound: Option<(VarId, AxisId)>,
 }
 
+/// A run of consecutive elements along dimension 0, as the enclosing
+/// `Stmt::LoadRun` describes it.
+pub(crate) struct LoadRunOp<'a> {
+    pub dsts: &'a [VarId],
+    pub arg: ArgId,
+    pub ty: MemType,
+    pub addr: &'a [AddrTerm],
+}
+
 /// How a backend reads and writes a binding.
 ///
 /// Bounded by [`Dialect`] rather than being a supertrait of it: the printer is
@@ -62,4 +71,80 @@ pub(crate) struct StoreOp<'a> {
 pub(crate) trait MemoryModel: Dialect + Sized {
     fn load(p: &mut Printer<'_, Self>, op: &LoadOp<'_>);
     fn store(p: &mut Printer<'_, Self>, op: &StoreOp<'_>);
+
+    /// One element of `arg` at the byte offset `at`, as an F32 expression.
+    fn read_at(p: &Printer<'_, Self>, arg: ArgId, ty: MemType, at: &str) -> String;
+
+    /// `width` consecutive elements at the byte offset `at` as **one** access,
+    /// spelled as a `float{width}` expression, or `None` when the backend has
+    /// no access wider than an element that the contract's alignment allows.
+    fn read_vector_at(
+        _p: &Printer<'_, Self>,
+        _arg: ArgId,
+        _ty: MemType,
+        _at: &str,
+        _width: u32,
+    ) -> Option<String> {
+        None
+    }
+}
+
+/// The widest single access `read_vector_at` is asked for: four elements, the
+/// widest vector all three shading languages name.
+const RUN_CHUNK: usize = 4;
+
+impl<D: Dialect + MemoryModel> Printer<'_, D> {
+    /// A `Stmt::LoadRun`, the same skeleton on every GPU backend.
+    ///
+    /// Lowering only places a run under a `Stmt::UnitStride` that has tested
+    /// `nb[0]` against the element size, so the run is consecutive bytes: read
+    /// in vectors where the backend has them, at constant offsets otherwise,
+    /// and with no test of its own - a test here, inside the segment loop, is
+    /// what the guard exists to keep out of it.
+    pub(crate) fn load_run(&mut self, op: &LoadRunOp<'_>) {
+        let LoadRunOp {
+            dsts,
+            arg,
+            ty,
+            addr,
+        } = *op;
+        let elem = ty.size_bytes();
+        let names: Vec<String> = dsts.iter().map(|d| self.var(*d).to_string()).collect();
+        let Some(first) = names.first() else {
+            return;
+        };
+        let at = format!("{first}_a");
+        let a = self.addr(arg, addr);
+        self.line(&format!("const {} {at} = {a};", D::UINT));
+        let offset = |c: usize| {
+            if c == 0 {
+                at.clone()
+            } else {
+                format!("{at} + {}u", c as u32 * elem)
+            }
+        };
+        for start in (0..names.len()).step_by(RUN_CHUNK) {
+            let width = (names.len() - start).min(RUN_CHUNK);
+            let vector = (width > 1)
+                .then(|| D::read_vector_at(self, arg, ty, &offset(start), width as u32))
+                .flatten();
+            match vector {
+                Some(v) => {
+                    let kind = rir_lower::VarKind::Vec(width as u32);
+                    let r = format!("{}_r", names[start]);
+                    self.line(&format!("const {} {r} = {v};", D::decl_ty(kind)));
+                    for c in 0..width {
+                        let comp = D::component(kind, &r, c);
+                        self.line(&format!("const float {} = {comp};", names[start + c]));
+                    }
+                }
+                None => {
+                    for (c, name) in names.iter().enumerate().skip(start).take(width) {
+                        let e = D::read_at(self, arg, ty, &offset(c));
+                        self.line(&format!("const float {name} = {e};"));
+                    }
+                }
+            }
+        }
+    }
 }

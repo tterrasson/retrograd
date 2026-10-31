@@ -163,6 +163,7 @@ pub(crate) fn child_blocks(s: &mut Stmt) -> Vec<&mut Vec<Stmt>> {
             tail_body,
             ..
         } => vec![vec_body, tail_body],
+        Stmt::UnitStride { unit, strided, .. } => vec![unit, strided],
         _ => Vec::new(),
     }
 }
@@ -208,6 +209,10 @@ fn defs_of(s: &Stmt, out: &mut HashSet<VarId>) {
         Stmt::LaneZero { body, .. } | Stmt::If { body, .. } | Stmt::InBounds { body, .. } => {
             defs_of_block(body, out)
         }
+        Stmt::UnitStride { unit, strided, .. } => {
+            defs_of_block(unit, out);
+            defs_of_block(strided, out);
+        }
         Stmt::StageTiles { tiles, body, .. } => {
             for t in tiles {
                 // The cooperative loop lives in the emitters, so these
@@ -238,6 +243,9 @@ fn defs_of(s: &Stmt, out: &mut HashSet<VarId>) {
         | Stmt::LoadShared { dst, .. }
         | Stmt::Load { dst, .. } => {
             out.insert(*dst);
+        }
+        Stmt::LoadRun { dsts, .. } => {
+            out.extend(dsts.iter().copied());
         }
         // Written, so nothing that reads it may leave the loop that writes it,
         // the very reason a loop-carried value needs its own statement.
@@ -368,7 +376,9 @@ fn extract(
                     rewrite_addr(*arg, terms, &varying, hoisted, bases, ctx);
                 }
             }
-            Stmt::Load { arg, addr, .. } | Stmt::Store { arg, addr, .. } => {
+            Stmt::Load { arg, addr, .. }
+            | Stmt::LoadRun { arg, addr, .. }
+            | Stmt::Store { arg, addr, .. } => {
                 rewrite_addr(*arg, addr, &varying, hoisted, bases, ctx);
             }
             // A tile's loader runs inside the emitters' cooperative loop, which

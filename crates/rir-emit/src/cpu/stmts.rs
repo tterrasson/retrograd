@@ -190,6 +190,12 @@ impl CpuPrinter<'_> {
                     };
                     self.line(&l);
                 }
+                Stmt::LoadRun { .. } | Stmt::UnitStride { .. } => {
+                    return Err(EmitError::UnsupportedStmt {
+                        backend: "cpu",
+                        stmt: "run read",
+                    });
+                }
                 Stmt::Load {
                     dst,
                     arg,

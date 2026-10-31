@@ -302,6 +302,7 @@ fn for_each_use(s: &mut Stmt, f: &mut impl FnMut(&mut VarId)) {
         | Stmt::ParallelLane { .. }
         | Stmt::For { .. } => {}
         Stmt::VecTail { base, .. } => f(base),
+        Stmt::UnitStride { .. } => {}
         Stmt::ForStrided { start, .. } => f(start),
         Stmt::ForChunk { lane, .. } => f(lane),
         Stmt::ForConst { .. } | Stmt::ForTiled { .. } => {}
@@ -360,7 +361,7 @@ fn for_each_use(s: &mut Stmt, f: &mut impl FnMut(&mut VarId)) {
                 f(var);
             }
         }
-        Stmt::Load { addr, .. } => addr_uses(addr, f),
+        Stmt::Load { addr, .. } | Stmt::LoadRun { addr, .. } => addr_uses(addr, f),
         Stmt::Store {
             addr, value, bound, ..
         } => {

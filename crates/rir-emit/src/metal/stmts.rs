@@ -77,6 +77,33 @@ impl MemoryModel for crate::dialect::Metal {
         p.line(&format!("const float {} = {value};", p.var(dst)));
     }
 
+    fn read_at(p: &Printer<'_, Self>, arg: rir_core::ArgId, ty: MemType, at: &str) -> String {
+        let arg_name = &p.k.args[arg.0 as usize].name;
+        let value = format!("*(device const {} *)({arg_name} + ({at}))", mem_ty(ty));
+        if ty == MemType::F32 {
+            value
+        } else {
+            format!("float({value})")
+        }
+    }
+
+    /// One `packed_{type}{width}` read: its alignment is one element, so a run
+    /// needs no more than the unit stride the caller has already tested.
+    fn read_vector_at(
+        p: &Printer<'_, Self>,
+        arg: rir_core::ArgId,
+        ty: MemType,
+        at: &str,
+        width: u32,
+    ) -> Option<String> {
+        let arg_name = &p.k.args[arg.0 as usize].name;
+        let load = format!(
+            "*(device const packed_{}{width} *)({arg_name} + ({at}))",
+            mem_ty(ty)
+        );
+        Some(format!("float{width}({load})"))
+    }
+
     fn store(p: &mut Printer<'_, Self>, op: &StoreOp<'_>) {
         let StoreOp {
             arg,

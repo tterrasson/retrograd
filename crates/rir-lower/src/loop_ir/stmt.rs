@@ -212,6 +212,21 @@ pub enum Stmt {
         tail_var: VarId,
         tail_body: Vec<Stmt>,
     },
+    /// The two halves of a loop whose dense operands are read in runs: `unit`
+    /// when every listed argument has `nb[0]` equal to its element size,
+    /// `strided` otherwise.
+    ///
+    /// The test is on push constants, so it is uniform, and it is taken once
+    /// around the loop rather than at each run: a branch inside the segment
+    /// loop was measured to cost the whole gain of the run. The halves are the
+    /// same accumulation lowered twice, into the same accumulators, so neither
+    /// is a transcription of the other; no layout is claimed, since every
+    /// stride the contract accepts takes one half or the other.
+    UnitStride {
+        args: Vec<(ArgId, MemType)>,
+        unit: Vec<Stmt>,
+        strided: Vec<Stmt>,
+    },
     /// Workgroup/subgroup lanes: the body executes once per lane with `var`
     /// set to the lane index. GPU hardware executes this as SPMD with no
     /// emitted loop; the interpreter simulates it with per-lane registers.
@@ -451,6 +466,27 @@ pub enum Stmt {
         addr: Vec<AddrTerm>,
         width: u32,
     },
+    /// `dsts.len()` consecutive elements of dimension 0, `nb[0]` bytes apart,
+    /// starting at the address: element `c` lands in `dsts[c]`, an ordinary
+    /// scalar register.
+    ///
+    /// Not a `Load` with a width, and the difference is the point: a widened
+    /// load feeds a body that is itself widened, one component per lane of the
+    /// vector, while a run feeds a body that consumes the elements one after
+    /// the other - a reduction over the run, in the same order it had when each
+    /// element was read on its own. The registers stay scalar, so the oracle
+    /// reads `c · nb[0]` further and the arithmetic downstream is unchanged.
+    ///
+    /// It only appears in the `unit` half of a `Stmt::UnitStride` naming its
+    /// argument, so an emitter prints it as consecutive elements - one vector
+    /// access where the backend has one - and tests nothing. The oracle steps
+    /// by `nb[0]`, which under that guard is the same address.
+    LoadRun {
+        dsts: Vec<VarId>,
+        arg: ArgId,
+        ty: MemType,
+        addr: Vec<AddrTerm>,
+    },
     Store {
         arg: ArgId,
         /// Element type **in memory**. The register that
@@ -508,6 +544,7 @@ pub fn child_blocks_of(s: &Stmt) -> Vec<&Vec<Stmt>> {
             tail_body,
             ..
         } => vec![vec_body, tail_body],
+        Stmt::UnitStride { unit, strided, .. } => vec![unit, strided],
         _ => Vec::new(),
     }
 }

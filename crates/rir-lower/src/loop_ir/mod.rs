@@ -235,7 +235,7 @@ impl LoopKernel {
         fn walk(stmts: &[Stmt], out: &mut [BTreeSet<MemType>]) {
             for s in stmts {
                 match s {
-                    Stmt::Load { arg, ty, .. } => {
+                    Stmt::Load { arg, ty, .. } | Stmt::LoadRun { arg, ty, .. } => {
                         out[arg.0 as usize].insert(*ty);
                     }
                     Stmt::Store { arg, ty, .. } => {
@@ -271,6 +271,10 @@ impl LoopKernel {
                     } => {
                         walk(vec_body, out);
                         walk(tail_body, out);
+                    }
+                    Stmt::UnitStride { unit, strided, .. } => {
+                        walk(unit, out);
+                        walk(strided, out);
                     }
                     Stmt::Barrier
                     | Stmt::Set { .. }
@@ -335,6 +339,9 @@ impl LoopKernel {
                         tail_body,
                         ..
                     } => walk(vec_body, lanes).max(walk(tail_body, lanes)),
+                    Stmt::UnitStride { unit, strided, .. } => {
+                        walk(unit, lanes).max(walk(strided, lanes))
+                    }
                     _ => None,
                 })
                 .max()
@@ -391,6 +398,10 @@ impl LoopKernel {
                     } => {
                         walk(vec_body, out);
                         walk(tail_body, out);
+                    }
+                    Stmt::UnitStride { unit, strided, .. } => {
+                        walk(unit, out);
+                        walk(strided, out);
                     }
                     _ => {}
                 }

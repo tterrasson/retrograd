@@ -100,6 +100,12 @@ pub enum LowerError {
     /// shader ignores - one workgroup in `tile` computing anything at all.
     #[error("lane_tile: {why}")]
     LaneTileUnsupported { why: &'static str },
+    /// `Schedule::reduce_run` above one on a lowering that cannot honour it:
+    /// no segmented reduction, or a segment the run does not divide. Refused
+    /// rather than read one element at a time, so a variant never publishes a
+    /// lowering it did not get.
+    #[error("reduce_run: {why}")]
+    ReduceRunUnsupported { why: &'static str },
     /// `Schedule::linear_addr` on a kernel whose accesses are not the identity
     /// on the flattened space.
     ///

@@ -449,27 +449,43 @@ fn mat_mul_naive(v: &mut Vec<Schedule>) {
 /// contraction.
 ///
 /// That fallback reads and decodes the weight row once per token, so a decode
-/// step costs the token count times the weight traffic. The lane-tiled variant
-/// gives one workgroup four tokens and decodes the row once for them. Swept on
-/// the Qwen3 0.6B projections (Apple M5, shader alone), it wins from four
-/// tokens up - q8_0 1.2-1.5× on Metal and 1.2-1.4× on Vulkan, q4_K 1.2-1.6× on
-/// Metal - and loses about 2× at one token, where three of its four
-/// accumulators are guarded off. Hence the rule: four to 32 tokens, the decode
-/// steps measured; the fallback keeps one to three and the prefill.
+/// step costs the token count times the weight traffic. The lane-tiled variants
+/// give one workgroup several tokens and decode the row once for them.
+///
+/// Every variant reads the activation column in runs of four (`reduce_run`):
+/// a lane's segment is four consecutive columns, so its four activations are
+/// one access instead of four. On the Qwen3 0.6B projections (q8_0 and q4_K
+/// `[1024, 3072]`, shader alone, Apple M5) that is 1.8-2.1× on the tiled
+/// variant on Metal and up to 1.7× on the fallback, the same bits out; on
+/// Vulkan (MoltenVK), which has no unaligned vector read, it is neutral to
+/// 1.3×. Vectorizing the weight bytes as well changed nothing.
+///
+/// With runs, four columns win from two tokens up on both backends (the
+/// fallback keeps one, where three of the four accumulators are guarded off),
+/// and eight columns win a further 6-15 % from eight tokens up.
 fn mul_mat_vec(v: &mut Vec<Schedule>) {
     let family = Family::MulMatVec;
     for gpu in targets_for(family) {
-        v.push(Schedule::gpu_subgroup(gpu));
+        v.push(Schedule::gpu_subgroup(gpu).with_reduce_run(4));
     }
-    let decode_steps = || {
+    let steps = |min: u32| {
         vec![ShapeRule {
             axes: &["plane"],
-            min: 4,
-            max: 32,
+            min,
+            max: rir_core::catalog::Regime::DECODE_MAX_TOKENS,
         }]
     };
     for gpu in targets_for(family) {
-        v.push(Schedule::gpu_subgroup_cols(gpu, 4).claiming(90, decode_steps()));
+        v.push(
+            Schedule::gpu_subgroup_cols(gpu, 4)
+                .with_reduce_run(4)
+                .claiming(90, steps(2)),
+        );
+        v.push(
+            Schedule::gpu_subgroup_cols(gpu, 8)
+                .with_reduce_run(4)
+                .claiming(95, steps(8)),
+        );
     }
 }
 

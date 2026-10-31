@@ -98,6 +98,18 @@ pub struct Schedule {
     /// no lane strategy, a flattened row space, a kernel with one parallel axis
     /// or a write inside the reduced axis.
     pub(crate) lane_tile: u32,
+    /// Consecutive elements of the **reduced** axis a segmented reduction
+    /// reads from a dense operand in one access (`Stmt::LoadRun`), instead of
+    /// one access per element.
+    ///
+    /// Not a layout claim, unlike `vector_width`: the run steps by the
+    /// operand's own `nb[0]`, so every stride the contract accepts is read
+    /// correctly, and the emitters take a single vector access only when that
+    /// stride is the element size - a uniform test in the shader, not a
+    /// condition the dispatcher has to evaluate. `1` everywhere else, and
+    /// refused by lowering where no segment of a quantized read exists for the
+    /// run to divide.
+    pub(crate) reduce_run: u32,
     pub(crate) reduction: ReductionStrategy,
     /// Indices of the reduction axis one staged tile covers, under
     /// `ReductionStrategy::TiledStage`. Zero everywhere else, and a
@@ -162,6 +174,10 @@ impl Schedule {
     /// lowering is lane-tiled.
     pub fn lane_tile(&self) -> u32 {
         self.lane_tile
+    }
+
+    pub fn reduce_run(&self) -> u32 {
+        self.reduce_run
     }
 
     pub fn reduction(&self) -> ReductionStrategy {
@@ -238,6 +254,12 @@ impl Schedule {
             return Err(ScheduleError::Malformed {
                 backend: self.backend,
                 why: "lane_tile is zero: a workgroup owns at least one index",
+            });
+        }
+        if self.reduce_run == 0 {
+            return Err(ScheduleError::Malformed {
+                backend: self.backend,
+                why: "reduce_run is zero: an access reads at least one element",
             });
         }
         if self.reduction == ReductionStrategy::TiledStage && self.tile_depth == 0 {
@@ -362,6 +384,7 @@ impl Schedule {
             flatten: false,
             linear_addr: false,
             lane_tile: 1,
+            reduce_run: 1,
             tile_depth: 0,
             scan: ScanStrategy::Serial,
             reduction: ReductionStrategy::Serial,
@@ -402,6 +425,7 @@ impl Schedule {
             flatten: false,
             linear_addr: false,
             lane_tile: 1,
+            reduce_run: 1,
             tile_depth: 0,
             scan: ScanStrategy::Serial,
             reduction: ReductionStrategy::SubgroupTree,
@@ -428,6 +452,7 @@ impl Schedule {
             flatten: false,
             linear_addr: false,
             lane_tile: 1,
+            reduce_run: 1,
             tile_depth: 0,
             scan: ScanStrategy::Serial,
             reduction: ReductionStrategy::Serial,
@@ -484,6 +509,15 @@ impl Schedule {
     pub fn with_lane_tile(mut self, cols: u32) -> Self {
         self.lane_tile = cols;
         self.named(cols_variant(cols))
+    }
+
+    /// The same lowering reading `run` consecutive elements of the reduced
+    /// axis per access from every dense operand indexed by it
+    /// (`reduce_run`). The name is unchanged: the run changes how a segment
+    /// reads, not which shapes the variant serves.
+    pub fn with_reduce_run(mut self, run: u32) -> Self {
+        self.reduce_run = run;
+        self
     }
 
     /// Blocked scan: one row per single-subgroup workgroup, the scanned axis

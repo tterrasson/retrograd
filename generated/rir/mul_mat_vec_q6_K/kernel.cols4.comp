@@ -45,73 +45,233 @@ void main() {
     float acc7_1_v7 = 0.0;
     float acc7_2_v8 = 0.0;
     float acc7_3_v9 = 0.0;
-    const uint seg_start_v10 = lane_v2 * 4u;
-    const uint base_v56 = row_v0 * pc.a_nb1;
-    const float q_off_v39 = 32.0;
-    for (uint col_seg_v11 = seg_start_v10; col_seg_v11 < pc.n_col; col_seg_v11 += 128u) {
-        const uint blk_v12 = col_seg_v11 / 256u;
-        const uint inb0_v13 = col_seg_v11 % 256u;
-        const float scale_v14 = float(a_f16[(blk_v12 * pc.a_nb0 + base_v56 + 208u) / 2u]);
-        const uint sub_is_v15 = inb0_v13 / 16u;
-        const float sub_sc_f_v16 = float(a_i8[blk_v12 * pc.a_nb0 + sub_is_v15 + base_v56 + 192u]);
-        const uint base_v55 = blk_v12 * pc.a_nb0 + row_v0 * pc.a_nb1;
-        const float dl_v41 = scale_v14 * sub_sc_f_v16;
-        for (uint col_e_v17 = 0u; col_e_v17 < 4u; ++col_e_v17) {
-            const uint col_v18 = col_seg_v11 + col_e_v17;
-            const uint inb_v19 = inb0_v13 + col_e_v17;
-            const uint q_grp_v20 = inb_v19 / 128u;
-            const uint q_inp_v21 = inb_v19 % 64u;
-            const uint q_byte_v22 = uint(a_u8[q_grp_v20 * 64u + q_inp_v21 + base_v55]);
-            const uint q_ing_v23 = inb_v19 % 128u;
-            const uint q_sel_v24 = q_ing_v23 / 64u;
-            const uint q_sh_v25 = q_sel_v24 * 4u;
-            const uint q_shr_v26 = q_byte_v22 >> q_sh_v25;
-            const uint q_v27 = q_shr_v26 & 15u;
-            const uint qh_inp_v29 = inb_v19 % 32u;
-            const uint qh_byte_v30 = uint(a_u8[q_grp_v20 * 32u + qh_inp_v29 + base_v55 + 128u]);
-            const uint qh_sel_v32 = q_ing_v23 / 32u;
-            const uint qh_sh_v33 = qh_sel_v32 * 2u;
-            const uint qh_shr_v34 = qh_byte_v30 >> qh_sh_v33;
-            const uint qh_v35 = qh_shr_v34 & 3u;
-            const uint qh_up_v36 = qh_v35 * 16u;
-            const uint q_full_v37 = q_v27 | qh_up_v36;
-            const float q_f_v38 = float(q_full_v37);
-            const float q_c_v40 = q_f_v38 - q_off_v39;
-            const float t_v42 = dl_v41 * q_c_v40;
-            const float t_v43 = b[(col_v18 * pc.b_nb0 + plane_v1 * pc.b_nb1) / 4u];
-            const float t_v44 = t_v42 * t_v43;
-            acc7_v6 += t_v44;
-            if (plane1_v3 < pc.n_plane) {
-                const float t_v45 = b[(col_v18 * pc.b_nb0 + plane1_v3 * pc.b_nb1) / 4u];
-                const float t_v46 = t_v42 * t_v45;
-                acc7_1_v7 += t_v46;
+    if (pc.b_nb0 == 4u) {
+        const uint seg_start_v10 = lane_v2 * 4u;
+        const uint base_v200 = row_v0 * pc.a_nb1;
+        const float q_off_v40 = 32.0;
+        for (uint col_seg_v11 = seg_start_v10; col_seg_v11 < pc.n_col; col_seg_v11 += 128u) {
+            const uint blk_v12 = col_seg_v11 / 256u;
+            const uint inb0_v13 = col_seg_v11 % 256u;
+            const float scale_v14 = float(a_f16[(blk_v12 * pc.a_nb0 + base_v200 + 208u) / 2u]);
+            const uint sub_is_v15 = inb0_v13 / 16u;
+            const float sub_sc_f_v16 = float(a_i8[blk_v12 * pc.a_nb0 + sub_is_v15 + base_v200 + 192u]);
+            const uint base_v199 = blk_v12 * pc.a_nb0 + row_v0 * pc.a_nb1;
+            const float dl_v42 = scale_v14 * sub_sc_f_v16;
+            for (uint col_g_v17 = 0u; col_g_v17 < 1u; ++col_g_v17) {
+                const uint e0_v18 = col_g_v17 * 4u;
+                const uint col_v19 = col_seg_v11 + e0_v18;
+                const uint inb_v20 = inb0_v13 + e0_v18;
+                const uint q_grp_v21 = inb_v20 / 128u;
+                const uint q_inp_v22 = inb_v20 % 64u;
+                const uint q_byte_v23 = uint(a_u8[q_grp_v21 * 64u + q_inp_v22 + base_v199]);
+                const uint q_ing_v24 = inb_v20 % 128u;
+                const uint q_sel_v25 = q_ing_v24 / 64u;
+                const uint q_sh_v26 = q_sel_v25 * 4u;
+                const uint q_shr_v27 = q_byte_v23 >> q_sh_v26;
+                const uint q_v28 = q_shr_v27 & 15u;
+                const uint qh_inp_v30 = inb_v20 % 32u;
+                const uint qh_byte_v31 = uint(a_u8[q_grp_v21 * 32u + qh_inp_v30 + base_v199 + 128u]);
+                const uint qh_sel_v33 = q_ing_v24 / 32u;
+                const uint qh_sh_v34 = qh_sel_v33 * 2u;
+                const uint qh_shr_v35 = qh_byte_v31 >> qh_sh_v34;
+                const uint qh_v36 = qh_shr_v35 & 3u;
+                const uint qh_up_v37 = qh_v36 * 16u;
+                const uint q_full_v38 = q_v28 | qh_up_v37;
+                const float q_f_v39 = float(q_full_v38);
+                const float q_c_v41 = q_f_v39 - q_off_v40;
+                const float t_v43 = dl_v42 * q_c_v41;
+                const uint e_v44 = e0_v18 + 1u;
+                const uint inb_v46 = inb0_v13 + e_v44;
+                const uint q_grp_v47 = inb_v46 / 128u;
+                const uint q_inp_v48 = inb_v46 % 64u;
+                const uint q_byte_v49 = uint(a_u8[q_grp_v47 * 64u + q_inp_v48 + base_v199]);
+                const uint q_ing_v50 = inb_v46 % 128u;
+                const uint q_sel_v51 = q_ing_v50 / 64u;
+                const uint q_sh_v52 = q_sel_v51 * 4u;
+                const uint q_shr_v53 = q_byte_v49 >> q_sh_v52;
+                const uint q_v54 = q_shr_v53 & 15u;
+                const uint qh_inp_v56 = inb_v46 % 32u;
+                const uint qh_byte_v57 = uint(a_u8[q_grp_v47 * 32u + qh_inp_v56 + base_v199 + 128u]);
+                const uint qh_sel_v59 = q_ing_v50 / 32u;
+                const uint qh_sh_v60 = qh_sel_v59 * 2u;
+                const uint qh_shr_v61 = qh_byte_v57 >> qh_sh_v60;
+                const uint qh_v62 = qh_shr_v61 & 3u;
+                const uint qh_up_v63 = qh_v62 * 16u;
+                const uint q_full_v64 = q_v54 | qh_up_v63;
+                const float q_f_v65 = float(q_full_v64);
+                const float q_c_v67 = q_f_v65 - q_off_v40;
+                const float t_v69 = dl_v42 * q_c_v67;
+                const uint e_v70 = e0_v18 + 2u;
+                const uint inb_v72 = inb0_v13 + e_v70;
+                const uint q_grp_v73 = inb_v72 / 128u;
+                const uint q_inp_v74 = inb_v72 % 64u;
+                const uint q_byte_v75 = uint(a_u8[q_grp_v73 * 64u + q_inp_v74 + base_v199]);
+                const uint q_ing_v76 = inb_v72 % 128u;
+                const uint q_sel_v77 = q_ing_v76 / 64u;
+                const uint q_sh_v78 = q_sel_v77 * 4u;
+                const uint q_shr_v79 = q_byte_v75 >> q_sh_v78;
+                const uint q_v80 = q_shr_v79 & 15u;
+                const uint qh_inp_v82 = inb_v72 % 32u;
+                const uint qh_byte_v83 = uint(a_u8[q_grp_v73 * 32u + qh_inp_v82 + base_v199 + 128u]);
+                const uint qh_sel_v85 = q_ing_v76 / 32u;
+                const uint qh_sh_v86 = qh_sel_v85 * 2u;
+                const uint qh_shr_v87 = qh_byte_v83 >> qh_sh_v86;
+                const uint qh_v88 = qh_shr_v87 & 3u;
+                const uint qh_up_v89 = qh_v88 * 16u;
+                const uint q_full_v90 = q_v80 | qh_up_v89;
+                const float q_f_v91 = float(q_full_v90);
+                const float q_c_v93 = q_f_v91 - q_off_v40;
+                const float t_v95 = dl_v42 * q_c_v93;
+                const uint e_v96 = e0_v18 + 3u;
+                const uint inb_v98 = inb0_v13 + e_v96;
+                const uint q_grp_v99 = inb_v98 / 128u;
+                const uint q_inp_v100 = inb_v98 % 64u;
+                const uint q_byte_v101 = uint(a_u8[q_grp_v99 * 64u + q_inp_v100 + base_v199]);
+                const uint q_ing_v102 = inb_v98 % 128u;
+                const uint q_sel_v103 = q_ing_v102 / 64u;
+                const uint q_sh_v104 = q_sel_v103 * 4u;
+                const uint q_shr_v105 = q_byte_v101 >> q_sh_v104;
+                const uint q_v106 = q_shr_v105 & 15u;
+                const uint qh_inp_v108 = inb_v98 % 32u;
+                const uint qh_byte_v109 = uint(a_u8[q_grp_v99 * 32u + qh_inp_v108 + base_v199 + 128u]);
+                const uint qh_sel_v111 = q_ing_v102 / 32u;
+                const uint qh_sh_v112 = qh_sel_v111 * 2u;
+                const uint qh_shr_v113 = qh_byte_v109 >> qh_sh_v112;
+                const uint qh_v114 = qh_shr_v113 & 3u;
+                const uint qh_up_v115 = qh_v114 * 16u;
+                const uint q_full_v116 = q_v106 | qh_up_v115;
+                const float q_f_v117 = float(q_full_v116);
+                const float q_c_v119 = q_f_v117 - q_off_v40;
+                const float t_v121 = dl_v42 * q_c_v119;
+                const uint t_v122_a = col_v19 * pc.b_nb0 + plane_v1 * pc.b_nb1;
+                const float t_v122 = b[(t_v122_a) / 4u];
+                const float t_v123 = b[(t_v122_a + 4u) / 4u];
+                const float t_v124 = b[(t_v122_a + 8u) / 4u];
+                const float t_v125 = b[(t_v122_a + 12u) / 4u];
+                const float t_v126 = t_v43 * t_v122;
+                acc7_v6 += t_v126;
+                const float t_v127 = t_v69 * t_v123;
+                acc7_v6 += t_v127;
+                const float t_v128 = t_v95 * t_v124;
+                acc7_v6 += t_v128;
+                const float t_v129 = t_v121 * t_v125;
+                acc7_v6 += t_v129;
+                if (plane1_v3 < pc.n_plane) {
+                    const uint t_v130_a = col_v19 * pc.b_nb0 + plane1_v3 * pc.b_nb1;
+                    const float t_v130 = b[(t_v130_a) / 4u];
+                    const float t_v131 = b[(t_v130_a + 4u) / 4u];
+                    const float t_v132 = b[(t_v130_a + 8u) / 4u];
+                    const float t_v133 = b[(t_v130_a + 12u) / 4u];
+                    const float t_v134 = t_v43 * t_v130;
+                    acc7_1_v7 += t_v134;
+                    const float t_v135 = t_v69 * t_v131;
+                    acc7_1_v7 += t_v135;
+                    const float t_v136 = t_v95 * t_v132;
+                    acc7_1_v7 += t_v136;
+                    const float t_v137 = t_v121 * t_v133;
+                    acc7_1_v7 += t_v137;
+                }
+                if (plane2_v4 < pc.n_plane) {
+                    const uint t_v138_a = col_v19 * pc.b_nb0 + plane2_v4 * pc.b_nb1;
+                    const float t_v138 = b[(t_v138_a) / 4u];
+                    const float t_v139 = b[(t_v138_a + 4u) / 4u];
+                    const float t_v140 = b[(t_v138_a + 8u) / 4u];
+                    const float t_v141 = b[(t_v138_a + 12u) / 4u];
+                    const float t_v142 = t_v43 * t_v138;
+                    acc7_2_v8 += t_v142;
+                    const float t_v143 = t_v69 * t_v139;
+                    acc7_2_v8 += t_v143;
+                    const float t_v144 = t_v95 * t_v140;
+                    acc7_2_v8 += t_v144;
+                    const float t_v145 = t_v121 * t_v141;
+                    acc7_2_v8 += t_v145;
+                }
+                if (plane3_v5 < pc.n_plane) {
+                    const uint t_v146_a = col_v19 * pc.b_nb0 + plane3_v5 * pc.b_nb1;
+                    const float t_v146 = b[(t_v146_a) / 4u];
+                    const float t_v147 = b[(t_v146_a + 4u) / 4u];
+                    const float t_v148 = b[(t_v146_a + 8u) / 4u];
+                    const float t_v149 = b[(t_v146_a + 12u) / 4u];
+                    const float t_v150 = t_v43 * t_v146;
+                    acc7_3_v9 += t_v150;
+                    const float t_v151 = t_v69 * t_v147;
+                    acc7_3_v9 += t_v151;
+                    const float t_v152 = t_v95 * t_v148;
+                    acc7_3_v9 += t_v152;
+                    const float t_v153 = t_v121 * t_v149;
+                    acc7_3_v9 += t_v153;
+                }
             }
-            if (plane2_v4 < pc.n_plane) {
-                const float t_v47 = b[(col_v18 * pc.b_nb0 + plane2_v4 * pc.b_nb1) / 4u];
-                const float t_v48 = t_v42 * t_v47;
-                acc7_2_v8 += t_v48;
-            }
-            if (plane3_v5 < pc.n_plane) {
-                const float t_v49 = b[(col_v18 * pc.b_nb0 + plane3_v5 * pc.b_nb1) / 4u];
-                const float t_v50 = t_v42 * t_v49;
-                acc7_3_v9 += t_v50;
+        }
+    } else {
+        const uint seg_start_v154 = lane_v2 * 4u;
+        const uint base_v202 = row_v0 * pc.a_nb1;
+        const float q_off_v183 = 32.0;
+        for (uint col_seg_v155 = seg_start_v154; col_seg_v155 < pc.n_col; col_seg_v155 += 128u) {
+            const uint blk_v156 = col_seg_v155 / 256u;
+            const uint inb0_v157 = col_seg_v155 % 256u;
+            const float scale_v158 = float(a_f16[(blk_v156 * pc.a_nb0 + base_v202 + 208u) / 2u]);
+            const uint sub_is_v159 = inb0_v157 / 16u;
+            const float sub_sc_f_v160 = float(a_i8[blk_v156 * pc.a_nb0 + sub_is_v159 + base_v202 + 192u]);
+            const uint base_v201 = blk_v156 * pc.a_nb0 + row_v0 * pc.a_nb1;
+            const float dl_v185 = scale_v158 * sub_sc_f_v160;
+            for (uint col_e_v161 = 0u; col_e_v161 < 4u; ++col_e_v161) {
+                const uint col_v162 = col_seg_v155 + col_e_v161;
+                const uint inb_v163 = inb0_v157 + col_e_v161;
+                const uint q_grp_v164 = inb_v163 / 128u;
+                const uint q_inp_v165 = inb_v163 % 64u;
+                const uint q_byte_v166 = uint(a_u8[q_grp_v164 * 64u + q_inp_v165 + base_v201]);
+                const uint q_ing_v167 = inb_v163 % 128u;
+                const uint q_sel_v168 = q_ing_v167 / 64u;
+                const uint q_sh_v169 = q_sel_v168 * 4u;
+                const uint q_shr_v170 = q_byte_v166 >> q_sh_v169;
+                const uint q_v171 = q_shr_v170 & 15u;
+                const uint qh_inp_v173 = inb_v163 % 32u;
+                const uint qh_byte_v174 = uint(a_u8[q_grp_v164 * 32u + qh_inp_v173 + base_v201 + 128u]);
+                const uint qh_sel_v176 = q_ing_v167 / 32u;
+                const uint qh_sh_v177 = qh_sel_v176 * 2u;
+                const uint qh_shr_v178 = qh_byte_v174 >> qh_sh_v177;
+                const uint qh_v179 = qh_shr_v178 & 3u;
+                const uint qh_up_v180 = qh_v179 * 16u;
+                const uint q_full_v181 = q_v171 | qh_up_v180;
+                const float q_f_v182 = float(q_full_v181);
+                const float q_c_v184 = q_f_v182 - q_off_v183;
+                const float t_v186 = dl_v185 * q_c_v184;
+                const float t_v187 = b[(col_v162 * pc.b_nb0 + plane_v1 * pc.b_nb1) / 4u];
+                const float t_v188 = t_v186 * t_v187;
+                acc7_v6 += t_v188;
+                if (plane1_v3 < pc.n_plane) {
+                    const float t_v189 = b[(col_v162 * pc.b_nb0 + plane1_v3 * pc.b_nb1) / 4u];
+                    const float t_v190 = t_v186 * t_v189;
+                    acc7_1_v7 += t_v190;
+                }
+                if (plane2_v4 < pc.n_plane) {
+                    const float t_v191 = b[(col_v162 * pc.b_nb0 + plane2_v4 * pc.b_nb1) / 4u];
+                    const float t_v192 = t_v186 * t_v191;
+                    acc7_2_v8 += t_v192;
+                }
+                if (plane3_v5 < pc.n_plane) {
+                    const float t_v193 = b[(col_v162 * pc.b_nb0 + plane3_v5 * pc.b_nb1) / 4u];
+                    const float t_v194 = t_v186 * t_v193;
+                    acc7_3_v9 += t_v194;
+                }
             }
         }
     }
-    const float red7_v51 = subgroupAdd(acc7_v6);
-    const float red7_v52 = subgroupAdd(acc7_1_v7);
-    const float red7_v53 = subgroupAdd(acc7_2_v8);
-    const float red7_v54 = subgroupAdd(acc7_3_v9);
+    const float red7_v195 = subgroupAdd(acc7_v6);
+    const float red7_v196 = subgroupAdd(acc7_1_v7);
+    const float red7_v197 = subgroupAdd(acc7_2_v8);
+    const float red7_v198 = subgroupAdd(acc7_3_v9);
     if (lane_v2 == 0u) {
-        dst[(row_v0 * pc.dst_nb0 + plane_v1 * pc.dst_nb1) / 4u] = red7_v51;
+        dst[(row_v0 * pc.dst_nb0 + plane_v1 * pc.dst_nb1) / 4u] = red7_v195;
         if (plane1_v3 < pc.n_plane) {
-            dst[(row_v0 * pc.dst_nb0 + plane1_v3 * pc.dst_nb1) / 4u] = red7_v52;
+            dst[(row_v0 * pc.dst_nb0 + plane1_v3 * pc.dst_nb1) / 4u] = red7_v196;
         }
         if (plane2_v4 < pc.n_plane) {
-            dst[(row_v0 * pc.dst_nb0 + plane2_v4 * pc.dst_nb1) / 4u] = red7_v53;
+            dst[(row_v0 * pc.dst_nb0 + plane2_v4 * pc.dst_nb1) / 4u] = red7_v197;
         }
         if (plane3_v5 < pc.n_plane) {
-            dst[(row_v0 * pc.dst_nb0 + plane3_v5 * pc.dst_nb1) / 4u] = red7_v54;
+            dst[(row_v0 * pc.dst_nb0 + plane3_v5 * pc.dst_nb1) / 4u] = red7_v198;
         }
     }
 }

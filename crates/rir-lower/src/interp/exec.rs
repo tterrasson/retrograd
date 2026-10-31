@@ -19,7 +19,8 @@ use rir_core::{AxisId, CmpOp, ReduceOp};
 use super::*;
 
 // The eight arguments are the shape of `Stmt::Load` itself - kernel, args,
-// registers, destination, binding, memory type, address, width - and grouping
+// registers, destination, binding, memory type, address, and the element along
+// dimension 0 the access reads past its address - and grouping
 // them in a struct would only move the same list: these are statement fields,
 // not shared state.
 #[expect(clippy::too_many_arguments)]
@@ -31,13 +32,11 @@ pub(crate) fn exec_load(
     arg: rir_core::ArgId,
     ty: MemType,
     addr: &[AddrTerm],
-    width: u32,
+    along: usize,
 ) -> Result<(), InterpError> {
     let arg_no = arg.0 as usize;
     let nb = args[arg_no].nb();
-    // A widened access reads the `vlane`-th element of the vector, which is
-    // `vlane` strides further along the contiguous dimension.
-    let off = byte_addr(&nb, addr, regs) + if width > 1 { regs.vlane * nb[0] } else { 0 };
+    let off = byte_addr(&nb, addr, regs) + along * nb[0];
     let _ = k;
     let value = match (&args[arg_no], ty) {
         (BoundArg::In(v), MemType::F32) => {
@@ -653,6 +652,17 @@ pub(crate) fn exec_stmts(
             Stmt::StageTiles { tiles, body, .. } => {
                 exec_stage_tiles(k, tiles, body, regs, sh, args, params)?
             }
+            Stmt::UnitStride {
+                args: dense,
+                unit,
+                strided,
+            } => {
+                let is_unit = dense
+                    .iter()
+                    .all(|(arg, ty)| args[arg.0 as usize].nb()[0] == ty.size_bytes() as usize);
+                let half = if is_unit { unit } else { strided };
+                exec_stmts(k, half, regs, sh, args, params)?;
+            }
             Stmt::StoreShared {
                 array,
                 index,
@@ -732,7 +742,25 @@ pub(crate) fn exec_stmts(
                 addr,
                 width,
             } => {
-                exec_load(k, args, regs, *dst, *arg, *ty, addr, *width)?;
+                // A widened access reads the `vlane`-th element of the vector,
+                // which is `vlane` strides further along the contiguous
+                // dimension.
+                let along = if *width > 1 { regs.vlane } else { 0 };
+                exec_load(k, args, regs, *dst, *arg, *ty, addr, along)?;
+            }
+            // Element `c` of a run is `c` strides further, whatever the stride:
+            // the oracle reads exactly what the general path of every emitter
+            // reads, and the vector path is that path when `nb[0]` is the
+            // element size.
+            Stmt::LoadRun {
+                dsts,
+                arg,
+                ty,
+                addr,
+            } => {
+                for (c, dst) in dsts.iter().enumerate() {
+                    exec_load(k, args, regs, *dst, *arg, *ty, addr, c)?;
+                }
             }
             Stmt::Store {
                 arg,

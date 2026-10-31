@@ -164,6 +164,7 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
         body: Vec::new(),
         allow_results: false,
         linear: None,
+        reduce_run: schedule.reduce_run,
     };
 
     // The linear-addressing claim, decided before a single
@@ -243,6 +244,23 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
         return Err(LowerError::TilingUnsupported {
             why: "tile_depth and strategy must match (either without the other is meaningless)",
         });
+    }
+
+    // A run divides the segment of a quantized read; with no reduction there is
+    // no segment, and a run nothing reads would be a schedule field nothing
+    // honours. The segment itself is only known per level, so the divisibility
+    // half is checked where the segment is planned (`lower_accum_loop`).
+    if schedule.reduce_run > 1 {
+        if a.reduces.is_empty() || !a.scans.is_empty() {
+            return Err(LowerError::ReduceRunUnsupported {
+                why: "a run is read inside a reduction, and the kernel has none (or carries a scan)",
+            });
+        }
+        if schedule.reduction == ReductionStrategy::TiledStage {
+            return Err(LowerError::ReduceRunUnsupported {
+                why: "a staged contraction reads its operands through tiles, not segments",
+            });
+        }
     }
 
     // The lane tile: everything it needs in order to mean something, checked

@@ -38,24 +38,66 @@ void main() {
     }
     const uint lane_v2 = gl_LocalInvocationID.x;
     float acc7_v3 = 0.0;
-    const uint seg_start_v4 = lane_v2 * 4u;
-    for (uint col_seg_v5 = seg_start_v4; col_seg_v5 < pc.n_col; col_seg_v5 += 128u) {
-        const uint blk_v6 = col_seg_v5 / 32u;
-        const uint inb0_v7 = col_seg_v5 % 32u;
-        const float scale_v8 = float(a_f16[(blk_v6 * pc.a_nb0 + row_v0 * pc.a_nb1) / 2u]);
-        const uint base_v17 = blk_v6 * pc.a_nb0 + row_v0 * pc.a_nb1;
-        for (uint col_e_v9 = 0u; col_e_v9 < 4u; ++col_e_v9) {
-            const uint col_v10 = col_seg_v5 + col_e_v9;
-            const uint inb_v11 = inb0_v7 + col_e_v9;
-            const float q_v12 = float(a_i8[inb_v11 + base_v17 + 2u]);
-            const float t_v13 = scale_v8 * q_v12;
-            const float t_v14 = b[(col_v10 * pc.b_nb0 + plane_v1 * pc.b_nb1) / 4u];
-            const float t_v15 = t_v13 * t_v14;
-            acc7_v3 += t_v15;
+    if (pc.b_nb0 == 4u) {
+        const uint seg_start_v4 = lane_v2 * 4u;
+        for (uint col_seg_v5 = seg_start_v4; col_seg_v5 < pc.n_col; col_seg_v5 += 128u) {
+            const uint blk_v6 = col_seg_v5 / 32u;
+            const uint inb0_v7 = col_seg_v5 % 32u;
+            const float scale_v8 = float(a_f16[(blk_v6 * pc.a_nb0 + row_v0 * pc.a_nb1) / 2u]);
+            const uint base_v51 = blk_v6 * pc.a_nb0 + row_v0 * pc.a_nb1;
+            for (uint col_g_v9 = 0u; col_g_v9 < 1u; ++col_g_v9) {
+                const uint e0_v10 = col_g_v9 * 4u;
+                const uint col_v11 = col_seg_v5 + e0_v10;
+                const uint inb_v12 = inb0_v7 + e0_v10;
+                const float q_v13 = float(a_i8[inb_v12 + base_v51 + 2u]);
+                const float t_v14 = scale_v8 * q_v13;
+                const uint e_v15 = e0_v10 + 1u;
+                const uint inb_v17 = inb0_v7 + e_v15;
+                const float q_v18 = float(a_i8[inb_v17 + base_v51 + 2u]);
+                const float t_v19 = scale_v8 * q_v18;
+                const uint e_v20 = e0_v10 + 2u;
+                const uint inb_v22 = inb0_v7 + e_v20;
+                const float q_v23 = float(a_i8[inb_v22 + base_v51 + 2u]);
+                const float t_v24 = scale_v8 * q_v23;
+                const uint e_v25 = e0_v10 + 3u;
+                const uint inb_v27 = inb0_v7 + e_v25;
+                const float q_v28 = float(a_i8[inb_v27 + base_v51 + 2u]);
+                const float t_v29 = scale_v8 * q_v28;
+                const uint t_v30_a = col_v11 * pc.b_nb0 + plane_v1 * pc.b_nb1;
+                const float t_v30 = b[(t_v30_a) / 4u];
+                const float t_v31 = b[(t_v30_a + 4u) / 4u];
+                const float t_v32 = b[(t_v30_a + 8u) / 4u];
+                const float t_v33 = b[(t_v30_a + 12u) / 4u];
+                const float t_v34 = t_v14 * t_v30;
+                acc7_v3 += t_v34;
+                const float t_v35 = t_v19 * t_v31;
+                acc7_v3 += t_v35;
+                const float t_v36 = t_v24 * t_v32;
+                acc7_v3 += t_v36;
+                const float t_v37 = t_v29 * t_v33;
+                acc7_v3 += t_v37;
+            }
+        }
+    } else {
+        const uint seg_start_v38 = lane_v2 * 4u;
+        for (uint col_seg_v39 = seg_start_v38; col_seg_v39 < pc.n_col; col_seg_v39 += 128u) {
+            const uint blk_v40 = col_seg_v39 / 32u;
+            const uint inb0_v41 = col_seg_v39 % 32u;
+            const float scale_v42 = float(a_f16[(blk_v40 * pc.a_nb0 + row_v0 * pc.a_nb1) / 2u]);
+            const uint base_v52 = blk_v40 * pc.a_nb0 + row_v0 * pc.a_nb1;
+            for (uint col_e_v43 = 0u; col_e_v43 < 4u; ++col_e_v43) {
+                const uint col_v44 = col_seg_v39 + col_e_v43;
+                const uint inb_v45 = inb0_v41 + col_e_v43;
+                const float q_v46 = float(a_i8[inb_v45 + base_v52 + 2u]);
+                const float t_v47 = scale_v42 * q_v46;
+                const float t_v48 = b[(col_v44 * pc.b_nb0 + plane_v1 * pc.b_nb1) / 4u];
+                const float t_v49 = t_v47 * t_v48;
+                acc7_v3 += t_v49;
+            }
         }
     }
-    const float red7_v16 = subgroupAdd(acc7_v3);
+    const float red7_v50 = subgroupAdd(acc7_v3);
     if (lane_v2 == 0u) {
-        dst[(row_v0 * pc.dst_nb0 + plane_v1 * pc.dst_nb1) / 4u] = red7_v16;
+        dst[(row_v0 * pc.dst_nb0 + plane_v1 * pc.dst_nb1) / 4u] = red7_v50;
     }
 }

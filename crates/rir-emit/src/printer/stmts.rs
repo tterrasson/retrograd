@@ -23,7 +23,7 @@ use crate::dialect::Dialect;
 use crate::manifest::{FLAT_TOTAL, flat_divisor};
 
 use super::Printer;
-use super::memory::{LoadOp, MemoryModel, StoreOp};
+use super::memory::{LoadOp, LoadRunOp, MemoryModel, StoreOp};
 
 impl<'k, D: Dialect + MemoryModel> Printer<'k, D> {
     pub(crate) fn stmts(&mut self, stmts: &[Stmt]) -> Result<(), EmitError> {
@@ -153,6 +153,28 @@ impl<'k, D: Dialect + MemoryModel> Printer<'k, D> {
                     self.stmts(tail_body)?;
                     self.indent -= 1;
                     self.line("}");
+                    self.indent -= 1;
+                    self.line("}");
+                }
+                Stmt::UnitStride {
+                    args,
+                    unit,
+                    strided,
+                } => {
+                    let cond: Vec<String> = args
+                        .iter()
+                        .map(|(arg, ty)| {
+                            let name = &self.k.args[arg.0 as usize].name;
+                            format!("{}{name}_nb0 == {}u", D::PARAMS, ty.size_bytes())
+                        })
+                        .collect();
+                    self.line(&format!("if ({}) {{", cond.join(" && ")));
+                    self.indent += 1;
+                    self.stmts(unit)?;
+                    self.indent -= 1;
+                    self.line("} else {");
+                    self.indent += 1;
+                    self.stmts(strided)?;
                     self.indent -= 1;
                     self.line("}");
                 }
@@ -472,6 +494,17 @@ impl<'k, D: Dialect + MemoryModel> Printer<'k, D> {
                         width: *width,
                     },
                 ),
+                Stmt::LoadRun {
+                    dsts,
+                    arg,
+                    ty,
+                    addr,
+                } => self.load_run(&LoadRunOp {
+                    dsts,
+                    arg: *arg,
+                    ty: *ty,
+                    addr,
+                }),
                 Stmt::Store {
                     arg,
                     ty,
