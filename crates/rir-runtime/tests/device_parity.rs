@@ -827,12 +827,12 @@ fn band_vec4_on_one_backend(target: Backend, kernel_name: &str, binary: bool, pa
         eprintln!("{name} skipped: no vectorized schedule on this backend");
         return;
     };
-    let variant = schedule.variant();
+    let variant = schedule.variant().map(str::to_string);
     let kernel = rir_kernels::elementwise::build(band).unwrap();
     let lk = rir_lower::lower(&kernel, schedule).expect("vectorized lowering");
 
     let dir = kernel_dir(kernel_name);
-    let (source_file, manifest_file) = target.files(variant);
+    let (source_file, manifest_file) = target.files(variant.as_deref());
     let manifest = Manifest::load_file(&dir, &manifest_file)
         .unwrap_or_else(|e| panic!("{name}: {manifest_file}: {e}"));
     let source = std::fs::read_to_string(dir.join(&source_file))

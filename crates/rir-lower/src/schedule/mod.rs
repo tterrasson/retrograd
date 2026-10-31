@@ -7,6 +7,8 @@ pub mod backend;
 pub mod bench;
 pub mod error;
 pub mod geometry;
+pub mod space;
+pub mod spaces;
 pub mod strategy;
 pub mod table;
 
@@ -20,6 +22,7 @@ pub use backend::{
 };
 pub use error::{ScheduleError, check_schedule, check_schedule_table};
 pub use geometry::Geometry;
+pub use space::{Dim, Pick, Space};
 pub use strategy::{
     Claim, FALLBACK_PRIORITY, ParallelMapping, ReductionStrategy, SUBGROUP_LANES, ScanStrategy,
     ShapeRule,
@@ -646,7 +649,18 @@ impl Schedule {
     /// readily as a single subgroup.
     pub fn with_lane_tile(mut self, cols: u32) -> Self {
         self.lane_tile = cols;
-        self.named(cols_variant(cols))
+        // The name is the derived one: the lane geometry against the plain
+        // subgroup's, which spells the column count - `cols4`, `cols8` - and
+        // nothing when there is no lane tile to name.
+        let neutral = Geometry::from_lanes(geometry::Lanes::NEUTRAL);
+        let g = Geometry::from_lanes(geometry::Lanes {
+            lane_tile: cols,
+            ..geometry::Lanes::NEUTRAL
+        });
+        match g.variant_name(neutral) {
+            Some(name) => self.named(name),
+            None => self,
+        }
     }
 
     /// The same lowering reading `run` consecutive elements of the reduced
@@ -1049,20 +1063,6 @@ pub const FLAT: &str = "flat";
 /// instead of a decomposition, and a layout the dispatcher has to check before
 /// selecting it.
 pub const FLAT_LINEAR: &str = "flat_linear";
-
-/// Variant name of a lane-tiled reduction owning `cols` columns per
-/// workgroup. One name per count, since the count is the whole difference
-/// between two such artifacts; a count without a name of its own is still
-/// published, by `dispatch`, but shares `cols`.
-pub fn cols_variant(cols: u32) -> &'static str {
-    match cols {
-        2 => "cols2",
-        4 => "cols4",
-        8 => "cols8",
-        16 => "cols16",
-        _ => "cols",
-    }
-}
 
 /// Variant name of the subgroup matrix product.
 pub const MATRIX_TILE: &str = "mma";

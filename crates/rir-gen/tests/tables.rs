@@ -540,3 +540,27 @@ fn an_oracle_only_kernel_still_emits_every_artifact() {
          carries, decide again whether the oracle-only half still pays"
     );
 }
+
+/// The GEMV space expands to at least the geometries the production picks
+/// carry: the sweep explores the same space the table picks from, so a
+/// proposal is a point that exists in both.
+#[test]
+fn the_gemv_space_expands_over_the_production_picks() {
+    use rir_lower::GpuBackend;
+    use rir_lower::schedule::spaces::mul_mat_vec;
+
+    let kernel = rir_kernels::mul_mat_vec::build(rir_core::QuantType::Q8_0).unwrap();
+    let space = mul_mat_vec::space();
+    for gpu in [GpuBackend::Vulkan, GpuBackend::Metal] {
+        let expanded = space.expand(gpu, &kernel);
+        for pick in space.picks(gpu).iter().chain(space.matrix_picks(gpu).iter()) {
+            assert!(
+                expanded.contains(&pick.geometry),
+                "{gpu:?}: the space does not expand to the pick {:?}",
+                pick.geometry
+            );
+        }
+        // The defaults are in the product too: they are the control.
+        assert!(expanded.contains(&(space.defaults)(gpu)));
+    }
+}

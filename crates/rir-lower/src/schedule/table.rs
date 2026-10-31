@@ -463,31 +463,30 @@ fn mat_mul_naive(v: &mut Vec<Schedule>) {
 /// twice, a partial cols8 tile once). The float matrix variant claims steps
 /// of at least 32 tokens where there is one (`MATRIX_TARGETS`); cols8 covers
 /// smaller steps, where the 32-column matrix tile wastes much of its work.
+///
+/// Apple M5, 2026-10-31: at K=M=1024 and N=16, cols8 takes ~41 us versus
+/// ~69-71 us for the float MMA tile (q4_K/q6_K). A 32-column tile computes
+/// mostly padding below this crossover. Keep it at 32 tokens; sweep
+/// padding/depth without promoting them from a RIR-only measurement.
 fn mul_mat_vec(v: &mut Vec<Schedule>) {
     let family = Family::MulMatVec;
-    let shaped = |s: Schedule, gpu: GpuBackend| {
-        let subgroups = if partitions_subgroups(gpu) { 2 } else { 1 };
-        s.with_reduce_run(4)
-            .with_segment(16)
-            .with_factored_scales()
-            .with_row_tile(2, subgroups)
-    };
+    // The rows are the space's picks: the fallback is the defaults, implicit,
+    // and each pick is scheduled, named by its derived name and claiming its
+    // rule - see `spaces::mul_mat_vec` for the geometries, claims and the
+    // measurement behind them.
+    let space = spaces::mul_mat_vec::space();
     for gpu in targets_for(family) {
-        v.push(shaped(Schedule::gpu_subgroup(gpu), gpu));
+        v.push(space.fallback(gpu));
     }
-    let steps = |min: u32, max: u32| Claim::any().on("plane", min..=max);
-    let decode_max = rir_core::catalog::Regime::DECODE_MAX_TOKENS;
     for gpu in targets_for(family) {
-        v.push(shaped(Schedule::gpu_subgroup_cols(gpu, 4), gpu).claiming(90, steps(2, decode_max)));
-        v.push(shaped(Schedule::gpu_subgroup_cols(gpu, 8), gpu).claiming(95, steps(5, decode_max)));
+        for pick in space.picks(gpu) {
+            v.push(space.pick(gpu, &pick));
+        }
     }
     for gpu in matrix_targets_for(family) {
-        // Apple M5, 2026-10-31: at K=M=1024 and N=16, cols8 takes
-        // ~41 us versus ~69-71 us for the float MMA tile (q4_K/q6_K).
-        // A 32-column tile computes mostly padding below this crossover.
-        // Keep it at 32 tokens; sweep padding/depth without promoting them
-        // from a RIR-only measurement.
-        v.push(Schedule::gpu_matrix_tile(gpu, MATRIX_COLS).claiming(100, steps(32, decode_max)));
+        for pick in space.matrix_picks(gpu) {
+            v.push(space.pick(gpu, &pick));
+        }
     }
 }
 
