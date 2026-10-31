@@ -8,6 +8,7 @@ use rir_core::{ArgId, AxisId, DType, Kernel, Op, ValueId};
 
 use crate::loop_ir::*;
 
+use super::strategies::stage::StageB;
 use crate::lower::LowerError;
 
 pub(crate) struct Lowerer<'k> {
@@ -44,6 +45,10 @@ pub(crate) struct Lowerer<'k> {
     pub(crate) segment: u32,
     /// `Schedule::factor_scales`.
     pub(crate) factor_scales: bool,
+    /// `Schedule::stage_b`.
+    pub(crate) stage_b: bool,
+    /// The staged shared operand's tile, once the lane strategy has built it.
+    pub(crate) stage: Option<StageB>,
 }
 
 impl<'k> Lowerer<'k> {

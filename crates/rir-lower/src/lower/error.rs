@@ -121,6 +121,13 @@ pub enum LowerError {
     /// times something else.
     #[error("factor_scales: {why}")]
     FactorScalesUnsupported { why: &'static str },
+    /// `Schedule::stage_b` on a lowering that cannot honour it: the shared
+    /// operand is staged once per reduction round by the whole workgroup, so
+    /// the workgroup must be several fixed-width subgroups, the tile must be
+    /// more than one column wide, and the finished shared list must fit the
+    /// workgroup memory every partition target guarantees.
+    #[error("stage_b: {why}")]
+    StageUnsupported { why: &'static str },
     /// `ReductionStrategy::MatrixTile` on a kernel or a schedule whose shape the
     /// matrix product cannot express. Refused rather than lowered otherwise:
     /// the manifest would still publish `matrix_tile`.

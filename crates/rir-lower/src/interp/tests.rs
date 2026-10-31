@@ -335,6 +335,98 @@ fn a_binding_that_does_not_fit_the_kernel_is_an_error() {
     );
 }
 
+/// `Schedule::stage_b` moves the shared operand's reads from global memory to
+/// a tile the workgroup stages once per reduction round. That is a memory
+/// decision, not an arithmetic one: the accumulated terms are the same, in the
+/// same order, so the staged lowering is **bit-identical** to the unstaged one.
+#[test]
+fn a_staged_operand_is_bit_identical_to_the_unstaged_lowering() {
+    use rir_core::{
+        Constraint, DType, Extent, KernelBuilder, Layout, QuantType, ReduceOp,
+        ReductionSemantics, TensorType,
+    };
+
+    use crate::interp::{BoundArg, TensorView, TensorViewBytes, TensorViewMut};
+    use crate::lower::lower;
+
+    // dst[row, plane] = Σ_col dequant(a[col, row]) · b[col, plane], the decode
+    // GEMV's shape: a quantized weight and a dense operand read along the
+    // reduced axis.
+    let format = QuantType::Q8_0;
+    let mut k = KernelBuilder::new("gemv");
+    let a = k.input(
+        "a",
+        TensorType {
+            dtype: DType::Quant(format),
+            rank: 2,
+            layout: Layout::Ggml,
+        },
+    );
+    let b = k.input("b", TensorType::f32_2d());
+    let dst = k.output("dst", TensorType::f32_2d());
+    let row = k.axis("row", Extent::Dim { arg: a, dim: 1 });
+    let plane = k.axis("plane", Extent::Dim { arg: b, dim: 1 });
+    let col = k.axis("col", Extent::Dim { arg: a, dim: 0 });
+    let av = k.read(a, &[col, row]);
+    let bv = k.read(b, &[col, plane]);
+    let p = k.mul(av, bv);
+    let s = k.reduce(ReduceOp::Sum, col, p, ReductionSemantics::Deterministic);
+    k.write(dst, &[row, plane], s);
+    k.constrain(Constraint::DType {
+        arg: a,
+        allowed: vec![DType::Quant(format)],
+    });
+    k.constrain(Constraint::DType {
+        arg: b,
+        allowed: vec![DType::F32],
+    });
+    let kernel = k.finish().unwrap();
+
+    let (blocks, n_row, n_tok) = (6usize, 5usize, 6usize);
+    let d = format.desc();
+    let (be, bb) = (d.block_elements as usize, d.block_bytes as usize);
+    let n_col = blocks * be;
+    let row_bytes = blocks * bb;
+    let mut seed = 0x51ed_u64;
+    let mut raw = Vec::with_capacity(row_bytes * n_row);
+    for _ in 0..n_row {
+        raw.extend_from_slice(&rir_core::random_block_bytes(format, blocks, &mut seed).unwrap());
+    }
+    let x: Vec<f32> = (0..n_col * n_tok)
+        .map(|i| (i as f32 * 0.37 - 1.0) * 0.5)
+        .collect();
+
+    let base = || {
+        Schedule::gpu_subgroup_cols(GpuBackend::Metal, 4)
+            .with_reduce_run(4)
+            .with_segment(16)
+            .with_row_tile(2, 2)
+            .with_factored_scales()
+    };
+    let run_one = |schedule: Schedule| {
+        let lk = lower(&kernel, schedule).unwrap();
+        let mut got = vec![0f32; n_row * n_tok];
+        let mut args = [
+            BoundArg::InBytes(TensorViewBytes {
+                data: &raw,
+                shape: [n_col, n_row, 1, 1],
+                nb: [bb, row_bytes, row_bytes * n_row, row_bytes * n_row],
+            }),
+            BoundArg::In(TensorView {
+                data: &x,
+                shape: [n_col, n_tok, 1, 1],
+                nb: [4, 4 * n_col, 4 * n_col * n_tok, 4 * n_col * n_tok],
+            }),
+            BoundArg::Out(TensorViewMut::contiguous_2d(&mut got, n_row, n_tok)),
+        ];
+        run(&lk, &mut args, &[]).unwrap();
+        got.iter().map(|v| v.to_bits()).collect::<Vec<u32>>()
+    };
+    let plain = run_one(base());
+    let staged = run_one(base().with_staged_operand());
+    assert_eq!(plain, staged);
+}
+
 /// A parameter the nest reads is the one the caller passed, by position.
 #[test]
 fn a_parameter_is_read_by_position() {

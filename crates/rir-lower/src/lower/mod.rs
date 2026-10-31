@@ -70,8 +70,8 @@ use rir_core::{ArgId, Kernel, Op, ReductionSemantics, ValueId};
 
 use crate::loop_ir::*;
 use crate::schedule::{
-    MATRIX_COLS, MATRIX_ROWS, ParallelMapping, ReductionStrategy, SUBGROUP_LANES, ScanStrategy,
-    Schedule,
+    MATRIX_COLS, MATRIX_ROWS, MAX_STAGED_SHARED_BYTES, ParallelMapping, ReductionStrategy,
+    SUBGROUP_LANES, ScanStrategy, Schedule, partitions_subgroups,
 };
 
 use crate::schedule::check_schedule;
@@ -171,6 +171,8 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
         reduce_run: schedule.reduce_run,
         segment: schedule.segment,
         factor_scales: schedule.factor_scales,
+        stage_b: schedule.stage_b,
+        stage: None,
     };
 
     // The linear-addressing claim, decided before a single
@@ -359,6 +361,41 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
         };
         if let Some(why) = why {
             return Err(LowerError::LaneTileUnsupported { why });
+        }
+    }
+
+    // The staged shared operand: one tile per reduction round, loaded by the
+    // whole workgroup, so the workgroup must be several fixed-width subgroups
+    // and the tile more than one column wide. Whether the finished shared list
+    // fits the workgroup memory every partition target guarantees is checked
+    // once lowering has built it, below.
+    if schedule.stage_b {
+        let why = if let Some(gpu) = schedule.backend.gpu() {
+            if !partitions_subgroups(gpu) {
+                Some(
+                    "the backend's subgroup width is not fixed: the workgroup cannot be \
+                     partitioned into subgroups that share one tile",
+                )
+            } else if subgroups < 2 {
+                Some(
+                    "one subgroup per workgroup: there is no second subgroup to share the staged \
+                     operand with",
+                )
+            } else if lane_tile < 2 {
+                Some(
+                    "the staged tile is one column per lane-tile index: a single column has \
+                     nothing to stage",
+                )
+            } else if schedule.flatten {
+                Some("a flattened row space has no lane tile to stage")
+            } else {
+                None
+            }
+        } else {
+            Some("a GPU backend is required: workgroup memory is a GPU concept")
+        };
+        if let Some(why) = why {
+            return Err(LowerError::StageUnsupported { why });
         }
     }
 
@@ -558,6 +595,20 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
     // identical expressions into the same block - one per sibling loop, one per
     // half of a vectorized traversal - and this is what then computes them once.
     crate::cse::canonicalize(&mut body);
+
+    // A staged operand is published through the shared-memory size the
+    // manifest already carries, so it must fit the workgroup memory every
+    // partition target guarantees - refused here rather than dispatched to a
+    // device that declines it.
+    if schedule.stage_b {
+        let bytes: u64 = lo.shared.iter().map(|&(_, w)| 4u64 * w as u64).sum();
+        if bytes > MAX_STAGED_SHARED_BYTES as u64 {
+            return Err(LowerError::StageUnsupported {
+                why: "the staged tile and the collectives exceed the workgroup memory every \
+                      partition target guarantees",
+            });
+        }
+    }
 
     Ok(LoopKernel {
         name: kernel.name().to_string(),

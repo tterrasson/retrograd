@@ -28,8 +28,7 @@ pub enum Geometry {
         reduce_run: u32,
         /// Whether segmented sums factor the block scale out of their terms.
         factor_scales: bool,
-        /// Stage the shared operand through workgroup memory. No `Dim`
-        /// declares it yet, so `Space::expand` cannot produce `true`.
+        /// Stage the shared operand through workgroup memory.
         stage_b: bool,
     },
     /// The subgroup matrix product: `gpu_matrix_tile` with its padding.
@@ -143,9 +142,9 @@ impl Geometry {
                 if factor_scales {
                     s = s.with_factored_scales();
                 }
-                // `stage_b` has no schedule field yet, and no `Dim` declares
-                // it, so no geometry reaching this point carries `true`.
-                let _ = stage_b;
+                if stage_b {
+                    s = s.with_staged_operand();
+                }
                 s
             }
             Geometry::Matrix { depth, padding } => {
@@ -295,6 +294,25 @@ mod tests {
             .variant_name(defaults)
             .map(|n| n.to_string()),
             Some("mma_k64_pad8".to_string())
+        );
+    }
+
+    #[test]
+    fn a_stage_b_geometry_schedules_the_staged_operand() {
+        let defaults = gemv_defaults(GpuBackend::Metal);
+        assert!(!defaults.schedule(GpuBackend::Metal).stage_b());
+        let g = defaults.map_lanes(|l| {
+            l.lane_tile = 8;
+            l.stage_b = true;
+        });
+        let s = g.schedule(GpuBackend::Metal);
+        assert!(s.stage_b());
+        // The constructor's name stands until the table derives the row's:
+        // against the defaults the staged geometry spells `cols8_stb`.
+        assert_eq!(s.variant(), Some("cols8"));
+        assert_eq!(
+            g.variant_name(defaults).map(|n| n.to_string()),
+            Some("cols8_stb".to_string())
         );
     }
 

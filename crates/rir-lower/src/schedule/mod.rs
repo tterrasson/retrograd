@@ -16,9 +16,9 @@ pub mod table;
 mod tests;
 
 pub use backend::{
-    Backend, FAMILY_REFUSED, FLAT_TARGETS, GPU_REFUSED, GPU_TARGETS, GpuBackend, MATRIX_TARGETS,
-    PARTITION_TARGETS, family_refusal, flat_targets_for, grid_targets_for, matrix_targets_for,
-    partitions_subgroups, targets_for,
+    Backend, FAMILY_REFUSED, FLAT_TARGETS, GPU_REFUSED, GPU_TARGETS, GpuBackend,
+    MATRIX_TARGETS, MAX_STAGED_SHARED_BYTES, PARTITION_TARGETS, family_refusal, flat_targets_for,
+    grid_targets_for, matrix_targets_for, partitions_subgroups, targets_for,
 };
 pub use error::{ScheduleError, check_schedule, check_schedule_table};
 pub use geometry::Geometry;
@@ -157,6 +157,12 @@ pub struct Schedule {
     /// `Deterministic` and refused under `ExactOrder`; refused as well where
     /// no accumulation of the kernel has that shape, as a field nothing honours.
     pub(crate) factor_scales: bool,
+    /// Whether the operand the workgroup's rows share is staged through
+    /// workgroup memory: per reduction round the workgroup loads its tile
+    /// cooperatively once, instead of every subgroup reading it from global
+    /// memory for its own rows. Published through the shared-memory size the
+    /// manifest already carries - no new field.
+    pub(crate) stage_b: bool,
     pub(crate) reduction: ReductionStrategy,
     /// Indices of the reduction axis one staged tile covers, under
     /// `ReductionStrategy::TiledStage`. Zero everywhere else, and a
@@ -253,6 +259,11 @@ impl Schedule {
     /// Whether segmented sums factor the block scale out of their terms.
     pub fn factor_scales(&self) -> bool {
         self.factor_scales
+    }
+
+    /// Whether the shared operand is staged through workgroup memory.
+    pub fn stage_b(&self) -> bool {
+        self.stage_b
     }
 
     pub fn reduction(&self) -> ReductionStrategy {
@@ -515,6 +526,7 @@ impl Schedule {
             subgroups: 1,
             segment: 0,
             factor_scales: false,
+            stage_b: false,
             tile_depth: 0,
             matrix_padding: 0,
             scan: ScanStrategy::Serial,
@@ -561,6 +573,7 @@ impl Schedule {
             subgroups: 1,
             segment: 0,
             factor_scales: false,
+            stage_b: false,
             tile_depth: 0,
             matrix_padding: 0,
             scan: ScanStrategy::Serial,
@@ -593,6 +606,7 @@ impl Schedule {
             subgroups: 1,
             segment: 0,
             factor_scales: false,
+            stage_b: false,
             tile_depth: 0,
             matrix_padding: 0,
             scan: ScanStrategy::Serial,
@@ -697,6 +711,16 @@ impl Schedule {
     /// factored out of their terms (`factor_scales`).
     pub fn with_factored_scales(mut self) -> Self {
         self.factor_scales = true;
+        self
+    }
+
+    /// The same lowering staging the operand the workgroup's rows share
+    /// (`stage_b`): per reduction round the workgroup loads its tile
+    /// cooperatively, barriers, and every subgroup reads the tile from
+    /// workgroup memory for its own rows. The order of the accumulated terms
+    /// is unchanged, so the published determinism is unchanged.
+    pub fn with_staged_operand(mut self) -> Self {
+        self.stage_b = true;
         self
     }
 

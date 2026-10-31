@@ -38,6 +38,7 @@ pub fn space() -> Space {
             Dim::Subgroups(&[1, 2, 4]),
             Dim::Segment(&[4, 16]),
             Dim::FactorScales,
+            Dim::StageB,
             Dim::MatrixDepth(&[32, 64, 128]),
             Dim::MatrixPadding(&[0, 8]),
         ],
@@ -88,6 +89,65 @@ pub fn matrix_picks(gpu: GpuBackend) -> Vec<Pick> {
 mod tests {
     use super::*;
     use crate::schedule::GpuBackend;
+
+    /// The decode GEMV's kernel, small enough to build in a test: a quantized
+    /// weight and a dense operand read along the reduced axis.
+    fn gemv_kernel() -> rir_core::ValidatedKernel {
+        use rir_core::{
+            Constraint, DType, Extent, KernelBuilder, Layout, QuantType, ReduceOp,
+            ReductionSemantics, TensorType,
+        };
+        let format = QuantType::Q8_0;
+        let mut k = KernelBuilder::new("gemv");
+        let a = k.input(
+            "a",
+            TensorType {
+                dtype: DType::Quant(format),
+                rank: 2,
+                layout: Layout::Ggml,
+            },
+        );
+        let b = k.input("b", TensorType::f32_2d());
+        let dst = k.output("dst", TensorType::f32_2d());
+        let row = k.axis("row", Extent::Dim { arg: a, dim: 1 });
+        let plane = k.axis("plane", Extent::Dim { arg: b, dim: 1 });
+        let col = k.axis("col", Extent::Dim { arg: a, dim: 0 });
+        let av = k.read(a, &[col, row]);
+        let bv = k.read(b, &[col, plane]);
+        let p = k.mul(av, bv);
+        let s = k.reduce(ReduceOp::Sum, col, p, ReductionSemantics::Deterministic);
+        k.write(dst, &[row, plane], s);
+        k.constrain(Constraint::DType {
+            arg: a,
+            allowed: vec![DType::Quant(format)],
+        });
+        k.constrain(Constraint::DType {
+            arg: b,
+            allowed: vec![DType::F32],
+        });
+        k.finish().unwrap()
+    }
+
+    /// The space expands staged geometries on the partition targets and on
+    /// them only: `stage_b` is refused elsewhere, so `expand` - which filters
+    /// by what `lower` admits - carries it there alone.
+    #[test]
+    fn the_space_expands_staged_geometries_on_partition_targets_only() {
+        let kernel = gemv_kernel();
+        let space = space();
+        for gpu in [GpuBackend::Metal, GpuBackend::Vulkan] {
+            let staged = space
+                .expand(gpu, &kernel)
+                .into_iter()
+                .filter(|g| g.lanes().is_some_and(|l| l.stage_b))
+                .count();
+            if crate::schedule::partitions_subgroups(gpu) {
+                assert!(staged > 0, "{}: no staged geometry expanded", gpu.name());
+            } else {
+                assert_eq!(staged, 0, "{}: a staged geometry expanded", gpu.name());
+            }
+        }
+    }
 
     /// The names the shipped artifacts carry are the derived ones: the
     /// fallback is unnamed, the column tiles are `cols4`/`cols8`, the matrix

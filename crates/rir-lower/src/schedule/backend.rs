@@ -134,6 +134,15 @@ pub fn partitions_subgroups(gpu: GpuBackend) -> bool {
     PARTITION_TARGETS.contains(&gpu)
 }
 
+/// The least workgroup memory every partition target guarantees, in bytes.
+///
+/// 32 KiB is what Metal promises on every Apple GPU the `PARTITION_TARGETS`
+/// hardware fixes a 32-lane subgroup on, and what a CUDA block gets without
+/// opting into the larger dynamic allocation. A staged operand beyond it is
+/// refused at lowering rather than published in the manifest for a device to
+/// decline at dispatch.
+pub const MAX_STAGED_SHARED_BYTES: u32 = 32 * 1024;
+
 /// The GPU backends with a subgroup matrix product the emitters print
 /// (`ReductionStrategy::MatrixTile`): Metal's `simdgroup_float8x8`. Vulkan's
 /// cooperative matrices are an extension outside the baseline the shaders

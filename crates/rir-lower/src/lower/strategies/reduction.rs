@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use rir_core::{AxisId, Kernel, Op, ValueId};
 
+use super::stage::{StageB, StagedRead, stage_b_tiles};
 use crate::loop_ir::*;
 use crate::schedule::{ReductionStrategy, SUBGROUP_LANES};
 
@@ -214,6 +215,12 @@ pub(crate) fn lower_accum_loop(
         Vec::new()
     };
     if plan.span <= 1 || reads.is_empty() {
+        if lo.stage.is_some() {
+            return Err(LowerError::StageUnsupported {
+                why: "a segmented quantized read is required: the staged tile is one round of \
+                      the segment loop",
+            });
+        }
         let col = lo.new_var(&inner_name, VarKind::Idx);
         lo.axis_vars.insert(inner_axis, col);
         lo.begin_scope(true);
@@ -297,6 +304,20 @@ fn lower_segments(
     // that depends on it fail loudly instead of silently taking the segment's
     // first element.
     lo.axis_vars.remove(&inner_axis);
+    // Under `stage_b` the loop variable is the **round's** base on the reduced
+    // axis and the segment loop becomes a round loop around a staged tile: each
+    // lane accumulates at `round + lane·span + e`, so the body is built at that
+    // register rather than at the loop variable's.
+    let stage = lo.stage.clone();
+    let seg_body = match (&stage, traversal, start) {
+        (Some(_), Traversal::Lanes { .. }, Some(_)) => lo.new_var("seg_lane", VarKind::Idx),
+        (Some(_), _, _) => {
+            return Err(LowerError::StageUnsupported {
+                why: "lane traversal required: one round is split across the workgroup's lanes",
+            })
+        }
+        (None, _, _) => seg,
+    };
     // One header per read and per row of the tile - the block of a weight row
     // is its own - except for a read the row does not move, whose header the
     // first row already holds.
@@ -315,8 +336,8 @@ fn lower_segments(
                 continue;
             }
             let be = read.format.desc().block_elements;
-            let block = lo.emit("blk", VarKind::Idx, LExpr::IDivC(seg, be));
-            let inb0 = lo.emit("inb0", VarKind::Idx, LExpr::IModC(seg, be));
+            let block = lo.emit("blk", VarKind::Idx, LExpr::IDivC(seg_body, be));
+            let inb0 = lo.emit("inb0", VarKind::Idx, LExpr::IModC(seg_body, be));
             // Slot 0 of the index list is the block, which the header addresses
             // itself; the outer indices are ordinary registers of this scope.
             let mut idx_vars = vec![block];
@@ -344,15 +365,33 @@ fn lower_segments(
     if !runs.is_empty() || tile.rows.is_some() || lo.factor_scales {
         let run = if runs.is_empty() { 1 } else { lo.reduce_run };
         body.extend(lower_groups(
-            lo, &heads, runs, seg, span, run, inner_axis, tile,
+            lo,
+            &heads,
+            runs,
+            seg_body,
+            span,
+            run,
+            inner_axis,
+            tile,
+            stage.as_ref().map(|st| (st, seg)),
         )?);
-        out.push(segment_loop(traversal, start, seg, inner_axis, span, body));
+        out.push(round_loop(
+            lo,
+            stage.as_ref(),
+            traversal,
+            start,
+            seg,
+            seg_body,
+            inner_axis,
+            span,
+            body,
+        )?);
         return Ok(out);
     }
 
     let elem = lo.new_var(&format!("{inner_name}_e"), VarKind::Idx);
     lo.begin_scope(true);
-    let col = lo.emit(&inner_name, VarKind::Idx, LExpr::IAdd(seg, elem));
+    let col = lo.emit(&inner_name, VarKind::Idx, LExpr::IAdd(seg_body, elem));
     lo.axis_vars.insert(inner_axis, col);
     for head in &heads[0] {
         let inb = lo.emit("inb", VarKind::Idx, LExpr::IAdd(head.inb0, elem));
@@ -376,8 +415,72 @@ fn lower_segments(
         body: inner_body,
     });
 
-    out.push(segment_loop(traversal, start, seg, inner_axis, span, body));
+    out.push(round_loop(
+        lo,
+        stage.as_ref(),
+        traversal,
+        start,
+        seg,
+        seg_body,
+        inner_axis,
+        span,
+        body,
+    )?);
     Ok(out)
+}
+
+/// The loop over a lane's (or the invocation's) segments, or - under
+/// `stage_b` - the loop over the workgroup's **rounds**: the loop variable
+/// becomes the round's base on the reduced axis, the shared operand's tile is
+/// loaded by the whole workgroup between two barriers, and the body runs per
+/// lane at `round + lane·span`, held back by the round's own bound.
+#[expect(clippy::too_many_arguments)]
+fn round_loop(
+    lo: &mut Lowerer,
+    stage: Option<&StageB>,
+    traversal: Traversal,
+    start: Option<VarId>,
+    seg: VarId,
+    seg_body: VarId,
+    inner_axis: AxisId,
+    span: u32,
+    body: Vec<Stmt>,
+) -> Result<Stmt, LowerError> {
+    let Some(st) = stage else {
+        return Ok(segment_loop(traversal, start, seg, inner_axis, span, body));
+    };
+    let step = match traversal {
+        Traversal::Lanes { lanes, .. } => lanes * span,
+        Traversal::Whole => {
+            return Err(LowerError::StageUnsupported {
+                why: "lane traversal required: one round is split across the workgroup's lanes",
+            })
+        }
+    };
+    let tiles = stage_b_tiles(st, lo, inner_axis, seg)?;
+    // The per-lane segment base is computed before the round's bound is
+    // tested: `round + lane·span` is what the guard compares with the extent,
+    // so the compute may not sit inside the guard it feeds.
+    let start = start.expect("lane traversal carries a start");
+    Ok(Stmt::ForTiled {
+        var: seg,
+        axis: inner_axis,
+        step,
+        body: vec![Stmt::StageTiles {
+            tiles,
+            threads: st.threads,
+            body: vec![
+                Stmt::Compute(Inst {
+                    dst: seg_body,
+                    expr: LExpr::IAdd(seg, start),
+                }),
+                Stmt::InBounds {
+                    bounds: vec![(seg_body, inner_axis)],
+                    body,
+                },
+            ],
+        }],
+    })
 }
 
 /// The loop over a lane's (or the invocation's) segments.
@@ -417,6 +520,14 @@ fn segment_loop(
 /// Anything else the level reads along the reduced axis is still read element
 /// by element, which is correct and only slower.
 fn run_reads(k: &Kernel, inner_axis: AxisId, accs: &[Accum]) -> Vec<ValueId> {
+    let rins: Vec<ValueId> = accs.iter().map(|&(_, _, rin, _)| rin).collect();
+    dense_axis_reads(k, inner_axis, &rins)
+}
+
+/// The dense reads reachable from `rins` whose first index is the reduced
+/// axis, whatever serves them: a run when the operand is contiguous, the
+/// staged tile under `Schedule::stage_b`.
+pub(crate) fn dense_axis_reads(k: &Kernel, inner_axis: AxisId, rins: &[ValueId]) -> Vec<ValueId> {
     k.ops()
         .iter()
         .enumerate()
@@ -436,7 +547,7 @@ fn run_reads(k: &Kernel, inner_axis: AxisId, accs: &[Accum]) -> Vec<ValueId> {
                 .iter()
                 .skip(1)
                 .all(|i| !depends_on_axis(k, *i, inner_axis));
-            let read_here = accs.iter().any(|(_, _, rin, _)| reaches(k, *rin, v));
+            let read_here = rins.iter().any(|rin| reaches(k, *rin, v));
             (dense && first_is_axis && rest_fixed && read_here).then_some(v)
         })
         .collect()
@@ -518,6 +629,7 @@ fn lower_groups(
     run: u32,
     inner_axis: AxisId,
     tile: &PointTile,
+    stage: Option<(&StageB, VarId)>,
 ) -> Result<Vec<Stmt>, LowerError> {
     let k = lo.k;
     let inner_name = k.axes()[inner_axis.0 as usize].name.clone();
@@ -677,6 +789,11 @@ fn lower_groups(
         runs: cached_reads,
         vector_reads: !runs.is_empty(),
         factored: &factored,
+        stage: stage.map(|(st, tour)| StageCtx {
+            round: st.round,
+            tour,
+            reads: st.reads.clone(),
+        }),
     };
     let mut loaded: HashMap<(usize, usize, ValueId), Vec<VarId>> = HashMap::new();
     emit_points(lo, tile, &mut |lo, r, c, accs| {
@@ -736,6 +853,49 @@ struct GroupCtx<'a> {
     runs: &'a [ValueId],
     vector_reads: bool,
     factored: &'a [Vec<Vec<Option<Factored>>>],
+    /// The staged shared operand, when `Schedule::stage_b` is on: its reads are
+    /// served from the tile instead of the buffer.
+    stage: Option<StageCtx>,
+}
+
+/// The staged tile as the group loop reads it: the round's width (the tile's
+/// row stride), the round loop's variable, and the reads with their arrays.
+struct StageCtx {
+    round: u32,
+    tour: VarId,
+    reads: Vec<super::stage::StagedRead>,
+}
+
+impl StageCtx {
+    /// The tile array serving `rv`, when the read is staged.
+    fn tile_of(&self, rv: ValueId) -> Option<VarId> {
+        self.reads
+            .iter()
+            .find(|r| r.value == rv)
+            .map(|r| r.tile)
+    }
+
+    /// Reads `rv` from the staged tile at column `col` of the round `tour`:
+    /// the tile's element `(point, col - tour)` is `point · round + col - tour`.
+    fn load(
+        &self,
+        lo: &mut Lowerer,
+        rv: ValueId,
+        point: usize,
+        col: VarId,
+    ) -> Result<VarId, LowerError> {
+        let tile = self.tile_of(rv).expect("load is called for a staged read");
+        let off = lo.emit("boff", VarKind::Idx, LExpr::ISub(col, self.tour));
+        let at = lo.emit("bat", VarKind::Idx, LExpr::IAddC(off, point as u32 * self.round));
+        let dst = lo.new_var("t", VarKind::F32);
+        lo.body.push(Stmt::LoadShared {
+            dst,
+            array: tile,
+            index: at,
+            width: 1,
+        });
+        Ok(dst)
+    }
 }
 
 /// One point's accumulations over a group: the runs read at the group's first
@@ -779,9 +939,27 @@ fn emit_group_point(
             for &col in &ctx.cols {
                 lo.env = keep(&lo.env);
                 lo.axis_vars.insert(inner, col);
-                regs.push(lo.lower_value(rv)?);
+                // A staged read comes from the tile, not from the buffer.
+                let reg = match &ctx.stage {
+                    Some(st) if st.tile_of(rv).is_some() => st.load(lo, rv, c, col)?,
+                    _ => lo.lower_value(rv)?,
+                };
+                regs.push(reg);
             }
             lo.env = keep(&lo.env);
+            loaded.insert((c, row_key, rv), regs.clone());
+            run_regs.push(regs);
+            continue;
+        }
+        // A staged read is served from the tile: one shared load per element
+        // of the run, at the column the element walks.
+        if let Some(st) = &ctx.stage
+            && st.tile_of(rv).is_some()
+        {
+            let mut regs = Vec::with_capacity(ctx.cols.len());
+            for &col in &ctx.cols {
+                regs.push(st.load(lo, rv, c, col)?);
+            }
             loaded.insert((c, row_key, rv), regs.clone());
             run_regs.push(regs);
             continue;
@@ -1143,6 +1321,42 @@ pub(crate) fn lower_lanes(
         {
             return Err(LowerError::LaneTileUnsupported {
                 why: "a quantized read depends on the tiled axis",
+            });
+        }
+        // The staged shared operand: one tile of `lane_tile` columns by
+        // `lanes · span` reduced elements per round, loaded once by the whole
+        // workgroup and read by every subgroup for its own rows. One array per
+        // dense read along the reduced axis, declared in `LoopKernel::shared`.
+        if lo.stage_b {
+            let Some(t) = tile else {
+                return Err(LowerError::StageUnsupported {
+                    why: "a lane tile is required: the staged tile is one column per tile index",
+                });
+            };
+            let rins: Vec<ValueId> = a.reduces.iter().map(|&(_, _, rin)| rin).collect();
+            let reads = dense_axis_reads(lo.k, inner_axis, &rins);
+            if reads.is_empty() {
+                return Err(LowerError::StageUnsupported {
+                    why: "no dense operand is read along the reduced axis: nothing to stage",
+                });
+            }
+            let threads = lanes * rows.map_or(1, |t| t.subgroups);
+            let mut staged = Vec::with_capacity(reads.len());
+            for rv in reads {
+                let tile_var = lo.new_var("tile_b", VarKind::Idx);
+                lo.shared.push((tile_var, lanes * plan.span * t.count));
+                staged.push(StagedRead {
+                    value: rv,
+                    tile: tile_var,
+                });
+            }
+            lo.stage = Some(StageB {
+                threads,
+                round: lanes * plan.span,
+                cols: t.count,
+                cols_first: t.first,
+                col_axis: t.axis,
+                reads: staged,
             });
         }
         // Use the same dependency **levels** as the sequential path. Each

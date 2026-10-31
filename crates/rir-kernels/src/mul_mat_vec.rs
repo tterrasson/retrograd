@@ -439,6 +439,75 @@ mod tests {
         }
     }
 
+    /// The staged shared operand: one tile of `cols × 32·segment` floats per
+    /// reduction round, loaded cooperatively by the whole workgroup and read
+    /// by every subgroup for its own rows. Partial tiles, strided activations
+    /// and every row/column geometry included, the result is the reference's
+    /// within the same tolerance as the unstaged lowering.
+    #[test]
+    fn parity_of_the_staged_operand_lowering_against_the_reference() {
+        use rir_lower::GpuBackend;
+        for format in variants() {
+            for (cols, rows, subgroups) in [(4u32, 2u32, 2u32), (8, 2, 2), (8, 4, 4)] {
+                let schedule = Schedule::gpu_subgroup_cols(GpuBackend::Metal, cols)
+                    .with_reduce_run(4)
+                    .with_segment(16)
+                    .with_row_tile(rows, subgroups)
+                    .with_factored_scales()
+                    .with_staged_operand();
+                for &(blocks, n_row, toks) in
+                    &[(1usize, 1usize, 1usize), (2, 5, 3), (2, 7, 9), (3, 70, 5)]
+                {
+                    for step in [1, 2] {
+                        run_case_strided(format, schedule.clone(), blocks, n_row, toks, step);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A staged operand needs several fixed-width subgroups, a tile wider than
+    /// one column, a partition target, and workgroup memory within what every
+    /// partition target guarantees - each refusal names its reason.
+    #[test]
+    fn staged_operands_refuse_unsupported_geometries() {
+        use rir_lower::{GpuBackend, LowerError};
+        let kernel = build(QuantType::Q8_0).unwrap();
+        let staged = |s: Schedule| s.with_staged_operand();
+        // One subgroup per workgroup: no second subgroup to share the tile with.
+        let err = rir_lower::lower(
+            &kernel,
+            staged(Schedule::gpu_subgroup_cols(GpuBackend::Metal, 8).with_row_tile(2, 1)),
+        )
+        .unwrap_err();
+        assert!(matches!(err, LowerError::StageUnsupported { .. }), "{err}");
+        // A single column: no tile to stage.
+        let err = rir_lower::lower(
+            &kernel,
+            staged(Schedule::gpu_subgroup(GpuBackend::Metal).with_row_tile(2, 2)),
+        )
+        .unwrap_err();
+        assert!(matches!(err, LowerError::StageUnsupported { .. }), "{err}");
+        // Vulkan: the subgroup width is the device's choice.
+        let err = rir_lower::lower(
+            &kernel,
+            staged(Schedule::gpu_subgroup_cols(GpuBackend::Vulkan, 8).with_row_tile(2, 2)),
+        )
+        .unwrap_err();
+        assert!(matches!(err, LowerError::StageUnsupported { .. }), "{err}");
+        // Beyond the guaranteed workgroup memory: cols16 · 32 · seg32 = 64 KiB.
+        let err = rir_lower::lower(
+            &kernel,
+            staged(
+                Schedule::gpu_subgroup_cols(GpuBackend::Metal, 16)
+                    .with_segment(32)
+                    .with_row_tile(2, 2),
+            ),
+        )
+        .unwrap_err();
+        assert!(matches!(err, LowerError::StageUnsupported { .. }), "{err}");
+    }
+
     /// The shipped schedules, every one of them, on shapes that leave partial
     /// row, column and depth tiles - the matrix variant's 64 × 32 output tile
     /// included.
