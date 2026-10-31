@@ -1893,6 +1893,9 @@ unsafe extern "C" {
         out_info: *mut RetroAdapterRowsInfo,
     ) -> c_int;
 
+    /// Mirror of `retro_engine_graphs_reused`.
+    pub fn retro_engine_graphs_reused(engine: *mut RetroEngine, out_n_reused: *mut u64) -> c_int;
+
     /// Mirror of `retro_engine_active_adapter`: writes the active adapter's
     /// name (empty = base), two-call sized-string contract.
     pub fn retro_engine_active_adapter(

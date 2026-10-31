@@ -328,3 +328,82 @@ fn a_trainer_snapshot_stays_frozen_while_the_adapter_trains() {
         "base rows are the base model"
     );
 }
+
+/// Decodes `n` single-token steps in slot 0 after `prompt`'s prefill, from
+/// position `pos`, and returns the next position and the last token.
+fn decode(
+    engine: &mut Engine,
+    mut token: i32,
+    mut pos: i32,
+    n: usize,
+    adapter: RowAdapter,
+) -> (i32, i32) {
+    let mut out = StepOutput::with_capacity(1, 0);
+    for _ in 0..n {
+        let tokens = [token];
+        let row = StepRow {
+            request: 1,
+            slot: 0,
+            tokens: Cow::Borrowed(&tokens),
+            pos0: pos,
+            sample: true,
+            sampling: sampling(3).into(),
+            n_top_logprobs: 0,
+            want_logprob: false,
+            adapter,
+        };
+        engine.step(&[row], &mut out).expect("decode step");
+        token = out.row(0).token;
+        pos += 1;
+    }
+    (pos, token)
+}
+
+/// Graph reuse is the fork's (`can_reuse`/`n_reused`), and what is checked
+/// here is that the runtime's decode path actually gets it: single-token steps
+/// of one shape reuse the previous graph, installing a per-row adapter stack
+/// changes the topology and rebuilds it once, and the steps after reuse the
+/// new one.
+#[test]
+fn a_steady_decode_reuses_its_graph_and_an_adapter_load_rebuilds_it() {
+    let _guard = serialize_models();
+    let Some(model) = common::model_path_if_available() else {
+        eprintln!("skipping: no local test model");
+        return;
+    };
+    let tmp = common::scratch("lora-rows-graph-reuse");
+    let adapter = trained_adapter(&model, 1, 5, tmp.path());
+
+    let mut engine = Engine::new(&model, &engine_config()).expect("load engine");
+    let prompt = engine.tokenize_text("Pack my box with five dozen").unwrap();
+    let mut out = StepOutput::with_capacity(1, TOP as usize);
+    engine
+        .step(&[scoring_row(1, 0, &prompt, RowAdapter::Context)], &mut out)
+        .expect("prefill");
+    let (pos, token) = (prompt.len() as i32, out.row(0).token);
+
+    // The first decode after the prefill has another shape and builds its
+    // graph; every one after it reuses that graph.
+    let (pos, token) = decode(&mut engine, token, pos, 1, RowAdapter::Context);
+    let before = engine.graphs_reused().unwrap();
+    let (pos, token) = decode(&mut engine, token, pos, 6, RowAdapter::Context);
+    assert_eq!(
+        engine.graphs_reused().unwrap() - before,
+        6,
+        "six decodes of one shape must each reuse the previous graph"
+    );
+
+    // A per-row stack is a new topology: the next step builds, then reuse
+    // resumes on the new graph.
+    let id = engine.adapter_load(&adapter, 1.0).expect("load per row");
+    let before = engine.graphs_reused().unwrap();
+    let (pos, token) = decode(&mut engine, token, pos, 1, RowAdapter::Loaded(id));
+    assert_eq!(
+        engine.graphs_reused().unwrap(),
+        before,
+        "the step after an adapter load must not run on the stale graph"
+    );
+    let before = engine.graphs_reused().unwrap();
+    let _ = decode(&mut engine, token, pos, 4, RowAdapter::Loaded(id));
+    assert_eq!(engine.graphs_reused().unwrap() - before, 4);
+}

@@ -430,6 +430,17 @@ impl Engine {
         Ok(crate::memory_report_from_ffi(report))
     }
 
+    /// Ubatches computed on the previous graph rather than a newly built one,
+    /// since the context was created. Monotonic: diff two reads around the
+    /// decodes being described. A decode loop whose steps keep one shape -
+    /// same row count, outputs and adapter set - should add one per step.
+    pub fn graphs_reused(&self) -> std::result::Result<u64, EngineError> {
+        let mut n = 0u64;
+        // SAFETY: the `Engine` invariant holds and `n` is a valid out-pointer.
+        self.check(unsafe { ffi::retro_engine_graphs_reused(self.raw.as_ptr(), &mut n) })?;
+        Ok(n)
+    }
+
     /// Monotonic prefix-reuse counters of the engine's context, same contract
     /// as [`crate::Trainer::generation_stats`].
     pub fn generation_stats(&self) -> std::result::Result<GenerationStats, EngineError> {

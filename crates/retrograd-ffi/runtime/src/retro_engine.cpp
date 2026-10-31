@@ -870,6 +870,23 @@ extern "C" int retro_engine_adapter_rows_info(
     });
 }
 
+extern "C" int retro_engine_graphs_reused(retro_engine * engine, uint64_t * out_n_reused) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        if (!out_n_reused) {
+            set_error("out_n_reused is required");
+            return -1;
+        }
+        // Counted whether or not perf timing is enabled, and never reset here:
+        // nothing in the runtime calls llama_perf_context_reset.
+        *out_n_reused = (uint64_t) std::max(0, llama_perf_context(state->ctx.get()).n_reused);
+        return 0;
+    });
+}
+
 extern "C" int retro_engine_active_adapter(
         retro_engine * engine, char * buffer, size_t n_buffer, size_t * out_n_bytes) {
     return boundary([&]() -> int {

@@ -2477,6 +2477,13 @@ int retro_engine_adapter_rows_info(
     retro_engine * engine,
     retro_adapter_rows_info * out_info);
 
+// Graph reuse of the engine's context: how many ubatches since its creation
+// were computed on the previous graph instead of building and allocating a new
+// one (llama.cpp's `n_reused`). Monotonic; diff two reads around the decodes
+// to describe. A changed adapter set, per-row stack, output count or ubatch
+// shape builds a new graph.
+int retro_engine_graphs_reused(retro_engine * engine, uint64_t * out_n_reused);
+
 // Writes the active adapter's name (empty when the base model is active),
 // following the render_string_out two-call contract.
 int retro_engine_active_adapter(
