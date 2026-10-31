@@ -6,6 +6,7 @@ use std::borrow::Cow;
 pub mod backend;
 pub mod bench;
 pub mod error;
+pub mod geometry;
 pub mod strategy;
 pub mod table;
 
@@ -18,6 +19,7 @@ pub use backend::{
     partitions_subgroups, targets_for,
 };
 pub use error::{ScheduleError, check_schedule, check_schedule_table};
+pub use geometry::Geometry;
 pub use strategy::{
     Claim, FALLBACK_PRIORITY, ParallelMapping, ReductionStrategy, SUBGROUP_LANES, ScanStrategy,
     ShapeRule,
