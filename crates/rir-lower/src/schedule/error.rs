@@ -230,6 +230,7 @@ pub fn check_schedule(kernel: &Kernel, schedule: &Schedule) -> Result<(), Schedu
                         | ReductionStrategy::SubgroupTree
                         | ReductionStrategy::HierarchicalTree
                         | ReductionStrategy::TiledStage
+                        | ReductionStrategy::MatrixTile
                 ),
                 // `TiledStage` moves *where the operands are read from*, not
                 // the order they are combined in: the reduction axis is still

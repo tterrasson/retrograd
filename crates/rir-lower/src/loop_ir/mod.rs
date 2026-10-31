@@ -117,7 +117,15 @@ pub enum VarKind {
     /// go with it; what they do *not* share is the spelling, which is exactly
     /// what an emitter is for.
     VecBool(u32),
+    /// A `FRAG_DIM × FRAG_DIM` F32 matrix held by a whole subgroup
+    /// (`simdgroup_float8x8`). Written and read only by the fragment
+    /// statements (`Stmt::FragZero` and its siblings), never by an expression.
+    Frag,
 }
+
+/// Rows and columns of a matrix fragment: the 8 × 8 shape every backend with a
+/// subgroup matrix product offers in F32.
+pub const FRAG_DIM: u32 = 8;
 
 /// Hardware level to which a parallel axis is mapped. The schedule
 /// (`ParallelMapping`) and lowering make this choice; emitters only print the
@@ -256,6 +264,7 @@ impl LoopKernel {
                     Stmt::Parallel { body, .. }
                     | Stmt::ParallelFlat { body, .. }
                     | Stmt::ParallelLane { body, .. }
+                    | Stmt::ParallelSubgroup { body, .. }
                     | Stmt::For { body, .. }
                     | Stmt::ForStrided { body, .. }
                     | Stmt::ForChunk { body, .. }
@@ -277,6 +286,10 @@ impl LoopKernel {
                         walk(strided, out);
                     }
                     Stmt::Barrier
+                    | Stmt::FragZero { .. }
+                    | Stmt::FragLoad { .. }
+                    | Stmt::FragMma { .. }
+                    | Stmt::FragStore { .. }
                     | Stmt::Set { .. }
                     | Stmt::InitAcc { .. }
                     | Stmt::Accum { .. }
@@ -318,12 +331,18 @@ impl LoopKernel {
             stmts
                 .iter()
                 .filter_map(|s| match s {
-                    Stmt::LaneReduce { .. } | Stmt::LaneScan { .. } => Some(lanes),
+                    Stmt::LaneReduce { .. }
+                    | Stmt::LaneScan { .. }
+                    | Stmt::FragZero { .. }
+                    | Stmt::FragLoad { .. }
+                    | Stmt::FragMma { .. }
+                    | Stmt::FragStore { .. } => Some(lanes),
                     Stmt::WorkgroupReduce {
                         subgroup: Some(w), ..
                     } => Some(*w),
                     Stmt::ParallelLane { lanes, body, .. } => walk(body, *lanes),
                     Stmt::Parallel { body, .. }
+                    | Stmt::ParallelSubgroup { body, .. }
                     | Stmt::ParallelFlat { body, .. }
                     | Stmt::For { body, .. }
                     | Stmt::ForStrided { body, .. }
@@ -383,6 +402,7 @@ impl LoopKernel {
                     Stmt::Parallel { body, .. }
                     | Stmt::ParallelFlat { body, .. }
                     | Stmt::ParallelLane { body, .. }
+                    | Stmt::ParallelSubgroup { body, .. }
                     | Stmt::For { body, .. }
                     | Stmt::ForStrided { body, .. }
                     | Stmt::ForChunk { body, .. }
@@ -414,6 +434,38 @@ impl LoopKernel {
 
     pub fn uses_shared(&self) -> bool {
         !self.shared.is_empty()
+    }
+
+    /// Whether the body partitions its workgroup into subgroups
+    /// (`Stmt::ParallelSubgroup`), which is what an emitter needs to know to
+    /// declare the subgroup index and to read a lane index *within* the
+    /// subgroup rather than within the workgroup.
+    pub fn uses_subgroups(&self) -> bool {
+        self.any_stmt(&|s| matches!(s, Stmt::ParallelSubgroup { .. }))
+    }
+
+    /// Whether the body computes on matrix fragments: the subgroup matrix
+    /// product is a device capability of its own, published apart from the
+    /// lane collectives.
+    pub fn uses_fragments(&self) -> bool {
+        self.any_stmt(&|s| {
+            matches!(
+                s,
+                Stmt::FragZero { .. }
+                    | Stmt::FragLoad { .. }
+                    | Stmt::FragMma { .. }
+                    | Stmt::FragStore { .. }
+            )
+        })
+    }
+
+    fn any_stmt(&self, pred: &dyn Fn(&Stmt) -> bool) -> bool {
+        fn walk(stmts: &[Stmt], pred: &dyn Fn(&Stmt) -> bool) -> bool {
+            stmts
+                .iter()
+                .any(|s| pred(s) || child_blocks_of(s).into_iter().any(|b| walk(b, pred)))
+        }
+        walk(&self.body, pred)
     }
 
     /// Number of consecutive elements one invocation covers on the vectorized

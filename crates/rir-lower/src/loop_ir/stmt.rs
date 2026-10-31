@@ -14,7 +14,7 @@ pub struct Inst {
 
 /// One argument staged into shared memory by a whole workgroup, as a
 /// `n_depth × n_rows` tile laid out depth-major - element `(d, r)` sits at
-/// `d · n_rows + r`, so the `n_rows` consumers of one depth slice read
+/// `d · row_stride + r`, so the `n_rows` consumers of one depth slice read
 /// consecutive words.
 ///
 /// Everything an emitter needs is here, and nothing it would have to invent:
@@ -69,12 +69,14 @@ pub struct TileStage {
     /// Statements staging one segment, executed only when its first element is
     /// inside both axes. They write the tile themselves, through `StoreTile`.
     pub load: Vec<Stmt>,
+    /// Physical distance between rows of shared storage, including padding.
+    pub row_stride: u32,
     pub n_rows: u32,
     pub n_depth: u32,
 }
 
 impl TileStage {
-    /// Elements of shared storage this tile occupies.
+    /// Logical elements staged by the cooperative loop, excluding padding.
     pub fn len(&self) -> u32 {
         self.n_rows * self.n_depth
     }
@@ -234,6 +236,65 @@ pub enum Stmt {
         var: VarId,
         lanes: u32,
         body: Vec<Stmt>,
+    },
+    /// The workgroup as `count` **subgroups**: `var` is the subgroup index,
+    /// and the body - exactly one `ParallelLane`, whose lanes are those of one
+    /// subgroup - runs on each of them.
+    ///
+    /// It is what lets one workgroup own several independent pieces of work, a
+    /// row each, without a workgroup-wide collective between them: the lane
+    /// collectives of the body span one subgroup, as `simd_sum` does, and the
+    /// workgroup is `count · lanes` invocations. A barrier or a staged tile in
+    /// the body is still the **workgroup's**, so the oracle runs every lane of
+    /// every subgroup in step, statement by statement, exactly as it runs the
+    /// lanes of a plain `ParallelLane`.
+    ///
+    /// The partition is the hardware's: subgroup `s` is the invocations
+    /// `s · lanes .. (s + 1) · lanes` of the workgroup. That holds on a backend
+    /// whose subgroup width is fixed at `lanes` (Apple's SIMD-group, a CUDA
+    /// warp), and a backend whose width is the device's choice refuses the
+    /// statement rather than print a partition it cannot promise.
+    ParallelSubgroup {
+        var: VarId,
+        count: u32,
+        body: Vec<Stmt>,
+    },
+    /// A `FRAG_DIM × FRAG_DIM` matrix fragment set to zero.
+    ///
+    /// A fragment (`VarKind::Frag`) belongs to a whole subgroup: every lane
+    /// holds a share of it and every fragment statement is a collective of the
+    /// subgroup, placed where `LaneReduce` may be - reached by every lane of the
+    /// enclosing `ParallelLane`, under bounds that are the same for all of them.
+    FragZero {
+        dst: VarId,
+    },
+    /// Loads a fragment from a shared array: element `(i, j)` is
+    /// `array[index + i · stride + j]`, or `array[index + j · stride + i]` when
+    /// `transpose` is set. `index` is the same in every lane.
+    FragLoad {
+        dst: VarId,
+        array: VarId,
+        index: VarId,
+        stride: u32,
+        transpose: bool,
+    },
+    /// `acc += a × b` on fragments: `acc[i][j] += Σ_k a[i][k] · b[k][j]`.
+    ///
+    /// The oracle sums `k` in ascending order and adds the result to `acc`; the
+    /// hardware's product is free to associate the eight terms otherwise, which
+    /// is why the strategy that lowers to it publishes a regrouped reduction.
+    FragMma {
+        acc: VarId,
+        a: VarId,
+        b: VarId,
+    },
+    /// Stores a fragment into a shared array, with `FragLoad`'s addressing.
+    FragStore {
+        src: VarId,
+        array: VarId,
+        index: VarId,
+        stride: u32,
+        transpose: bool,
     },
     /// Sequential loop over a full axis extent. `reverse` traverses the axis
     /// in descending order for backward scans.
@@ -481,6 +542,14 @@ pub enum Stmt {
     /// argument, so an emitter prints it as consecutive elements - one vector
     /// access where the backend has one - and tests nothing. The oracle steps
     /// by `nb[0]`, which under that guard is the same address.
+    ///
+    /// A run may also read a **quantized payload**: on a byte operand `nb[0]` is
+    /// the block size, so the run steps by one byte instead, and lowering only
+    /// emits it when the run's elements touch consecutive bytes inside one
+    /// block (the run length divides the `BitPlan`'s plane, and the run starts
+    /// aligned). Element `c` is then the byte `c` past the address - one vector
+    /// access of raw payload on Metal, `uchar`/`char` components elsewhere -
+    /// and the per-element bit extraction reads the pre-loaded byte.
     LoadRun {
         dsts: Vec<VarId>,
         arg: ArgId,
@@ -526,6 +595,7 @@ pub fn child_blocks_of(s: &Stmt) -> Vec<&Vec<Stmt>> {
         Stmt::Parallel { body, .. }
         | Stmt::ParallelFlat { body, .. }
         | Stmt::ParallelLane { body, .. }
+        | Stmt::ParallelSubgroup { body, .. }
         | Stmt::For { body, .. }
         | Stmt::ForStrided { body, .. }
         | Stmt::ForChunk { body, .. }

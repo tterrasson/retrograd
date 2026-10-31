@@ -25,6 +25,39 @@ fn store_lane(value: VarId, at: VarId) -> Stmt {
     }
 }
 
+/// A byte view does not imply a quantized block stride: dense F16 inputs are
+/// byte views too. Reading the next element must skip the padding half.
+#[test]
+fn dense_f16_element_offsets_keep_the_tensor_stride() {
+    use crate::interp::{Regs, TensorViewBytes, exec::exec_load, f32_to_f16};
+
+    let mut lk = kernel(
+        &[("v", VarKind::F32)],
+        vec![],
+        vec![],
+        Schedule::cpu_serial(),
+    );
+    lk.args[0].access = rir_core::Access::Read;
+    lk.args[0].ty.dtype = rir_core::DType::F16;
+    let bytes: Vec<u8> = [1.0, -99.0, 2.0]
+        .into_iter()
+        .flat_map(|v| f32_to_f16(v).to_le_bytes())
+        .collect();
+    let args = [BoundArg::InBytes(TensorViewBytes {
+        data: &bytes,
+        shape: [2, 1, 1, 1],
+        nb: [4, 8, 8, 8],
+    })];
+    let mut regs = Regs {
+        f: vec![0.0],
+        i: vec![0],
+        vlane: 0,
+        m: Default::default(),
+    };
+    exec_load(&lk, &args, &mut regs, VarId(0), Y, MemType::F16, &[], 1).unwrap();
+    assert_eq!(regs.f[0], 2.0);
+}
+
 /// A store by one lane, read by its neighbour after a barrier.
 ///
 /// Two properties in one nest, and neither could be observed if

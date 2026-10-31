@@ -90,8 +90,23 @@ impl MemoryModel for crate::dialect::Cuda {
         match ty {
             MemType::F32 => raw,
             MemType::F16 => format!("__half2float({raw})"),
+            // An unsigned byte lands in an integer register: the reader wants
+            // the raw bits, not a converted value.
+            MemType::U8 => format!("{}({raw})", Self::UINT),
             _ => format!("float({raw})"),
         }
+    }
+
+    // No `read_uvector_at`: a width-w access is w scalar reads from a common
+    // base address, deliberately not a `uint4`, which would demand a
+    // sixteen-byte alignment the contract does not require.
+    fn uvec_ty(width: u32) -> String {
+        format!("uint{width}")
+    }
+
+    fn ucomponent(text: &str, c: usize) -> String {
+        const LANES: [&str; 4] = ["x", "y", "z", "w"];
+        format!("{text}.{}", LANES[c])
     }
 
     fn store(p: &mut Printer<'_, Self>, op: &StoreOp<'_>) {

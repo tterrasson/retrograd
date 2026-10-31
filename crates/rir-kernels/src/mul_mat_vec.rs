@@ -109,7 +109,8 @@ mod tests {
                 *seed = seed
                     .wrapping_mul(6364136223846793005)
                     .wrapping_add(1442695040888963407);
-                let u = ((*seed >> 33) as u32) as f32 / u32::MAX as f32;
+                // The upper 32 bits fit u32; using 31 bits biases every value negative.
+                let u = ((*seed >> 32) as u32) as f32 / u32::MAX as f32;
                 u * 2.0 - 1.0
             })
             .collect()
@@ -246,8 +247,15 @@ mod tests {
     fn parity_of_the_run_lowering_against_the_reference() {
         use rir_lower::GpuBackend;
         for format in variants() {
-            for cols in [1u32, 4] {
-                for &(blocks, rows, toks) in &[(1usize, 1usize, 1usize), (2, 5, 3), (33, 3, 9)] {
+            for cols in [1u32, 4, 8] {
+                for &(blocks, rows, toks) in &[
+                    (1usize, 1usize, 1usize),
+                    (2, 5, 3),
+                    (2, 3, 5),
+                    (2, 3, 6),
+                    (2, 3, 7),
+                    (33, 3, 9),
+                ] {
                     let schedule = if cols == 1 {
                         Schedule::gpu_subgroup(GpuBackend::Metal)
                     } else {
@@ -257,6 +265,28 @@ mod tests {
                         let schedule = schedule.clone().with_reduce_run(4);
                         run_case_strided(format, schedule, blocks, rows, toks, step);
                     }
+                }
+            }
+        }
+    }
+
+    /// Payload runs also serve portable layouts outside the reference model
+    /// profiles: LUT values, high-bit planes, global minima, and plans whose
+    /// byte layout requires the scalar fallback. Two blocks cross every
+    /// in-block plane boundary and the block boundary; five tokens leave a
+    /// partial cols8 tile, with both contiguous and strided activations.
+    #[test]
+    fn payload_runs_agree_with_every_portable_format() {
+        use rir_lower::GpuBackend;
+        for format in QUANT_FORMATS {
+            if format.desc().block_elements <= 1 || !rir_lower::can_lower_dequant(format) {
+                continue;
+            }
+            for run in [2, 4] {
+                let schedule =
+                    Schedule::gpu_subgroup_cols(GpuBackend::Metal, 8).with_reduce_run(run);
+                for step in [1, 2] {
+                    run_case_strided(format, schedule.clone(), 2, 3, 5, step);
                 }
             }
         }
@@ -279,35 +309,52 @@ mod tests {
         );
     }
 
-    /// The shipped GPU schedules read their activations in runs where `b` is
+    /// The shipped lane schedules read their operands in runs where `b` is
     /// contiguous: one `UnitStride`, whose unit half reads `b` in one
-    /// `LoadRun` of four per segment and per tiled index and never element by
-    /// element, and whose strided half is the element loop. The CPU keeps the
-    /// serial element loop, which is the oracle's own order.
+    /// `LoadRun` of four per segment group and per tiled column - once for
+    /// every row of the row tile - and the quantized payload of `a` in one
+    /// `LoadRun` of four per bit plane, per group and per row, while its
+    /// strided half reads `b` element by element, once per column. The CPU
+    /// keeps the serial element loop, which is the oracle's own order, and the
+    /// matrix variant stages its operands instead.
     #[test]
-    fn the_shipped_schedules_read_the_activations_in_runs() {
-        use rir_lower::{Stmt, child_blocks_of};
-        /// `(runs of b, element reads of b)` under `stmts`.
-        fn count(stmts: &[Stmt]) -> (usize, usize) {
-            let mut n = (0, 0);
+    fn the_shipped_schedules_read_the_operands_in_runs() {
+        use rir_lower::{MemType, ReductionStrategy, Stmt, child_blocks_of};
+        /// `(payload runs of a, runs of b, element reads of b)` under `stmts`.
+        fn count(stmts: &[Stmt]) -> (usize, usize, usize) {
+            let mut n = (0, 0, 0);
             for s in stmts {
                 match s {
-                    Stmt::LoadRun { dsts, arg, .. } => {
-                        assert_eq!((dsts.len(), arg.0), (4, 1));
-                        n.0 += 1;
+                    Stmt::LoadRun { dsts, arg, ty, .. } => {
+                        assert_eq!(dsts.len(), 4);
+                        match arg.0 {
+                            // The payload run: raw bytes of the quantized
+                            // argument, I8 when the format is signed.
+                            0 => {
+                                assert!(matches!(ty, MemType::U8 | MemType::I8));
+                                n.0 += 1;
+                            }
+                            1 => {
+                                assert_eq!(*ty, MemType::F32);
+                                n.1 += 1;
+                            }
+                            a => panic!("run of unexpected argument {a}"),
+                        }
                     }
-                    Stmt::Load { arg, .. } if arg.0 == 1 => n.1 += 1,
+                    Stmt::Load { arg, .. } if arg.0 == 1 => n.2 += 1,
                     _ => {
                         for b in child_blocks_of(s) {
-                            let (r, e) = count(b);
-                            n = (n.0 + r, n.1 + e);
+                            let (ra, rb, eb) = count(b);
+                            n = (n.0 + ra, n.1 + rb, n.2 + eb);
                         }
                     }
                 }
             }
             n
         }
-        fn guards(stmts: &[Stmt], out: &mut Vec<(usize, usize, usize, usize)>) {
+        /// Per `UnitStride`: `(payload runs, b runs, b element reads)` of the
+        /// unit half, then of the strided half.
+        fn guards(stmts: &[Stmt], out: &mut Vec<(usize, usize, usize, usize, usize, usize)>) {
             for s in stmts {
                 if let Stmt::UnitStride {
                     args,
@@ -317,7 +364,7 @@ mod tests {
                 {
                     assert_eq!(args.len(), 1);
                     let (u, s) = (count(unit), count(strided));
-                    out.push((u.0, u.1, s.0, s.1));
+                    out.push((u.0, u.1, u.2, s.0, s.1, s.2));
                 } else {
                     for b in child_blocks_of(s) {
                         guards(b, out);
@@ -325,19 +372,153 @@ mod tests {
                 }
             }
         }
-        let kernel = build(QuantType::Q4_K).unwrap();
-        for schedule in rir_lower::schedules_for(rir_lower::Family::MulMatVec) {
-            if schedule.backend() == rir_lower::Backend::Cpu {
-                assert_eq!(schedule.reduce_run(), 1);
-                continue;
+        for format in variants() {
+            let kernel = build(format).unwrap();
+            let planes = if format == QuantType::Q6_K { 2 } else { 1 };
+            for schedule in rir_lower::schedules_for(rir_lower::Family::MulMatVec) {
+                if schedule.backend() == rir_lower::Backend::Cpu {
+                    assert_eq!(schedule.reduce_run(), 1);
+                    continue;
+                }
+                if schedule.reduction() == ReductionStrategy::MatrixTile {
+                    let lk = rir_lower::lower(&kernel, schedule).unwrap();
+                    assert_eq!(count(&lk.body).0 + count(&lk.body).1, 0, "{format:?}");
+                    continue;
+                }
+                let tile = schedule.lane_tile() as usize;
+                let rows = schedule.row_tile() as usize;
+                assert_eq!(schedule.reduce_run(), 4);
+                let lk = rir_lower::lower(&kernel, schedule).unwrap();
+                let mut found = Vec::new();
+                guards(&lk.body, &mut found);
+                assert_eq!(found, [(planes * rows, tile, 0, 0, 0, tile)], "{format:?}");
             }
-            let tile = schedule.lane_tile() as usize;
-            assert_eq!(schedule.reduce_run(), 4);
-            let lk = rir_lower::lower(&kernel, schedule).unwrap();
-            let mut found = Vec::new();
-            guards(&lk.body, &mut found);
-            assert_eq!(found, [(tile, 0, 0, tile)]);
         }
+    }
+
+    /// Row tiles, subgroups, long segments and factored scales, alone and
+    /// together: rows past the extent are read wrapped and never written, a
+    /// partial column tile stays guarded, and the factored sum agrees with the
+    /// definition within the tolerance a regrouped sum is held to.
+    #[test]
+    fn parity_of_the_row_tiled_factored_lowering_against_the_reference() {
+        use rir_lower::GpuBackend;
+        for format in variants() {
+            for (rows, subgroups) in [(1u32, 1u32), (2, 1), (2, 2), (3, 2)] {
+                for factor in [false, true] {
+                    for cols in [1u32, 4, 8] {
+                        let base = if cols == 1 {
+                            Schedule::gpu_subgroup(GpuBackend::Metal)
+                        } else {
+                            Schedule::gpu_subgroup_cols(GpuBackend::Metal, cols)
+                        };
+                        let mut schedule = base
+                            .with_reduce_run(4)
+                            .with_segment(16)
+                            .with_row_tile(rows, subgroups);
+                        if factor {
+                            schedule = schedule.with_factored_scales();
+                        }
+                        for &(blocks, n_row, toks) in
+                            &[(1usize, 1usize, 1usize), (2, 5, 3), (2, 7, 9)]
+                        {
+                            for step in [1, 2] {
+                                run_case_strided(
+                                    format,
+                                    schedule.clone(),
+                                    blocks,
+                                    n_row,
+                                    toks,
+                                    step,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The shipped schedules, every one of them, on shapes that leave partial
+    /// row, column and depth tiles - the matrix variant's 64 × 32 output tile
+    /// included.
+    #[test]
+    fn parity_of_every_shipped_schedule_against_the_reference() {
+        for format in variants() {
+            for schedule in rir_lower::schedules_for(rir_lower::Family::MulMatVec) {
+                for &(blocks, n_row, toks) in &[(1usize, 3usize, 2usize), (2, 70, 9), (1, 65, 33)] {
+                    run_case(format, schedule.clone(), blocks, n_row, toks);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn long_contractions_agree_with_the_reference() {
+        for format in variants() {
+            for schedule in rir_lower::schedules_for(rir_lower::Family::MulMatVec) {
+                for depth in [4096, 14336] {
+                    run_case(
+                        format,
+                        schedule.clone(),
+                        depth / format.desc().block_elements as usize,
+                        3,
+                        3,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Staged storage stride is independent of the logical depth: both
+    /// padded and unpadded layouts must preserve the contraction and its tails.
+    #[test]
+    fn matrix_padding_preserves_the_product() {
+        use rir_lower::GpuBackend;
+        for format in variants() {
+            for depth in [32, 64, 128] {
+                run_case(
+                    format,
+                    Schedule::gpu_matrix_tile(GpuBackend::Metal, depth).with_matrix_padding(8),
+                    1,
+                    65,
+                    9,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn staged_schedules_refuse_ignored_scalar_knobs() {
+        use rir_lower::GpuBackend;
+        let kernel = build(QuantType::Q4_K).unwrap();
+        let matrix = Schedule::gpu_matrix_tile(GpuBackend::Metal, 32);
+        assert!(rir_lower::lower(&kernel, matrix.clone().with_segment(16)).is_err());
+        assert!(rir_lower::lower(&kernel, matrix.with_factored_scales()).is_err());
+        assert!(
+            rir_lower::lower(
+                &kernel,
+                Schedule::gpu_subgroup(GpuBackend::Metal).with_row_tile(2, u32::MAX)
+            )
+            .is_err()
+        );
+    }
+
+    /// A segment that does not divide a sub-block is refused: one header
+    /// would be read for elements that have another.
+    #[test]
+    fn a_segment_that_crosses_a_sub_block_is_refused() {
+        use rir_lower::{GpuBackend, LowerError};
+        let kernel = build(QuantType::Q6_K).unwrap();
+        let err = rir_lower::lower(
+            &kernel,
+            Schedule::gpu_subgroup(GpuBackend::Metal).with_segment(32),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, LowerError::SegmentUnsupported { .. }),
+            "{err}"
+        );
     }
 
     /// The tile is what the dispatch divides by, so the manifest's grid has to

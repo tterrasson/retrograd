@@ -36,8 +36,19 @@ pub(crate) fn exec_load(
 ) -> Result<(), InterpError> {
     let arg_no = arg.0 as usize;
     let nb = args[arg_no].nb();
-    let off = byte_addr(&nb, addr, regs) + along * nb[0];
-    let _ = k;
+    // The element `along` strides further along dimension 0. For a dense
+    // operand that stride is `nb[0]`, which the unit-stride guard has already
+    // tested against the element size. For a quantized (byte) operand `nb[0]`
+    // is the **block** size, and a run over its payload steps by one byte: the
+    // run's address names the first payload byte and the run covers the
+    // consecutive bytes of one block, which is the only run lowering emits
+    // there. Use the declared dtype, not `InBytes`: dense F16 inputs use byte
+    // views too and must retain their own dimension-0 stride.
+    let stride = match k.args[arg_no].ty.dtype {
+        rir_core::DType::Quant(_) => ty.size_bytes() as usize,
+        _ => nb[0],
+    };
+    let off = byte_addr(&nb, addr, regs) + along * stride;
     let value = match (&args[arg_no], ty) {
         (BoundArg::In(v), MemType::F32) => {
             if !off.is_multiple_of(4) {
@@ -601,7 +612,8 @@ fn exec_stage_tiles(
             let (r, d) = (l % n_rows, l / n_rows);
             regs.i[t.row.0 as usize] = r;
             regs.i[t.depth.0 as usize] = d;
-            regs.i[t.slot.0 as usize] = l;
+            let slot = d * t.row_stride as usize + r;
+            regs.i[t.slot.0 as usize] = slot;
             let m = regs.i[t.row_origin.0 as usize] + r;
             let kg = regs.i[t.depth_origin.0 as usize] + d;
             regs.i[t.row_global.0 as usize] = m;
@@ -614,7 +626,7 @@ fn exec_stage_tiles(
             // tensor. It writes its own segment through `StoreShared`, so this
             // fills the zeros and steps aside.
             for c in 0..span {
-                sh[t.tile.0 as usize][l + c] = 0.0;
+                sh[t.tile.0 as usize][slot + c] = 0.0;
             }
             if m < row_n && kg < depth_n {
                 exec_stmts(k, &t.load, regs, sh, args, params)?;
@@ -715,11 +727,20 @@ pub(crate) fn exec_stmts(
                         r
                     })
                     .collect();
-                exec_lane_stmts(k, body, &mut lane_regs, sh, args, params)?;
+                // A plain lane body is one subgroup as wide as the workgroup:
+                // its collectives span every lane, as they always have.
+                exec_lane_stmts(k, body, &mut lane_regs, *lanes as usize, sh, args, params)?;
+            }
+            Stmt::ParallelSubgroup { var, count, body } => {
+                exec_subgroups(k, *var, *count, body, regs, sh, args, params)?
             }
             Stmt::LaneReduce { .. }
             | Stmt::LaneScan { .. }
             | Stmt::WorkgroupReduce { .. }
+            | Stmt::FragZero { .. }
+            | Stmt::FragLoad { .. }
+            | Stmt::FragMma { .. }
+            | Stmt::FragStore { .. }
             | Stmt::LaneZero { .. } => return Err(InterpError::MisplacedCollective),
             Stmt::InitAcc { acc, op } => {
                 regs.f[acc.0 as usize] = match op {
@@ -748,10 +769,9 @@ pub(crate) fn exec_stmts(
                 let along = if *width > 1 { regs.vlane } else { 0 };
                 exec_load(k, args, regs, *dst, *arg, *ty, addr, along)?;
             }
-            // Element `c` of a run is `c` strides further, whatever the stride:
-            // the oracle reads exactly what the general path of every emitter
-            // reads, and the vector path is that path when `nb[0]` is the
-            // element size.
+            // Dense runs advance by `nb[0]`, which UnitStride checked against
+            // the element size; quantized payload runs advance within the
+            // block's bytes rather than from one block to the next.
             Stmt::LoadRun {
                 dsts,
                 arg,
@@ -826,12 +846,132 @@ pub(crate) fn lane_total_hierarchical(
     }
 }
 
+/// `ParallelSubgroup`: the workgroup's lanes, every subgroup's, in **one**
+/// bank run in step - a barrier or a staged tile in the body is the
+/// workgroup's, and only a bank that runs each statement for every lane before
+/// the next gives it its meaning. The lane collectives below then span `width`
+/// consecutive lanes, one subgroup each.
+#[expect(clippy::too_many_arguments)]
+fn exec_subgroups(
+    k: &LoopKernel,
+    var: VarId,
+    count: u32,
+    body: &[Stmt],
+    regs: &Regs,
+    sh: &mut Shared,
+    args: &mut [BoundArg],
+    params: &[f32],
+) -> Result<(), InterpError> {
+    let [
+        Stmt::ParallelLane {
+            var: lane,
+            lanes,
+            body,
+        },
+    ] = body
+    else {
+        return Err(InterpError::MisplacedCollective);
+    };
+    let width = *lanes as usize;
+    let mut bank: Vec<Regs> = (0..count as usize * width)
+        .map(|l| {
+            let mut r = regs.clone();
+            r.i[var.0 as usize] = l / width;
+            r.i[lane.0 as usize] = l % width;
+            r
+        })
+        .collect();
+    exec_lane_stmts(k, body, &mut bank, width, sh, args, params)
+}
+
+/// One fragment of a subgroup, as its first lane holds it.
+fn frag(r: &Regs, reg: VarId) -> Result<&Frag, InterpError> {
+    r.m.get(&reg.0)
+        .map(|b| &**b)
+        .ok_or(InterpError::UndefinedFragment { reg: reg.0 })
+}
+
+/// Shared-array position of fragment element `(i, j)`: `FragLoad` and
+/// `FragStore` address alike.
+fn frag_at(index: usize, stride: u32, transpose: bool, i: usize, j: usize) -> usize {
+    let stride = stride as usize;
+    if transpose {
+        index + j * stride + i
+    } else {
+        index + i * stride + j
+    }
+}
+
+/// The fragment statements, once per subgroup, on the registers of the
+/// subgroup's first lane.
+fn exec_frag(s: &Stmt, lead: &mut Regs, sh: &mut Shared) -> Result<(), InterpError> {
+    const N: usize = FRAG_DIM as usize;
+    match s {
+        Stmt::FragZero { dst } => {
+            lead.m.insert(dst.0, Box::new([0.0; N * N]));
+        }
+        Stmt::FragLoad {
+            dst,
+            array,
+            index,
+            stride,
+            transpose,
+        } => {
+            let at = lead.i[index.0 as usize];
+            let src = &sh[array.0 as usize];
+            let mut f = Box::new([0.0; N * N]);
+            for i in 0..N {
+                for j in 0..N {
+                    f[i * N + j] = src[frag_at(at, *stride, *transpose, i, j)];
+                }
+            }
+            lead.m.insert(dst.0, f);
+        }
+        Stmt::FragMma { acc, a, b } => {
+            let (fa, fb) = (frag(lead, *a)?, frag(lead, *b)?);
+            let mut prod = [0.0f32; N * N];
+            for i in 0..N {
+                for j in 0..N {
+                    prod[i * N + j] = (0..N).fold(0.0, |s, t| s + fa[i * N + t] * fb[t * N + j]);
+                }
+            }
+            let mut out = Box::new(*frag(lead, *acc)?);
+            for (o, p) in out.iter_mut().zip(prod) {
+                *o += p;
+            }
+            lead.m.insert(acc.0, out);
+        }
+        Stmt::FragStore {
+            src,
+            array,
+            index,
+            stride,
+            transpose,
+        } => {
+            let at = lead.i[index.0 as usize];
+            let f = *frag(lead, *src)?;
+            let dst = &mut sh[array.0 as usize];
+            for i in 0..N {
+                for j in 0..N {
+                    dst[frag_at(at, *stride, *transpose, i, j)] = f[i * N + j];
+                }
+            }
+        }
+        other => unreachable!("exec_frag: not a fragment statement - {other:?}"),
+    }
+    Ok(())
+}
+
 /// Executes a `ParallelLane` body. Non-collective instructions run lane by
 /// lane with independent registers; collectives and `LaneZero` synchronize.
+///
+/// `width` is the subgroup: a lane collective combines `width` consecutive
+/// lanes, and the whole bank when it is one subgroup.
 pub(crate) fn exec_lane_stmts(
     k: &LoopKernel,
     stmts: &[Stmt],
     lanes: &mut [Regs],
+    width: usize,
     sh: &mut Shared,
     args: &mut [BoundArg],
     params: &[f32],
@@ -867,26 +1007,52 @@ pub(crate) fn exec_lane_stmts(
                     lane_total_hierarchical(lanes, r.op, r.src, r.dst, *width as usize);
                 }
             }
-            Stmt::LaneReduce { op, src, dst } => lane_total(lanes, *op, *src, *dst),
+            Stmt::LaneReduce { op, src, dst } => {
+                for sg in lanes.chunks_mut(width) {
+                    lane_total(sg, *op, *src, *dst);
+                }
+            }
             Stmt::LaneScan { op, src, dst } => {
                 // Exclusive prefix, lane by lane in increasing order - the same
                 // order the hardware collective is specified to produce, and the
                 // reason the blocked scan is reproducible.
-                let mut acc = match op {
-                    ReduceOp::Sum => 0.0,
-                    ReduceOp::Max => f32::NEG_INFINITY,
-                };
-                for r in lanes.iter_mut() {
-                    let v = r.f[src.0 as usize];
-                    r.f[dst.0 as usize] = acc;
-                    acc = match op {
-                        ReduceOp::Sum => acc + v,
-                        ReduceOp::Max => acc.max(v),
+                for sg in lanes.chunks_mut(width) {
+                    let mut acc = match op {
+                        ReduceOp::Sum => 0.0,
+                        ReduceOp::Max => f32::NEG_INFINITY,
                     };
+                    for r in sg.iter_mut() {
+                        let v = r.f[src.0 as usize];
+                        r.f[dst.0 as usize] = acc;
+                        acc = match op {
+                            ReduceOp::Sum => acc + v,
+                            ReduceOp::Max => acc.max(v),
+                        };
+                    }
                 }
             }
+            // Lane zero of every subgroup: the lane test the emitters print
+            // reads the lane index, which is the index within the subgroup.
             Stmt::LaneZero { body, .. } => {
-                exec_stmts(k, body, &mut lanes[0], sh, args, params)?;
+                for sg in lanes.chunks_mut(width) {
+                    exec_stmts(k, body, &mut sg[0], sh, args, params)?;
+                }
+            }
+            Stmt::FragZero { .. }
+            | Stmt::FragLoad { .. }
+            | Stmt::FragMma { .. }
+            | Stmt::FragStore { .. } => {
+                for sg in lanes.chunks_mut(width) {
+                    exec_frag(s, &mut sg[0], sh)?;
+                }
+            }
+            // A staged tile is filled by the whole workgroup, once - every lane
+            // computes the same origins, so the first lane's registers stand
+            // for all of them - and its body is read back in step, which is
+            // what the barrier after the cooperative loads promises.
+            Stmt::StageTiles { tiles, body, .. } => {
+                exec_stage_tiles(k, tiles, &[], &mut lanes[0], sh, args, params)?;
+                exec_lane_stmts(k, body, lanes, width, sh, args, params)?;
             }
             // A barrier is what the execution model below already gives: every
             // statement of a lane body finishes for all lanes before the next
@@ -910,7 +1076,7 @@ pub(crate) fn exec_lane_stmts(
                     for r in lanes.iter_mut() {
                         r.i[var.0 as usize] = i;
                     }
-                    exec_lane_stmts(k, body, lanes, sh, args, params)?;
+                    exec_lane_stmts(k, body, lanes, width, sh, args, params)?;
                 }
             }
             Stmt::ForTiled {
@@ -925,7 +1091,7 @@ pub(crate) fn exec_lane_stmts(
                     for r in lanes.iter_mut() {
                         r.i[var.0 as usize] = i;
                     }
-                    exec_lane_stmts(k, body, lanes, sh, args, params)?;
+                    exec_lane_stmts(k, body, lanes, width, sh, args, params)?;
                     i += (*step).max(1) as usize;
                 }
             }
@@ -945,7 +1111,7 @@ pub(crate) fn exec_lane_stmts(
                     for r in lanes.iter_mut() {
                         r.i[var.0 as usize] = i;
                     }
-                    exec_lane_stmts(k, body, lanes, sh, args, params)?;
+                    exec_lane_stmts(k, body, lanes, width, sh, args, params)?;
                 }
             }
             other => {

@@ -109,10 +109,22 @@ pub fn emit_metal(k: &LoopKernel) -> Result<String, EmitError> {
     ));
     p.line("uint3 group_id [[threadgroup_position_in_grid]],");
     p.line("uint3 global_id [[thread_position_in_grid]],");
+    // The lane indices the body reads: the threadgroup's when it shares
+    // storage, the SIMD-group's when it reduces through one, both when the
+    // workgroup is several SIMD-groups - plus, then, which SIMD-group.
+    let mut lanes = Vec::new();
     if k.uses_shared() {
-        p.line("uint threadgroup_lane_id [[thread_index_in_threadgroup]])");
-    } else {
-        p.line("uint simd_lane_id [[thread_index_in_simdgroup]])");
+        lanes.push("uint threadgroup_lane_id [[thread_index_in_threadgroup]]");
+    }
+    if !k.uses_shared() || k.uses_subgroups() {
+        lanes.push("uint simd_lane_id [[thread_index_in_simdgroup]]");
+    }
+    if k.uses_subgroups() {
+        lanes.push("uint simdgroup_id [[simdgroup_index_in_threadgroup]]");
+    }
+    let last = lanes.len() - 1;
+    for (i, l) in lanes.iter().enumerate() {
+        p.line(&format!("{l}{}", if i == last { ")" } else { "," }));
     }
     p.indent = 0;
     p.line("{");

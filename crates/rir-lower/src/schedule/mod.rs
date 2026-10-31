@@ -11,8 +11,9 @@ pub mod table;
 mod tests;
 
 pub use backend::{
-    Backend, FAMILY_REFUSED, FLAT_TARGETS, GPU_REFUSED, GPU_TARGETS, GpuBackend, family_refusal,
-    flat_targets_for, grid_targets_for, targets_for,
+    Backend, FAMILY_REFUSED, FLAT_TARGETS, GPU_REFUSED, GPU_TARGETS, GpuBackend, MATRIX_TARGETS,
+    PARTITION_TARGETS, family_refusal, flat_targets_for, grid_targets_for, matrix_targets_for,
+    partitions_subgroups, targets_for,
 };
 pub use error::{ScheduleError, check_schedule, check_schedule_table};
 pub use strategy::{
@@ -110,12 +111,52 @@ pub struct Schedule {
     /// refused by lowering where no segment of a quantized read exists for the
     /// run to divide.
     pub(crate) reduce_run: u32,
+    /// Indices of the **first** parallel axis one subgroup owns, under a lane
+    /// reduction: every lane keeps one accumulator per index, decodes each
+    /// index's operands, and reads the operands that do not depend on that
+    /// axis once for all of them.
+    ///
+    /// It is `lane_tile` on the other axis, and what it shares is the other
+    /// operand: in a decode GEMV the activation column is read once per row
+    /// with one row per subgroup, so a step of `n` tokens re-reads `n`
+    /// columns for every weight row. `1` everywhere else, and refused where
+    /// nothing would honour it, as `lane_tile` is.
+    pub(crate) row_tile: u32,
+    /// Subgroups in one workgroup under a lane reduction, each owning its own
+    /// `row_tile` indices of the first parallel axis: the workgroup is
+    /// `subgroups · SUBGROUP_LANES` invocations, the grid that many times
+    /// smaller, and no collective spans two subgroups.
+    ///
+    /// Not a wider reduction - `HierarchicalTree` is that - but more rows in
+    /// flight per workgroup, which is what a 32-invocation workgroup lacks when
+    /// the device caps the workgroups a core may hold. Under `MatrixTile` it is
+    /// the number of subgroups sharing one staged tile.
+    pub(crate) subgroups: u32,
+    /// Elements of the reduced axis one segment of a quantized read covers, or
+    /// `0` for the widest of four, two and one the format divides.
+    ///
+    /// A longer segment reads its block header - the F16 scales, the packed
+    /// sub-block scale - once for more elements, and is what gives the scale
+    /// factoring below something to factor. Refused when it does not divide
+    /// the block, or the sub-block of a format that has one: the header would
+    /// otherwise change inside the segment.
+    pub(crate) segment: u32,
+    /// Whether a segmented sum of products takes the block scale **out** of
+    /// its terms: `Σ (s·q − m)·x` is accumulated as `s·Σ q·x − m·Σ x` per
+    /// segment, two products per segment instead of two per element.
+    ///
+    /// The terms are regrouped by segment, so it is admissible under
+    /// `Deterministic` and refused under `ExactOrder`; refused as well where
+    /// no accumulation of the kernel has that shape, as a field nothing honours.
+    pub(crate) factor_scales: bool,
     pub(crate) reduction: ReductionStrategy,
     /// Indices of the reduction axis one staged tile covers, under
     /// `ReductionStrategy::TiledStage`. Zero everywhere else, and a
     /// `LowerError` if the two disagree - a depth nothing reads would be a
     /// silent field.
     pub(crate) tile_depth: u32,
+    /// Extra shared words between operand rows under MatrixTile.
+    pub(crate) matrix_padding: u32,
     /// Scan-axis strategy. Independent of `reduction` because v1 forbids a
     /// kernel from carrying both a scan and a reduction.
     pub(crate) scan: ScanStrategy,
@@ -178,6 +219,32 @@ impl Schedule {
 
     pub fn reduce_run(&self) -> u32 {
         self.reduce_run
+    }
+
+    /// Indices of the first parallel axis one subgroup owns; 1 unless the
+    /// lowering is row-tiled.
+    pub fn row_tile(&self) -> u32 {
+        self.row_tile
+    }
+
+    /// Subgroups in one workgroup; 1 unless the lowering partitions it.
+    pub fn subgroups(&self) -> u32 {
+        self.subgroups
+    }
+
+    /// Requested segment length of a quantized read, or 0 for the format's.
+    pub fn segment(&self) -> u32 {
+        self.segment
+    }
+
+    /// Extra shared words between MatrixTile operand rows.
+    pub fn matrix_padding(&self) -> u32 {
+        self.matrix_padding
+    }
+
+    /// Whether segmented sums factor the block scale out of their terms.
+    pub fn factor_scales(&self) -> bool {
+        self.factor_scales
     }
 
     pub fn reduction(&self) -> ReductionStrategy {
@@ -262,7 +329,45 @@ impl Schedule {
                 why: "reduce_run is zero: an access reads at least one element",
             });
         }
-        if self.reduction == ReductionStrategy::TiledStage && self.tile_depth == 0 {
+        if self.row_tile == 0 {
+            return Err(ScheduleError::Malformed {
+                backend: self.backend,
+                why: "row_tile is zero: a subgroup owns at least one row",
+            });
+        }
+        if self.subgroups == 0 {
+            return Err(ScheduleError::Malformed {
+                backend: self.backend,
+                why: "subgroups is zero: a workgroup holds at least one subgroup",
+            });
+        }
+        if self.subgroups.checked_mul(SUBGROUP_LANES).is_none()
+            || self.row_tile.checked_mul(self.subgroups).is_none()
+        {
+            return Err(ScheduleError::Malformed {
+                backend: self.backend,
+                why: "subgroup or row geometry overflows the grid counter",
+            });
+        }
+        if self.matrix_padding > 0 && self.reduction != ReductionStrategy::MatrixTile {
+            return Err(ScheduleError::Malformed {
+                backend: self.backend,
+                why: "matrix padding requires MatrixTile",
+            });
+        }
+        if self.subgroups > 1 && self.block != [self.subgroups.saturating_mul(SUBGROUP_LANES), 1, 1]
+        {
+            return Err(ScheduleError::Malformed {
+                backend: self.backend,
+                why: "a workgroup of several subgroups is subgroups · SUBGROUP_LANES invocations \
+                      on x and one on y and z",
+            });
+        }
+        if matches!(
+            self.reduction,
+            ReductionStrategy::TiledStage | ReductionStrategy::MatrixTile
+        ) && self.tile_depth == 0
+        {
             return Err(ScheduleError::Malformed {
                 backend: self.backend,
                 why: "tile_depth is zero under TiledStage: a staged tile has at least one index",
@@ -385,7 +490,12 @@ impl Schedule {
             linear_addr: false,
             lane_tile: 1,
             reduce_run: 1,
+            row_tile: 1,
+            subgroups: 1,
+            segment: 0,
+            factor_scales: false,
             tile_depth: 0,
+            matrix_padding: 0,
             scan: ScanStrategy::Serial,
             reduction: ReductionStrategy::Serial,
             par_map: ParallelMapping::Workgroup,
@@ -426,7 +536,12 @@ impl Schedule {
             linear_addr: false,
             lane_tile: 1,
             reduce_run: 1,
+            row_tile: 1,
+            subgroups: 1,
+            segment: 0,
+            factor_scales: false,
             tile_depth: 0,
+            matrix_padding: 0,
             scan: ScanStrategy::Serial,
             reduction: ReductionStrategy::SubgroupTree,
             par_map: ParallelMapping::Workgroup,
@@ -453,7 +568,12 @@ impl Schedule {
             linear_addr: false,
             lane_tile: 1,
             reduce_run: 1,
+            row_tile: 1,
+            subgroups: 1,
+            segment: 0,
+            factor_scales: false,
             tile_depth: 0,
+            matrix_padding: 0,
             scan: ScanStrategy::Serial,
             reduction: ReductionStrategy::Serial,
             par_map: ParallelMapping::Invocation,
@@ -517,6 +637,34 @@ impl Schedule {
     /// reads, not which shapes the variant serves.
     pub fn with_reduce_run(mut self, run: u32) -> Self {
         self.reduce_run = run;
+        self
+    }
+
+    /// The same lane lowering owning `rows` consecutive indices of the first
+    /// parallel axis per subgroup, with `subgroups` subgroups per workgroup:
+    /// the block becomes `subgroups · SUBGROUP_LANES` invocations and the grid
+    /// on that axis `rows · subgroups` times smaller.
+    ///
+    /// The name is unchanged, as for a run: the variant serves the same shapes,
+    /// and a row past the extent is read wrapped and never written.
+    pub fn with_row_tile(mut self, rows: u32, subgroups: u32) -> Self {
+        self.row_tile = rows;
+        self.subgroups = subgroups;
+        self.block = [subgroups.saturating_mul(SUBGROUP_LANES), 1, 1];
+        self
+    }
+
+    /// The same lowering reading quantized operands in segments of `span`
+    /// elements (`segment`).
+    pub fn with_segment(mut self, span: u32) -> Self {
+        self.segment = span;
+        self
+    }
+
+    /// The same lowering accumulating segmented sums with the block scale
+    /// factored out of their terms (`factor_scales`).
+    pub fn with_factored_scales(mut self) -> Self {
+        self.factor_scales = true;
         self
     }
 
@@ -705,6 +853,38 @@ impl Schedule {
         }
     }
 
+    /// Extra shared words between MatrixTile operand rows. This is a layout
+    /// experiment, independent of the logical depth and arithmetic precision.
+    pub fn with_matrix_padding(mut self, words: u32) -> Self {
+        self.matrix_padding = words;
+        self
+    }
+
+    /// A contraction against a few dozen columns computed by the **subgroup
+    /// matrix product** (`ReductionStrategy::MatrixTile`).
+    ///
+    /// One workgroup of `MATRIX_SUBGROUPS` subgroups owns a tile of
+    /// `MATRIX_ROWS` rows by `MATRIX_COLS` columns of the output; each round
+    /// stages a `depth`-deep slice of both operands in shared memory - the
+    /// quantized one decoded on the way in - and every subgroup multiplies the
+    /// 8 × 8 fragments of its quarter of the tile out of it.
+    ///
+    /// It is the lowering the decode GEMV cannot become by widening its column
+    /// tile: past eight columns the weight row is still decoded once per tile
+    /// of columns, and the product itself is one scalar multiply-add per lane
+    /// and term, where the matrix product does sixty-four per subgroup and
+    /// instruction.
+    pub fn gpu_matrix_tile(gpu: GpuBackend, depth: u32) -> Self {
+        Self {
+            block: [MATRIX_SUBGROUPS * SUBGROUP_LANES, 1, 1],
+            subgroups: MATRIX_SUBGROUPS,
+            reduction: ReductionStrategy::MatrixTile,
+            tile_depth: depth,
+            ..Self::gpu_subgroup(gpu)
+        }
+        .named(MATRIX_TILE)
+    }
+
     // ---------------------------------------------------------------------
     // Named facades. Each is one call to a `gpu_*` constructor and carries no
     // decision of its own. They exist so the ~90 test call sites that name a
@@ -832,6 +1012,21 @@ pub fn cols_variant(cols: u32) -> &'static str {
         _ => "cols",
     }
 }
+
+/// Variant name of the subgroup matrix product.
+pub const MATRIX_TILE: &str = "mma";
+
+/// Subgroups sharing one staged tile under `MatrixTile`, arranged two by two
+/// over the output tile.
+pub const MATRIX_SUBGROUPS: u32 = 4;
+
+/// Output rows one `MatrixTile` workgroup owns: two subgroups of four
+/// fragments each.
+pub const MATRIX_ROWS: u32 = 64;
+
+/// Output columns one `MatrixTile` workgroup owns: two subgroups of two
+/// fragments each.
+pub const MATRIX_COLS: u32 = 32;
 
 /// Variant name of the flattened **row** space. Distinct
 /// from `FLAT` because what it flattens is the workgroup grid of a collective

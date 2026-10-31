@@ -240,7 +240,7 @@ fn variant_row(k: &LoopKernel, spec: &IntegrationSpec) -> Result<String, Registr
          {priority},\n     {n_rules}, {{{rules}}},\n     {nb}, {np},\n     \
          {{{bindings}}},\n     {{{params}}},\n     \
          {na}, {{{axes}}},\n     {{{dispatch}}},\n     {n_flat}, {{{flat}}},\n     \
-         32, {vecw}, {lin}, {rank}, {subg}, {minsg}, {{{wg0}, {wg1}, {wg2}}}, {shb}, {pc}}},\n",
+         32, {vecw}, {lin}, {rank}, {subg}, {minsg}, {mtx}, {{{wg0}, {wg1}, {wg2}}}, {shb}, {pc}}},\n",
         kernel = k.name,
         opvar = match spec.ggml_op_variant {
             Some(v) => format!("\"{v}\""),
@@ -269,6 +269,7 @@ fn variant_row(k: &LoopKernel, spec: &IntegrationSpec) -> Result<String, Registr
         rank = max_rank(k),
         subg = u8::from(subgroup.is_some()),
         minsg = subgroup.unwrap_or(0),
+        mtx = u8::from(k.uses_fragments()),
         wg0 = k.schedule.block()[0],
         wg1 = k.schedule.block()[1],
         wg2 = k.schedule.block()[2],

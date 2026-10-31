@@ -39,6 +39,11 @@ pub(crate) struct Lowerer<'k> {
     /// `Schedule::reduce_run`: elements of the reduced axis a segment reads
     /// from a dense operand per access.
     pub(crate) reduce_run: u32,
+    /// `Schedule::segment`: elements of a quantized read one segment covers,
+    /// or 0 for the format's own.
+    pub(crate) segment: u32,
+    /// `Schedule::factor_scales`.
+    pub(crate) factor_scales: bool,
 }
 
 impl<'k> Lowerer<'k> {

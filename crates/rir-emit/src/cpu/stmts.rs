@@ -92,9 +92,14 @@ impl CpuPrinter<'_> {
                     });
                 }
                 Stmt::ParallelLane { .. }
+                | Stmt::ParallelSubgroup { .. }
                 | Stmt::LaneReduce { .. }
                 | Stmt::LaneScan { .. }
                 | Stmt::WorkgroupReduce { .. }
+                | Stmt::FragZero { .. }
+                | Stmt::FragLoad { .. }
+                | Stmt::FragMma { .. }
+                | Stmt::FragStore { .. }
                 | Stmt::Barrier
                 | Stmt::LaneZero { .. }
                 | Stmt::ForChunk { .. } => {

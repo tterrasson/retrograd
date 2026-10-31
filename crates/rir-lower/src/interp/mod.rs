@@ -10,6 +10,8 @@
 //! Typed registers use an integer bank for `Idx` and a floating-point bank for
 //! F32 and Bool (encoded as 0.0/1.0). Quantized F16/I8 loads read byte views.
 
+use std::collections::HashMap;
+
 use rir_core::{Access, Extent};
 
 use crate::loop_ir::*;
@@ -49,6 +51,10 @@ pub enum InterpError {
     /// `ParallelLane`, violating a lowering invariant.
     #[error("lane collective outside a ParallelLane")]
     MisplacedCollective,
+    /// A fragment read before any statement wrote it - a lowering that
+    /// multiplies into an accumulator it never cleared.
+    #[error("fragment register {reg} read before it was written")]
+    UndefinedFragment { reg: u32 },
     /// A constant-table read past the table. The masks of a bit field make this
     /// unreachable by construction, which is exactly why it is an error and not
     /// a clamp: a saturating read would turn a wrong mask into plausible values.
@@ -72,7 +78,15 @@ pub(crate) struct Regs {
     pub(crate) i: Vec<usize>,
     /// Component of the vector currently being evaluated, or 0.
     pub(crate) vlane: usize,
+    /// Matrix fragments, row-major, by register. A fragment belongs to a
+    /// subgroup and not to a lane, so the oracle keeps it in the registers of
+    /// the subgroup's **first** lane only: the fragment statements are
+    /// collectives, executed once per subgroup, and no other lane reads one.
+    pub(crate) m: HashMap<u32, Box<Frag>>,
 }
+
+/// One fragment's elements, row-major.
+pub(crate) type Frag = [f32; (FRAG_DIM * FRAG_DIM) as usize];
 
 /// Shared memory, one array per declaring register (`LoopKernel::shared`), and
 /// **genuinely shared**: registers are cloned per lane, this is not.
@@ -121,6 +135,7 @@ pub fn run(k: &LoopKernel, args: &mut [BoundArg], params: &[f32]) -> Result<(), 
         f: vec![0f32; n],
         i: vec![0usize; n],
         vlane: 0,
+        m: HashMap::new(),
     };
     // The storage the kernel **declares**, allocated exactly as the emitters
     // declare theirs: one list, three consumers.

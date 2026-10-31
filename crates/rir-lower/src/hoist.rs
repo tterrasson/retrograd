@@ -37,7 +37,8 @@
 //!   matters: `InitAcc` sits *outside* the accumulation loop, so a naive
 //!   "defined outside" test would happily hoist a use of it. `Stmt::Accum`
 //!   therefore counts as a definition inside the loop.
-//! - anything across a `Parallel`, `ParallelLane` or `StageTiles` boundary,
+//! - anything across a `Parallel`, `ParallelLane`, `ParallelSubgroup` or
+//!   `StageTiles` boundary,
 //!   which is not a loop this pass owns. Hoisting stops at the enclosing
 //!   sequential loop and repeats outward, so a value invariant in three nested
 //!   loops still ends up outside all three.
@@ -139,6 +140,7 @@ pub(crate) fn child_blocks(s: &mut Stmt) -> Vec<&mut Vec<Stmt>> {
         Stmt::Parallel { body, .. }
         | Stmt::ParallelFlat { body, .. }
         | Stmt::ParallelLane { body, .. }
+        | Stmt::ParallelSubgroup { body, .. }
         | Stmt::For { body, .. }
         | Stmt::ForStrided { body, .. }
         | Stmt::ForChunk { body, .. }
@@ -188,6 +190,7 @@ fn defs_of(s: &Stmt, out: &mut HashSet<VarId>) {
         }
         Stmt::Parallel { var, body, .. }
         | Stmt::ParallelLane { var, body, .. }
+        | Stmt::ParallelSubgroup { var, body, .. }
         | Stmt::For { var, body, .. }
         | Stmt::ForStrided { var, body, .. }
         | Stmt::ForChunk { var, body, .. }
@@ -241,8 +244,13 @@ fn defs_of(s: &Stmt, out: &mut HashSet<VarId>) {
         Stmt::LaneReduce { dst, .. }
         | Stmt::LaneScan { dst, .. }
         | Stmt::LoadShared { dst, .. }
+        | Stmt::FragZero { dst }
+        | Stmt::FragLoad { dst, .. }
         | Stmt::Load { dst, .. } => {
             out.insert(*dst);
+        }
+        Stmt::FragMma { acc, .. } => {
+            out.insert(*acc);
         }
         Stmt::LoadRun { dsts, .. } => {
             out.extend(dsts.iter().copied());
@@ -260,7 +268,7 @@ fn defs_of(s: &Stmt, out: &mut HashSet<VarId>) {
         Stmt::Compute(Inst { dst, .. }) => {
             out.insert(*dst);
         }
-        Stmt::Store { .. } | Stmt::StoreShared { .. } | Stmt::Barrier => {}
+        Stmt::Store { .. } | Stmt::StoreShared { .. } | Stmt::FragStore { .. } | Stmt::Barrier => {}
     }
 }
 

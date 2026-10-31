@@ -95,7 +95,8 @@ fn rng(seed: &mut u64) -> f32 {
     *seed = seed
         .wrapping_mul(6364136223846793005)
         .wrapping_add(1442695040888963407);
-    let u = ((*seed >> 33) as u32) as f32 / u32::MAX as f32;
+    // The upper 32 bits fit u32; using 31 bits biases every value negative.
+    let u = ((*seed >> 32) as u32) as f32 / u32::MAX as f32;
     u * 2.0 - 1.0
 }
 
@@ -281,16 +282,39 @@ fn shapes(lk: &LoopKernel) -> Vec<Vec<usize>> {
         }
     }
     out.push(odd);
-    if lk.schedule.lane_tile() > 1 {
-        let mut partial = base.clone();
-        let rir_lower::Stmt::Parallel { body, .. } = &lk.body[0] else {
-            panic!("a lane tile has a parallel nest");
-        };
-        let rir_lower::Stmt::Parallel { axis, tile, .. } = &body[0] else {
-            panic!("a lane tile has a second parallel axis");
-        };
-        partial[axis.0 as usize] = *tile as usize + 1;
-        out.push(partial);
+    // Long contractions exercise repeated scale factoring and MMA rounds,
+    // with mixed signs rather than an all-negative activation fixture.
+    if lk.name.starts_with("mul_mat_vec") {
+        for (depth, rows, tokens) in [(4096, 5, 9), (14336, 3, 3)] {
+            out.push(
+                lk.axes
+                    .iter()
+                    .map(|axis| match axis.name.as_str() {
+                        "col" => depth,
+                        "row" => rows,
+                        "plane" => tokens,
+                        _ => 1,
+                    })
+                    .collect(),
+            );
+        }
+    }
+    // A tiled grid axis - the lane tile on the second, the row tile or the
+    // matrix tile on the first - with one index past a whole tile: the partial
+    // tile whose guards and wrapped reads are the point of the lowering.
+    let mut nest = &lk.body;
+    while let [
+        rir_lower::Stmt::Parallel {
+            axis, tile, body, ..
+        },
+    ] = nest.as_slice()
+    {
+        if *tile > 1 {
+            let mut partial = base.clone();
+            partial[axis.0 as usize] = *tile as usize + 1;
+            out.push(partial);
+        }
+        nest = body;
     }
     if !lk.folds.is_empty() {
         let mut fold = base.clone();
@@ -574,8 +598,7 @@ fn every_registered_kernel_on(target: Target) {
         for s in reg.schedules.iter() {
             // Named ones only: a flattened lowering that is the pair's fallback
             // is already the schedule above.
-            if s.backend() == backend && (s.flatten() || s.lane_tile() > 1) && s.variant().is_some()
-            {
+            if s.backend() == backend && indexes(s) && s.variant().is_some() {
                 work.push((index, s.artifact_name(&name), s.clone()));
             }
         }
@@ -687,11 +710,7 @@ fn every_registered_kernel_on(target: Target) {
             v.extend(
                 r.schedules
                     .iter()
-                    .filter(|s| {
-                        s.backend() == backend
-                            && (s.flatten() || s.lane_tile() > 1)
-                            && s.variant().is_some()
-                    })
+                    .filter(|s| s.backend() == backend && indexes(s) && s.variant().is_some())
                     .map(|s| s.artifact_name(&name)),
             );
             v
@@ -784,4 +803,66 @@ fn the_derived_geometry_is_the_one_the_handwritten_tests_use() {
     assert_eq!(ne_y, [3, 1, 1, 1]);
     assert_eq!(nb_y, [4, 12, 12, 12]);
     assert_eq!(bytes_y, 12);
+}
+
+/// Whether a named lowering carries index arithmetic of its own, and therefore
+/// device parity beyond the fallback's: a flattened index, a lane tile, a row
+/// tile, or the matrix tile.
+fn indexes(s: &rir_lower::Schedule) -> bool {
+    s.flatten()
+        || s.lane_tile() > 1
+        || s.row_tile() > 1
+        || s.subgroups() > 1
+        || s.reduction() == rir_lower::ReductionStrategy::MatrixTile
+}
+
+/// Layout experiments are checked on the device even when the schedule table
+/// has not selected them. Random, asymmetric operands expose transpositions;
+/// the q8_0 single-block case also leaves a partial K tile at depth 64.
+#[test]
+fn matrix_layouts_agree_with_the_oracle_on_metal() {
+    let gpu = match AnyGpu::open(Target::Metal) {
+        Ok(gpu) => gpu,
+        Err(e) if is_unavailable(&e) => {
+            eprintln!("matrix layout parity skipped: {e}");
+            return;
+        }
+        Err(e) => panic!("opening Metal: {e}"),
+    };
+    for format in rir_kernels::mul_mat_vec::variants() {
+        let kernel = rir_kernels::mul_mat_vec::build(format).unwrap();
+        for depth in [32, 64] {
+            for padding in [0, 8] {
+                let schedule = Schedule::gpu_matrix_tile(rir_lower::GpuBackend::Metal, depth)
+                    .with_matrix_padding(padding);
+                let built = match rir_sweep::measure::build(&gpu, Target::Metal, &kernel, schedule)
+                {
+                    Ok(built) => built,
+                    Err(e) if e.is_unavailable() => {
+                        eprintln!("matrix layout parity skipped: {e}");
+                        return;
+                    }
+                    Err(e) => panic!("building matrix layout: {e}"),
+                };
+                let extents: Vec<usize> = built
+                    .lowered
+                    .axes
+                    .iter()
+                    .map(|axis| match axis.name.as_str() {
+                        "col" => format.desc().block_elements as usize,
+                        "row" => 65,
+                        "plane" => 9,
+                        other => panic!("unexpected matrix axis: {other}"),
+                    })
+                    .collect();
+                check(
+                    &format!("{:?}/k{depth}/pad{padding}", format),
+                    &built.lowered,
+                    &built.pipeline,
+                    &built.manifest,
+                    &extents,
+                );
+            }
+        }
+    }
 }

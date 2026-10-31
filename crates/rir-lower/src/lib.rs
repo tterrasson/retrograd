@@ -22,7 +22,9 @@ pub use loop_ir::*;
 pub use lower::{LowerError, can_lower_dequant, lower};
 pub use schedule::{
     BLOCKED_SCAN, Backend, FALLBACK_PRIORITY, FAMILY_REFUSED, FLAT_LINEAR, FLAT_ROWS, Family,
-    GPU_REFUSED, GPU_TARGETS, GpuBackend, HIER_REDUCE, ParallelMapping, ReductionStrategy,
+    GPU_REFUSED, GPU_TARGETS, GpuBackend, HIER_REDUCE, MATRIX_COLS, MATRIX_ROWS, MATRIX_SUBGROUPS,
+    MATRIX_TARGETS, MATRIX_TILE, PARTITION_TARGETS, ParallelMapping, ReductionStrategy,
     SHARED_REDUCE, STRIDED_SCAN, SUBGROUP_LANES, ScanStrategy, Schedule, ScheduleError, ShapeRule,
-    TILED_SCAN, check_schedule, check_schedule_table, family_refusal, schedules_for, targets_for,
+    TILED_SCAN, check_schedule, check_schedule_table, family_refusal, matrix_targets_for,
+    partitions_subgroups, schedules_for, targets_for,
 };

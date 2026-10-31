@@ -106,6 +106,26 @@ pub enum LowerError {
     /// lowering it did not get.
     #[error("reduce_run: {why}")]
     ReduceRunUnsupported { why: &'static str },
+    /// `Schedule::row_tile` or `Schedule::subgroups` above one on a lowering
+    /// that cannot honour them. Both divide the published grid, so a shader
+    /// that walked one row where the dispatch counted several would leave rows
+    /// uncomputed.
+    #[error("row_tile: {why}")]
+    RowTileUnsupported { why: &'static str },
+    /// `Schedule::segment` that does not divide a quantized read's block, or
+    /// its sub-block, or on a kernel with no segmented read at all.
+    #[error("segment: {why}")]
+    SegmentUnsupported { why: &'static str },
+    /// `Schedule::factor_scales` where no accumulation can take it: a sum
+    /// declared in exact order, or a kernel whose sums are not a quantized read
+    /// times something else.
+    #[error("factor_scales: {why}")]
+    FactorScalesUnsupported { why: &'static str },
+    /// `ReductionStrategy::MatrixTile` on a kernel or a schedule whose shape the
+    /// matrix product cannot express. Refused rather than lowered otherwise:
+    /// the manifest would still publish `matrix_tile`.
+    #[error("matrix_tile: {why}")]
+    MatrixTileUnsupported { why: &'static str },
     /// `Schedule::linear_addr` on a kernel whose accesses are not the identity
     /// on the flattened space.
     ///

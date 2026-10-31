@@ -80,6 +80,11 @@ impl MemoryModel for crate::dialect::Metal {
     fn read_at(p: &Printer<'_, Self>, arg: rir_core::ArgId, ty: MemType, at: &str) -> String {
         let arg_name = &p.k.args[arg.0 as usize].name;
         let value = format!("*(device const {} *)({arg_name} + ({at}))", mem_ty(ty));
+        if ty == MemType::U8 {
+            // An unsigned byte lands in an integer register: the reader wants
+            // the raw bits, not a converted value.
+            return format!("{}({value})", Self::UINT);
+        }
         if ty == MemType::F32 {
             value
         } else {
@@ -102,6 +107,30 @@ impl MemoryModel for crate::dialect::Metal {
             mem_ty(ty)
         );
         Some(format!("float{width}({load})"))
+    }
+
+    /// One `packed_uchar{width}` read of a quantized payload run: the packed
+    /// vector's alignment is one byte, so a run inside one block needs no more
+    /// than the consecutive bytes lowering proved. The raw bytes stay
+    /// unsigned - the bit extraction masks them itself.
+    fn read_uvector_at(
+        p: &Printer<'_, Self>,
+        arg: rir_core::ArgId,
+        at: &str,
+        width: u32,
+    ) -> Option<String> {
+        let arg_name = &p.k.args[arg.0 as usize].name;
+        Some(format!(
+            "uchar{width}(*(device const packed_uchar{width} *)({arg_name} + ({at})))"
+        ))
+    }
+
+    fn uvec_ty(width: u32) -> String {
+        format!("uchar{width}")
+    }
+
+    fn ucomponent(text: &str, c: usize) -> String {
+        format!("{text}[{c}]")
     }
 
     fn store(p: &mut Printer<'_, Self>, op: &StoreOp<'_>) {

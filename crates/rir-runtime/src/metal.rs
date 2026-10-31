@@ -66,6 +66,9 @@ pub struct Gpu {
     /// `simd_sum` and friends, under the rule the fork applies before admitting
     /// a RIR variant on Metal: Apple7 or Metal3 family.
     simdgroup_reduction: bool,
+    /// `simdgroup_float8x8` and its product, under the fork's rule for the
+    /// native matrix kernels: Apple7 family.
+    simdgroup_matrix: bool,
 }
 
 impl Gpu {
@@ -81,11 +84,13 @@ impl Gpu {
             .ok_or_else(|| RuntimeError::NoMetal("the device returned no command queue".into()))?;
         let simdgroup_reduction = device.supportsFamily(MTLGPUFamily::Apple7)
             || device.supportsFamily(MTLGPUFamily::Metal3);
+        let simdgroup_matrix = device.supportsFamily(MTLGPUFamily::Apple7);
         Ok(Gpu {
             name: device.name().to_string(),
             device,
             queue,
             simdgroup_reduction,
+            simdgroup_matrix,
         })
     }
 
@@ -122,6 +127,8 @@ impl Gpu {
                     self.simdgroup_reduction,
                     "neither Apple7 nor Metal3 family".into(),
                 )
+            } else if f == "simdgroup_matrix" {
+                (self.simdgroup_matrix, "not an Apple7 family GPU".into())
             } else if let Some(v) = f.strip_prefix("simdgroup_size>=") {
                 (v.parse::<usize>().is_ok(), "unreadable lane count".into())
             } else {

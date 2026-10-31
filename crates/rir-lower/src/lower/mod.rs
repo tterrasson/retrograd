@@ -69,11 +69,15 @@ use std::collections::HashMap;
 use rir_core::{ArgId, Kernel, Op, ReductionSemantics, ValueId};
 
 use crate::loop_ir::*;
-use crate::schedule::{ParallelMapping, ReductionStrategy, SUBGROUP_LANES, ScanStrategy, Schedule};
+use crate::schedule::{
+    MATRIX_COLS, MATRIX_ROWS, ParallelMapping, ReductionStrategy, SUBGROUP_LANES, ScanStrategy,
+    Schedule,
+};
 
 use crate::schedule::check_schedule;
 use rir_core::ValidatedKernel;
-use strategies::reduction::{LaneTile, lower_lanes};
+use strategies::matrix::lower_matrix;
+use strategies::reduction::{LaneTile, RowTile, lower_lanes};
 use strategies::scan::{lower_blocked_scan, lower_strided_scan, lower_tiled_scan};
 use strategies::serial::lower_serial;
 use strategies::tiled::lower_tiled;
@@ -165,6 +169,8 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
         allow_results: false,
         linear: None,
         reduce_run: schedule.reduce_run,
+        segment: schedule.segment,
+        factor_scales: schedule.factor_scales,
     };
 
     // The linear-addressing claim, decided before a single
@@ -240,7 +246,11 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
 
     // A depth outside the strategy that reads it would be a schedule field
     // nothing honours - the failure mode already closed for `vector_width`.
-    if (schedule.tile_depth > 0) != (schedule.reduction == ReductionStrategy::TiledStage) {
+    let staged = matches!(
+        schedule.reduction,
+        ReductionStrategy::TiledStage | ReductionStrategy::MatrixTile
+    );
+    if (schedule.tile_depth > 0) != staged {
         return Err(LowerError::TilingUnsupported {
             why: "tile_depth and strategy must match (either without the other is meaningless)",
         });
@@ -260,6 +270,66 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
             return Err(LowerError::ReduceRunUnsupported {
                 why: "a staged contraction reads its operands through tiles, not segments",
             });
+        }
+    }
+
+    // A segment and a factored scale both read the segment of a quantized read
+    // along the reduced axis; a kernel that has none would carry two fields
+    // nothing honours. Whether the segment divides each format is checked
+    // where it is planned (`plan_segments`).
+    let segmented = || {
+        a.inner_axis
+            .is_some_and(|ax| plan_segments(kernel, ax, 0).is_ok_and(|p| !p.reads.is_empty()))
+    };
+    if schedule.segment > 0 && (staged || !segmented()) {
+        return Err(LowerError::SegmentUnsupported {
+            why: "segment requires a non-staged reduction reading a quantized operand along its reduced axis",
+        });
+    }
+    if schedule.factor_scales {
+        let why = if staged {
+            Some("scale factoring requires a non-staged reduction")
+        } else if !segmented() {
+            Some("the kernel reads no quantized operand along its reduced axis")
+        } else if semantics.contains(&ReductionSemantics::ExactOrder) {
+            Some("a sum declared in exact order: factoring regroups its terms by segment")
+        } else if !a.scans.is_empty() {
+            Some("kernel with a scan: only a reduction is factored")
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            return Err(LowerError::FactorScalesUnsupported { why });
+        }
+    }
+
+    // The row tile and the subgroups: the first grid dimension divided by
+    // `row_tile · subgroups`, so a lowering that walked fewer rows would leave
+    // some uncomputed. `MatrixTile` reads `subgroups` as its own geometry.
+    let row_tile = schedule.row_tile;
+    let subgroups = schedule.subgroups;
+    if (row_tile > 1 || subgroups > 1) && schedule.reduction != ReductionStrategy::MatrixTile {
+        let why = if schedule.reduction != ReductionStrategy::SubgroupTree
+            || schedule.par_map != ParallelMapping::Workgroup
+        {
+            Some(
+                "a subgroup reduction over workgroup mapping required: no collective may span two subgroups",
+            )
+        } else if schedule.flatten {
+            Some("a flattened row space has no first grid dimension to tile")
+        } else if a.par_axes.is_empty() {
+            Some("the tile is the first grid dimension, and there is none")
+        } else if !a.scans.is_empty() {
+            Some("kernel with a scan: only a reduction carries one accumulator per row")
+        } else if !a.inner_writes.is_empty() {
+            Some("writes inside the reduced axis: only per-row writes are tiled")
+        } else if schedule.block != [subgroups * SUBGROUP_LANES, 1, 1] {
+            Some("the workgroup is not its subgroups")
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            return Err(LowerError::RowTileUnsupported { why });
         }
     }
 
@@ -294,6 +364,7 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
 
     let innermost = match schedule.reduction {
         ReductionStrategy::TiledStage => lower_tiled(&mut lo, &a, &par_vars, &schedule)?,
+        ReductionStrategy::MatrixTile => lower_matrix(&mut lo, &a, &par_vars, &schedule)?,
         // Linear addressing has no tail to branch on: the claim requires the
         // contiguous extent to be a whole number of vectors, so every invocation
         // owns a complete one and `VecTail` would print a branch no invocation
@@ -343,7 +414,8 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
             if a.inner_axis.is_none() {
                 return Err(LowerError::LanesRequireInnerAxis);
             }
-            let lanes = schedule.block[0];
+            // The lanes of one subgroup when the workgroup holds several.
+            let lanes = schedule.block[0] / subgroups;
             // The tiled scan's prefix over lane totals **is** the shared tree,
             // the same `workgroup_scan_stmts` the blocked scan lowers under
             // `SharedTree`, and it does not consult the reduction strategy.
@@ -427,7 +499,16 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
                         first: par_vars[1],
                         count: lane_tile,
                     });
-                    lower_lanes(&mut lo, &a, lanes, schedule.reduction, tile)?
+                    // The row tile and its register: the first parallel axis,
+                    // whose grid dimension `parallel_nest` divides by
+                    // `row_tile · subgroups`.
+                    let rows = (row_tile > 1 || subgroups > 1).then(|| RowTile {
+                        axis: a.par_axes[0],
+                        first: par_vars[0],
+                        per_subgroup: row_tile,
+                        subgroups,
+                    });
+                    lower_lanes(&mut lo, &a, lanes, schedule.reduction, tile, rows)?
                 }
                 (false, ScanStrategy::TiledLanes { items }) => {
                     lower_tiled_scan(&mut lo, &a, lanes, items)?
@@ -680,6 +761,16 @@ fn parallel_nest(
     vector: u32,
 ) -> Vec<Stmt> {
     let n_grid = a.par_axes.len().min(schedule.grid_dims);
+    // Indices of each grid axis one workgroup walks itself: the matrix tile on
+    // both, the row tile on the first, the lane tile on the second.
+    let tiles = match schedule.reduction {
+        ReductionStrategy::MatrixTile => [MATRIX_ROWS, MATRIX_COLS, 1],
+        _ => [
+            schedule.row_tile * schedule.subgroups,
+            schedule.lane_tile,
+            1,
+        ],
+    };
     let mut body = innermost;
     for i in (n_grid..a.par_axes.len()).rev() {
         body = vec![Stmt::For {
@@ -704,8 +795,8 @@ fn parallel_nest(
             vector: if i == 0 { vector } else { 1 },
             // The lane tile sits on the second grid dimension, the one a
             // row-per-workgroup reduction leaves to the other operand's
-            // columns (`Schedule::lane_tile`).
-            tile: if i == 1 { schedule.lane_tile } else { 1 },
+            // columns (`Schedule::lane_tile`); the row tile on the first.
+            tile: tiles[i],
             // A staged body holds barriers, so an invocation past the extent
             // may only leave early when *its whole workgroup* is past it,
             // which is exactly the dimensions a workgroup is one index wide on.

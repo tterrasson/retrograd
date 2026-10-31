@@ -79,8 +79,23 @@ impl MemoryModel for crate::dialect::Vulkan {
         let idx = index_expr(at, ty.size_bytes());
         match ty {
             MemType::F32 => format!("{view}[{idx}]"),
+            // An unsigned byte lands in an integer register: the reader wants
+            // the raw bits, not a converted value.
+            MemType::U8 => format!("uint({view}[{idx}])"),
             _ => format!("float({view}[{idx}])"),
         }
+    }
+
+    // No `read_uvector_at`: std430 has no unaligned vector view, so a payload
+    // run is read as indexed bytes from one common base index - which is what
+    // the width buys there, the amortized address algebra.
+    fn uvec_ty(width: u32) -> String {
+        format!("uvec{width}")
+    }
+
+    fn ucomponent(text: &str, c: usize) -> String {
+        const LANES: [&str; 4] = ["x", "y", "z", "w"];
+        format!("{text}.{}", LANES[c])
     }
 
     fn store(p: &mut Printer<'_, Self>, op: &StoreOp<'_>) {

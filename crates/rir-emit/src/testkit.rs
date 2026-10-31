@@ -690,6 +690,7 @@ pub fn staging() -> Probe {
                             value: VarId(9),
                         },
                     ],
+                    row_stride: 16,
                     n_rows: 16,
                     n_depth: 8,
                 }],

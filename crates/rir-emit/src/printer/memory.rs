@@ -72,7 +72,8 @@ pub(crate) trait MemoryModel: Dialect + Sized {
     fn load(p: &mut Printer<'_, Self>, op: &LoadOp<'_>);
     fn store(p: &mut Printer<'_, Self>, op: &StoreOp<'_>);
 
-    /// One element of `arg` at the byte offset `at`, as an F32 expression.
+    /// One element of `arg` at the byte offset `at`, as an F32 expression
+    /// except for `U8`, which yields an unsigned integer for bit extraction.
     fn read_at(p: &Printer<'_, Self>, arg: ArgId, ty: MemType, at: &str) -> String;
 
     /// `width` consecutive elements at the byte offset `at` as **one** access,
@@ -87,6 +88,25 @@ pub(crate) trait MemoryModel: Dialect + Sized {
     ) -> Option<String> {
         None
     }
+
+    /// `width` consecutive **unsigned bytes** at the byte offset `at` as one
+    /// access, spelled as a vector expression of the type [`Self::uvec_ty`]
+    /// names, or `None` when the backend reads such a run component by
+    /// component (it still amortizes the address algebra).
+    fn read_uvector_at(
+        _p: &Printer<'_, Self>,
+        _arg: ArgId,
+        _at: &str,
+        _width: u32,
+    ) -> Option<String> {
+        None
+    }
+
+    /// The type a `read_uvector_at` result is declared as.
+    fn uvec_ty(width: u32) -> String;
+
+    /// Component `c` of an unsigned-byte vector register.
+    fn ucomponent(text: &str, c: usize) -> String;
 }
 
 /// The widest single access `read_vector_at` is asked for: four elements, the
@@ -96,11 +116,10 @@ const RUN_CHUNK: usize = 4;
 impl<D: Dialect + MemoryModel> Printer<'_, D> {
     /// A `Stmt::LoadRun`, the same skeleton on every GPU backend.
     ///
-    /// Lowering only places a run under a `Stmt::UnitStride` that has tested
-    /// `nb[0]` against the element size, so the run is consecutive bytes: read
-    /// in vectors where the backend has them, at constant offsets otherwise,
-    /// and with no test of its own - a test here, inside the segment loop, is
-    /// what the guard exists to keep out of it.
+    /// Dense runs sit under a `Stmt::UnitStride` that has tested `nb[0]`
+    /// against the element size; quantized payload runs are consecutive by
+    /// their bit plans. Read in vectors where the backend has them, at constant
+    /// offsets otherwise, with no test inside the segment loop.
     pub(crate) fn load_run(&mut self, op: &LoadRunOp<'_>) {
         let LoadRunOp {
             dsts,
@@ -109,6 +128,11 @@ impl<D: Dialect + MemoryModel> Printer<'_, D> {
             addr,
         } = *op;
         let elem = ty.size_bytes();
+        // A run of unsigned bytes (a quantized payload) lands in integer
+        // registers: the bit extraction wants the raw bits, so its components
+        // are declared as the unsigned type rather than converted to float.
+        let u8 = ty == MemType::U8;
+        let decl = if u8 { D::UINT } else { "float" };
         let names: Vec<String> = dsts.iter().map(|d| self.var(*d).to_string()).collect();
         let Some(first) = names.first() else {
             return;
@@ -125,10 +149,29 @@ impl<D: Dialect + MemoryModel> Printer<'_, D> {
         };
         for start in (0..names.len()).step_by(RUN_CHUNK) {
             let width = (names.len() - start).min(RUN_CHUNK);
-            let vector = (width > 1)
-                .then(|| D::read_vector_at(self, arg, ty, &offset(start), width as u32))
-                .flatten();
+            let vector = if width > 1 {
+                if u8 {
+                    D::read_uvector_at(self, arg, &offset(start), width as u32)
+                } else {
+                    D::read_vector_at(self, arg, ty, &offset(start), width as u32)
+                }
+            } else {
+                None
+            };
             match vector {
+                Some(v) if u8 => {
+                    let r = format!("{}_r", names[start]);
+                    self.line(&format!("const {} {r} = {v};", D::uvec_ty(width as u32)));
+                    for c in 0..width {
+                        let comp = D::ucomponent(&r, c);
+                        self.line(&format!(
+                            "const {} {} = {}({comp});",
+                            D::UINT,
+                            names[start + c],
+                            D::UINT
+                        ));
+                    }
+                }
                 Some(v) => {
                     let kind = rir_lower::VarKind::Vec(width as u32);
                     let r = format!("{}_r", names[start]);
@@ -141,7 +184,7 @@ impl<D: Dialect + MemoryModel> Printer<'_, D> {
                 None => {
                     for (c, name) in names.iter().enumerate().skip(start).take(width) {
                         let e = D::read_at(self, arg, ty, &offset(c));
-                        self.line(&format!("const float {name} = {e};"));
+                        self.line(&format!("const {decl} {name} = {e};"));
                     }
                 }
             }

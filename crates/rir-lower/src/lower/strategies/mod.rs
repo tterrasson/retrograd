@@ -2,6 +2,7 @@
 //! `Schedule`, in `super::lower`; each module here only knows how to build
 //! the nest its strategy describes.
 
+pub mod matrix;
 pub mod reduction;
 pub mod scan;
 pub mod serial;

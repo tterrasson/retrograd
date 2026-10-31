@@ -121,6 +121,34 @@ pub const FAMILY_REFUSED: &[(Family, GpuBackend, &str)] = &[
 /// this list is one line and a lane run.
 pub const FLAT_TARGETS: &[GpuBackend] = &[GpuBackend::Cuda];
 
+/// The GPU backends whose subgroup width is fixed at `SUBGROUP_LANES` by the
+/// hardware, and on which a workgroup may therefore be several subgroups
+/// (`Stmt::ParallelSubgroup`): Apple's SIMD-group and NVIDIA's warp are 32
+/// lanes on every device. Vulkan is absent because `gl_SubgroupSize` is the
+/// device's choice, and a lowering that partitioned its workgroup into 32-lane
+/// subgroups would combine the wrong lanes on a 64-lane one.
+pub const PARTITION_TARGETS: &[GpuBackend] = &[GpuBackend::Metal, GpuBackend::Cuda];
+
+/// Whether `gpu` may run a workgroup of several subgroups.
+pub fn partitions_subgroups(gpu: GpuBackend) -> bool {
+    PARTITION_TARGETS.contains(&gpu)
+}
+
+/// The GPU backends with a subgroup matrix product the emitters print
+/// (`ReductionStrategy::MatrixTile`): Metal's `simdgroup_float8x8`. Vulkan's
+/// cooperative matrices are an extension outside the baseline the shaders
+/// compile against, and CUDA's `wmma` has no F32 × F32 fragment.
+pub const MATRIX_TARGETS: &[GpuBackend] = &[GpuBackend::Metal];
+
+/// `MATRIX_TARGETS` less what this family refuses, on the model of
+/// `targets_for`.
+pub fn matrix_targets_for(family: Family) -> impl Iterator<Item = GpuBackend> {
+    MATRIX_TARGETS
+        .iter()
+        .copied()
+        .filter(move |g| family_refusal(family, *g).is_none())
+}
+
 /// `FLAT_TARGETS` less what this family refuses, on the model of `targets_for`.
 pub fn flat_targets_for(family: Family) -> impl Iterator<Item = GpuBackend> {
     FLAT_TARGETS

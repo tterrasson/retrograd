@@ -71,7 +71,7 @@ pub(crate) fn lower_serial(lo: &mut Lowerer, a: &Analysis) -> Result<Vec<Stmt>, 
     }
 
     if !a.reduces.is_empty() {
-        let plan = plan_segments(lo.k, inner_axis);
+        let plan = plan_segments(lo.k, inner_axis, lo.segment)?;
         // Group reductions by dependency **level**. A reduction whose input
         // depends on another reduction runs in a later sequential pass, one
         // loop per level. Circular or same-level dependencies remain

@@ -448,44 +448,69 @@ fn mat_mul_naive(v: &mut Vec<Schedule>) {
 /// dot product. It is the `row_reduce` lowering with a second operand in the
 /// contraction.
 ///
-/// That fallback reads and decodes the weight row once per token, so a decode
-/// step costs the token count times the weight traffic. The lane-tiled variants
-/// give one workgroup several tokens and decode the row once for them.
-///
 /// Every variant reads the activation column in runs of four (`reduce_run`):
 /// a lane's segment is four consecutive columns, so its four activations are
 /// one access instead of four. On the Qwen3 0.6B projections (q8_0 and q4_K
 /// `[1024, 3072]`, shader alone, Apple M5) that is 1.8-2.1× on the tiled
 /// variant on Metal and up to 1.7× on the fallback, the same bits out; on
 /// Vulkan (MoltenVK), which has no unaligned vector read, it is neutral to
-/// 1.3×. Vectorizing the weight bytes as well changed nothing.
+/// 1.3×.
 ///
-/// With runs, four columns win from two tokens up on both backends (the
-/// fallback keeps one, where three of the four accumulators are guarded off),
-/// and eight columns win a further 6-15 % from eight tokens up.
+/// Four further decisions, each answering a measured deficit against the
+/// native `mul_mv` kernels, which hold two rows per SIMD-group and two to four
+/// SIMD-groups per threadgroup:
+///
+/// - **Two rows per subgroup** (`row_tile`). With one row per subgroup every
+///   token's activation column is read once per weight row; two rows halve
+///   that traffic, which is what made a step of eight tokens cost three times
+///   one token where the native kernel's stays flat.
+/// - **Two subgroups per workgroup** where the hardware fixes the subgroup
+///   width (`PARTITION_TARGETS`): more rows in flight per workgroup, as the
+///   native threadgroups have.
+/// - **Segments of sixteen** (`segment`): a lane decodes a block header - the
+///   F16 scales and the packed sub-block scale - once per sixteen elements
+///   instead of four. Sixteen divides every profiled format's sub-block
+///   (q6_K's is sixteen).
+/// - **Factored scales** (`factor_scales`): `Σ (s·q − m)·x` is accumulated as
+///   `s·Σ q·x − m·Σ x` per segment, two multiplies per segment instead of two
+///   per element.
+///
+/// Column tiles share the decoded row between tokens: four columns from two
+/// tokens up, eight from five (a partial cols4 tile reads the weight row
+/// twice, a partial cols8 tile once). The float matrix variant claims steps
+/// of at least 32 tokens where there is one (`MATRIX_TARGETS`); cols8 covers
+/// smaller steps, where the 32-column matrix tile wastes much of its work.
 fn mul_mat_vec(v: &mut Vec<Schedule>) {
     let family = Family::MulMatVec;
+    let shaped = |s: Schedule, gpu: GpuBackend| {
+        let subgroups = if partitions_subgroups(gpu) { 2 } else { 1 };
+        s.with_reduce_run(4)
+            .with_segment(16)
+            .with_factored_scales()
+            .with_row_tile(2, subgroups)
+    };
     for gpu in targets_for(family) {
-        v.push(Schedule::gpu_subgroup(gpu).with_reduce_run(4));
+        v.push(shaped(Schedule::gpu_subgroup(gpu), gpu));
     }
-    let steps = |min: u32| {
+    let steps = |min: u32, max: u32| {
         vec![ShapeRule {
             axes: &["plane"],
             min,
-            max: rir_core::catalog::Regime::DECODE_MAX_TOKENS,
+            max,
         }]
     };
+    let decode_max = rir_core::catalog::Regime::DECODE_MAX_TOKENS;
     for gpu in targets_for(family) {
-        v.push(
-            Schedule::gpu_subgroup_cols(gpu, 4)
-                .with_reduce_run(4)
-                .claiming(90, steps(2)),
-        );
-        v.push(
-            Schedule::gpu_subgroup_cols(gpu, 8)
-                .with_reduce_run(4)
-                .claiming(95, steps(8)),
-        );
+        v.push(shaped(Schedule::gpu_subgroup_cols(gpu, 4), gpu).claiming(90, steps(2, decode_max)));
+        v.push(shaped(Schedule::gpu_subgroup_cols(gpu, 8), gpu).claiming(95, steps(5, decode_max)));
+    }
+    for gpu in matrix_targets_for(family) {
+        // Apple M5, 2026-10-31: at K=M=1024 and N=16, cols8 takes
+        // ~41 us versus ~69-71 us for the float MMA tile (q4_K/q6_K).
+        // A 32-column tile computes mostly padding below this crossover.
+        // Keep it at 32 tokens; sweep padding/depth without promoting them
+        // from a RIR-only measurement.
+        v.push(Schedule::gpu_matrix_tile(gpu, MATRIX_COLS).claiming(100, steps(32, decode_max)));
     }
 }
 

@@ -300,6 +300,7 @@ fn for_each_use(s: &mut Stmt, f: &mut impl FnMut(&mut VarId)) {
         Stmt::Parallel { .. }
         | Stmt::ParallelFlat { .. }
         | Stmt::ParallelLane { .. }
+        | Stmt::ParallelSubgroup { .. }
         | Stmt::For { .. } => {}
         Stmt::VecTail { base, .. } => f(base),
         Stmt::UnitStride { .. } => {}
@@ -348,6 +349,28 @@ fn for_each_use(s: &mut Stmt, f: &mut impl FnMut(&mut VarId)) {
             f(index);
         }
         Stmt::Barrier => {}
+        // A fragment is read by the statement that accumulates into it, for
+        // the reason an accumulator is read by its own `Accum`.
+        Stmt::FragZero { dst } => f(dst),
+        Stmt::FragLoad {
+            dst, array, index, ..
+        } => {
+            f(dst);
+            f(array);
+            f(index);
+        }
+        Stmt::FragMma { acc, a, b } => {
+            f(acc);
+            f(a);
+            f(b);
+        }
+        Stmt::FragStore {
+            src, array, index, ..
+        } => {
+            f(src);
+            f(array);
+            f(index);
+        }
         Stmt::If { cond, .. } => f(cond),
         // Both, and deliberately: the target of an assignment is written *and*
         // read - it was declared elsewhere, and pruning it because this

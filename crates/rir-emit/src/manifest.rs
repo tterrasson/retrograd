@@ -227,11 +227,15 @@ pub struct KernelNeeds {
     pub shared_bytes: u32,
     /// Threads in one workgroup.
     pub block_threads: u32,
+    /// Multiplies matrix fragments: the subgroup matrix product, a capability
+    /// of its own beside the lane collectives.
+    pub matrix: bool,
 }
 
 pub fn kernel_needs(k: &LoopKernel) -> KernelNeeds {
     let mut needs = KernelNeeds {
         block_threads: k.schedule.block().iter().product(),
+        matrix: k.uses_fragments(),
         // Four bytes per element: every shared array the Loop IR declares is a
         // `float` array, on all three backends.
         shared_bytes: k.shared.iter().map(|(_, len)| 4 * len).sum(),
@@ -261,19 +265,23 @@ impl KernelNeeds {
     /// Metal's rendering. `simd_sum`/`simd_max` are macOS Metal 2.1 and later
     /// (iOS 2.3), per the MSL specification; everything else the emitter prints
     /// compiles under Metal 2.0. Same shape as the Vulkan 1.0/1.1 split, and for
-    /// the same reason: the collective is the cost.
+    /// the same reason: the collective is the cost. The fragment product is
+    /// Metal 2.3, and an Apple7 GPU family.
     pub fn metal(self) -> Vec<String> {
-        let mut features = vec![
-            if self.collective {
-                "metal>=2.1"
-            } else {
-                "metal>=2.0"
-            }
-            .to_string(),
-        ];
+        let version = if self.matrix {
+            "metal>=2.3"
+        } else if self.collective {
+            "metal>=2.1"
+        } else {
+            "metal>=2.0"
+        };
+        let mut features = vec![version.to_string()];
         if self.collective {
             features.push("simdgroup_reduction".to_string());
             features.push(format!("simdgroup_size>={}", self.lanes));
+        }
+        if self.matrix {
+            features.push("simdgroup_matrix".to_string());
         }
         features
     }

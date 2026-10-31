@@ -26,6 +26,14 @@ use super::Printer;
 use super::memory::{LoadOp, LoadRunOp, MemoryModel, StoreOp};
 
 impl<'k, D: Dialect + MemoryModel> Printer<'k, D> {
+    /// The fragment lexicon, or the refusal naming the statement that needed it.
+    fn fragments(stmt: &'static str) -> Result<crate::dialect::Fragments, EmitError> {
+        D::fragments().ok_or(EmitError::UnsupportedStmt {
+            backend: D::BACKEND,
+            stmt,
+        })
+    }
+
     pub(crate) fn stmts(&mut self, stmts: &[Stmt]) -> Result<(), EmitError> {
         let uint = D::UINT;
         for s in stmts {
@@ -186,6 +194,66 @@ impl<'k, D: Dialect + MemoryModel> Printer<'k, D> {
                         D::lane_builtin(self.k)
                     ));
                     self.stmts(body)?;
+                }
+                // No loop either: each invocation belongs to one subgroup, and
+                // the index says which.
+                Stmt::ParallelSubgroup { var, body, .. } => {
+                    let builtin = D::subgroup_index().ok_or(EmitError::UnsupportedStmt {
+                        backend: D::BACKEND,
+                        stmt: "ParallelSubgroup - subgroup width chosen by the device",
+                    })?;
+                    let name = self.var(*var).to_string();
+                    self.line(&format!("const {uint} {name} = {builtin};"));
+                    self.stmts(body)?;
+                }
+                Stmt::FragZero { dst } => {
+                    let f = Self::fragments("FragZero")?;
+                    self.line(&format!("{} {} = {};", f.ty, self.var(*dst), f.zero));
+                }
+                Stmt::FragLoad {
+                    dst,
+                    array,
+                    index,
+                    stride,
+                    transpose,
+                } => {
+                    let f = Self::fragments("FragLoad")?;
+                    let name = self.var(*dst).to_string();
+                    self.line(&format!("{} {name};", f.ty));
+                    self.line(&format!(
+                        "{}({name}, {} + {}, {stride}, {}, {transpose});",
+                        f.load,
+                        self.shared(*array),
+                        self.var(*index),
+                        f.origin
+                    ));
+                }
+                Stmt::FragMma { acc, a, b } => {
+                    let f = Self::fragments("FragMma")?;
+                    let acc = self.var(*acc).to_string();
+                    self.line(&format!(
+                        "{}({acc}, {}, {}, {acc});",
+                        f.mma,
+                        self.var(*a),
+                        self.var(*b)
+                    ));
+                }
+                Stmt::FragStore {
+                    src,
+                    array,
+                    index,
+                    stride,
+                    transpose,
+                } => {
+                    let f = Self::fragments("FragStore")?;
+                    self.line(&format!(
+                        "{}({}, {} + {}, {stride}, {}, {transpose});",
+                        f.store,
+                        self.var(*src),
+                        self.shared(*array),
+                        self.var(*index),
+                        f.origin
+                    ));
                 }
                 Stmt::For {
                     var,
@@ -392,11 +460,17 @@ impl<'k, D: Dialect + MemoryModel> Printer<'k, D> {
                         ));
                         self.indent += 1;
                         let slot = self.var(t.slot).to_string();
-                        if slot != l {
+                        if t.row_stride == t.n_rows && slot != l {
                             self.line(&format!("const {uint} {slot} = {l};"));
                         }
                         self.line(&format!("const {uint} {row} = {l} % {}u;", t.n_rows));
                         self.line(&format!("const {uint} {dep} = {l} / {}u;", t.n_rows));
+                        if t.row_stride != t.n_rows {
+                            self.line(&format!(
+                                "const {uint} {slot} = {dep} * {}u + {row};",
+                                t.row_stride
+                            ));
+                        }
                         self.line(&format!("const {uint} {m} = {m0} + {row};"));
                         self.line(&format!("const {uint} {kg} = {k0} + {dep};"));
                         // The loader under the range test, the zeros in the
@@ -426,7 +500,8 @@ impl<'k, D: Dialect + MemoryModel> Printer<'k, D> {
                             } else {
                                 format!(" + {c}u")
                             };
-                            self.line(&format!("{sh}[{l}{off}] = {};", D::ZERO));
+                            let zero_slot = if t.row_stride == t.n_rows { &l } else { &slot };
+                            self.line(&format!("{sh}[{zero_slot}{off}] = {};", D::ZERO));
                         }
                         self.indent -= 1;
                         self.line("}");

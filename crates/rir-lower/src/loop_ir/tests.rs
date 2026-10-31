@@ -125,6 +125,7 @@ fn every_nested_block_is_reachable() {
                     slot: VarId(0),
                     span: 1,
                     load: vec![Stmt::Barrier],
+                    row_stride: 1,
                     n_rows: 1,
                     n_depth: 1,
                 }],

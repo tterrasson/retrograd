@@ -47,6 +47,16 @@ pub enum ReductionStrategy {
     /// contiguous run of workgroup-local indices. The manifest publishes the
     /// width as a device requirement (`min_subgroup`).
     HierarchicalTree,
+    /// A contraction computed by the **subgroup matrix product**: the
+    /// workgroup stages a tile of each operand in shared memory, as
+    /// `TiledStage` does, and each subgroup multiplies 8 × 8 fragments of
+    /// them instead of every invocation walking the depth one term at a time.
+    ///
+    /// The terms are regrouped - eight at a time inside the hardware product,
+    /// then by fragment - in a topology the tile geometry fixes, so the result
+    /// is reproducible run to run and admissible under `Deterministic`, not
+    /// under `ExactOrder`.
+    MatrixTile,
 }
 
 impl ReductionStrategy {
@@ -59,6 +69,7 @@ impl ReductionStrategy {
             ReductionStrategy::TiledStage => manifest::Reduction::TiledStage,
             ReductionStrategy::SubgroupTree => manifest::Reduction::SubgroupTree,
             ReductionStrategy::HierarchicalTree => manifest::Reduction::HierarchicalTree,
+            ReductionStrategy::MatrixTile => manifest::Reduction::MatrixTile,
         }
     }
 
@@ -69,6 +80,7 @@ impl ReductionStrategy {
             ReductionStrategy::TiledStage => "tiled_stage",
             ReductionStrategy::SubgroupTree => "subgroup_tree",
             ReductionStrategy::HierarchicalTree => "hierarchical_tree",
+            ReductionStrategy::MatrixTile => "matrix_tile",
         }
     }
 }

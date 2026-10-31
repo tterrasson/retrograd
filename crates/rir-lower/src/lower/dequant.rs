@@ -148,28 +148,23 @@ impl<'k> Lowerer<'k> {
         Ok((base, header))
     }
 
-    /// One bit field of the block, as an `Idx` register, from its index plan.
-    ///
-    /// This is the block layout's index plan turned into three registers and a load:
+    /// The address of the byte holding element `elem`'s field, per the plan:
     ///
     /// ```text
-    /// byte  = offset + (e / group)·plane + (e % plane)
-    /// shift = bits · ((e % group) / plane)
-    /// field = (mem[byte] >> shift) & mask
+    /// byte = offset + (e / group)·plane + (e % plane)
     /// ```
     ///
     /// Every term whose value the block size makes constant is dropped rather
     /// than emitted and multiplied by one - a plan covering the whole block has
     /// no group term, a plan one byte wide has no in-plane term.
-    pub(crate) fn lower_bit_field(
+    fn bit_field_addr(
         &mut self,
-        tensor: ArgId,
         base: &[AddrTerm],
         plan: rir_core::BitPlan,
         elem: VarId,
         block_elements: u32,
         name: &str,
-    ) -> VarId {
+    ) -> Vec<AddrTerm> {
         let (group, plane) = (plan.group(), plan.plane);
         let mut addr = base.to_vec();
         if plan.offset != 0 {
@@ -195,17 +190,28 @@ impl<'k> Lowerer<'k> {
             };
             addr.push(AddrTerm::VarConst { var: inp, c: 1 });
         }
-        let raw = self.new_var(&format!("{name}_byte"), VarKind::Idx);
-        self.body.push(Stmt::Load {
-            dst: raw,
-            arg: tensor,
-            ty: MemType::U8,
-            addr,
-            width: 1,
-        });
+        addr
+    }
+
+    /// One bit field of the block, as an `Idx` register, extracted from the
+    /// already-loaded `raw` byte of element `elem`:
+    ///
+    /// ```text
+    /// shift = bits · ((e % group) / plane)
+    /// field = (raw >> shift) & mask
+    /// ```
+    fn bit_field_from(
+        &mut self,
+        raw: VarId,
+        plan: rir_core::BitPlan,
+        elem: VarId,
+        block_elements: u32,
+        name: &str,
+    ) -> VarId {
         if plan.per_byte() == 1 {
             return raw;
         }
+        let (group, plane) = (plan.group(), plan.plane);
         let ingroup = if group >= block_elements {
             elem
         } else {
@@ -241,6 +247,29 @@ impl<'k> Lowerer<'k> {
         self.emit(name, VarKind::Idx, LExpr::IAndC(shifted, plan.mask()))
     }
 
+    /// One bit field of the block, as an `Idx` register, from its index plan:
+    /// the address of the byte, one `U8` load, then the extraction.
+    pub(crate) fn lower_bit_field(
+        &mut self,
+        tensor: ArgId,
+        base: &[AddrTerm],
+        plan: rir_core::BitPlan,
+        elem: VarId,
+        block_elements: u32,
+        name: &str,
+    ) -> VarId {
+        let addr = self.bit_field_addr(base, plan, elem, block_elements, name);
+        let raw = self.new_var(&format!("{name}_byte"), VarKind::Idx);
+        self.body.push(Stmt::Load {
+            dst: raw,
+            arg: tensor,
+            ty: MemType::U8,
+            addr,
+            width: 1,
+        });
+        self.bit_field_from(raw, plan, elem, block_elements, name)
+    }
+
     /// The per-**element** half: the payload read and the arithmetic, given the
     /// block's base address and what `lower_dequant_header` resolved.
     ///
@@ -259,6 +288,18 @@ impl<'k> Lowerer<'k> {
         header: &DequantHeader,
         inb: VarId,
     ) -> Result<VarId, LowerError> {
+        let qterm = self.lower_payload(tensor, from, block_base, inb)?;
+        self.lower_scale_apply(tensor, from, block_base, header, inb, qterm)
+    }
+
+    /// The payload of one element, as the F32 term the scale multiplies.
+    pub(crate) fn lower_payload(
+        &mut self,
+        tensor: ArgId,
+        from: rir_core::QuantType,
+        block_base: &[AddrTerm],
+        inb: VarId,
+    ) -> Result<VarId, LowerError> {
         let desc = from.desc();
         let layout = desc
             .layout
@@ -266,8 +307,7 @@ impl<'k> Lowerer<'k> {
         let be = desc.block_elements;
         let base = block_base.to_vec();
 
-        // The payload, as the F32 term the scale multiplies.
-        let qterm = if layout.signed {
+        if layout.signed {
             // A signed byte is read as one: extracting it from an unsigned load
             // would need a sign fix-up per element, and `MemType::I8` is the
             // conversion the memory boundary already owns. `q8_0`, and only it.
@@ -284,7 +324,7 @@ impl<'k> Lowerer<'k> {
                 addr,
                 width: 1,
             });
-            qv
+            Ok(qv)
         } else {
             let mut q = self.lower_bit_field(tensor, &base, layout.payload, inb, be, "q");
             // The high plane is concatenated **above** the payload, which is
@@ -300,18 +340,137 @@ impl<'k> Lowerer<'k> {
                 );
                 q = self.emit("q_full", VarKind::Idx, LExpr::IOr(q, shifted));
             }
-            match layout.value {
-                rir_core::Payload::Lut(table) => {
-                    self.emit("q_lut", VarKind::F32, LExpr::Lut { table, idx: q })
-                }
-                rir_core::Payload::Offset(0) => self.emit("q_f", VarKind::F32, LExpr::IToF(q)),
-                rir_core::Payload::Offset(off) => {
-                    let qf = self.emit("q_f", VarKind::F32, LExpr::IToF(q));
-                    let c = self.emit("q_off", VarKind::F32, LExpr::ConstF32(off as f32));
-                    self.emit("q_c", VarKind::F32, LExpr::Sub(qf, c))
-                }
+            Ok(self.lower_payload_value(layout.value, q))
+        }
+    }
+
+    /// The same payload interpretation for scalar reads and byte runs.
+    fn lower_payload_value(&mut self, value: rir_core::Payload, q: VarId) -> VarId {
+        match value {
+            rir_core::Payload::Lut(table) => {
+                self.emit("q_lut", VarKind::F32, LExpr::Lut { table, idx: q })
             }
+            rir_core::Payload::Offset(0) => self.emit("q_f", VarKind::F32, LExpr::IToF(q)),
+            rir_core::Payload::Offset(off) => {
+                let qf = self.emit("q_f", VarKind::F32, LExpr::IToF(q));
+                // Format offsets are at most 128 in magnitude and exactly
+                // representable in F32 (the canonical BlockLayout table).
+                let c = self.emit("q_off", VarKind::F32, LExpr::ConstF32(off as f32));
+                self.emit("q_c", VarKind::F32, LExpr::Sub(qf, c))
+            }
+        }
+    }
+
+    /// The payload of `run` consecutive in-block elements starting at `inb0`,
+    /// read as **one run of payload bytes** when the plans allow it, returned
+    /// as one F32 term per element. `None` when they do not, and the caller
+    /// falls back to per-element loads.
+    ///
+    /// A signed payload is one byte per element at `base + offset + inb`, so
+    /// the run is consecutive for any length and lands in F32 registers
+    /// directly (`I8` widens on load) - one `packed_char{w}` access on Metal.
+    ///
+    /// A sub-byte payload is vectorized over **bytes**: element `c` of the run
+    /// sits in byte `c` past the run's first byte exactly when each plan's
+    /// plane is a multiple of the run length. The run starts aligned: the
+    /// segment starts at a multiple of the span, and `run | span | block_elements`.
+    /// Since `run | plane` implies `run | group`, neither a plane nor a group
+    /// boundary falls inside the run. The field shift is therefore constant
+    /// across the run too: using `inb0` for every extraction lets CSE share its
+    /// division/modulo/shift algebra, while each extraction reads its own
+    /// pre-loaded byte.
+    pub(crate) fn lower_payload_run(
+        &mut self,
+        tensor: ArgId,
+        from: rir_core::QuantType,
+        block_base: &[AddrTerm],
+        inb0: VarId,
+        run: u32,
+    ) -> Result<Option<Vec<VarId>>, LowerError> {
+        let desc = from.desc();
+        let Some(layout) = desc.layout else {
+            return Err(LowerError::UnsupportedQuantShape { format: from });
         };
+        let be = desc.block_elements;
+        if layout.signed {
+            let mut addr = block_base.to_vec();
+            if layout.payload.offset != 0 {
+                addr.push(AddrTerm::Const(layout.payload.offset));
+            }
+            addr.push(AddrTerm::VarConst { var: inb0, c: 1 });
+            let dsts: Vec<VarId> = (0..run).map(|_| self.new_var("q", VarKind::F32)).collect();
+            self.body.push(Stmt::LoadRun {
+                dsts: dsts.clone(),
+                arg: tensor,
+                ty: MemType::I8,
+                addr,
+            });
+            return Ok(Some(dsts));
+        }
+        let runnable = |p: rir_core::BitPlan| p.plane.is_multiple_of(run);
+        if !runnable(layout.payload) || layout.high.is_some_and(|h| !runnable(h)) {
+            return Ok(None);
+        }
+        let pay_addr = self.bit_field_addr(block_base, layout.payload, inb0, be, "q");
+        let pay: Vec<VarId> = (0..run)
+            .map(|_| self.new_var("q_byte", VarKind::Idx))
+            .collect();
+        self.body.push(Stmt::LoadRun {
+            dsts: pay.clone(),
+            arg: tensor,
+            ty: MemType::U8,
+            addr: pay_addr,
+        });
+        let high: Option<Vec<VarId>> = match layout.high {
+            Some(hp) => {
+                let h_addr = self.bit_field_addr(block_base, hp, inb0, be, "qh");
+                let dsts: Vec<VarId> = (0..run)
+                    .map(|_| self.new_var("qh_byte", VarKind::Idx))
+                    .collect();
+                self.body.push(Stmt::LoadRun {
+                    dsts: dsts.clone(),
+                    arg: tensor,
+                    ty: MemType::U8,
+                    addr: h_addr,
+                });
+                Some(dsts)
+            }
+            None => None,
+        };
+        let mut out = Vec::with_capacity(run as usize);
+        for (c, &raw) in pay.iter().enumerate() {
+            let mut q = self.bit_field_from(raw, layout.payload, inb0, be, "q");
+            if let (Some(hp), Some(hdsts)) = (layout.high, &high) {
+                let h = self.bit_field_from(hdsts[c], hp, inb0, be, "qh");
+                let shifted = self.emit(
+                    "qh_up",
+                    VarKind::Idx,
+                    LExpr::IMulC(h, 1u32 << layout.payload.bits),
+                );
+                q = self.emit("q_full", VarKind::Idx, LExpr::IOr(q, shifted));
+            }
+            out.push(self.lower_payload_value(layout.value, q));
+        }
+        Ok(Some(out))
+    }
+
+    /// The scale and min arithmetic of one element, given its payload term:
+    /// the block-wide or sub-block scale times the payload, plus or minus the
+    /// min term, in ggml's own order.
+    pub(crate) fn lower_scale_apply(
+        &mut self,
+        tensor: ArgId,
+        from: rir_core::QuantType,
+        block_base: &[AddrTerm],
+        header: &DequantHeader,
+        inb: VarId,
+        qterm: VarId,
+    ) -> Result<VarId, LowerError> {
+        let desc = from.desc();
+        let layout = desc
+            .layout
+            .ok_or(LowerError::UnsupportedQuantShape { format: from })?;
+        let base = block_base.to_vec();
 
         // The scale, block-wide or block times sub-block.
         let (scale, sub_min) = match layout.scales {
@@ -345,6 +504,50 @@ impl<'k> Lowerer<'k> {
                 self.emit("t", VarKind::F32, LExpr::Sub(scaled, ml))
             }
         })
+    }
+
+    /// The scale and the offset every element of a segment shares, as
+    /// `lower_scale_apply` computes them per element: `dequant(e) = scale ·
+    /// q(e) [+ | −] offset`. `None` when the scale changes inside the segment -
+    /// a sub-block scale the header did not resolve once for it.
+    ///
+    /// The same expressions, in the same order, as the per-element half, so
+    /// the canonicalisation pass computes them once wherever both appear.
+    pub(crate) fn lower_segment_affine(
+        &mut self,
+        from: rir_core::QuantType,
+        header: &DequantHeader,
+    ) -> Result<Option<Affine>, LowerError> {
+        let layout = from
+            .desc()
+            .layout
+            .ok_or(LowerError::UnsupportedQuantShape { format: from })?;
+        let (scale, sub_min) = match layout.scales {
+            rir_core::ScalePlan::Global { .. } | rir_core::ScalePlan::GlobalMin { .. } => {
+                (header.d, None)
+            }
+            rir_core::ScalePlan::SubBlock { .. } => match header.sub {
+                Some((sc, mm)) => (self.emit("dl", VarKind::F32, LExpr::Mul(header.d, sc)), mm),
+                None => return Ok(None),
+            },
+        };
+        let missing = LowerError::UnsupportedQuantShape { format: from };
+        let offset = match layout.min {
+            rir_core::MinTerm::None => None,
+            rir_core::MinTerm::GlobalPlus => Some(Offset {
+                value: header.m.ok_or(missing)?,
+                subtract: false,
+            }),
+            rir_core::MinTerm::SubMinus => {
+                let dmin = header.m.ok_or(missing.clone())?;
+                let mm = sub_min.ok_or(missing)?;
+                Some(Offset {
+                    value: self.emit("ml", VarKind::F32, LExpr::Mul(dmin, mm)),
+                    subtract: true,
+                })
+            }
+        };
+        Ok(Some(Affine { scale, offset }))
     }
 
     /// The sub-block scale (and min, when the formula subtracts one) of the
@@ -540,6 +743,22 @@ impl<'k> Lowerer<'k> {
     }
 }
 
+/// `dequant(e) = scale · q(e) [+ | −] offset` over a segment whose elements
+/// share both (`Lowerer::lower_segment_affine`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Affine {
+    pub(crate) scale: VarId,
+    pub(crate) offset: Option<Offset>,
+}
+
+/// The term a format adds to (`q4_1`) or subtracts from (the K quants with a
+/// min) the scaled payload.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Offset {
+    pub(crate) value: VarId,
+    pub(crate) subtract: bool,
+}
+
 /// A quantized read an accumulation loop may traverse **by segment** rather
 /// than by element.
 ///
@@ -566,6 +785,7 @@ pub(crate) struct SegmentPlan {
 /// What one segment resolved, carried from the segment scope to the element
 /// scope: the address base of the block, its header, and the index inside the
 /// block of the segment's first element.
+#[derive(Clone)]
 pub(crate) struct SegmentHeader {
     pub(crate) read: QuantRead,
     pub(crate) base: Vec<AddrTerm>,
@@ -619,7 +839,16 @@ pub(crate) fn format_span(format: rir_core::QuantType) -> u32 {
 /// are. A read that does not qualify is not an error and does not disable the
 /// plan - it simply lowers per element inside the segment, exactly as it does
 /// today.
-pub(crate) fn plan_segments(k: &Kernel, inner_axis: AxisId) -> SegmentPlan {
+///
+/// `segment` is the schedule's request (`Schedule::segment`): zero takes the
+/// widest span every read divides, anything else is that span or an error -
+/// a span that crossed a block, or a sub-block, would read one header for
+/// elements that have another.
+pub(crate) fn plan_segments(
+    k: &Kernel,
+    inner_axis: AxisId,
+    segment: u32,
+) -> Result<SegmentPlan, LowerError> {
     let mut reads = Vec::new();
     for (i, op) in k.ops().iter().enumerate() {
         let Op::Dequant { value: rv, from } = op else {
@@ -651,10 +880,32 @@ pub(crate) fn plan_segments(k: &Kernel, inner_axis: AxisId) -> SegmentPlan {
             format: *from,
         });
     }
-    let span = reads
-        .iter()
-        .map(|r| format_span(r.format))
-        .min()
-        .unwrap_or(1);
-    SegmentPlan { span, reads }
+    if segment == 0 {
+        let span = reads
+            .iter()
+            .map(|r| format_span(r.format))
+            .min()
+            .unwrap_or(1);
+        return Ok(SegmentPlan { span, reads });
+    }
+    for r in &reads {
+        let desc = r.format.desc();
+        if !desc.block_elements.is_multiple_of(segment) {
+            return Err(LowerError::SegmentUnsupported {
+                why: "the segment does not divide a quantized block",
+            });
+        }
+        if let Some(rir_core::ScalePlan::SubBlock { sub_elements, .. }) =
+            desc.layout.map(|l| l.scales)
+            && !sub_elements.is_multiple_of(segment)
+        {
+            return Err(LowerError::SegmentUnsupported {
+                why: "the segment does not divide a quantized sub-block",
+            });
+        }
+    }
+    Ok(SegmentPlan {
+        span: segment,
+        reads,
+    })
 }

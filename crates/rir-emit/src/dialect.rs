@@ -87,6 +87,24 @@ pub struct VectorCmp {
     pub splat_operands: bool,
 }
 
+/// The words of the subgroup matrix product: the fragment type and the four
+/// operations on it, all printed as calls on a fragment register.
+#[derive(Clone, Copy, Debug)]
+pub struct Fragments {
+    /// The declared type of a `VarKind::Frag` register.
+    pub ty: &'static str,
+    /// An expression of that type whose every element is zero.
+    pub zero: &'static str,
+    /// `load(dst, src, stride, origin, transpose)`.
+    pub load: &'static str,
+    /// `mma(d, a, b, c)`: `d = a × b + c`.
+    pub mma: &'static str,
+    /// `store(src, dst, stride, origin, transpose)`.
+    pub store: &'static str,
+    /// The matrix origin argument both transfers take, always the origin.
+    pub origin: &'static str,
+}
+
 /// One backend's lexicon.
 ///
 /// Implemented by a zero-sized marker per backend, not by the printer: the
@@ -131,6 +149,14 @@ pub trait Dialect {
 
     /// The linear thread index inside a block, as `Stmt::StageTiles` spells it.
     fn local_index(k: &LoopKernel) -> &'static str;
+
+    /// The subgroup index under `Stmt::ParallelSubgroup`, or `None` where the
+    /// subgroup width is the device's choice and the workgroup cannot be
+    /// promised the partition the statement describes.
+    fn subgroup_index() -> Option<&'static str>;
+
+    /// The subgroup matrix product, or `None` where the backend prints none.
+    fn fragments() -> Option<Fragments>;
 
     /// A float literal, in a spelling that does not change the computation:
     /// CUDA's needs an `f` suffix or the expression is promoted to `double`,
@@ -250,14 +276,31 @@ impl Dialect for Cuda {
         })
     }
 
-    fn lane_builtin(_k: &LoopKernel) -> &'static str {
-        "threadIdx.x"
+    /// The lane within its warp when the block holds several: a warp is 32
+    /// threads on every NVIDIA device, which is what the partition of
+    /// `Stmt::ParallelSubgroup` needs.
+    fn lane_builtin(k: &LoopKernel) -> &'static str {
+        if k.uses_subgroups() {
+            "(threadIdx.x & 31u)"
+        } else {
+            "threadIdx.x"
+        }
     }
 
     /// Inline rather than declared: a nest may carry two `StageTiles`, and a
     /// `const` at the top of each would be a redefinition in the same scope.
     fn local_index(_k: &LoopKernel) -> &'static str {
         "(threadIdx.x + blockDim.x * (threadIdx.y + blockDim.y * threadIdx.z))"
+    }
+
+    fn subgroup_index() -> Option<&'static str> {
+        Some("(threadIdx.x >> 5u)")
+    }
+
+    /// `wmma` has no F32 × F32 fragment, so there is nothing to print the F32
+    /// product with.
+    fn fragments() -> Option<Fragments> {
+        None
     }
 
     /// The `f` suffix is not cosmetic: without it the literal is a `double`,
@@ -304,6 +347,9 @@ impl Dialect for Cuda {
             VarKind::Bool => "bool".to_string(),
             VarKind::Vec(w) => format!("rir_vf<{w}>"),
             VarKind::VecBool(w) => format!("rir_vb<{w}>"),
+            VarKind::Frag => {
+                unreachable!("a fragment is declared by its statements, which CUDA refuses")
+            }
         }
     }
 
@@ -405,11 +451,12 @@ impl Dialect for Metal {
         })
     }
 
-    /// The entrypoint declares one of the two, never both: a kernel using
-    /// threadgroup storage takes `thread_index_in_threadgroup`, one that does
-    /// not takes `thread_index_in_simdgroup` (`metal/mod.rs`).
+    /// A kernel using threadgroup storage takes `thread_index_in_threadgroup`,
+    /// one that does not takes `thread_index_in_simdgroup`, and one whose
+    /// workgroup is several SIMD-groups takes both and reads its lane in the
+    /// SIMD-group (`metal/mod.rs`).
     fn lane_builtin(k: &LoopKernel) -> &'static str {
-        if k.uses_shared() {
+        if k.uses_shared() && !k.uses_subgroups() {
             "threadgroup_lane_id"
         } else {
             "simd_lane_id"
@@ -418,6 +465,23 @@ impl Dialect for Metal {
 
     fn local_index(_k: &LoopKernel) -> &'static str {
         "threadgroup_lane_id"
+    }
+
+    /// Apple's SIMD-group is 32 threads on every GPU family, so the partition
+    /// is the hardware's own.
+    fn subgroup_index() -> Option<&'static str> {
+        Some("simdgroup_id")
+    }
+
+    fn fragments() -> Option<Fragments> {
+        Some(Fragments {
+            ty: "simdgroup_float8x8",
+            zero: "make_filled_simdgroup_matrix<float, 8>(0.0f)",
+            load: "simdgroup_load",
+            mma: "simdgroup_multiply_accumulate",
+            store: "simdgroup_store",
+            origin: "ulong2(0, 0)",
+        })
     }
 
     fn float_literal(c: f32) -> String {
@@ -451,6 +515,7 @@ impl Dialect for Metal {
             VarKind::Bool => "bool".to_string(),
             VarKind::Vec(w) => format!("float{w}"),
             VarKind::VecBool(w) => format!("bool{w}"),
+            VarKind::Frag => "simdgroup_float8x8".to_string(),
         }
     }
 
@@ -543,6 +608,19 @@ impl Dialect for Vulkan {
         "gl_LocalInvocationIndex"
     }
 
+    /// `gl_SubgroupSize` is the device's choice - 32, 64 or a range a driver
+    /// may vary - so a workgroup cannot be promised subgroups of the width the
+    /// lowering partitioned it into.
+    fn subgroup_index() -> Option<&'static str> {
+        None
+    }
+
+    /// The cooperative-matrix extension is not part of the baseline the
+    /// shaders compile against.
+    fn fragments() -> Option<Fragments> {
+        None
+    }
+
     fn float_literal(c: f32) -> String {
         format!("{c:?}")
     }
@@ -574,6 +652,9 @@ impl Dialect for Vulkan {
             VarKind::Bool => "bool".to_string(),
             VarKind::Vec(w) => format!("vec{w}"),
             VarKind::VecBool(w) => format!("bvec{w}"),
+            VarKind::Frag => {
+                unreachable!("a fragment is declared by its statements, which Vulkan refuses")
+            }
         }
     }
 

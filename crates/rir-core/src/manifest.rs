@@ -82,6 +82,9 @@ pub enum Reduction {
     /// it is a different topology and therefore a different grouping of the
     /// additions - the same reason `TiledStage` is not `Serial`.
     HierarchicalTree,
+    /// Staged tiles multiplied by the subgroup matrix product: a contraction
+    /// whose terms are grouped by fragment.
+    MatrixTile,
 }
 
 /// The scan strategy a lowering used, as published.
