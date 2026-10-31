@@ -28,5 +28,5 @@ Preview the built site:
 bun run docs:preview
 ```
 
-Use Bun for documentation commands. The training project itself is built with
-Cargo; see the user documentation for the CLI workflow.
+Use Bun for documentation commands. The project itself is built with Cargo; see
+the user documentation for the CLI workflow.

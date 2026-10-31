@@ -1,10 +1,14 @@
 # Errors
 
-Every failure from the V1 API is an `application/problem+json` document (RFC
-9457): every `type` the server can answer with, every `code` that can appear
-on a `errors[]` entry, what triggers it, and what a client should do about it.
+Every failure from the `retrograd-server` API is an `application/problem+json`
+document (RFC 9457). This page lists every `type` the server can answer with,
+every `code` that can appear on an `errors[]` entry, what triggers it, and what
+a client should do about it.
 
-`crates/retrograd-server/tests/error_catalog.rs` checks this file against the
+The [OpenAI routes](../../running/api#errors) are the exception: their clients
+read an OpenAI error envelope, so that is what they answer with.
+
+`crates/retrograd-server/tests/api/error_catalog.rs` checks this file against the
 code, not the other way around: it fails if `ProblemKind::ALL` or
 `ErrorCode::ALL` (`crates/retrograd-server/src/error.rs`) gains a variant with
 no row here. A catalogue that can drift silently from what the server
@@ -73,13 +77,13 @@ actually emits would be worse than no catalogue.
 
 Saturation and shutdown have no `code`: `device-busy`, `timeout` and `internal`
 are about the server, not about a field of the request, so they answer with a
-`detail` and an empty `errors[]`. `tests/error_catalog.rs` enforces the
+`detail` and an empty `errors[]`. `tests/api/error_catalog.rs` enforces the
 converse of the table - a `code` this server never emits does not get to sit
 here looking actionable.
 
 ## `meta`
 
-Typed, problem-specific payload. Only two shapes exist today:
+Typed, problem-specific payload. Two shapes exist:
 
 ```jsonc
 // insufficient-memory
@@ -97,12 +101,18 @@ Typed, problem-specific payload. Only two shapes exist today:
 configuration (`config`/TOML forms) rather than a `recipe`: those forms skip
 phase 3, so there is nothing to report beyond the overflow itself.
 
-A future `dataset-invalid` problem (per-line dataset validation) will carry
-`meta.line_errors`; it is not implemented yet.
+```jsonc
+// invalid-request, from POST /v1/datasets
+"meta": {
+  "line_errors": [{"line": 3, "code": "…", "message": "…"}],
+  "errors_shown": 1,
+  "errors_total": 1
+}
+```
 
 ## `trace_id`
 
-Every response - success or failure - is handled inside one request span
+Every response, success or failure, is handled inside one request span
 tagged with a random `trace_id`. A problem document echoes it; every log line
 written while handling that request carries the same one
 (`tracing::info_span!("request", trace_id = …)`). When `redact_error_paths` is

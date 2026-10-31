@@ -1,7 +1,7 @@
 # Engineering documentation
 
-This section is for people who modify Retrograd. To train a model or tune a
-run, start with the [Getting started](/getting-started/quickstart),
+This section is for people who modify Retrograd. To run or train a model, start
+with the [Getting started](/getting-started/quickstart), [Running](/running/),
 [Training](/training/sft) and [Reference](/reference/configuration) guides
 instead.
 

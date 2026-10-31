@@ -72,5 +72,6 @@ WANDB_API_KEY=... python3 scripts/import_wandb.py artifacts/wandb --project my-p
 ```
 
 Metric names are grouped by prefix: `train/`, `eval/`, `reward/`, `policy/`,
-`completions/`, `batch/`, `optimizer/`, `system/` (including memory use) and,
+`completions/`, `batch/`, `optimizer/`, `rollout/`, `system/` (including memory
+use) and,
 per algorithm, `distill/`, `preference/`, `agent/`, `judge/`, `env/`.

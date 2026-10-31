@@ -273,6 +273,11 @@ Packing needs `micro_batch` to hold the prompt plus all packed answers: for a
 250-token prompt and eight 15-token answers, `micro_batch = 512` fits and `256`
 does not. See [Performance and memory](../operations/performance).
 
+`training.rollout_admission` applies to GRPO, PPO, distillation and agentic
+rollouts. `lockstep` (the default) reproduces the batched generation order. `continuous` refills a slot as soon as a sequence finishes instead of
+waiting for the longest one, which changes the order in which sequences are
+sampled. Metrics are published under `rollout/`.
+
 ## Watching a run
 
 `[observe]` saves each group's answers, rewards and advantages, shown in the

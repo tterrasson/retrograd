@@ -2,7 +2,8 @@
 
 This page trains a small LoRA adapter with supervised fine-tuning (SFT). You
 need Rust with Cargo, a local GGUF model, and the repository cloned with its
-submodule. Retrograd does not download or convert models.
+submodule. Retrograd does not download or convert models. To serve a model
+without training, go to [Running models](../running/).
 
 ## 1. Build
 
@@ -100,13 +101,21 @@ llama-cli -m /path/to/base.gguf --lora artifacts/adapter.gguf -p "ping"
 ```
 
 To query it from an OpenAI client or an eval harness, serve it through the
-OpenAI chat API on `127.0.0.1:8000`:
+OpenAI API on `127.0.0.1:8000`:
 
 ```bash
-./target/release/retrograd serve configs/quickstart.toml --adapter artifacts/adapter.gguf
+./target/release/retrograd serve configs/quickstart.toml \
+  --adapter artifacts/adapter.gguf --ctx 4096
 ```
 
-See [`serve`](../reference/cli#serve).
+```bash
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model": "adapter", "messages": [{"role": "user", "content": "ping"}]}'
+```
+
+The model id is the adapter's file name, and `base` is the model without it.
+See [Running models](../running/).
 
 ## Next steps
 

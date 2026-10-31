@@ -5,8 +5,9 @@
 <h1 align="center">Retrograd</h1>
 
 <p align="center">
-  Fine-tune GGUF models, with LoRA or full weights: SFT, preference
-  optimization, PPO, GRPO and agentic GRPO.
+  Run and train GGUF models: an OpenAI-compatible server, and LoRA or
+  full-weight training with SFT, preference optimization, PPO, GRPO and agentic
+  GRPO.
 </p>
 
 <p align="center">
@@ -14,12 +15,20 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
-Retrograd trains GGUF models directly. The model is loaded as is, with no
-conversion step, and trained in memory by `ggml` autograd on a `llama.cpp`
-fork. By default it trains a LoRA adapter, written as a standard GGUF that
-`llama.cpp` loads with `--lora`. It can also train the model's own weights,
-all of them or a selection. One TOML file describes the whole run.
+Retrograd runs and trains GGUF models directly. The model is loaded as is, with
+no conversion step, on a `llama.cpp` fork. Training and serving share one
+step-wise generation engine, so a rollout and an HTTP request go through the
+same scheduler.
 
+For training, `ggml` autograd works on the model in memory. By default
+Retrograd trains a LoRA adapter, written as a standard GGUF that `llama.cpp`
+loads with `--lora`. It can also train the model's own weights, all of them or
+a selection. One TOML file describes the whole run.
+
+- **Serving**: an OpenAI-compatible API (Chat Completions, Responses,
+  Completions, Embeddings) with token streaming, batched requests, a shared
+  prefix cache and structured outputs. Several LoRA adapters of one base can
+  share a decode.
 - **Algorithms**: SFT (plain text, chat or tool conversations), offline
   preference optimization (DPO, IPO, SimPO, ORPO), PPO, GRPO (token- or
   sequence-level importance sampling, as in GSPO), distillation from a teacher
@@ -34,10 +43,9 @@ all of them or a selection. One TOML file describes the whole run.
 - **Models**: F16 or quantized base models (Q4_0 to Q8_0, K-quants, i-quants,
   MXFP4) for LoRA training. The lowest-bit formats are not supported on Metal;
   see the [support matrix](https://tterrasson.github.io/retrograd/engineering/SUPPORT).
-- **Interfaces**: a CLI, an HTTP server (`retrograd-server`), the `retrograd`
-  Rust crate and Python bindings. `retrograd serve` exposes a trained adapter
-  through the OpenAI chat API, so any OpenAI client or eval harness can query
-  it.
+- **Interfaces**: a CLI, a standalone inference server (`retrograd-infer`), a
+  server for training runs with a web interface (`retrograd-server`), the
+  `retrograd` Rust crate and Python bindings.
 
 ## Build
 
@@ -59,6 +67,13 @@ cargo build --release                     # Metal on macOS, CPU elsewhere
 cargo build --release --features vulkan   # needs the Vulkan SDK
 cargo build --release --features cuda     # needs the CUDA Toolkit
 cargo build --release --features mcp,container   # MCP tools and container sandboxes for agentic GRPO
+```
+
+The servers are separate binaries. Build them together with the root package,
+which is what enables the GPU backend for them:
+
+```sh
+cargo build --release -p retrograd -p retrograd-server -p retrograd-serve
 ```
 
 Requirements per backend are in
@@ -95,6 +110,38 @@ example with an exact reward and held-out evaluation.
 The [quickstart](https://tterrasson.github.io/retrograd/getting-started/quickstart)
 walks through a first real run.
 
+## Running a model
+
+`retrograd-infer` serves a GGUF and its adapters, with no training code in the
+binary. A TOML file describes what to serve:
+
+```toml
+# serve.toml
+model = "/models/base.gguf"
+n_ctx = 8192
+
+[[adapters]]
+name = "tuned"
+path = "/models/tuned.gguf"
+```
+
+```sh
+./target/release/retrograd-infer serve.toml
+```
+
+The base model is served under the id `base`, and each adapter under its name:
+
+```sh
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model": "tuned", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+`retrograd serve run.toml` does the same from a training configuration, and
+`retrograd-server` serves the runs it trains, including a run still in
+progress. See
+[Running models](https://tterrasson.github.io/retrograd/running/).
+
 ## Usage
 
 ```sh
@@ -104,6 +151,8 @@ retrograd train run.toml                         # train; --resume continues a s
 retrograd bench run.toml --adapter adapter.gguf  # base model against adapter, same examples
 retrograd chat run.toml --compare                # base model and adapter, turn by turn
 retrograd serve run.toml                         # OpenAI-compatible API on 127.0.0.1:8000
+retrograd-infer serve.toml                       # the same, for a model and its adapters
+retrograd-server server.toml                     # runs and serving over HTTP, on 127.0.0.1:8471
 ```
 
 Agentic runs add `tools list`, `scenarios generate`, `judge eval` and
@@ -116,6 +165,9 @@ Agentic runs add `tools list`, `scenarios generate`, `judge eval` and
 The documentation is at <https://tterrasson.github.io/retrograd/>. Its source is
 a VitePress site in [`docs/`](docs/) (`cd docs && bun install && bun run docs:dev`).
 
+- **Running**: [running models](https://tterrasson.github.io/retrograd/running/),
+  [OpenAI-compatible API](https://tterrasson.github.io/retrograd/running/api),
+  [Retrograd server](https://tterrasson.github.io/retrograd/running/server).
 - **Training**: [SFT](https://tterrasson.github.io/retrograd/training/sft),
   [preference optimization](https://tterrasson.github.io/retrograd/training/preference),
   [PPO](https://tterrasson.github.io/retrograd/training/ppo),
@@ -128,7 +180,8 @@ a VitePress site in [`docs/`](docs/) (`cd docs && bun install && bun run docs:de
 - **Data**: [dataset formats](https://tterrasson.github.io/retrograd/getting-started/datasets),
   including tool conversations and preference pairs.
 - **Operations**: [checkpoints and metrics](https://tterrasson.github.io/retrograd/operations/checkpoints),
-  [performance and memory](https://tterrasson.github.io/retrograd/operations/performance).
+  [performance and memory](https://tterrasson.github.io/retrograd/operations/performance),
+  [web interface](https://tterrasson.github.io/retrograd/operations/web-ui).
 - **Engineering**: [contribution rules, test lanes, backends and RIR kernels](https://tterrasson.github.io/retrograd/engineering/).
 
 ## Libraries

@@ -1,6 +1,6 @@
 # Web interface
 
-`retrograd-server` can serve a web interface under `/`. From it you can start,
+[`retrograd-server`](../running/server) can serve a web interface under `/`. From it you can start,
 follow, debug and compare fine-tunings without writing TOML or curl. The
 interface is a client of the `/v1` API like any other. Every refusal, every
 estimate and every derived value comes from the server.
@@ -13,8 +13,10 @@ nor the interface's build.
 
 ```bash
 (cd web && bun install --frozen-lockfile && bun run build)
-cargo build --release -p retrograd-server --features ui
+cargo build --release -p retrograd -p retrograd-server --features retrograd-server/ui
 ```
+
+The root package is selected for its [GPU backend](../reference/builds#servers).
 
 If `web/dist` is missing, the Cargo build stops and prints the command that
 produces it. Cargo never calls Bun.
@@ -44,7 +46,7 @@ stays behind `/v1`.
 
 A browser cannot attach a token to a download. So the interface asks for a
 **signed link** (`POST /v1/runs/{id}/artifacts/{name}/link`), then navigates
-to it. A link is valid for one artefact, for 60 seconds, and stops working when
+to it. A link is valid for one artifact, for 60 seconds, and stops working when
 the server restarts. Any other route ignores a signature.
 
 ## Trajectories of a CLI run
@@ -68,8 +70,8 @@ publishes the rule.
 ## Behind a reverse proxy
 
 The interface follows runs over server-sent events. A proxy that buffers
-responses delays them until the run ends. With nginx, set
-`proxy_buffering off;` on `/v1/`.
+responses delays them until the run ends. See
+[Expose it to a network](../running/server#expose-it-to-a-network).
 
 ## Developing it
 

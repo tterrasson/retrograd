@@ -12,7 +12,9 @@ check a run file (with Taplo or Even Better TOML):
 retrograd-server config-schema > retrograd.schema.json
 ```
 
-A running server serves it at `GET /v1/config-schema`.
+A running server serves it at `GET /v1/config-schema`. The configuration of the
+servers themselves is in [Running models](../running/#configuration-of-retrograd-infer)
+and [Retrograd server](../running/server#configuration).
 
 ## Common sections
 
@@ -92,6 +94,7 @@ rotary constants are never trained; the run lists what it excluded at start-up.
 | `threads` | automatic | CPU threads. Leave it out for automatic; `0` is refused. |
 | `generation_concurrency` | derived | Answers generated at once (GRPO, agentic GRPO, distillation). Lower to save memory. |
 | `generation_batch` | derived | Generation batch size. |
+| `rollout_admission` | `lockstep` | How rollouts are admitted to generation: `lockstep`, or `continuous` to refill a finished sequence's slot at the next step. See [GRPO](../training/grpo#speed-and-memory). |
 | `shared_prefix_fanout` | `auto` | Packing of sequences that share a prompt (GRPO answers, preference pairs): `auto`, `off`, `max`, or an integer ≥ 2. |
 | `fast_sampling_context` | `true` | F16 KV cache and flash attention for generation. `false` for bit-exact sampling. |
 | `generation_kv_dtype` | `f16` | KV cache type for generation: `f16`, `q8_0` or `q4_0`. That cache holds `ctx × generation_concurrency` tokens; `q8_0` halves it, `q4_0` quarters it, and sampling drifts further from the trained policy the coarser it is. The quantized types require `fast_sampling_context`. |
@@ -450,7 +453,7 @@ are required; `count` (`24`), `batch_size` (`12`), `min_difficulty` /
 
 | Key | Default | Description |
 | --- | ---: | --- |
-| `mode` | `auto` | `auto` (one request per group, split into chunks if too long), `listwise` (always one request), `chunked` (always split), `pairwise` (two answers per request, most reliable, most requests). |
+| `mode` | `auto` | `auto` (one request per group, split into chunks if too long), `listwise` (always one request), `chunked` (always split), `pairwise` (two answers per request, most reliable, most requests), `pointwise_logprob` (no generation, needs `local`; see [GRPO](../training/grpo#self-judging-the-judge-in-process)). |
 | `anchor` | `true` | Chunked: repeat one answer in every chunk to keep scores on one scale. |
 | `max_pairs` | all pairs | Pairwise: comparisons per group. |
 | `both_orders` | `true` | Pairwise: judge each pair in both orders to cancel position bias (doubles requests). |

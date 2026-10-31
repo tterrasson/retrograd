@@ -79,8 +79,8 @@ lane like any other.
 weight projections. Decode covers 1, 4, 8, 16 and 32 tokens; prefill covers
 512. Without `--regime`, the two are reported separately. The catalogue
 publishes the profiles and validates their selections against its variants;
-their selections are currently empty, and no model-specific dispatch choice
-is installed by this change.
+their selections are currently empty, so no model-specific dispatch choice is
+installed.
 
 ### Level 2 - the promotion lane
 

@@ -63,7 +63,7 @@ Three CPU-only package selections compile and run library and binary tests:
 
 ```sh
 cargo test --workspace --exclude retrograd --exclude retrograd-python --lib --bins
-cargo test -p retrograd --no-default-features --features agent,cli --lib --bins --test profile_cli
+cargo test -p retrograd --no-default-features --features agent,cli,serve --lib --bins --test profile_cli
 cargo test -p retrograd-python --no-default-features --lib --bins
 ```
 
@@ -115,6 +115,11 @@ regresses silently.
   `retrograd-agent`'s `train_sequences`, `retrograd-engine`'s
   `chat_parser_roundtrip` (on chat-template fixtures), `retrograd-judge`'s
   `reward_batch` and `retrograd-training`'s `value_head`.
+
+- The serving stack, on a fake backend: `retrograd-infer`'s scheduler, prefix
+  cache and adapter tests, `retrograd-openai`'s `wire`, `responses` and
+  `responses_stateful` contract tests, and `retrograd-serve`'s `dep_boundary`,
+  which checks that the standalone binary carries no training crate.
 
 - The root package's `tests/profile_cli.rs`: the `profile` binary's argument
   handling, whose cases all exit before a model is loaded.
@@ -389,8 +394,7 @@ scripts/test-rir-parity.sh              # every parity binary
 scripts/test-rir-parity.sh out_prod     # a filter, while iterating
 ```
 
-`rir-runtime`'s device-parity binaries, in **release**, in
-`target/lanes/rir-parity`. Nothing here loads a model or reads the fixture: what
+`rir-runtime`'s device-parity binaries, in **release**, in `target`. Nothing here loads a model or reads the fixture: what
 it proves is that the committed artifacts under `generated/rir/` compute on a
 real device what the Loop IR interpreter computes on the host.
 

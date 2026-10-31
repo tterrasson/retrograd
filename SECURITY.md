@@ -23,10 +23,11 @@ What Retrograd treats as trusted, so that a report can be weighed against it:
 - **Run configurations are trusted input.** A configuration can start reward
   commands, judges, tools and MCP servers; running a configuration from an
   untrusted source is equivalent to running its commands yourself.
-- **The HTTP server** (`retrograd-server`) has one authentication model: a
-  single shared bearer token, or none. It refuses to listen on a non-loopback
-  address without a token. A way to reach a route without the token, or to
-  bind beyond loopback without one, is in scope.
+- **The HTTP servers** (`retrograd-server`, `retrograd-infer`, `retrograd serve`)
+  have one authentication model: a single shared bearer token, or none. They
+  refuse to listen on a non-loopback address without a token, and
+  `retrograd-server` also requires `path_roots` there. A way to reach a route
+  without the token, or to bind beyond loopback without one, is in scope.
 - **GGUF files** are parsed by the vendored
   [llama.cpp fork](https://github.com/tterrasson/llama.cpp-retrograd). A defect
   that also exists in upstream llama.cpp belongs to

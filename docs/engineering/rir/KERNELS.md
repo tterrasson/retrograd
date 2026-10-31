@@ -3,13 +3,10 @@
 RIR is a source-to-source kernel compiler: kernels are written **once** in a
 Rust DSL as a pure tensor SSA graph, then lowered against a hand-written
 *schedule* and printed as backend source (Rust for CPU, GLSL compute for
-Vulkan, MSL for Metal) **ahead of time**. The generated files are committed
+Vulkan, MSL for Metal, CUDA) **ahead of time**. The generated files are committed
 under `generated/rir/` and a test fails if regenerating produces any diff.
 
-This document lists what is actually generated. It is deliberately narrow -
-the full architecture writeup (semantic IR, schedules, lowering, emitters,
-autodiff, dispatch) lives closer to the crates themselves and is not part of
-this public excerpt yet.
+This document lists what is actually generated.
 
 ## Kernels currently generated
 

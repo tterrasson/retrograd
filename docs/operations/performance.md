@@ -19,6 +19,8 @@ Try these in order:
 `ctx`, `group_size` and `prompts_per_update` also change memory use, but they
 change what is being trained: do not use them only to save memory.
 
+Serving has its own sizing; see [Running models](../running/#sizing).
+
 With a GPU, run `retrograd preflight --model base.gguf` to check that no
 training operation falls back to the CPU; each fallback slows every step.
 `training.require_gpu_resident = true` makes such a fallback an error.

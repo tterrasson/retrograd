@@ -20,6 +20,10 @@ server's `ui` tests against the fresh `web/dist`. After changing a route or a
 DTO, regenerate the contract: `cargo run -p retrograd-server --bin
 retrograd-server -- openapi > web/openapi.json` then `cd web && bun run gen:api`.
 
+`retrograd-openai` holds the OpenAI protocol and `retrograd-infer` the step-wise
+scheduler. `retrograd-serve` is the standalone server, whose binary is
+`retrograd-infer`; it and `retrograd-server` enable no GPU backend on their own.
+
 The PyO3 package in `python/native` is named `retrograd-python` (its library is
 `_native`): exclude it from a workspace command with
 `--exclude retrograd-python`.
@@ -47,7 +51,7 @@ not start:
   `ScheduleError` and `RegistryError`, and each of them reaches it through
   `#[from]`. A `rir-*` crate never depends on `retrograd-core` - checked, not
   just written: `crates/rir-gen/tests/chain_boundary.rs` reads `cargo tree` for
-  the six crates of the chain. A schema both chains need goes in `rir-core`
+  every crate of the chain. A schema both chains need goes in `rir-core`
   (`manifest`, `catalog`), which `retrograd-core` may read.
 - **applicative** - `retrograd_core::Error`, with one `From` per crate.
 

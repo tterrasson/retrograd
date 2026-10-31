@@ -6,7 +6,7 @@ always included.
 | Backend | Platform | Build command |
 | --- | --- | --- |
 | Metal | macOS | `cargo build --release` (default on macOS) |
-| CPU only | all | `cargo build --release --no-default-features --features cli,agent` |
+| CPU only | all | `cargo build --release --no-default-features --features cli,agent,serve` |
 | CUDA | Linux, Windows | `cargo build --release --features cuda` |
 | Vulkan | any with a Vulkan SDK | `cargo build --release --features vulkan` |
 
@@ -25,6 +25,26 @@ model before a long run:
 What each backend supports is in the
 [support matrix](../engineering/SUPPORT).
 
+## Servers
+
+`retrograd-infer` and `retrograd-server` are separate binaries, in the
+`retrograd-serve` and `retrograd-server` packages. Those packages enable no GPU
+backend themselves: built alone, they are CPU-only. Select the root package with
+them, so that its backend applies to the whole build:
+
+```bash
+cargo build --release -p retrograd -p retrograd-serve -p retrograd-server
+```
+
+Name another backend through the root package:
+
+```bash
+cargo build --release -p retrograd -p retrograd-serve -p retrograd-server \
+  --features retrograd/vulkan
+```
+
+`GET /v1/health` on `retrograd-server` lists the backends a binary has.
+
 ## Optional features
 
 | Feature | Adds |
@@ -35,6 +55,14 @@ What each backend supports is in the
 `cli` (the command-line tools), `agent` (agentic GRPO) and `serve`
 ([`retrograd serve`](./cli#serve), which adds an HTTP server) are enabled by
 default; keep the ones you need when you pass `--no-default-features`.
+
+`retrograd-server` has two features of its own, named through the package when
+several are selected:
+
+| Feature | Adds |
+| --- | --- |
+| `retrograd-server/ui` | The [web interface](../operations/web-ui). |
+| `retrograd-server/container` | `[[environment]]` entries of type `container`. |
 
 ## CUDA
 
