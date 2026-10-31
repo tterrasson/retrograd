@@ -49,7 +49,9 @@ const MAX_PARAMS: usize = 2;
 /// folds every dimension of a repeated operand (one extra axis per folded
 /// dimension), and one more axis used by the dispatch contract.
 const MAX_AXES: usize = 9;
-const MAX_SHAPE_RULES: usize = 2;
+/// Maximum rules in one published claim, including any rule a sweep reserves
+/// for an independently measured contraction depth.
+pub const MAX_SHAPE_RULES: usize = 2;
 /// Rows one `(ggml_op, backend)` pair may publish: the dispatcher sizes its
 /// per-pair candidate list with it and aborts at startup past it. Every
 /// dtype-specific kernel of an op counts, with all its variants.

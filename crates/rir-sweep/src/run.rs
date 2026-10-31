@@ -16,7 +16,7 @@ use crate::SweepError;
 use crate::bind::{Fixture, push_values};
 use crate::candidates::{Candidate, Origin, Subject, candidates, extents_with_contraction, shapes};
 use crate::measure::{Built, Footprint, ITERS, Mode, REPS, Sample, WARMUP, build, time};
-use crate::verdict::{Measured, Verdict, arbitrate};
+use crate::verdict::{Measured, Verdict, arbitrate, arbitrate_with_rule_limit};
 
 /// How long the sweep runs and on what.
 #[derive(Clone, Debug)]
@@ -205,7 +205,12 @@ fn arbitrate_one(
             agrees: agrees(&reference[i], &values, regroup_len(&built.lowered, ext)),
         });
     }
-    let mut verdict = arbitrate(&rows);
+    let mut verdict = if subject.family == rir_lower::Family::OutProd {
+        // The fixed contraction depth appended below occupies one ABI rule.
+        arbitrate_with_rule_limit(&rows, rir_emit::registry::MAX_SHAPE_RULES - 1)
+    } else {
+        arbitrate(&rows)
+    };
     // The GEMV has no `batch` axis: its output count is `row · plane`, and a
     // rule naming an axis the kernel lacks is refused by `check_schedule`.
     if subject.family == rir_lower::Family::MulMatVec

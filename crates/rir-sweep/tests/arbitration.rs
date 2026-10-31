@@ -153,6 +153,22 @@ fn a_conjunction_is_derived_when_one_rule_does_not_separate() {
     }
 }
 
+/// Each loss differs from the win on just one rule coordinate. Separating
+/// them needs three rules, beyond the registry's two-rule capacity.
+#[test]
+fn a_domain_that_requires_three_rules_is_refused() {
+    let rows = [
+        row([64, 4, 4, 1], 100.0, 50.0),
+        row([128, 4, 4, 1], 100.0, 200.0),
+        row([64, 2, 8, 1], 100.0, 200.0),
+        row([64, 8, 4, 1], 100.0, 200.0),
+    ];
+    assert!(matches!(
+        arbitrate(&rows),
+        Verdict::Refused(Refusal::NoDistinctDomain { .. })
+    ));
+}
+
 /// Speed is not the first question. A candidate that does not return what the
 /// lowering it would replace returns is refused before a time is read, however
 /// fast it is - the one proposal a sweep must never make.

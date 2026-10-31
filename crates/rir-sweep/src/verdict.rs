@@ -113,6 +113,11 @@ pub enum Verdict {
 
 /// The verdict for one candidate from its measured rows.
 pub fn arbitrate(rows: &[Measured]) -> Verdict {
+    arbitrate_with_rule_limit(rows, rir_emit::registry::MAX_SHAPE_RULES)
+}
+
+/// Reserve room for rules the caller adds after deriving the measured domain.
+pub(crate) fn arbitrate_with_rule_limit(rows: &[Measured], rule_limit: usize) -> Verdict {
     if rows.is_empty() {
         return Verdict::Refused(Refusal::NotMeasured);
     }
@@ -140,7 +145,7 @@ pub fn arbitrate(rows: &[Measured]) -> Verdict {
         return Verdict::Replaces { best_gain };
     }
 
-    match separate(&wins, &losses) {
+    match separate(&wins, &losses, rule_limit) {
         Some(claim) => {
             let ties_claimed = rows
                 .iter()
@@ -174,7 +179,10 @@ pub fn claims(claim: &Claim, shape: [usize; 4]) -> bool {
 /// Single rules first, then the conjunction of two, because a rule a reader has
 /// to hold two intervals in their head to evaluate is worth writing only when
 /// one does not do the job - the order the table's own arms are written in.
-fn separate(wins: &[&Measured], losses: &[&Measured]) -> Option<Claim> {
+fn separate(wins: &[&Measured], losses: &[&Measured], rule_limit: usize) -> Option<Claim> {
+    if rule_limit == 0 {
+        return None;
+    }
     let single: Vec<Option<ShapeRule>> = RULE_AXES
         .iter()
         .map(|axes| interval(axes, wins, losses))
@@ -185,6 +193,9 @@ fn separate(wins: &[&Measured], losses: &[&Measured]) -> Option<Claim> {
             return Some(claim);
         }
     }
+    if rule_limit < 2 {
+        return None;
+    }
     let available: Vec<ShapeRule> = single.into_iter().flatten().collect();
     for (i, first) in available.iter().enumerate() {
         for second in available.iter().skip(i + 1) {
@@ -194,19 +205,8 @@ fn separate(wins: &[&Measured], losses: &[&Measured]) -> Option<Claim> {
             }
         }
     }
-    // The conjunction: each axis group takes the interval that covers the wins,
-    // and the pair is accepted only if together they exclude every loss,
-    // neither has to on its own, which is the point of a conjunction and the
-    // shape of `few_wide_rows` in the production table.
-    let both = Claim(
-        RULE_AXES
-            .iter()
-            .filter_map(|axes| interval(axes, wins, losses))
-            .collect(),
-    );
-    if both.rules().len() == RULE_AXES.len() && losses.iter().all(|l| !claims(&both, l.shape)) {
-        return Some(both);
-    }
+    // The registry holds at most two rules. A conjunction of all three axis
+    // groups could separate the measurements but could never be published.
     None
 }
 
@@ -281,4 +281,37 @@ fn round_between(lo: u64, hi: u64) -> u64 {
         .filter(|v| *v >= lo && *v <= hi)
         .max_by_key(|v| (v.trailing_zeros(), *v))
         .unwrap_or(hi)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reserving_a_rule_for_contraction_depth_refuses_a_two_rule_domain() {
+        let row = |shape, us| Measured {
+            shape,
+            base: Sample {
+                median_us: 100.0,
+                spread: 0.01,
+                groups: [1, 1, 1],
+            },
+            candidate: Sample {
+                median_us: us,
+                spread: 0.01,
+                groups: [1, 1, 1],
+            },
+            agrees: true,
+        };
+        let rows = [
+            row([1024, 16, 1, 1], 50.0),
+            row([64, 16, 1, 1], 200.0),
+            row([1024, 512, 1, 1], 200.0),
+        ];
+        assert!(matches!(arbitrate(&rows), Verdict::Claims { .. }));
+        assert!(matches!(
+            arbitrate_with_rule_limit(&rows, rir_emit::registry::MAX_SHAPE_RULES - 1),
+            Verdict::Refused(Refusal::NoDistinctDomain { .. })
+        ));
+    }
 }

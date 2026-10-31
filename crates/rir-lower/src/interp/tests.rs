@@ -342,16 +342,16 @@ fn a_binding_that_does_not_fit_the_kernel_is_an_error() {
 #[test]
 fn a_staged_operand_is_bit_identical_to_the_unstaged_lowering() {
     use rir_core::{
-        Constraint, DType, Extent, KernelBuilder, Layout, QuantType, ReduceOp,
-        ReductionSemantics, TensorType,
+        Constraint, DType, Extent, KernelBuilder, Layout, QuantType, ReduceOp, ReductionSemantics,
+        TensorType,
     };
 
     use crate::interp::{BoundArg, TensorView, TensorViewBytes, TensorViewMut};
     use crate::lower::lower;
 
     // dst[row, plane] = Σ_col dequant(a[col, row]) · b[col, plane], the decode
-    // GEMV's shape: a quantized weight and a dense operand read along the
-    // reduced axis.
+    // GEMV's shape, with an additional row-dependent dense operand. Only b
+    // can be shared across rows; the additional operand must stay per-row.
     let format = QuantType::Q8_0;
     let mut k = KernelBuilder::new("gemv");
     let a = k.input(
@@ -363,12 +363,15 @@ fn a_staged_operand_is_bit_identical_to_the_unstaged_lowering() {
         },
     );
     let b = k.input("b", TensorType::f32_2d());
+    let row_b = k.input("row_b", TensorType::f32_2d());
     let dst = k.output("dst", TensorType::f32_2d());
     let row = k.axis("row", Extent::Dim { arg: a, dim: 1 });
     let plane = k.axis("plane", Extent::Dim { arg: b, dim: 1 });
     let col = k.axis("col", Extent::Dim { arg: a, dim: 0 });
     let av = k.read(a, &[col, row]);
     let bv = k.read(b, &[col, plane]);
+    let row_bv = k.read(row_b, &[col, row]);
+    let bv = k.add(bv, row_bv);
     let p = k.mul(av, bv);
     let s = k.reduce(ReduceOp::Sum, col, p, ReductionSemantics::Deterministic);
     k.write(dst, &[row, plane], s);
@@ -395,6 +398,9 @@ fn a_staged_operand_is_bit_identical_to_the_unstaged_lowering() {
     let x: Vec<f32> = (0..n_col * n_tok)
         .map(|i| (i as f32 * 0.37 - 1.0) * 0.5)
         .collect();
+    let row_x: Vec<f32> = (0..n_col * n_row)
+        .map(|i| (i as f32 * 0.19 + 0.5) * 0.3)
+        .collect();
 
     let base = || {
         Schedule::gpu_subgroup_cols(GpuBackend::Metal, 4)
@@ -416,6 +422,11 @@ fn a_staged_operand_is_bit_identical_to_the_unstaged_lowering() {
                 data: &x,
                 shape: [n_col, n_tok, 1, 1],
                 nb: [4, 4 * n_col, 4 * n_col * n_tok, 4 * n_col * n_tok],
+            }),
+            BoundArg::In(TensorView {
+                data: &row_x,
+                shape: [n_col, n_row, 1, 1],
+                nb: [4, 4 * n_col, 4 * n_col * n_row, 4 * n_col * n_row],
             }),
             BoundArg::Out(TensorViewMut::contiguous_2d(&mut got, n_row, n_tok)),
         ];

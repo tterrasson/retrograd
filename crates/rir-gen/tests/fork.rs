@@ -369,7 +369,7 @@ fn the_forks_variant_caps_hold_for_the_widest_pair() {
     };
     for (file, needle) in [
         ("ggml-rir.h", "#define GGML_RIR_MAX_SITE_VARIANTS"),
-        ("ggml-rir.cpp", "constexpr uint32_t RIR_MAX_PAIR_VARIANTS"),
+        ("rir_registry.h", "#define RIR_MAX_PAIR_VARIANTS"),
     ] {
         let cap = read_cap(file, needle);
         assert!(

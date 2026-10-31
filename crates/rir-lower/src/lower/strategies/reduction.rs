@@ -314,7 +314,7 @@ fn lower_segments(
         (Some(_), _, _) => {
             return Err(LowerError::StageUnsupported {
                 why: "lane traversal required: one round is split across the workgroup's lanes",
-            })
+            });
         }
         (None, _, _) => seg,
     };
@@ -454,7 +454,7 @@ fn round_loop(
         Traversal::Whole => {
             return Err(LowerError::StageUnsupported {
                 why: "lane traversal required: one round is split across the workgroup's lanes",
-            })
+            });
         }
     };
     let tiles = stage_b_tiles(st, lo, inner_axis, seg)?;
@@ -869,10 +869,7 @@ struct StageCtx {
 impl StageCtx {
     /// The tile array serving `rv`, when the read is staged.
     fn tile_of(&self, rv: ValueId) -> Option<VarId> {
-        self.reads
-            .iter()
-            .find(|r| r.value == rv)
-            .map(|r| r.tile)
+        self.reads.iter().find(|r| r.value == rv).map(|r| r.tile)
     }
 
     /// Reads `rv` from the staged tile at column `col` of the round `tour`:
@@ -886,7 +883,11 @@ impl StageCtx {
     ) -> Result<VarId, LowerError> {
         let tile = self.tile_of(rv).expect("load is called for a staged read");
         let off = lo.emit("boff", VarKind::Idx, LExpr::ISub(col, self.tour));
-        let at = lo.emit("bat", VarKind::Idx, LExpr::IAddC(off, point as u32 * self.round));
+        let at = lo.emit(
+            "bat",
+            VarKind::Idx,
+            LExpr::IAddC(off, point as u32 * self.round),
+        );
         let dst = lo.new_var("t", VarKind::F32);
         lo.body.push(Stmt::LoadShared {
             dst,
@@ -1334,10 +1335,17 @@ pub(crate) fn lower_lanes(
                 });
             };
             let rins: Vec<ValueId> = a.reduces.iter().map(|&(_, _, rin)| rin).collect();
-            let reads = dense_axis_reads(lo.k, inner_axis, &rins);
+            // A tile is shared by every row and subgroup in the workgroup.
+            // Row-dependent reads must keep their per-row global loads: using
+            // a row register in the cooperative loader would mix different
+            // rows in one shared array.
+            let reads: Vec<_> = dense_axis_reads(lo.k, inner_axis, &rins)
+                .into_iter()
+                .filter(|&rv| rows.is_none_or(|r| !depends_on_axis(lo.k, rv, r.axis)))
+                .collect();
             if reads.is_empty() {
                 return Err(LowerError::StageUnsupported {
-                    why: "no dense operand is read along the reduced axis: nothing to stage",
+                    why: "no row-independent dense operand is read along the reduced axis: nothing to stage",
                 });
             }
             let threads = lanes * rows.map_or(1, |t| t.subgroups);
