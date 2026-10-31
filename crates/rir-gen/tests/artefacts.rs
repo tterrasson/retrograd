@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rir_lower::Backend;
+use rir_lower::{Backend, GpuBackend, ReductionStrategy};
 
 use rir_gen::*;
 
@@ -760,8 +760,9 @@ fn every_barrier_printed_by_a_scan_is_a_barrier_in_its_loop_nest() {
     }
 }
 
-/// The Metal schedules mirror their Vulkan twins field for field, and
-/// `lower` never reads `schedule.backend`. Asserting the two loop nests
+/// The Metal schedules mirror their Vulkan twins field for field - up to the
+/// subgroup partition only Metal runs - and `lower` never reads
+/// `schedule.backend`. Asserting the two loop nests
 /// are identical is what carries the oracle's Vulkan parity over to Metal:
 /// without it, a divergence in the schedule table would only surface on
 /// a device nothing in this workspace drives.
@@ -792,6 +793,27 @@ fn a_metal_schedule_lowers_like_its_vulkan_twin() {
             let name = want.unwrap_or("fallback");
             match (pick(Backend::Vulkan), pick(Backend::Metal)) {
                 (Some(vk), Some(mtl)) => {
+                    // The one divergence the table writes: Metal fixes the
+                    // subgroup width and runs several subgroups per workgroup
+                    // (`PARTITION_TARGETS`), Vulkan does not. The twin is then
+                    // the Vulkan schedule at Metal's partition, and everything
+                    // else - block, claim, nest - must still be identical.
+                    let vk = if vk.subgroups() == mtl.subgroups() {
+                        vk
+                    } else {
+                        assert!(
+                            !rir_lower::partitions_subgroups(GpuBackend::Vulkan)
+                                && rir_lower::partitions_subgroups(GpuBackend::Metal)
+                                && vk.subgroups() == 1,
+                            "{}/{name}: subgroups {} on Vulkan, {} on Metal - only a \
+                             partitioning backend may differ",
+                            kernel.name(),
+                            vk.subgroups(),
+                            mtl.subgroups()
+                        );
+                        let rows = vk.row_tile();
+                        vk.with_row_tile(rows, mtl.subgroups())
+                    };
                     assert_eq!(vk.block(), mtl.block(), "{}/{name}: block", kernel.name());
                     assert_eq!(
                         vk.priority(),
@@ -816,6 +838,12 @@ fn a_metal_schedule_lowers_like_its_vulkan_twin() {
                     );
                 }
                 (None, None) => {}
+                // The matrix tile multiplies fragments only Metal's emitter
+                // prints (`MATRIX_TARGETS`): a Metal-only variant is that
+                // one and nothing else.
+                (None, Some(mtl))
+                    if mtl.reduction() == ReductionStrategy::MatrixTile
+                        && !rir_lower::MATRIX_TARGETS.contains(&GpuBackend::Vulkan) => {}
                 _ => panic!(
                     "{}/{name}: only one of the two GPU backends is scheduled",
                     kernel.name()
