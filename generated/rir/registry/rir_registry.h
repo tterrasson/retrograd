@@ -8,7 +8,7 @@
 // and builds hidden by default as a shared library.
 #include "ggml.h"
 
-#define RIR_REGISTRY_SCHEMA 18
+#define RIR_REGISTRY_SCHEMA 19
 #define RIR_MAX_BINDINGS 4
 #define RIR_MAX_PARAMS 2
 // Nine axes cover the four tensor dimensions plus four folded dimensions and
@@ -252,6 +252,18 @@ typedef struct rir_op_policy {
     uint8_t      native_retired;
 } rir_op_policy;
 
+// A claim evaluated by the generator: the four extents of a probe tensor, read
+// as axes 0..3 from its dimensions 0..3, the rules over those axes, and whether
+// the generator's evaluator says they hold. A dispatcher replays every vector
+// through its own shape check and must give the same answer - the two
+// evaluators agree by test, not by convention.
+typedef struct rir_shape_rule_vector {
+    int64_t          extent[4];
+    uint8_t          n_shape_rules;
+    rir_shape_rule   shape_rules[RIR_MAX_SHAPE_RULES];
+    uint8_t          expected;
+} rir_shape_rule_vector;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -259,6 +271,8 @@ GGML_API const rir_variant_desc rir_variants[];
 GGML_API const uint32_t rir_variant_count;
 GGML_API const rir_op_policy rir_op_policies[];
 GGML_API const uint32_t rir_op_policy_count;
+GGML_API const rir_shape_rule_vector rir_shape_rule_vectors[];
+GGML_API const uint32_t rir_shape_rule_vector_count;
 #ifdef __cplusplus
 }
 #endif
@@ -266,3 +280,8 @@ GGML_API const uint32_t rir_op_policy_count;
 // The largest step, in tokens (`ne11` of a MUL_MAT), still in the decode
 // regime. A site that serves one regime only offers a node within it.
 #define RIR_DECODE_MAX_TOKENS 32
+
+// Rows one (op, backend) pair may publish, every dtype-specific kernel of
+// the op included. The generator refuses a table past it; a dispatcher
+// sizes its per-pair candidate list with it.
+#define RIR_MAX_PAIR_VARIANTS 48
