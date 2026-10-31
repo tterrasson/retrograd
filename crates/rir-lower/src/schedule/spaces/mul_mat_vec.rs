@@ -8,7 +8,7 @@ use crate::schedule::{
 };
 
 /// The measurement session that justified the current rows.
-const EVIDENCE: &str = "amidala-20261031T160408Z";
+const EVIDENCE: &str = "amidala-20261031T200650Z";
 
 /// The GEMV's default geometry per backend: two rows per subgroup, two
 /// subgroups where the hardware fixes the subgroup width, segments of
@@ -47,6 +47,14 @@ pub fn space() -> Space {
 
 /// The production lane picks on `gpu`. The fallback is the space's defaults,
 /// implicit.
+///
+/// The eight-column pick carries four rows per subgroup, in segments of four
+/// without scale factoring, leaving the subgroup count at each backend's
+/// default so the variant name is the same on both GPU backends: measured
+/// against the plain `cols8` geometry on Metal, it wins on every decode step
+/// of the sweep's grid (up to 3.2x at K=14336, N=8, M=4096) and loses nowhere
+/// beyond the noise; raising the subgroup count to four on top measured
+/// nothing (881 against 905 µs at K=14336, N=8).
 pub fn picks(gpu: GpuBackend) -> Vec<Pick> {
     let space = space();
     let defaults = (space.defaults)(gpu);
@@ -60,7 +68,12 @@ pub fn picks(gpu: GpuBackend) -> Vec<Pick> {
             evidence: EVIDENCE,
         },
         Pick {
-            geometry: defaults.map_lanes(|l| l.lane_tile = 8),
+            geometry: defaults.map_lanes(|l| {
+                l.lane_tile = 8;
+                l.row_tile = 4;
+                l.segment = 4;
+                l.factor_scales = false;
+            }),
             claim: steps(5, decode_max),
             priority: 95,
             evidence: EVIDENCE,
@@ -150,8 +163,10 @@ mod tests {
     }
 
     /// The names the shipped artifacts carry are the derived ones: the
-    /// fallback is unnamed, the column tiles are `cols4`/`cols8`, the matrix
-    /// tile `mma` - on every backend the family schedules.
+    /// fallback is unnamed, the column tiles are `cols4` and
+    /// `cols8_rt4_seg4_nofs` - the same name on every GPU backend, since the
+    /// pick leaves the subgroup count at each backend's default - and the
+    /// matrix tile `mma` on every backend the family schedules.
     #[test]
     fn the_gemv_picks_derive_the_names_the_artifacts_carry() {
         for gpu in [GpuBackend::Vulkan, GpuBackend::Metal] {
@@ -170,9 +185,9 @@ mod tests {
                 })
                 .collect();
             if matrix_targets_for(Family::MulMatVec).any(|g| g == gpu) {
-                assert_eq!(names, ["cols4", "cols8", "mma"]);
+                assert_eq!(names, ["cols4", "cols8_rt4_seg4_nofs", "mma"]);
             } else {
-                assert_eq!(names, ["cols4", "cols8"]);
+                assert_eq!(names, ["cols4", "cols8_rt4_seg4_nofs"]);
             }
         }
     }

@@ -1,9 +1,9 @@
 {
   "schema_version": 9,
   "name": "mul_mat_vec_q8_0",
-  "entrypoint": "rir_mul_mat_vec_q8_0_cols8",
+  "entrypoint": "rir_mul_mat_vec_q8_0_cols8_rt4_sg4_seg4_nofs",
   "ggml_op": "GGML_OP_MUL_MAT",
-  "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_cols8",
+  "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_cols8_rt4_sg4_seg4_nofs",
   "production": true,
   "assumed_domain": [
     {
@@ -109,7 +109,7 @@
   "determinism": "deterministic",
   "reduction": "subgroup_tree",
   "scan": "serial",
-  "variant": "cols8",
+  "variant": "cols8_rt4_sg4_seg4_nofs",
   "priority": 95,
   "vector_width": 1,
   "linear_addr": false,
@@ -131,7 +131,7 @@
   "dispatch": [
     {
       "axis": "row",
-      "per_workgroup": 4
+      "per_workgroup": 16
     },
     {
       "axis": "plane",
@@ -140,7 +140,7 @@
   ],
   "flat": [],
   "workgroup": [
-    64,
+    128,
     1,
     1
   ]

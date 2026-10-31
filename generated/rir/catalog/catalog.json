@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "fingerprint": "sha256:fa06b55349f1a8ae2a36b6f98c73e0bd38c5044735495773ae214d0f24cb84cb",
+  "fingerprint": "sha256:39c377004b1ee880f26a8a611f96f8354dcfa977cd7f07607ffb6c12baf83d02",
   "kernels": [
     {
       "ggml_op": "GGML_OP_ADD",
@@ -1891,7 +1891,7 @@
           "scan": "serial"
         },
         {
-          "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_cols8",
+          "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_cols8_rt4_sg4_seg4_nofs",
           "kernel": "mul_mat_vec_q4_K",
           "priority": 95,
           "constraints": [
@@ -1915,7 +1915,7 @@
             "simdgroup_size>=32"
           ],
           "workgroup": [
-            64,
+            128,
             1,
             1
           ],
@@ -1924,7 +1924,7 @@
           "scan": "serial"
         },
         {
-          "variant_id": "mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_cols8",
+          "variant_id": "mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_cols8_rt4_sg4_seg4_nofs",
           "kernel": "mul_mat_vec_q6_K",
           "priority": 95,
           "constraints": [
@@ -1948,7 +1948,7 @@
             "simdgroup_size>=32"
           ],
           "workgroup": [
-            64,
+            128,
             1,
             1
           ],
@@ -1957,7 +1957,7 @@
           "scan": "serial"
         },
         {
-          "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_cols8",
+          "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_cols8_rt4_sg4_seg4_nofs",
           "kernel": "mul_mat_vec_q8_0",
           "priority": 95,
           "constraints": [
@@ -1981,7 +1981,7 @@
             "simdgroup_size>=32"
           ],
           "workgroup": [
-            64,
+            128,
             1,
             1
           ],
