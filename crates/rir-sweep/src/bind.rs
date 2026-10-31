@@ -108,7 +108,8 @@ fn rng(seed: &mut u64) -> f32 {
     *seed = seed
         .wrapping_mul(6364136223846793005)
         .wrapping_add(1442695040888963407);
-    let u = ((*seed >> 33) as u32) as f32 / u32::MAX as f32;
+    // The upper 32 bits fit u32; using 31 bits biases every value negative.
+    let u = ((*seed >> 32) as u32) as f32 / u32::MAX as f32;
     u * 2.0 - 1.0
 }
 

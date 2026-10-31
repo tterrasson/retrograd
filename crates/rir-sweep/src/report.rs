@@ -32,7 +32,7 @@ pub fn render(r: &SweepReport) -> String {
     );
     let _ = writeln!(
         out,
-        "# {} - median of the repetitions; a gain counts only above the two spreads added (floor 2%)",
+        "# {} - median of the repetitions; baseline remeasured around each candidate; a gain counts only above the two spreads added, including control drift (floor 2%)",
         r.mode.name()
     );
     if let Some((profile, regime)) = &r.profile {
@@ -197,8 +197,8 @@ fn refusal(r: &Refusal) -> String {
 
 fn footprint(f: &crate::measure::Footprint) -> String {
     let mut s = format!("{} lanes, {} B shared", f.lanes, f.shared_bytes);
-    if let Some(w) = f.workgroups_by_shared {
-        let _ = write!(s, ", ≤{w} workgroups by shared budget");
+    if let Some(limit) = f.shared_limit_bytes {
+        let _ = write!(s, ", {limit} B limit per workgroup");
     }
     match (f.registers, f.spill_bytes) {
         (Some(r), Some(sp)) => {

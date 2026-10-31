@@ -78,6 +78,7 @@ fn run() -> Result<(), SweepError> {
                     }
                 });
             }
+            "--candidate" => options.candidate_filters.push(value("--candidate")?),
             "--latency" => options.mode = rir_sweep::measure::Mode::Latency,
             "--reps" => options.reps = parse(&value("--reps")?)?,
             "--iters" => options.iters = parse(&value("--iters")?)?,
@@ -99,7 +100,7 @@ fn run() -> Result<(), SweepError> {
                 return Err(SweepError::Unbindable {
                     kernel: other.to_string(),
                     why: "unknown argument; --kernel, --backend, --profile, --regime, --reps, \
-                          --iters, --warmup, --shape, --contraction, --latency, --list"
+                          --iters, --warmup, --shape, --contraction, --candidate, --latency, --list"
                         .to_string(),
                 });
             }

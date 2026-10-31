@@ -40,9 +40,9 @@ pub struct Footprint {
     pub shared_bytes: u32,
     /// Invocations per workgroup.
     pub lanes: u32,
-    /// Workgroups the device's shared-memory budget admits at once, when the
-    /// backend publishes that budget. `None` where it does not.
-    pub workgroups_by_shared: Option<u32>,
+    /// Shared-memory limit for one workgroup. This is not a per-core budget
+    /// and cannot be divided by `shared_bytes` to infer occupancy.
+    pub shared_limit_bytes: Option<u32>,
     /// Registers per thread, when the backend publishes them. Vulkan publishes
     /// none - not "zero", none - so it stays `None` there.
     pub registers: Option<u32>,
@@ -65,16 +65,12 @@ impl Footprint {
 
     /// The same, completed with what this device publishes.
     pub fn on(mut self, gpu: &AnyGpu) -> Footprint {
-        if let Some(limit) = shared_memory_limit(gpu)
-            && self.shared_bytes > 0
-        {
-            self.workgroups_by_shared = Some(limit / self.shared_bytes);
-        }
+        self.shared_limit_bytes = shared_memory_limit(gpu);
         self
     }
 }
 
-/// The device's shared-memory budget, when the backend publishes one.
+/// The device's shared-memory limit per workgroup, when published.
 ///
 /// Vulkan does: `maxComputeSharedMemorySize`, and Metal its
 /// `maxThreadgroupMemoryLength`. Neither publishes a multiprocessor count, so
@@ -95,7 +91,7 @@ fn shared_memory_limit(gpu: &AnyGpu) -> Option<u32> {
     }
     #[cfg(target_vendor = "apple")]
     if let AnyGpu::Metal(g) = gpu {
-        // A budget: saturating keeps the quotient a ceiling.
+        // A resource ceiling: values above u32::MAX cannot constrain our u32 byte counter.
         return Some(u32::try_from(g.max_threadgroup_memory()).unwrap_or(u32::MAX));
     }
     None

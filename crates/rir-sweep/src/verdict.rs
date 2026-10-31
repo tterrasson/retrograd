@@ -187,6 +187,15 @@ fn separate(wins: &[&Measured], losses: &[&Measured]) -> Option<Vec<ShapeRule>> 
             return Some(vec![rule.clone()]);
         }
     }
+    let available: Vec<ShapeRule> = single.into_iter().flatten().collect();
+    for (i, first) in available.iter().enumerate() {
+        for second in available.iter().skip(i + 1) {
+            let pair = vec![first.clone(), second.clone()];
+            if losses.iter().all(|l| !claims(&pair, l.shape)) {
+                return Some(pair);
+            }
+        }
+    }
     // The conjunction: each axis group takes the interval that covers the wins,
     // and the pair is accepted only if together they exclude every loss,
     // neither has to on its own, which is the point of a conjunction and the

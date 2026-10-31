@@ -27,6 +27,8 @@ pub struct Options {
     /// `[col, row, plane, batch]` shapes, or the family's own list.
     pub shapes: Option<Vec<[usize; 4]>>,
     pub mode: Mode,
+    /// Optional substrings selecting candidates; the fallback is always kept.
+    pub candidate_filters: Vec<String>,
     /// OUT_PROD reduction depth, independent of its output shape.
     pub contraction: usize,
     /// The model profile and regime the shapes were derived from, when they
@@ -42,6 +44,7 @@ impl Default for Options {
             iters: ITERS,
             shapes: None,
             mode: Mode::Stream,
+            candidate_filters: Vec::new(),
             contraction: 64,
             profile: None,
         }
@@ -87,7 +90,17 @@ pub fn sweep(
     options: &Options,
 ) -> Result<SweepReport, SweepError> {
     let gpu_backend = target.gpu();
-    let all = candidates(subject, gpu_backend);
+    let all: Vec<_> = candidates(subject, gpu_backend)
+        .into_iter()
+        .filter(|c| {
+            c.origin == Origin::Fallback
+                || options.candidate_filters.is_empty()
+                || options
+                    .candidate_filters
+                    .iter()
+                    .any(|filter| c.tag.contains(filter))
+        })
+        .collect();
     let base = all
         .iter()
         .find(|c| c.origin == Origin::Fallback)
@@ -134,7 +147,7 @@ pub fn sweep(
             candidate,
             &fixtures,
             &reference,
-            &base_samples,
+            &base_built,
             options,
         ) {
             Ok(a) => arbitrated.push(a),
@@ -168,7 +181,7 @@ fn arbitrate_one(
     candidate: &Candidate,
     fixtures: &[(Fixture, Vec<usize>)],
     reference: &[Vec<f32>],
-    base: &[Sample],
+    baseline: &Built<'_>,
     options: &Options,
 ) -> Result<Arbitrated, SweepError> {
     let built = build(gpu, target, &subject.kernel, candidate.schedule.clone())?;
@@ -176,10 +189,16 @@ fn arbitrate_one(
     let mut rows = Vec::new();
     for (i, (fixture, ext)) in fixtures.iter().enumerate() {
         let shape = shape_of(&built.lowered, ext);
+        // Compilation and a long candidate list can change clock/thermal
+        // state. Bracket each candidate with fresh baseline timings; include
+        // baseline drift in the noise instead of comparing to a cold sample
+        // from the start of the sweep.
+        let (before, _) = run_shape(baseline, fixture, ext, options)?;
         let (sample, values) = run_shape(&built, fixture, ext, options)?;
+        let (after, _) = run_shape(baseline, fixture, ext, options)?;
         rows.push(Measured {
             shape,
-            base: base[i],
+            base: bracket(before, after),
             candidate: sample,
             agrees: agrees(&reference[i], &values, regroup_len(&built.lowered, ext)),
         });
@@ -232,6 +251,17 @@ fn arbitrate_one(
         rows,
         verdict,
     })
+}
+
+/// Preserve both within-pass spread and clock drift between controls.
+fn bracket(before: Sample, after: Sample) -> Sample {
+    let median_us = (before.median_us + after.median_us) / 2.0;
+    let drift = (before.median_us - after.median_us).abs() / median_us;
+    Sample {
+        median_us,
+        spread: before.spread.max(after.spread).max(drift),
+        groups: before.groups,
+    }
 }
 
 /// Prepares, dispatches once to obtain the result, then times: one session, one
@@ -346,7 +376,20 @@ fn rms(values: &[f32]) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::agrees;
+    use super::{agrees, bracket};
+    use crate::measure::Sample;
+
+    #[test]
+    fn control_drift_is_counted_as_measurement_noise() {
+        let sample = |us| Sample {
+            median_us: us,
+            spread: 0.01,
+            groups: [1, 1, 1],
+        };
+        let control = bracket(sample(10.0), sample(20.0));
+        assert_eq!(control.median_us, 15.0);
+        assert!(control.spread > 0.66);
+    }
 
     #[test]
     fn a_regrouped_sum_is_bounded_by_the_output_scale_not_the_element() {

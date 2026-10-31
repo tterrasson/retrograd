@@ -194,7 +194,10 @@ pub fn shapes(family: Family) -> Vec<[usize; 4]> {
             [1024, 3072, 1, 1],
             [3072, 1024, 1, 1],
             [2048, 1024, 1, 1],
+            [1024, 3072, 4, 1],
             [1024, 3072, 8, 1],
+            [1024, 3072, 16, 1],
+            [1024, 3072, 32, 1],
         ],
         // Synthetic coverage; --shape and --contraction reproduce census shapes.
         Family::OutProd => vec![
@@ -351,6 +354,53 @@ pub fn candidates(subject: &Subject, gpu: GpuBackend) -> Vec<Candidate> {
                         Schedule::gpu_subgroup_cols(gpu, cols).with_reduce_run(4),
                     ));
                 }
+                // Keep the old lowering as a control, then vary the geometry,
+                // header reuse and arithmetic independently. Lowering remains
+                // the authority for backend and format refusals.
+                for cols in [1u32, 4, 8] {
+                    for rows in [1u32, 2] {
+                        for subgroups in [1u32, 2, 4] {
+                            for segment in [4u32, 16] {
+                                for factor in [false, true] {
+                                    let mut schedule = if cols == 1 {
+                                        Schedule::gpu_subgroup(gpu)
+                                    } else {
+                                        Schedule::gpu_subgroup_cols(gpu, cols)
+                                    };
+                                    let constructor = if cols == 1 {
+                                        format!("Schedule::gpu_subgroup({gpu_name})")
+                                    } else {
+                                        format!("Schedule::gpu_subgroup_cols({gpu_name}, {cols})")
+                                    };
+                                    schedule = schedule
+                                        .with_reduce_run(4)
+                                        .with_row_tile(rows, subgroups)
+                                        .with_segment(segment);
+                                    let mut source = format!(
+                                        "{constructor}.with_reduce_run(4).with_row_tile({rows}, {subgroups}).with_segment({segment})"
+                                    );
+                                    if factor {
+                                        schedule = schedule.with_factored_scales();
+                                        source.push_str(".with_factored_scales()");
+                                    }
+                                    v.push(Candidate::new(
+                                        format!("cols{cols} rows{rows} sg{subgroups} seg{segment} fact{factor}"),
+                                        source, schedule,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                for depth in [32u32, 64, 128] {
+                    for padding in [0u32, 8] {
+                        v.push(Candidate::new(
+                            format!("mma k{depth} pad{padding}"),
+                            format!("Schedule::gpu_matrix_tile({gpu_name}, {depth}).with_matrix_padding({padding})"),
+                            Schedule::gpu_matrix_tile(gpu, depth).with_matrix_padding(padding),
+                        ));
+                    }
+                }
                 for lanes in [64u32, 128] {
                     for cols in [4u32, 8] {
                         v.push(Candidate::new(
@@ -427,11 +477,11 @@ pub fn candidates(subject: &Subject, gpu: GpuBackend) -> Vec<Candidate> {
 ///
 /// It is the registry's vocabulary and not a superset of it: a published rule is
 /// the product of some axes' extents inside `[min, max]`, and the two groupings
-/// below are the two the table uses - the row count (`row · plane · batch`,
+/// below include the table's token domain alongside - the row count (`row · plane · batch`,
 /// what occupies the device) and the row length (`col`, what a workgroup
 /// covers). A domain that needs a third grouping is a domain this tool declines
 /// to invent (`verdict::Refusal::NoDistinctDomain`).
-pub const RULE_AXES: [&[&str]; 2] = [&["row", "plane", "batch"], &["col"]];
+pub const RULE_AXES: [&[&str]; 3] = [&["row", "plane", "batch"], &["col"], &["plane"]];
 
 /// The product of a rule's axes on a shape, which is what a `ShapeRule`
 /// compares against `[min, max]`.

@@ -194,3 +194,19 @@ fn out_prod_sweep_binds_output_geometry_and_contraction_separately() {
     }
     assert!(extents_with_contraction(&lowered, [33, 17, 2, 3], 0).is_err());
 }
+
+#[test]
+fn a_token_domain_is_separable_when_output_counts_are_equal() {
+    let rows = [
+        row([1024, 1024, 1, 1], 10.0, 20.0),
+        row([1024, 128, 8, 1], 100.0, 50.0),
+    ];
+    match arbitrate(&rows) {
+        Verdict::Claims { rules, .. } => {
+            assert_eq!(rules.len(), 1);
+            assert_eq!(rules[0].axes, &["plane"]);
+            assert!(rules[0].min > 1 && rules[0].min <= 8);
+        }
+        other => panic!("{other:?}"),
+    }
+}
