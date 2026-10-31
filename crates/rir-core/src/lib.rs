@@ -14,6 +14,7 @@ pub mod backend;
 pub mod blocklayout;
 pub mod builder;
 pub mod catalog;
+pub mod claim;
 pub mod ids;
 pub mod ir;
 pub mod layout;
