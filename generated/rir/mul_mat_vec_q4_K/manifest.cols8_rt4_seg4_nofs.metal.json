@@ -1,9 +1,9 @@
 {
   "schema_version": 9,
-  "name": "mul_mat_vec_q8_0",
-  "entrypoint": "main",
+  "name": "mul_mat_vec_q4_K",
+  "entrypoint": "rir_mul_mat_vec_q4_K_cols8_rt4_seg4_nofs",
   "ggml_op": "GGML_OP_MUL_MAT",
-  "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_cols8",
+  "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_cols8_rt4_seg4_nofs",
   "production": true,
   "assumed_domain": [
     {
@@ -15,13 +15,13 @@
       "why": "batched MUL_MAT (ne2/ne3 > 1, with or without the src0 broadcast): the variant is rank 2, one weight matrix against a few columns"
     }
   ],
-  "backend": "vulkan",
+  "backend": "metal",
   "bindings": [
     {
       "name": "a",
       "binding": 0,
       "source": "src[0]",
-      "dtype": "q8_0",
+      "dtype": "q4_K",
       "access": "read",
       "extents": [
         "col",
@@ -101,7 +101,7 @@
   ],
   "packed_output": null,
   "constraints": [
-    "dtype(a)=q8_0",
+    "dtype(a)=q4_K",
     "dtype(b)=f32",
     "rank(a)<=2",
     "rank(b)<=2"
@@ -109,7 +109,7 @@
   "determinism": "deterministic",
   "reduction": "subgroup_tree",
   "scan": "serial",
-  "variant": "cols8",
+  "variant": "cols8_rt4_seg4_nofs",
   "priority": 95,
   "vector_width": 1,
   "linear_addr": false,
@@ -123,19 +123,15 @@
     }
   ],
   "features": [
-    "vulkan>=1.1",
-    "subgroup_arithmetic",
-    "subgroup_size>=32",
-    "storage_buffer_16bit",
-    "shader_float16",
-    "storage_buffer_8bit",
-    "shader_int8"
+    "metal>=2.1",
+    "simdgroup_reduction",
+    "simdgroup_size>=32"
   ],
   "parallel_mapping": "workgroup",
   "dispatch": [
     {
       "axis": "row",
-      "per_workgroup": 2
+      "per_workgroup": 8
     },
     {
       "axis": "plane",
@@ -144,7 +140,7 @@
   ],
   "flat": [],
   "workgroup": [
-    32,
+    64,
     1,
     1
   ]

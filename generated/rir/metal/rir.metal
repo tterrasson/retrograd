@@ -937,8 +937,8 @@ kernel void rir_mul_mat_vec_q8_0_cols4(
     }
 }
 
-// ---- mul_mat_vec_q8_0_cols8_rt4_sg4_seg4_nofs ----
-struct rir_mul_mat_vec_q8_0_cols8_rt4_sg4_seg4_nofs_params {
+// ---- mul_mat_vec_q8_0_cols8_rt4_seg4_nofs ----
+struct rir_mul_mat_vec_q8_0_cols8_rt4_seg4_nofs_params {
     uint n_row;
     uint n_plane;
     uint n_col;
@@ -950,17 +950,17 @@ struct rir_mul_mat_vec_q8_0_cols8_rt4_sg4_seg4_nofs_params {
     uint dst_nb1;
 };
 
-kernel void rir_mul_mat_vec_q8_0_cols8_rt4_sg4_seg4_nofs(
+kernel void rir_mul_mat_vec_q8_0_cols8_rt4_seg4_nofs(
     device const uchar* a [[buffer(0)]],
     device const uchar* b [[buffer(1)]],
     device uchar* dst [[buffer(2)]],
-    constant rir_mul_mat_vec_q8_0_cols8_rt4_sg4_seg4_nofs_params& pc [[buffer(3)]],
+    constant rir_mul_mat_vec_q8_0_cols8_rt4_seg4_nofs_params& pc [[buffer(3)]],
     uint3 group_id [[threadgroup_position_in_grid]],
     uint3 global_id [[thread_position_in_grid]],
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simdgroup_id [[simdgroup_index_in_threadgroup]])
 {
-    const uint row_v0 = group_id.x * 16u;
+    const uint row_v0 = group_id.x * 8u;
     if (row_v0 >= pc.n_row) {
         return;
     }
@@ -2610,8 +2610,8 @@ kernel void rir_mul_mat_vec_q4_K_cols4(
     }
 }
 
-// ---- mul_mat_vec_q4_K_cols8_rt4_sg4_seg4_nofs ----
-struct rir_mul_mat_vec_q4_K_cols8_rt4_sg4_seg4_nofs_params {
+// ---- mul_mat_vec_q4_K_cols8_rt4_seg4_nofs ----
+struct rir_mul_mat_vec_q4_K_cols8_rt4_seg4_nofs_params {
     uint n_row;
     uint n_plane;
     uint n_col;
@@ -2623,17 +2623,17 @@ struct rir_mul_mat_vec_q4_K_cols8_rt4_sg4_seg4_nofs_params {
     uint dst_nb1;
 };
 
-kernel void rir_mul_mat_vec_q4_K_cols8_rt4_sg4_seg4_nofs(
+kernel void rir_mul_mat_vec_q4_K_cols8_rt4_seg4_nofs(
     device const uchar* a [[buffer(0)]],
     device const uchar* b [[buffer(1)]],
     device uchar* dst [[buffer(2)]],
-    constant rir_mul_mat_vec_q4_K_cols8_rt4_sg4_seg4_nofs_params& pc [[buffer(3)]],
+    constant rir_mul_mat_vec_q4_K_cols8_rt4_seg4_nofs_params& pc [[buffer(3)]],
     uint3 group_id [[threadgroup_position_in_grid]],
     uint3 global_id [[thread_position_in_grid]],
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simdgroup_id [[simdgroup_index_in_threadgroup]])
 {
-    const uint row_v0 = group_id.x * 16u;
+    const uint row_v0 = group_id.x * 8u;
     if (row_v0 >= pc.n_row) {
         return;
     }
@@ -4495,8 +4495,8 @@ kernel void rir_mul_mat_vec_q6_K_cols4(
     }
 }
 
-// ---- mul_mat_vec_q6_K_cols8_rt4_sg4_seg4_nofs ----
-struct rir_mul_mat_vec_q6_K_cols8_rt4_sg4_seg4_nofs_params {
+// ---- mul_mat_vec_q6_K_cols8_rt4_seg4_nofs ----
+struct rir_mul_mat_vec_q6_K_cols8_rt4_seg4_nofs_params {
     uint n_row;
     uint n_plane;
     uint n_col;
@@ -4508,17 +4508,17 @@ struct rir_mul_mat_vec_q6_K_cols8_rt4_sg4_seg4_nofs_params {
     uint dst_nb1;
 };
 
-kernel void rir_mul_mat_vec_q6_K_cols8_rt4_sg4_seg4_nofs(
+kernel void rir_mul_mat_vec_q6_K_cols8_rt4_seg4_nofs(
     device const uchar* a [[buffer(0)]],
     device const uchar* b [[buffer(1)]],
     device uchar* dst [[buffer(2)]],
-    constant rir_mul_mat_vec_q6_K_cols8_rt4_sg4_seg4_nofs_params& pc [[buffer(3)]],
+    constant rir_mul_mat_vec_q6_K_cols8_rt4_seg4_nofs_params& pc [[buffer(3)]],
     uint3 group_id [[threadgroup_position_in_grid]],
     uint3 global_id [[thread_position_in_grid]],
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simdgroup_id [[simdgroup_index_in_threadgroup]])
 {
-    const uint row_v0 = group_id.x * 16u;
+    const uint row_v0 = group_id.x * 8u;
     if (row_v0 >= pc.n_row) {
         return;
     }

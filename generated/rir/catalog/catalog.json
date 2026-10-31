@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "fingerprint": "sha256:39c377004b1ee880f26a8a611f96f8354dcfa977cd7f07607ffb6c12baf83d02",
+  "fingerprint": "sha256:47040da94bc8a70beae6352555da06fa46b6f4b1e68841d25f30c6ed3c8ebd40",
   "kernels": [
     {
       "ggml_op": "GGML_OP_ADD",
@@ -1891,7 +1891,7 @@
           "scan": "serial"
         },
         {
-          "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_cols8_rt4_sg4_seg4_nofs",
+          "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_cols8_rt4_seg4_nofs",
           "kernel": "mul_mat_vec_q4_K",
           "priority": 95,
           "constraints": [
@@ -1915,7 +1915,7 @@
             "simdgroup_size>=32"
           ],
           "workgroup": [
-            128,
+            64,
             1,
             1
           ],
@@ -1924,7 +1924,7 @@
           "scan": "serial"
         },
         {
-          "variant_id": "mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_cols8_rt4_sg4_seg4_nofs",
+          "variant_id": "mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_cols8_rt4_seg4_nofs",
           "kernel": "mul_mat_vec_q6_K",
           "priority": 95,
           "constraints": [
@@ -1948,7 +1948,7 @@
             "simdgroup_size>=32"
           ],
           "workgroup": [
-            128,
+            64,
             1,
             1
           ],
@@ -1957,7 +1957,7 @@
           "scan": "serial"
         },
         {
-          "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_cols8_rt4_sg4_seg4_nofs",
+          "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_cols8_rt4_seg4_nofs",
           "kernel": "mul_mat_vec_q8_0",
           "priority": 95,
           "constraints": [
@@ -1981,7 +1981,7 @@
             "simdgroup_size>=32"
           ],
           "workgroup": [
-            128,
+            64,
             1,
             1
           ],
@@ -2186,7 +2186,7 @@
       "policy": "observe_generated",
       "variants": [
         {
-          "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_cols8",
+          "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_cols8_rt4_seg4_nofs",
           "kernel": "mul_mat_vec_q4_K",
           "priority": 95,
           "constraints": [
@@ -2223,7 +2223,7 @@
           "scan": "serial"
         },
         {
-          "variant_id": "mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_cols8",
+          "variant_id": "mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_cols8_rt4_seg4_nofs",
           "kernel": "mul_mat_vec_q6_K",
           "priority": 95,
           "constraints": [
@@ -2260,7 +2260,7 @@
           "scan": "serial"
         },
         {
-          "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_cols8",
+          "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_cols8_rt4_seg4_nofs",
           "kernel": "mul_mat_vec_q8_0",
           "priority": 95,
           "constraints": [
