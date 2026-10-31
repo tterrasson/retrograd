@@ -91,8 +91,8 @@ Commands:
           [--report report.json] [--force] [--pairs [--min-gap G]]
   preflight --model base.gguf [--device auto|cpu|gpu] [--targets a,b] [--strict]
   serve <config.toml> [--adapter adapter.gguf | --checkpoint dir/best.state | --base-only]
-        [--model base.gguf] [--device auto|cpu|gpu] [--ctx N] [--host 127.0.0.1]
-        [--port 8000] [--api-key KEY] [--model-name NAME]
+        [--model base.gguf] [--device auto|cpu|gpu] [--ctx N] [--slots N]
+        [--host 127.0.0.1] [--port 8000] [--api-key KEY] [--model-name NAME]
 
 Compatibility aliases:
   chat: --base_only --temperature --top_p --max_new_tokens --max-tokens";

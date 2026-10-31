@@ -28,6 +28,7 @@ pub(crate) const FLAGS: &[&str] = &[
     "--model",
     "--device",
     "--ctx",
+    "--slots",
     "--host",
     "--port",
     "--api-key",
@@ -47,6 +48,7 @@ struct ServeArgs {
     base_only: bool,
     device: Option<Device>,
     ctx: Option<u32>,
+    slots: Option<u32>,
     host: String,
     port: u16,
     api_key: Option<String>,
@@ -152,7 +154,7 @@ fn served_models(args: &ServeArgs, run_config: &config::RunConfig) -> Result<Sin
         adapter,
         n_ctx: run_config.training.n_ctx,
         device: run_config.training.device,
-        n_seq_max: None,
+        n_seq_max: args.slots,
         chat_template_variables: variables.clone(),
     };
     let base = spec(&run_config.model, None);
@@ -237,6 +239,7 @@ fn parse_serve_args(args: &[String]) -> Result<ServeArgs> {
         base_only: false,
         device: None,
         ctx: None,
+        slots: None,
         host: "127.0.0.1".into(),
         port: 8000,
         api_key: None,
@@ -273,6 +276,13 @@ fn parse_serve_args(args: &[String]) -> Result<ServeArgs> {
                     return Err(Error::invalid("serve --ctx must be greater than zero"));
                 }
                 parsed.ctx = Some(ctx);
+            }
+            "--slots" => {
+                let slots: u32 = parse_value("--slots", value, "an integer")?;
+                if slots == 0 {
+                    return Err(Error::invalid("serve --slots must be greater than zero"));
+                }
+                parsed.slots = Some(slots);
             }
             "--host" => parsed.host = value.to_owned(),
             "--port" => parsed.port = parse_value("--port", value, "a port number")?,
@@ -354,6 +364,8 @@ mod tests {
             "tuned",
             "--ctx",
             "2048",
+            "--slots",
+            "4",
             "--device",
             "cpu",
         ]))
@@ -361,6 +373,7 @@ mod tests {
         assert_eq!(parsed.checkpoint, Some(PathBuf::from("ckpt/best.state")));
         assert_eq!(parsed.port, 9000);
         assert_eq!(parsed.ctx, Some(2048));
+        assert_eq!(parsed.slots, Some(4));
         assert_eq!(parsed.device, Some(Device::Cpu));
         assert_eq!(parsed.model_name.as_deref(), Some("tuned"));
 
@@ -380,6 +393,7 @@ mod tests {
             ),
             (vec!["run.toml", "--port", "70000"], "a port number"),
             (vec!["run.toml", "--ctx", "0"], "greater than zero"),
+            (vec!["run.toml", "--slots", "0"], "greater than zero"),
             (vec!["run.toml", "--host", "example.org"], "an IP address"),
             (
                 vec!["run.toml", "--port", "1", "--port", "2"],
