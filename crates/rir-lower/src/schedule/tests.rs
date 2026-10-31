@@ -17,10 +17,10 @@ fn fallback() -> Schedule {
     Schedule::vulkan_grid([64, 1, 1])
 }
 
-fn special(name: &'static str, priority: u8, rules: Vec<ShapeRule>) -> Schedule {
+fn special(name: &'static str, priority: u8, claim: Claim) -> Schedule {
     Schedule::vulkan_grid([64, 1, 1])
         .as_variant(name)
-        .claiming(priority, rules)
+        .claiming(priority, claim)
 }
 
 /// `GPU_TARGETS` and `GPU_REFUSED` partition `GpuBackend::ALL`: every GPU
@@ -164,18 +164,18 @@ fn a_degenerate_numeric_argument_is_an_error() {
 fn a_fallback_plus_one_specialization_is_well_formed() {
     let t = [
         fallback(),
-        special("blocked", 90, vec![ShapeRule::at_most(&["row"], 128)]),
+        special("blocked", 90, Claim::any().on("row", ..=128)),
     ];
     assert_eq!(check_schedule_table(&kernel(), &t), Ok(()));
 }
 
 /// A variant may claim a **layout** instead of a shape. `vec4` carries no
 /// extent interval - its condition is `nb[0] == elem_bytes`, which no
-/// `ShapeRule` can express - and the table must still see it as a
+/// `Claim` can express - and the table must still see it as a
 /// specialization and not as a second fallback.
 #[test]
 fn a_vector_width_is_a_claim_like_a_shape_rule() {
-    let vec4 = Schedule::vulkan_grid_vec4([64, 1, 1]).claiming(90, Vec::new());
+    let vec4 = Schedule::vulkan_grid_vec4([64, 1, 1]).claiming(90, Claim::any());
     assert!(vec4.claims());
     assert!(!fallback().claims());
     assert_eq!(check_schedule_table(&kernel(), &[fallback(), vec4]), Ok(()));
@@ -184,7 +184,7 @@ fn a_vector_width_is_a_claim_like_a_shape_rule() {
     // shadow the fallback everywhere: still refused.
     let named_but_empty = Schedule::vulkan_grid([64, 1, 1])
         .as_variant("vec4")
-        .claiming(90, Vec::new());
+        .claiming(90, Claim::any());
     assert!(check_schedule_table(&kernel(), &[fallback(), named_but_empty]).is_err());
 }
 
@@ -197,45 +197,34 @@ fn a_malformed_variant_table_is_a_generation_error() {
     let cases: Vec<(&str, Vec<Schedule>)> = vec![
         (
             "no fallback",
-            vec![special("a", 90, vec![ShapeRule::at_most(&["row"], 8)])],
+            vec![special("a", 90, Claim::any().on("row", ..=8))],
         ),
         ("two fallbacks", vec![fallback(), fallback()]),
         (
             "colliding identities",
             vec![
                 fallback(),
-                special("a", 90, vec![ShapeRule::at_most(&["row"], 8)]),
-                special("a", 91, vec![ShapeRule::at_most(&["col"], 8)]),
+                special("a", 90, Claim::any().on("row", ..=8)),
+                special("a", 91, Claim::any().on("col", ..=8)),
             ],
         ),
         (
             "specialization below fallback",
-            vec![
-                fallback(),
-                special("a", 10, vec![ShapeRule::at_most(&["row"], 8)]),
-            ],
+            vec![fallback(), special("a", 10, Claim::any().on("row", ..=8))],
         ),
         (
             "tie between specializations",
             vec![
                 fallback(),
-                special("a", 90, vec![ShapeRule::at_most(&["row"], 8)]),
-                special("b", 90, vec![ShapeRule::at_most(&["col"], 8)]),
+                special("a", 90, Claim::any().on("row", ..=8)),
+                special("b", 90, Claim::any().on("col", ..=8)),
             ],
         ),
         (
             "axis-free rule",
             vec![
                 fallback(),
-                special(
-                    "a",
-                    90,
-                    vec![ShapeRule {
-                        axes: &[],
-                        min: 1,
-                        max: 8,
-                    }],
-                ),
+                special("a", 90, Claim::any().product(&[], ..=8)),
             ],
         ),
         (
@@ -245,20 +234,17 @@ fn a_malformed_variant_table_is_a_generation_error() {
                 special(
                     "a",
                     90,
-                    vec![ShapeRule {
-                        axes: &["row"],
+                    Claim(vec![ShapeRule {
+                        axes: vec!["row".into()],
                         min: 9,
                         max: 8,
-                    }],
+                    }]),
                 ),
             ],
         ),
         (
             "unknown axis",
-            vec![
-                fallback(),
-                special("a", 90, vec![ShapeRule::at_most(&["plane"], 8)]),
-            ],
+            vec![fallback(), special("a", 90, Claim::any().on("plane", ..=8))],
         ),
     ];
     for (why, table) in cases {
@@ -275,11 +261,11 @@ fn a_malformed_variant_table_is_a_generation_error() {
 fn each_backend_is_checked_on_its_own() {
     let t = [
         fallback(),
-        special("blocked", 90, vec![ShapeRule::at_most(&["row"], 128)]),
+        special("blocked", 90, Claim::any().on("row", ..=128)),
         // Metal: a specialization and no fallback.
         Schedule::metal_grid([64, 1, 1])
             .as_variant("blocked")
-            .claiming(90, vec![ShapeRule::at_most(&["row"], 128)]),
+            .claiming(90, Claim::any().on("row", ..=128)),
     ];
     assert!(matches!(
         check_schedule_table(&kernel(), &t),

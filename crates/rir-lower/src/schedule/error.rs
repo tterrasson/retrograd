@@ -123,7 +123,7 @@ pub fn check_schedule_table(kernel: &Kernel, schedules: &[Schedule]) -> Result<(
             _ => return Err(ScheduleError::AmbiguousFallback { backend }),
         }
         let fallback = fallbacks[0];
-        if !fallback.eligible_when.is_empty() {
+        if !fallback.eligible_when.is_any() {
             return Err(ScheduleError::UnselectableVariant {
                 backend,
                 variant: "<fallback>".to_string(),
@@ -147,7 +147,7 @@ pub fn check_schedule_table(kernel: &Kernel, schedules: &[Schedule]) -> Result<(
                     why: "does not exceed fallback priority and would therefore never be selected",
                 });
             }
-            for rule in &s.eligible_when {
+            for rule in s.eligible_when.rules() {
                 // A rule over no axis constrains nothing: the variant would
                 // claim every shape and shadow the fallback it outranks.
                 if rule.axes.is_empty() {
@@ -166,12 +166,12 @@ pub fn check_schedule_table(kernel: &Kernel, schedules: &[Schedule]) -> Result<(
                         why: "has an empty interval (min > max) and is therefore never satisfied",
                     });
                 }
-                for axis in rule.axes {
+                for axis in &rule.axes {
                     if !kernel.axes().iter().any(|a| a.name == *axis) {
                         return Err(ScheduleError::UnknownRuleAxis {
                             backend,
                             variant: name,
-                            axis: (*axis).to_string(),
+                            axis: axis.clone(),
                         });
                     }
                 }

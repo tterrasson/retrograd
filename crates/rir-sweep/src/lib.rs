@@ -24,7 +24,7 @@
 //! - a candidate whose gain does not clear the run-to-run spread of the two
 //!   measurements is refused as **noise**, not rounded up;
 //! - a candidate that wins on some shapes and loses on others is refused unless
-//!   the shapes it wins on are separable by a `ShapeRule` - the registry
+//!   the shapes it wins on are separable by a `Claim` - the registry
 //!   publishes a conjunction of extent intervals and nothing else, so a domain
 //!   that cannot be written as one is a domain the dispatcher cannot evaluate.
 //!

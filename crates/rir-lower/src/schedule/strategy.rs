@@ -198,32 +198,7 @@ impl ScanStrategy {
     }
 }
 
-/// A shape predicate a variant publishes: the **product** of the extents of
-/// the named axes must fall within `[min, max]` inclusive.
-///
-/// A product rather than a single extent because what decides between two
-/// lowerings of the same kernel is rarely one dimension. The blocked scan wins
-/// while the *total* number of rows leaves the GPU idle, and that total is
-/// `row × plane × batch` - three ggml dimensions the kernel keeps distinct
-/// precisely so it can address a view.
-///
-/// Axes are named, not indexed: the registry emitter resolves the name against
-/// the kernel's axis table, so a rule written here fails generation rather than
-/// silently constraining the wrong dimension.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ShapeRule {
-    pub axes: &'static [&'static str],
-    pub min: u32,
-    pub max: u32,
-}
-
-impl ShapeRule {
-    /// `product(axes) ≤ max`. A lower bound is written as a literal: the rule
-    /// is an interval, and the only variant so far claims a ceiling.
-    pub fn at_most(axes: &'static [&'static str], max: u32) -> Self {
-        Self { axes, min: 1, max }
-    }
-}
+pub use rir_core::claim::{Claim, ShapeRule};
 
 /// Lanes of one hardware subgroup, as every lane collective in this crate
 /// already assumes it.

@@ -20,6 +20,10 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The catalogue publishes the claim the manifest does; `KernelShapeRule` is
+/// the name its readers already import.
+pub use crate::claim::{Claim, ShapeRule as KernelShapeRule};
+
 /// Schema version of the catalogue this module describes.
 ///
 /// One constant for the two ends, like the manifest's: the generator writes it
@@ -349,22 +353,13 @@ pub struct KernelVariantPolicy {
     #[serde(default)]
     pub constraints: Vec<String>,
     #[serde(default)]
-    pub eligible_when: Vec<KernelShapeRule>,
+    pub eligible_when: Claim,
     #[serde(default)]
     pub features: Vec<String>,
     pub workgroup: [u32; 3],
     pub vector_width: u32,
     pub reduction: String,
     pub scan: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct KernelShapeRule {
-    #[serde(default)]
-    pub axes: Vec<String>,
-    pub min: u32,
-    pub max: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -437,11 +432,7 @@ mod tests {
                     variant_id: "out_prod_w4".into(),
                     kernel: "out_prod".into(),
                     priority: 2,
-                    eligible_when: vec![KernelShapeRule {
-                        axes: vec!["row".into()],
-                        min: 1,
-                        max: 8,
-                    }],
+                    eligible_when: Claim::any().on("row", ..=8),
                     workgroup: [32, 1, 1],
                     vector_width: 4,
                     reduction: "shared_tree".into(),

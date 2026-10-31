@@ -9,7 +9,7 @@
 
 use std::fmt::Write as _;
 
-use crate::candidates::rule_source;
+use crate::candidates::claim_source;
 use crate::run::{Arbitrated, SweepReport};
 use crate::verdict::{Outcome, Refusal, Verdict};
 
@@ -116,15 +116,11 @@ pub fn proposal(a: &Arbitrated) -> String {
             a.source
         ),
         Verdict::Claims {
-            rules,
+            claim,
             best_gain,
             ties_claimed,
         } => {
-            let list = rules
-                .iter()
-                .map(rule_source)
-                .collect::<Vec<_>>()
-                .join(",\n        ");
+            let source = claim_source(claim);
             let ties = if ties_claimed.is_empty() {
                 String::new()
             } else {
@@ -136,7 +132,7 @@ pub fn proposal(a: &Arbitrated) -> String {
             };
             format!(
                 "{head}\n    CLAIMS a domain: up to {:.0}% on the shapes the rule covers.{ties}\n    \
-                 v.push({}.claiming(90, vec![\n        {list},\n    ]));",
+                 v.push({}.claiming(90, {source}));",
                 best_gain * 100.0,
                 a.source
             )
@@ -154,15 +150,11 @@ fn control(v: &Verdict) -> String {
             best_gain * 100.0
         ),
         Verdict::Claims {
-            rules, best_gain, ..
+            claim, best_gain, ..
         } => format!(
             "up to {:.0}%, on the domain {}",
             best_gain * 100.0,
-            rules
-                .iter()
-                .map(rule_source)
-                .collect::<Vec<_>>()
-                .join(" and ")
+            claim_source(claim)
         ),
         Verdict::Refused(why) => refusal(why),
     }

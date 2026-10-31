@@ -17,7 +17,7 @@
 use rir_core::ValidatedKernel;
 use rir_core::catalog::{ModelShape, Regime};
 use rir_lower::schedule::bench;
-use rir_lower::{Family, GpuBackend, Schedule, ShapeRule};
+use rir_lower::{Claim, Family, GpuBackend, Schedule};
 
 use crate::SweepError;
 
@@ -497,27 +497,30 @@ pub fn rule_product(axes: &[&str], shape: [usize; 4]) -> u64 {
         })
 }
 
-/// A rule as `schedules_for` would write it.
-pub fn rule_source(rule: &ShapeRule) -> String {
-    let axes = rule
-        .axes
-        .iter()
-        .map(|a| format!("\"{a}\""))
-        .collect::<Vec<_>>()
-        .join(", ");
-    if rule.min == 1 {
-        format!("ShapeRule::at_most(&[{axes}], {})", rule.max)
-    } else if rule.max == u32::MAX {
-        format!(
-            "ShapeRule {{ axes: &[{axes}], min: {}, max: u32::MAX }}",
-            rule.min
-        )
-    } else {
-        format!(
-            "ShapeRule {{ axes: &[{axes}], min: {}, max: {} }}",
-            rule.min, rule.max
-        )
+/// A claim as `schedules_for` would write it, with the open ends of
+/// `ShapeRule::new` left open.
+pub fn claim_source(claim: &Claim) -> String {
+    let mut source = "Claim::any()".to_string();
+    for rule in claim.rules() {
+        let range = match (rule.min, rule.max) {
+            (1, u32::MAX) => "..".to_string(),
+            (1, max) => format!("..={max}"),
+            (min, u32::MAX) => format!("{min}.."),
+            (min, max) => format!("{min}..={max}"),
+        };
+        match rule.axes.as_slice() {
+            [axis] => source.push_str(&format!(".on(\"{axis}\", {range})")),
+            axes => {
+                let axes = axes
+                    .iter()
+                    .map(|a| format!("\"{a}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                source.push_str(&format!(".product(&[{axes}], {range})"));
+            }
+        }
     }
+    source
 }
 
 #[cfg(test)]

@@ -22,7 +22,7 @@ pub fn emit_catalog(
     use std::collections::BTreeMap;
 
     use rir_core::catalog::{
-        KernelCatalog, KernelDomainAssumption, KernelPolicy, KernelShapeRule, KernelVariantPolicy,
+        Claim, KernelCatalog, KernelDomainAssumption, KernelPolicy, KernelVariantPolicy,
         SCHEMA_VERSION,
     };
     use rir_emit::GgmlBackend;
@@ -133,21 +133,8 @@ pub fn emit_catalog(
                 .filter_map(|v| v.as_str().map(str::to_string))
                 .collect::<Vec<_>>()
         };
-        let eligible_when = manifest["eligible_when"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|rule| KernelShapeRule {
-                axes: rule["axes"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|axis| axis.as_str().map(str::to_string))
-                    .collect(),
-                min: rule["min"].as_u64().unwrap_or(0) as u32,
-                max: rule["max"].as_u64().unwrap_or(u32::MAX as u64) as u32,
-            })
-            .collect();
+        let eligible_when: Claim = serde_json::from_value(manifest["eligible_when"].clone())
+            .expect("the manifest emitter publishes its claim as a rule list");
         let workgroup_values = manifest["workgroup"].as_array().expect("workgroup");
         let workgroup = std::array::from_fn(|i| {
             workgroup_values

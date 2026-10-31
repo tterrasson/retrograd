@@ -248,15 +248,10 @@ pub fn select_variant<'a>(
     let mut saw_shape = false;
     let mut saw_feature = false;
     for variant in &policy.variants {
-        let shape_matches = variant.eligible_when.iter().all(|rule| {
-            let product = rule.axes.iter().try_fold(1u64, |product, axis| {
-                axis_extents
-                    .get(axis)
-                    .and_then(|value| product.checked_mul(*value))
-            });
-            product.is_some_and(|value| value >= rule.min as u64 && value <= rule.max as u64)
-        });
-        if !shape_matches {
+        if !variant
+            .eligible_when
+            .holds(|axis| axis_extents.get(axis).copied())
+        {
             saw_shape = true;
             continue;
         }
@@ -291,18 +286,14 @@ pub fn select_variant<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use retrograd_core::{KernelShapeRule, KernelVariantPolicy};
+    use retrograd_core::{Claim, KernelVariantPolicy};
 
     #[test]
     fn variant_selection_is_priority_ordered_and_shape_aware() {
         let variant = |id: &str, priority, min, max| KernelVariantPolicy {
             variant_id: id.into(),
             priority,
-            eligible_when: vec![KernelShapeRule {
-                axes: vec!["row".into()],
-                min,
-                max,
-            }],
+            eligible_when: Claim::any().on("row", min..=max),
             workgroup: [32, 1, 1],
             ..Default::default()
         };

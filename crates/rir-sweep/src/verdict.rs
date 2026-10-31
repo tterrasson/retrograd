@@ -8,15 +8,15 @@
 //! Both halves of that sentence are a *comparison against a measurement*, and
 //! neither is a constant chosen here. The noise is the run-to-run spread of the
 //! two medians being compared ([`Sample::spread`]); the domain is a
-//! `ShapeRule` - the only predicate the registry publishes - and it has to
+//! `Claim` - the only predicate the registry publishes - and it has to
 //! separate the shapes the candidate wins on from the ones it loses on
 //! *exactly*. A rule that also claims a shape where the candidate loses is an
 //! over-claim, which is a failure corrected by hand once seen before: `≤ 64`
 //! claimed one shape too many, and the pair stayed in `observe` because of it.
 
-use rir_lower::ShapeRule;
+use rir_lower::{Claim, ShapeRule};
 
-use crate::candidates::{RULE_AXES, rule_product};
+use crate::candidates::{AXES, RULE_AXES, rule_product};
 use crate::measure::Sample;
 
 /// One shape, timed on both lowerings.
@@ -81,7 +81,7 @@ pub enum Refusal {
     Disagrees { shape: [usize; 4] },
     /// It never got outside the noise on any shape.
     NoGain { best_gain: f64, noise: f64 },
-    /// It wins somewhere and loses somewhere, and no `ShapeRule` over the
+    /// It wins somewhere and loses somewhere, and no `Claim` over the
     /// registry's axis groups separates the two sets. The shapes listed are the
     /// losses the closest rule would have claimed.
     NoDistinctDomain { overclaimed: Vec<[usize; 4]> },
@@ -99,10 +99,9 @@ pub enum Verdict {
     Replaces {
         best_gain: f64,
     },
-    /// It wins on a domain a rule separates. `rules` is a conjunction, as the
-    /// registry evaluates it.
+    /// It wins on a domain a claim separates.
     Claims {
-        rules: Vec<ShapeRule>,
+        claim: Claim,
         best_gain: f64,
         /// Shapes the rule claims and the candidate only ties on. Not a
         /// problem - stated so a reader can see what the rule covers beyond
@@ -142,14 +141,14 @@ pub fn arbitrate(rows: &[Measured]) -> Verdict {
     }
 
     match separate(&wins, &losses) {
-        Some(rules) => {
+        Some(claim) => {
             let ties_claimed = rows
                 .iter()
-                .filter(|r| r.outcome() == Outcome::Tied && claims(&rules, r.shape))
+                .filter(|r| r.outcome() == Outcome::Tied && claims(&claim, r.shape))
                 .map(|r| r.shape)
                 .collect();
             Verdict::Claims {
-                rules,
+                claim,
                 best_gain,
                 ties_claimed,
             }
@@ -160,37 +159,36 @@ pub fn arbitrate(rows: &[Measured]) -> Verdict {
     }
 }
 
-/// Whether a conjunction of rules claims a shape.
-pub fn claims(rules: &[ShapeRule], shape: [usize; 4]) -> bool {
-    rules.iter().all(|r| {
-        let p = rule_product(r.axes, shape);
-        p >= u64::from(r.min) && p <= u64::from(r.max)
+/// Whether a claim holds on a `[col, row, plane, batch]` shape, evaluated as
+/// the dispatcher evaluates it.
+pub fn claims(claim: &Claim, shape: [usize; 4]) -> bool {
+    claim.holds(|axis| {
+        let i = AXES.iter().position(|a| *a == axis)?;
+        u64::try_from(shape[i]).ok()
     })
 }
 
-/// The smallest conjunction of `ShapeRule`s over [`RULE_AXES`] that claims every
-/// win and no loss, or `None`.
+/// The smallest conjunction of rules over [`RULE_AXES`] that claims every win
+/// and no loss, or `None`.
 ///
 /// Single rules first, then the conjunction of two, because a rule a reader has
 /// to hold two intervals in their head to evaluate is worth writing only when
 /// one does not do the job - the order the table's own arms are written in.
-fn separate(wins: &[&Measured], losses: &[&Measured]) -> Option<Vec<ShapeRule>> {
+fn separate(wins: &[&Measured], losses: &[&Measured]) -> Option<Claim> {
     let single: Vec<Option<ShapeRule>> = RULE_AXES
         .iter()
         .map(|axes| interval(axes, wins, losses))
         .collect();
     for rule in single.iter().flatten() {
-        if losses
-            .iter()
-            .all(|l| !claims(std::slice::from_ref(rule), l.shape))
-        {
-            return Some(vec![rule.clone()]);
+        let claim = Claim(vec![rule.clone()]);
+        if losses.iter().all(|l| !claims(&claim, l.shape)) {
+            return Some(claim);
         }
     }
     let available: Vec<ShapeRule> = single.into_iter().flatten().collect();
     for (i, first) in available.iter().enumerate() {
         for second in available.iter().skip(i + 1) {
-            let pair = vec![first.clone(), second.clone()];
+            let pair = Claim(vec![first.clone(), second.clone()]);
             if losses.iter().all(|l| !claims(&pair, l.shape)) {
                 return Some(pair);
             }
@@ -200,11 +198,13 @@ fn separate(wins: &[&Measured], losses: &[&Measured]) -> Option<Vec<ShapeRule>> 
     // and the pair is accepted only if together they exclude every loss,
     // neither has to on its own, which is the point of a conjunction and the
     // shape of `few_wide_rows` in the production table.
-    let both: Vec<ShapeRule> = RULE_AXES
-        .iter()
-        .filter_map(|axes| interval(axes, wins, losses))
-        .collect();
-    if both.len() == RULE_AXES.len() && losses.iter().all(|l| !claims(&both, l.shape)) {
+    let both = Claim(
+        RULE_AXES
+            .iter()
+            .filter_map(|axes| interval(axes, wins, losses))
+            .collect(),
+    );
+    if both.rules().len() == RULE_AXES.len() && losses.iter().all(|l| !claims(&both, l.shape)) {
         return Some(both);
     }
     None
@@ -219,11 +219,7 @@ fn separate(wins: &[&Measured], losses: &[&Measured]) -> Option<Vec<ShapeRule>> 
 /// inside that gap rather than fitted to a shape". A bound fitted to the
 /// extreme measured shape claims to know where the crossover is to the unit,
 /// and a sweep of five shapes knows no such thing.
-fn interval(
-    axes: &'static [&'static str],
-    wins: &[&Measured],
-    losses: &[&Measured],
-) -> Option<ShapeRule> {
+fn interval(axes: &[&str], wins: &[&Measured], losses: &[&Measured]) -> Option<ShapeRule> {
     let w: Vec<u64> = wins.iter().map(|m| rule_product(axes, m.shape)).collect();
     let (lo, hi) = (*w.iter().min()?, *w.iter().max()?);
     let below = losses
@@ -244,11 +240,8 @@ fn interval(
         Some(a) => round_between(hi, a - 1),
         None => u64::from(u32::MAX),
     };
-    Some(ShapeRule {
-        axes,
-        min: u32::try_from(min).ok()?,
-        max: u32::try_from(max).ok()?,
-    })
+    let (min, max) = (u32::try_from(min).ok()?, u32::try_from(max).ok()?);
+    Some(ShapeRule::new(axes, min..=max))
 }
 
 /// The **roundest** number inside `[lo, hi]`: the one with the most trailing

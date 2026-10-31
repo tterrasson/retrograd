@@ -588,16 +588,7 @@ pub fn build_manifest(k: &LoopKernel, spec: Option<&IntegrationSpec>) -> Manifes
         priority: k.schedule.priority(),
         vector_width: k.vector_width(),
         linear_addr: k.linear_addr(),
-        eligible_when: k
-            .schedule
-            .eligible_when()
-            .iter()
-            .map(|r| manifest::ShapeRule {
-                axes: r.axes.iter().map(|a| (*a).to_string()).collect(),
-                min: r.min,
-                max: r.max,
-            })
-            .collect(),
+        eligible_when: k.schedule.eligible_when().clone(),
         features: backend_features(k).unwrap_or_default(),
         parallel_mapping: k.schedule.par_map().published(),
         dispatch,

@@ -54,7 +54,7 @@ pub use optimizer::{
 /// The catalogue schema, declared in `rir-core` and re-exported for the
 /// applicative side that reads it.
 pub use rir_core::catalog::{
-    BackendPolicy, GgmlBackend, KernelCatalog, KernelDomainAssumption, KernelPolicy,
+    BackendPolicy, Claim, GgmlBackend, KernelCatalog, KernelDomainAssumption, KernelPolicy,
     KernelShapeRule, KernelVariantPolicy,
 };
 pub use trainable::{

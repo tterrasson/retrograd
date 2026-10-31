@@ -111,7 +111,8 @@ fn the_bound_of_a_derived_rule_sits_in_the_gap() {
         row([1024, 256, 1, 1], 100.0, 200.0),
     ];
     match arbitrate(&rows) {
-        Verdict::Claims { rules, .. } => {
+        Verdict::Claims { claim, .. } => {
+            let rules = claim.rules();
             assert_eq!(rules.len(), 1);
             assert_eq!(rules[0].axes, &["row", "plane", "batch"]);
             assert_eq!(rules[0].min, 1);
@@ -137,9 +138,13 @@ fn a_conjunction_is_derived_when_one_rule_does_not_separate() {
         row([1024, 512, 1, 1], 100.0, 200.0),
     ];
     match arbitrate(&rows) {
-        Verdict::Claims { rules, .. } => {
+        Verdict::Claims { claim, .. } => {
+            let rules = claim.rules();
             assert_eq!(rules.len(), 2);
-            let rows_rule = rules.iter().find(|r| r.axes.contains(&"row")).unwrap();
+            let rows_rule = rules
+                .iter()
+                .find(|r| r.axes.iter().any(|a| a == "row"))
+                .unwrap();
             let cols_rule = rules.iter().find(|r| r.axes == ["col"]).unwrap();
             assert!(rows_rule.max >= 32 && rows_rule.max < 512);
             assert!(cols_rule.min > 64 && cols_rule.min <= 1024);
@@ -202,7 +207,8 @@ fn a_token_domain_is_separable_when_output_counts_are_equal() {
         row([1024, 128, 8, 1], 100.0, 50.0),
     ];
     match arbitrate(&rows) {
-        Verdict::Claims { rules, .. } => {
+        Verdict::Claims { claim, .. } => {
+            let rules = claim.rules();
             assert_eq!(rules.len(), 1);
             assert_eq!(rules[0].axes, &["plane"]);
             assert!(rules[0].min > 1 && rules[0].min <= 8);

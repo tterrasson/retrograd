@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use rir_lower::Backend;
+use rir_lower::{Backend, Claim};
 
 use rir_gen::*;
 
@@ -347,16 +347,12 @@ fn the_cumsum_variants_split_the_shape_space_where_the_bench_says() {
         let tiled = of(Some(rir_lower::TILED_SCAN));
 
         assert!(
-            fallback.eligible_when().is_empty(),
+            fallback.eligible_when().is_any(),
             "{backend:?}: fallback must accept every shape"
         );
         assert_eq!(
             blocked.eligible_when(),
-            vec![rir_lower::ShapeRule {
-                axes: &["row", "plane", "batch"],
-                min: 1,
-                max: 128
-            }],
+            &Claim::any().product(&["row", "plane", "batch"], 1..=128),
             "{backend:?}: blocked-scan rule no longer describes what the benchmark measured"
         );
         assert!(
@@ -365,18 +361,9 @@ fn the_cumsum_variants_split_the_shape_space_where_the_bench_says() {
         );
         assert_eq!(
             tiled.eligible_when(),
-            vec![
-                rir_lower::ShapeRule {
-                    axes: &["row", "plane", "batch"],
-                    min: 1,
-                    max: 128,
-                },
-                rir_lower::ShapeRule {
-                    axes: &["col"],
-                    min: 4096,
-                    max: u32::MAX,
-                },
-            ],
+            &Claim::any()
+                .product(&["row", "plane", "batch"], 1..=128)
+                .on("col", 4096..=u32::MAX),
             "{backend:?}: tiled scan no longer covers very long low-occupancy shapes"
         );
         assert!(
@@ -413,25 +400,16 @@ fn the_rms_norm_back_variants_split_the_shape_space_where_the_lane_says() {
         let shared = of(Some(rir_lower::SHARED_REDUCE));
 
         assert!(
-            fallback.eligible_when().is_empty(),
+            fallback.eligible_when().is_any(),
             "{backend:?}: fallback must accept every shape"
         );
         assert_eq!(fallback.block(), [32, 1, 1]);
         assert_eq!(shared.block(), [256, 1, 1]);
         assert_eq!(
             shared.eligible_when(),
-            vec![
-                rir_lower::ShapeRule {
-                    axes: &["row", "plane", "batch"],
-                    min: 1,
-                    max: 32,
-                },
-                rir_lower::ShapeRule {
-                    axes: &["col"],
-                    min: 256,
-                    max: u32::MAX,
-                },
-            ],
+            &Claim::any()
+                .product(&["row", "plane", "batch"], 1..=32)
+                .on("col", 256..=u32::MAX),
             "{backend:?}: rule no longer describes what the lane measured"
         );
         assert!(

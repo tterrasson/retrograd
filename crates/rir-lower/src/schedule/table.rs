@@ -132,14 +132,9 @@ fn rms_norm(v: &mut Vec<Schedule>) {
         v.push(Schedule::gpu_subgroup(gpu));
     }
     let few_wide_rows = || {
-        vec![
-            ShapeRule::at_most(&["row", "plane", "batch"], 32),
-            ShapeRule {
-                axes: &["col"],
-                min: 256,
-                max: u32::MAX,
-            },
-        ]
+        Claim::any()
+            .product(&["row", "plane", "batch"], ..=32)
+            .on("col", 256..)
     };
     // CUDA measurements confirm the same threshold. A 1,024-lane tree
     // adds barriers and shared storage while losing on every measured
@@ -150,13 +145,7 @@ fn rms_norm(v: &mut Vec<Schedule>) {
     // Flat-row dispatch covers the complementary many-row case only on
     // backends whose native kernel also flattens rows. Metal and Vulkan
     // already dispatch per row and lose with this variant.
-    let many_rows = || {
-        vec![ShapeRule {
-            axes: &["row", "plane", "batch"],
-            min: 33,
-            max: u32::MAX,
-        }]
-    };
+    let many_rows = || Claim::any().product(&["row", "plane", "batch"], 33..);
     for gpu in flat_targets_for(family) {
         v.push(Schedule::gpu_subgroup_flat_rows(gpu).claiming(85, many_rows()));
     }
@@ -202,13 +191,7 @@ fn unary(v: &mut Vec<Schedule>) {
     }
     // Short rows cannot fill a 256-wide vectorized workgroup. The waste
     // depends on column count rather than the number of rows.
-    let short_rows = || {
-        vec![ShapeRule {
-            axes: &["col"],
-            min: 0,
-            max: 256,
-        }]
-    };
+    let short_rows = || Claim::any().on("col", 0..=256);
     for gpu in grid_targets_for(family) {
         v.push(
             Schedule::gpu_grid_vec4(gpu, [32, 1, 1])
@@ -269,7 +252,7 @@ fn unary(v: &mut Vec<Schedule>) {
     // measurement read as the address alone rather than as a width and
     // an address at once.
     for gpu in flat_targets_for(family) {
-        v.push(Schedule::gpu_grid_flat_linear(gpu, [256, 1, 1], 1).claiming(90, Vec::new()));
+        v.push(Schedule::gpu_grid_flat_linear(gpu, [256, 1, 1], 1).claiming(90, Claim::any()));
     }
 }
 
@@ -279,7 +262,7 @@ fn elementwise_repeat(v: &mut Vec<Schedule>) {
         v.push(Schedule::gpu_grid(gpu, [256, 1, 1]));
     }
     for gpu in grid_targets_for(family) {
-        v.push(Schedule::gpu_grid_vec4(gpu, [256, 1, 1]).claiming(90, Vec::new()));
+        v.push(Schedule::gpu_grid_vec4(gpu, [256, 1, 1]).claiming(90, Claim::any()));
     }
     // The flattened dispatch, on the backends
     // `FLAT_TARGETS` names and for the reason it gives. It **replaces**
@@ -302,7 +285,7 @@ fn elementwise_repeat(v: &mut Vec<Schedule>) {
         v.push(
             Schedule::gpu_grid_flat(gpu, [256, 1, 1], 4)
                 .as_variant(VEC4)
-                .claiming(90, Vec::new()),
+                .claiming(90, Claim::any()),
         );
     }
 }
@@ -315,7 +298,7 @@ fn elementwise(v: &mut Vec<Schedule>) {
         v.push(Schedule::gpu_grid(gpu, [256, 1, 1]));
     }
     for gpu in grid_targets_for(family) {
-        v.push(Schedule::gpu_grid_vec4(gpu, [256, 1, 1]).claiming(90, Vec::new()));
+        v.push(Schedule::gpu_grid_vec4(gpu, [256, 1, 1]).claiming(90, Claim::any()));
     }
     // The flattened dispatch, on the backends
     // `FLAT_TARGETS` names and for the reason it gives. It **replaces**
@@ -338,7 +321,7 @@ fn elementwise(v: &mut Vec<Schedule>) {
         v.push(
             Schedule::gpu_grid_flat(gpu, [256, 1, 1], 4)
                 .as_variant(VEC4)
-                .claiming(90, Vec::new()),
+                .claiming(90, Claim::any()),
         );
     }
     // The **address** the flattening left open: a claim of layout,
@@ -366,7 +349,7 @@ fn elementwise(v: &mut Vec<Schedule>) {
     // `LinearAddrUnsupported`, on the `RepeatIndex` - rather than
     // leaving the table to remember it.
     for gpu in flat_targets_for(family) {
-        v.push(Schedule::gpu_grid_flat_linear(gpu, [256, 1, 1], 4).claiming(100, Vec::new()));
+        v.push(Schedule::gpu_grid_flat_linear(gpu, [256, 1, 1], 4).claiming(100, Claim::any()));
     }
 }
 
@@ -429,7 +412,7 @@ fn scale(v: &mut Vec<Schedule>) {
     // here and moves on `UNARY` is the address; one that moves on both
     // is something else.
     for gpu in flat_targets_for(family) {
-        v.push(Schedule::gpu_grid_flat_linear(gpu, [256, 1, 1], 4).claiming(90, Vec::new()));
+        v.push(Schedule::gpu_grid_flat_linear(gpu, [256, 1, 1], 4).claiming(90, Claim::any()));
     }
 }
 
@@ -492,13 +475,7 @@ fn mul_mat_vec(v: &mut Vec<Schedule>) {
     for gpu in targets_for(family) {
         v.push(shaped(Schedule::gpu_subgroup(gpu), gpu));
     }
-    let steps = |min: u32, max: u32| {
-        vec![ShapeRule {
-            axes: &["plane"],
-            min,
-            max,
-        }]
-    };
+    let steps = |min: u32, max: u32| Claim::any().on("plane", min..=max);
     let decode_max = rir_core::catalog::Regime::DECODE_MAX_TOKENS;
     for gpu in targets_for(family) {
         v.push(shaped(Schedule::gpu_subgroup_cols(gpu, 4), gpu).claiming(90, steps(2, decode_max)));
@@ -568,7 +545,7 @@ fn cumsum(v: &mut Vec<Schedule>) {
     for gpu in targets_for(family) {
         v.push(Schedule::gpu_grid(gpu, [64, 1, 1]));
     }
-    let few_rows = || vec![ShapeRule::at_most(&["row", "plane", "batch"], 128)];
+    let few_rows = || Claim::any().product(&["row", "plane", "batch"], ..=128);
     for gpu in targets_for(family) {
         v.push(Schedule::gpu_blocked_scan(gpu).claiming(90, few_rows()));
     }
@@ -583,31 +560,17 @@ fn cumsum(v: &mut Vec<Schedule>) {
     // 4.6 µs). At 128 columns the shader-alone measurement is mixed
     // (0.6-1.0), so the rule starts at 256, where it is not.
     let many_long_rows = || {
-        vec![
-            ShapeRule {
-                axes: &["row", "plane", "batch"],
-                min: 129,
-                max: u32::MAX,
-            },
-            ShapeRule {
-                axes: &["col"],
-                min: 256,
-                max: u32::MAX,
-            },
-        ]
+        Claim::any()
+            .product(&["row", "plane", "batch"], 129..)
+            .on("col", 256..)
     };
     for gpu in targets_for(family) {
         v.push(Schedule::gpu_strided_scan(gpu).claiming(95, many_long_rows()));
     }
     let very_long_few_rows = || {
-        vec![
-            ShapeRule::at_most(&["row", "plane", "batch"], 128),
-            ShapeRule {
-                axes: &["col"],
-                min: 4096,
-                max: u32::MAX,
-            },
-        ]
+        Claim::any()
+            .product(&["row", "plane", "batch"], ..=128)
+            .on("col", 4096..)
     };
     for gpu in targets_for(family) {
         v.push(Schedule::gpu_tiled_scan(gpu, 256, 16).claiming(100, very_long_few_rows()));

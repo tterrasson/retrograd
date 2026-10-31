@@ -204,18 +204,7 @@ pub struct FlatAxis {
     pub per_index: u32,
 }
 
-/// The shape predicate a variant publishes: the product of the extents of the
-/// named axes must fall within `[min, max]` inclusive.
-///
-/// The owned twin of `rir_lower::ShapeRule`, whose axes are `&'static str`
-/// because they are written in the schedule table. A manifest is *read*, so its
-/// axes are `String`; the two convert in `rir-emit`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ShapeRule {
-    pub axes: Vec<String>,
-    pub min: u32,
-    pub max: u32,
-}
+pub use crate::claim::{Claim, ShapeRule};
 
 /// Everything a generated kernel publishes about itself.
 ///
@@ -262,7 +251,7 @@ pub struct Manifest {
     /// single product. False on every lowering that decomposes.
     #[serde(default)]
     pub linear_addr: bool,
-    pub eligible_when: Vec<ShapeRule>,
+    pub eligible_when: Claim,
     /// What the device must provide, in that backend's words. Absent on the CPU,
     /// which negotiates nothing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

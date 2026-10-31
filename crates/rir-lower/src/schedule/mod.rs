@@ -17,7 +17,8 @@ pub use backend::{
 };
 pub use error::{ScheduleError, check_schedule, check_schedule_table};
 pub use strategy::{
-    FALLBACK_PRIORITY, ParallelMapping, ReductionStrategy, SUBGROUP_LANES, ScanStrategy, ShapeRule,
+    Claim, FALLBACK_PRIORITY, ParallelMapping, ReductionStrategy, SUBGROUP_LANES, ScanStrategy,
+    ShapeRule,
 };
 pub use table::{Family, schedules_for};
 
@@ -180,7 +181,7 @@ pub struct Schedule {
     /// which lowering to prefer, not a property of the lowering.
     pub(crate) priority: u8,
     /// Shapes this variant claims. Empty = every shape (the fallback).
-    pub(crate) eligible_when: Vec<ShapeRule>,
+    pub(crate) eligible_when: Claim,
 }
 
 impl Schedule {
@@ -280,7 +281,7 @@ impl Schedule {
         self.priority
     }
 
-    pub fn eligible_when(&self) -> &[ShapeRule] {
+    pub fn eligible_when(&self) -> &Claim {
         &self.eligible_when
     }
 
@@ -450,12 +451,12 @@ impl Schedule {
     /// them. Only a named variant may carry rules - the fallback exists to have
     /// none (`check_schedule_table`).
     ///
-    /// The rule list may be empty when the variant claims a **layout** instead
-    /// of a shape (`vector_width > 1`); what it may never be is empty on a
-    /// variant that claims nothing at all, which would shadow the fallback.
-    pub fn claiming(mut self, priority: u8, rules: Vec<ShapeRule>) -> Self {
+    /// The claim may be `Claim::any()` when the variant claims a **layout**
+    /// instead of a shape (`vector_width > 1`); what it may never be is empty on
+    /// a variant that claims nothing at all, which would shadow the fallback.
+    pub fn claiming(mut self, priority: u8, claim: Claim) -> Self {
         self.priority = priority;
-        self.eligible_when = rules;
+        self.eligible_when = claim;
         self
     }
 
@@ -465,7 +466,7 @@ impl Schedule {
     /// from `ne[]`) and a vector width (a layout condition, evaluated from
     /// `nb[0]`). A schedule that claims neither is the pair's fallback.
     pub fn claims(&self) -> bool {
-        !self.eligible_when.is_empty() || self.vector_width > 1 || self.linear_addr
+        !self.eligible_when.is_any() || self.vector_width > 1 || self.linear_addr
     }
 
     /// Artifact identity of this schedule for `kernel`: the kernel name for the
@@ -502,7 +503,7 @@ impl Schedule {
             grid_dims: 1,
             variant: None,
             priority: FALLBACK_PRIORITY,
-            eligible_when: Vec::new(),
+            eligible_when: Claim::any(),
         }
     }
 
@@ -548,7 +549,7 @@ impl Schedule {
             grid_dims: 3,
             variant: None,
             priority: FALLBACK_PRIORITY,
-            eligible_when: Vec::new(),
+            eligible_when: Claim::any(),
         }
     }
 
@@ -580,7 +581,7 @@ impl Schedule {
             grid_dims: 3,
             variant: None,
             priority: FALLBACK_PRIORITY,
-            eligible_when: Vec::new(),
+            eligible_when: Claim::any(),
         }
     }
 

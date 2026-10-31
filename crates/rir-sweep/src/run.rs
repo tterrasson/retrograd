@@ -207,11 +207,11 @@ fn arbitrate_one(
     // The GEMV has no `batch` axis: its output count is `row · plane`, and a
     // rule naming an axis the kernel lacks is refused by `check_schedule`.
     if subject.family == rir_lower::Family::MulMatVec
-        && let Verdict::Claims { rules, .. } = &mut verdict
+        && let Verdict::Claims { claim, .. } = &mut verdict
     {
-        for rule in rules.iter_mut() {
+        for rule in &mut claim.0 {
             if rule.axes == ["row", "plane", "batch"] {
-                rule.axes = &["row", "plane"];
+                rule.axes = vec!["row".into(), "plane".into()];
             }
         }
     }
@@ -223,24 +223,20 @@ fn arbitrate_one(
         })?;
         if let Verdict::Replaces { best_gain } = verdict {
             verdict = Verdict::Claims {
-                rules: Vec::new(),
+                claim: rir_lower::Claim::any(),
                 best_gain,
                 ties_claimed: Vec::new(),
             };
         }
-        if let Verdict::Claims { rules, .. } = &mut verdict {
-            for rule in rules.iter_mut() {
-                rule.axes = match rule.axes {
-                    ["col"] => &["i"],
-                    ["row", "plane", "batch"] => &["j", "plane", "batch"],
-                    _ => rule.axes,
-                };
+        if let Verdict::Claims { claim, .. } = &mut verdict {
+            for rule in &mut claim.0 {
+                if rule.axes == ["col"] {
+                    rule.axes = vec!["i".into()];
+                } else if rule.axes == ["row", "plane", "batch"] {
+                    rule.axes = vec!["j".into(), "plane".into(), "batch".into()];
+                }
             }
-            rules.push(rir_lower::ShapeRule {
-                axes: &["k"],
-                min: k,
-                max: k,
-            });
+            *claim = std::mem::take(claim).on("k", k..=k);
         }
     }
     Ok(Arbitrated {

@@ -440,17 +440,15 @@ fn shape_rules_of(k: &LoopKernel) -> Result<(Vec<String>, usize), RegistryError>
     // above. The name is what the schedule table writes and what a reader
     // checks; the index is what the dispatcher can evaluate without a
     // string compare per node.
-    if k.schedule.eligible_when().len() > MAX_SHAPE_RULES {
+    let claimed = k.schedule.eligible_when().rules();
+    if claimed.len() > MAX_SHAPE_RULES {
         return Err(RegistryError::new(
             &k.name,
-            format!(
-                "{} shape rules, at most {MAX_SHAPE_RULES}",
-                k.schedule.eligible_when().len()
-            ),
+            format!("{} shape rules, at most {MAX_SHAPE_RULES}", claimed.len()),
         ));
     }
     let mut rules = Vec::new();
-    for rule in k.schedule.eligible_when() {
+    for rule in claimed {
         if rule.axes.len() > MAX_AXES {
             return Err(RegistryError::new(
                 &k.name,
