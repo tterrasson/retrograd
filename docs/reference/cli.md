@@ -130,8 +130,12 @@ answers at its next progress callback. Its `[serving]` section sets `enabled`,
 `idle_seconds` (default 300), `device_wait_seconds` (default 0: a load refused
 while a run holds the device), `queue` (8), `max_body_bytes` (4 MiB),
 `responses_store_dir` (a file store instead of the in-memory one) and
-`responses_store_ttl_seconds` (default 86400). A live run serves chat and
-Responses with a buffered stream, one choice and no logprobs.
+`responses_store_ttl_seconds` (default 86400). The LoRA checkpoints of one run
+(`RUN_ID@step-N`, `@best`, …) and `@base` share decodes: each request's rows
+select their adapter, the prefix cache is partitioned per adapter, and an
+adapter the per-row path refuses (activated LoRA, embedding or expert
+targets) falls back to being activated alone, one adapter at a time. A live run
+serves chat and Responses with a buffered stream, one choice and no logprobs.
 
 ## `inspect`
 

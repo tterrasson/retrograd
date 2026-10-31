@@ -17,7 +17,7 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
@@ -25,12 +25,14 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::{Duration, Instant};
 
 use retrograd_core::{RolloutAdmission, SamplingParamsV2};
-use retrograd_engine::{EngineMemory, StepOutRow, StepOutput, StepRow};
+use retrograd_engine::{
+    AdapterId, AdapterRowsInfo, EngineMemory, RowAdapter, StepOutRow, StepOutput, StepRow,
+};
 
 use crate::backend::DecodeBackend;
 use crate::detok::Detokenizer;
 use crate::error::InferError;
-use crate::kv::{KvCacheKey, KvStats, PinId, PrefixTree};
+use crate::kv::{KvCacheKey, KvStats, Namespace, PinId, PrefixTree};
 use crate::request::{
     Event, EventStream, FinishReason, Request, Retention, TokenEvent, TopLogprob,
 };
@@ -198,6 +200,8 @@ struct Retained {
 
 struct LiveGroup {
     prompt: Vec<i32>,
+    /// The adapter every member decodes under, resolved at admission.
+    adapter: RowAdapter,
     /// `prompt.len() - 1` for a shared group (the terminal token is decoded
     /// per member after the copies), `prompt.len()` for a single member.
     prefix_end: usize,
@@ -330,9 +334,30 @@ pub struct Scheduler<B: DecodeBackend> {
     /// Requests' retentions by key, valid under `kv_key` like the tree.
     retained: HashMap<String, Retained>,
     /// The adapter currently active on the backend. A composed step never
-    /// mixes adapters: admission only lets requests for this adapter join the
-    /// live set, and switches it when nothing is live.
+    /// mixes it with another serialized adapter: admission only lets requests
+    /// for this adapter (or per-row ones, when it is `None`) join the live
+    /// set, and switches it when nothing is live.
     active_adapter: Option<String>,
+    /// Adapters the backend serves per row, by name.
+    row_adapters: HashMap<String, AdapterId>,
+    /// Per-row adapters unloaded or replaced while live requests still
+    /// decode under them: freed, with their prefixes, once none does.
+    retiring: Vec<AdapterId>,
+    /// Unloaded names must not fall back to an older named backend adapter.
+    unloaded_adapters: HashSet<String>,
+}
+
+/// The prefix-tree namespace of an adapter: per-row adapters never share a
+/// prefix with anything else.
+fn namespace(adapter: RowAdapter) -> Namespace {
+    match adapter {
+        // Positive by construction.
+        RowAdapter::Loaded(id) => id.get() as Namespace,
+        RowAdapter::Context => 0,
+        // The base rows of a context with an active adapter; the scheduler
+        // routes base requests through `Context` with no adapter active.
+        RowAdapter::Base => Namespace::MAX,
+    }
 }
 
 /// A point-in-time report of the scheduler and its backend, for a stats
@@ -345,6 +370,10 @@ pub struct SchedulerStats {
     pub queued: usize,
     pub live: usize,
     pub adapter: Option<String>,
+    /// The adapters served per row, by name, sorted.
+    pub row_adapters: Vec<String>,
+    /// What the per-row adapters cost on the backend.
+    pub adapter_rows: AdapterRowsInfo,
 }
 
 impl<B: DecodeBackend> Scheduler<B> {
@@ -367,6 +396,9 @@ impl<B: DecodeBackend> Scheduler<B> {
             kv_stats: KvStats::default(),
             retained: HashMap::new(),
             active_adapter: None,
+            row_adapters: HashMap::new(),
+            retiring: Vec::new(),
+            unloaded_adapters: HashSet::new(),
         }
     }
 
@@ -389,7 +421,96 @@ impl<B: DecodeBackend> Scheduler<B> {
             queued: self.queue.len(),
             live: self.live_len(),
             adapter: self.active_adapter.clone(),
+            row_adapters: {
+                let mut names: Vec<String> = self.row_adapters.keys().cloned().collect();
+                names.sort_unstable();
+                names
+            },
+            adapter_rows: self.backend.adapter_rows_info().unwrap_or_default(),
         }
+    }
+
+    /// Registers the adapter `name` (a LoRA checkpoint of the backend's base
+    /// model). Served per row when the backend can - its requests then share
+    /// steps with the others and its prefixes live in their own namespace -
+    /// and as a serialized named adapter otherwise (no per-row support, or a
+    /// checkpoint the per-row path refuses). Reloading a per-row name gives
+    /// it a fresh id: requests already live keep decoding under the old one,
+    /// which is freed once they end.
+    pub fn load_adapter(&mut self, name: &str, path: &std::path::Path) -> Result<(), InferError> {
+        if name.is_empty() {
+            return Err(InferError::invalid("an adapter name must not be empty"));
+        }
+        if self.backend.supports_row_adapters()
+            && let Ok(id) = self.backend.load_row_adapter(path, 1.0)
+        {
+            self.unloaded_adapters.remove(name);
+            if let Some(old) = self.row_adapters.insert(name.to_owned(), id) {
+                self.retiring.push(old);
+                self.release_retired()?;
+            }
+            return Ok(());
+        }
+        self.backend.load_adapter(name, path)?;
+        self.unloaded_adapters.remove(name);
+        // A replacement can fall back from per-row to serialized serving.
+        // Stop resolving new requests to the superseded row adapter.
+        if let Some(old) = self.row_adapters.remove(name) {
+            self.retiring.push(old);
+            self.release_retired()?;
+        }
+        Ok(())
+    }
+
+    /// Unloads the per-row adapter `name`. Queued requests naming it are
+    /// refused at admission (the name no longer resolves); live ones run to
+    /// completion under it, and its KV and prefixes are freed after them.
+    pub fn unload_adapter(&mut self, name: &str) -> Result<(), InferError> {
+        let id = self.row_adapters.remove(name).ok_or_else(|| {
+            InferError::invalid(format!("no per-row adapter is loaded under '{name}'"))
+        })?;
+        self.unloaded_adapters.insert(name.to_owned());
+        self.retiring.push(id);
+        self.release_retired()
+    }
+
+    /// Frees the retiring per-row adapters no live group decodes under:
+    /// their prefix namespace (and its dormant slots), then the adapter.
+    fn release_retired(&mut self) -> Result<(), InferError> {
+        let mut index = 0;
+        while index < self.retiring.len() {
+            let id = self.retiring[index];
+            let adapter = RowAdapter::Loaded(id);
+            if self.live.iter().any(|group| group.adapter == adapter) {
+                index += 1;
+                continue;
+            }
+            for slot in self.kv.drop_namespace(namespace(adapter)) {
+                self.backend.seq_rm(slot, -1, -1)?;
+            }
+            self.backend.unload_row_adapter(id)?;
+            self.retiring.swap_remove(index);
+        }
+        Ok(())
+    }
+
+    /// How a request's adapter decodes: per row when its name is a per-row
+    /// adapter, under the context's adapter set otherwise.
+    fn row_adapter(&self, request: &Request) -> RowAdapter {
+        request
+            .adapter
+            .as_ref()
+            .and_then(|name| self.row_adapters.get(name))
+            .map_or(RowAdapter::Context, |&id| RowAdapter::Loaded(id))
+    }
+
+    /// The serialized adapter a request needs active on the backend: its
+    /// named adapter, or `None` for the base model and every per-row adapter.
+    fn serial_adapter(&self, request: &Request) -> Option<String> {
+        request
+            .adapter
+            .clone()
+            .filter(|name| !self.row_adapters.contains_key(name))
     }
 
     /// Makes `wanted` the backend's active adapter when it is not already:
@@ -411,7 +532,7 @@ impl<B: DecodeBackend> Scheduler<B> {
     /// keeps its KV through.
     pub fn pin_prefix(&mut self, prefix: &[i32]) -> Result<PinId, InferError> {
         self.refresh_key()?;
-        self.kv.pin_at(prefix).ok_or_else(|| {
+        self.kv.pin_at(0, prefix).ok_or_else(|| {
             InferError::invalid("no resident prefix node at exactly that token path")
         })
     }
@@ -527,7 +648,10 @@ impl<B: DecodeBackend> Scheduler<B> {
                 let _ = reply.send(self.unpin(id));
             }
             Envelope::LoadAdapter { name, path, reply } => {
-                let _ = reply.send(self.backend.load_adapter(&name, &path));
+                let _ = reply.send(self.load_adapter(&name, &path));
+            }
+            Envelope::UnloadAdapter { name, reply } => {
+                let _ = reply.send(self.unload_adapter(&name));
             }
             Envelope::Submit(_) | Envelope::Wake => {}
         }
@@ -727,6 +851,9 @@ impl<B: DecodeBackend> Scheduler<B> {
         self.queue
             .retain(|queued| !queued.cancelled.load(AtomicOrdering::SeqCst));
         self.remove_cancelled()?;
+        if !self.retiring.is_empty() {
+            self.release_retired()?;
+        }
         self.admit()?;
         self.advance_phases()?;
         if self.live.is_empty() {
@@ -788,6 +915,9 @@ impl<B: DecodeBackend> Scheduler<B> {
         }
         self.live
             .retain(|group| group.members.iter().any(|member| member.live));
+        if !self.retiring.is_empty() {
+            self.release_retired()?;
+        }
         Ok(true)
     }
 
@@ -875,7 +1005,7 @@ impl<B: DecodeBackend> Scheduler<B> {
                 sampling: member.sampling.clone(),
                 n_top_logprobs: member.n_top_logprobs,
                 want_logprob: member.want_logprob,
-                adapter: retrograd_engine::RowAdapter::Context,
+                adapter: group.adapter,
             });
             kinds.push(RowKind::Decode {
                 group: gi,
@@ -914,7 +1044,7 @@ impl<B: DecodeBackend> Scheduler<B> {
                             0
                         },
                         want_logprob: sampled_member.is_some() && leader.want_logprob,
-                        adapter: retrograd_engine::RowAdapter::Context,
+                        adapter: group.adapter,
                     });
                     kinds.push(RowKind::Prefill {
                         group: gi,
@@ -941,7 +1071,7 @@ impl<B: DecodeBackend> Scheduler<B> {
                             sampling: member.sampling.clone(),
                             n_top_logprobs: member.n_top_logprobs,
                             want_logprob: member.want_logprob,
-                            adapter: retrograd_engine::RowAdapter::Context,
+                            adapter: group.adapter,
                         });
                         kinds.push(RowKind::Terminal {
                             group: gi,
@@ -1075,7 +1205,24 @@ impl<B: DecodeBackend> Scheduler<B> {
             return Ok(());
         }
 
-        // Adapters serialize the batch: a composed step never mixes adapters.
+        self.queue.retain(|queued| {
+            if let Some(name) = &queued.request.adapter
+                && self.unloaded_adapters.contains(name)
+            {
+                let _ = queued
+                    .events
+                    .try_send(Event::Error(InferError::invalid(format!(
+                        "no adapter is loaded under '{name}'"
+                    ))));
+                return false;
+            }
+            true
+        });
+        if self.queue.is_empty() {
+            return Ok(());
+        }
+
+        // Serialized adapters partition the batch; per-row adapters can mix.
         // When nothing is live, the front of the queue chooses the adapter to
         // activate; while sequences are live, only requests for the active
         // adapter may join them. Requests for other adapters wait - FIFO
@@ -1084,7 +1231,7 @@ impl<B: DecodeBackend> Scheduler<B> {
             true => self
                 .queue
                 .front()
-                .and_then(|queued| queued.request.adapter.clone()),
+                .and_then(|queued| self.serial_adapter(&queued.request)),
             false => self.active_adapter.clone(),
         };
         // Partition the queue for this pass: only candidates (same adapter as
@@ -1092,8 +1239,9 @@ impl<B: DecodeBackend> Scheduler<B> {
         // the leftover candidates.
         let mut candidates = VecDeque::new();
         let mut rest = VecDeque::new();
-        for queued in self.queue.drain(..) {
-            if queued.request.adapter == target {
+        let queue = std::mem::take(&mut self.queue);
+        for queued in queue {
+            if self.serial_adapter(&queued.request) == target {
                 candidates.push_back(queued);
             } else {
                 rest.push_back(queued);
@@ -1163,6 +1311,7 @@ impl<B: DecodeBackend> Scheduler<B> {
                     let mut run_end = 1;
                     while run_end < pending.len()
                         && pending[run_end].request.prompt == pending[0].request.prompt
+                        && pending[run_end].request.adapter == pending[0].request.adapter
                     {
                         run_end += 1;
                     }
@@ -1230,7 +1379,8 @@ impl<B: DecodeBackend> Scheduler<B> {
             let members = queued.request.n();
             // Recomputed after every eviction: the evicted node may be the
             // one the hit came from.
-            let hit = self.hit_candidate(&queued.request.prompt)?;
+            let ns = namespace(self.row_adapter(&queued.request));
+            let hit = self.hit_candidate(ns, &queued.request.prompt)?;
             let shared = hit.map_or(0, |(_, hit)| hit as u64 * members as u64);
             let need = reservation(&queued.request, n_ctx_seq).saturating_sub(shared);
             let (slots_left, cells_left) = self.capacity()?;
@@ -1293,7 +1443,11 @@ impl<B: DecodeBackend> Scheduler<B> {
     /// prefilled - the backend refuses to resubmit a token whose position is
     /// already resident, and re-feeding it would double-advance a hybrid's
     /// recurrent state.
-    fn hit_candidate(&self, prompt: &[i32]) -> Result<Option<(usize, usize)>, InferError> {
+    fn hit_candidate(
+        &self,
+        ns: Namespace,
+        prompt: &[i32],
+    ) -> Result<Option<(usize, usize)>, InferError> {
         if !self.options.prefix_cache || prompt.len() < 2 {
             return Ok(None);
         }
@@ -1324,7 +1478,7 @@ impl<B: DecodeBackend> Scheduler<B> {
             }
         };
         Ok(kv
-            .longest_prefix(prompt, partial_ok, &mut usable)
+            .longest_prefix(ns, prompt, partial_ok, &mut usable)
             .map(|(node, hit)| (node, hit.min(last))))
     }
 
@@ -1332,8 +1486,13 @@ impl<B: DecodeBackend> Scheduler<B> {
     /// (empty) `leader_slot`. Returns the applied hit length (0 = cold); the
     /// applied hit is always `< prompt.len()`, so the last prompt token is
     /// prefilled by the normal prefill phase.
-    fn apply_cache_hit(&mut self, prompt: &[i32], leader_slot: i32) -> Result<usize, InferError> {
-        let Some((node, hit)) = self.hit_candidate(prompt)? else {
+    fn apply_cache_hit(
+        &mut self,
+        ns: Namespace,
+        prompt: &[i32],
+        leader_slot: i32,
+    ) -> Result<usize, InferError> {
+        let Some((node, hit)) = self.hit_candidate(ns, prompt)? else {
             return Ok(0);
         };
         debug_assert!(hit < prompt.len());
@@ -1366,6 +1525,7 @@ impl<B: DecodeBackend> Scheduler<B> {
     /// into free slots and reserves its cells.
     fn admit_group(&mut self, group: Vec<Queued>, n_ctx_seq: usize) -> Result<(), InferError> {
         let prompt = group[0].request.prompt.clone();
+        let adapter = self.row_adapter(&group[0].request);
         let n_members: usize = group.iter().map(|queued| queued.request.n()).sum();
         let prefix_end = if n_members > 1 {
             prompt.len() - 1
@@ -1457,7 +1617,7 @@ impl<B: DecodeBackend> Scheduler<B> {
         // Prefix-cache hit into the leader's slot: the shared prefix is copied
         // (or restored from a snapshot) instead of prefilled.
         let leader_slot = members[0].slot;
-        let cache_hit = self.apply_cache_hit(&prompt, leader_slot)?;
+        let cache_hit = self.apply_cache_hit(namespace(adapter), &prompt, leader_slot)?;
         let prefill_from = cache_hit.min(prefix_end);
         // The shared prefix [0, cache_hit) is already resident in the tree's
         // node: only the suffix and the budgets are new cells.
@@ -1478,6 +1638,7 @@ impl<B: DecodeBackend> Scheduler<B> {
         let phase = GroupPhase::Prefill { pos: prefill_from };
         self.live.push(LiveGroup {
             prompt,
+            adapter,
             prefix_end,
             leader: 0,
             reserved,
@@ -1605,6 +1766,7 @@ impl<B: DecodeBackend> Scheduler<B> {
         member: usize,
         reason: FinishReason,
     ) -> Result<(), InferError> {
+        let ns = namespace(self.live[group].adapter);
         let (slot, request_id, index, text, events, path, retention, cached_tokens) = {
             let group_ref = &mut self.live[group];
             let member_ref = &mut group_ref.members[member];
@@ -1669,7 +1831,7 @@ impl<B: DecodeBackend> Scheduler<B> {
             && resident >= self.options.min_prefix_len
             && resident <= path.len()
         {
-            let (node, attached) = self.kv.insert(&path[..resident], slot);
+            let (node, attached) = self.kv.insert(ns, &path[..resident], slot);
             if !attached {
                 // The exact path already has a node: keep the existing one.
                 self.backend.seq_rm(slot, -1, -1)?;
@@ -1808,10 +1970,15 @@ pub(crate) enum Envelope {
         id: PinId,
         reply: mpsc::Sender<bool>,
     },
-    /// Register a named adapter on the backend (without applying it).
+    /// Register an adapter on the backend (without applying it).
     LoadAdapter {
         name: String,
         path: PathBuf,
+        reply: mpsc::Sender<Result<(), InferError>>,
+    },
+    /// Unload a per-row adapter once its live requests end.
+    UnloadAdapter {
+        name: String,
         reply: mpsc::Sender<Result<(), InferError>>,
     },
 }

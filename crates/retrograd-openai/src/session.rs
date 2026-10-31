@@ -8,11 +8,14 @@
 //! bounded event stream.
 //!
 //! Several LoRA checkpoints of the one base model can be resident: a request
-//! names its adapter, the adapter is registered once (loading it again for
-//! another request of the same file is free), and the scheduler activates it
-//! per request - serialized per adapter, so a decode batch never mixes them,
-//! and every switch invalidates the KV. Changing the base model is the only
-//! full reload.
+//! names its adapter, and the adapter is registered once (loading it again for
+//! another request of the same file is free). A backend that selects adapters
+//! per row serves every checkpoint and the base model in the same decode,
+//! with a prefix cache partitioned per adapter; a checkpoint the per-row path
+//! refuses (or a backend without it) is activated per request instead -
+//! serialized, so a decode batch never mixes it with anything, and every
+//! switch invalidates the KV. Changing the base model is the only full
+//! reload.
 //!
 //! The device is borrowed, not owned. The session holds a [`DeviceLease`] for
 //! as long as a model is loaded, gives it back after [`SessionOptions::idle`]
@@ -31,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use retrograd_agent_core::parser::ToolCallParser;
 use retrograd_core::Device;
-use retrograd_engine::EngineMemory;
+use retrograd_engine::{AdapterRowsInfo, EngineMemory};
 use retrograd_infer::{
     AdmissionMode, Event, EventStream, FinishReason, KvStats, Request, Scheduler,
 };
@@ -158,6 +161,10 @@ pub struct EngineStats {
     pub live: usize,
     /// The active adapter, `None` for the base model.
     pub adapter: Option<String>,
+    /// The adapters served per row (sharing decodes), by name.
+    pub row_adapters: Vec<String>,
+    /// What the per-row adapters cost on the device.
+    pub adapter_rows: AdapterRowsInfo,
 }
 
 enum Envelope {
@@ -191,6 +198,10 @@ struct Core {
     reasoning_budget: i32,
     /// Adapter names registered on the backend.
     adapters: HashSet<String>,
+    /// Adapter names also registered as the backend's named adapters, which
+    /// the embedding path activates (a per-row adapter only applies to step
+    /// rows).
+    named_adapters: HashSet<String>,
     /// Held, never read: dropping it is what gives the device back - after the
     /// scheduler above, so the weights are freed first.
     _lease: Lease,
@@ -210,8 +221,22 @@ impl Core {
     fn register(&mut self, path: &std::path::Path) -> Result<String, OpenAiError> {
         let name = adapter_name(path);
         if !self.adapters.contains(&name) {
-            self.scheduler.backend_mut().load_adapter(&name, path)?;
+            self.scheduler.load_adapter(&name, path)?;
             self.adapters.insert(name.clone());
+            if !self.scheduler.stats().row_adapters.contains(&name) {
+                self.named_adapters.insert(name.clone());
+            }
+        }
+        Ok(name)
+    }
+
+    /// Registers the adapter at `path` as a named adapter the backend can
+    /// activate for a whole call (the embedding path), once per file.
+    fn register_named(&mut self, path: &std::path::Path) -> Result<String, OpenAiError> {
+        let name = self.register(path)?;
+        if !self.named_adapters.contains(&name) {
+            self.scheduler.backend_mut().load_adapter(&name, path)?;
+            self.named_adapters.insert(name.clone());
         }
         Ok(name)
     }
@@ -641,6 +666,8 @@ impl Worker {
             queued: stats.queued,
             live: stats.live,
             adapter: stats.adapter,
+            row_adapters: stats.row_adapters,
+            adapter_rows: stats.adapter_rows,
         })
     }
 
@@ -713,7 +740,7 @@ impl Worker {
         }
         let core = self.ensure(core, spec)?;
         let adapter = match &spec.adapter {
-            Some(path) => Some(core.register(path)?),
+            Some(path) => Some(core.register_named(path)?),
             None => None,
         };
         core.scheduler.run_until_idle()?;
@@ -807,6 +834,7 @@ impl Worker {
             parsers: ParserCache::default(),
             reasoning_budget: -1,
             adapters: HashSet::new(),
+            named_adapters: HashSet::new(),
             _lease: lease,
         }))
     }

@@ -11,7 +11,9 @@
 
 use std::path::Path;
 
-use retrograd_engine::{Engine, EngineMemory, StepOutput, StepRow, Trainer};
+use retrograd_engine::{
+    AdapterId, AdapterRowsInfo, Engine, EngineMemory, StepOutput, StepRow, Trainer,
+};
 
 use crate::InferError;
 use crate::kv::{KvCacheKey, mix};
@@ -125,6 +127,31 @@ pub trait DecodeBackend {
     fn active_adapter(&self) -> Result<Option<String>, InferError> {
         Ok(None)
     }
+    /// Whether the backend selects adapters per step row
+    /// ([`StepRow::adapter`]), so one step can mix them.
+    fn supports_row_adapters(&self) -> bool {
+        false
+    }
+    /// Loads a LoRA checkpoint of the base model as a per-row adapter under
+    /// a fresh id, never reused. Leaves the resident KV alone.
+    fn load_row_adapter(&mut self, path: &Path, scale: f32) -> Result<AdapterId, InferError> {
+        let _ = (path, scale);
+        Err(InferError::Failed(
+            "this backend does not support per-row adapters".into(),
+        ))
+    }
+    /// Unloads a per-row adapter; the caller has already dropped every slot
+    /// decoded under it.
+    fn unload_row_adapter(&mut self, id: AdapterId) -> Result<(), InferError> {
+        let _ = id;
+        Err(InferError::Failed(
+            "this backend does not support per-row adapters".into(),
+        ))
+    }
+    /// What the per-row adapters cost (zero without any).
+    fn adapter_rows_info(&self) -> Result<AdapterRowsInfo, InferError> {
+        Ok(AdapterRowsInfo::default())
+    }
 }
 
 /// A boxed backend is a backend: lets a caller type-erase the concrete
@@ -218,6 +245,22 @@ impl<T: DecodeBackend + ?Sized> DecodeBackend for Box<T> {
     fn active_adapter(&self) -> Result<Option<String>, InferError> {
         (**self).active_adapter()
     }
+
+    fn supports_row_adapters(&self) -> bool {
+        (**self).supports_row_adapters()
+    }
+
+    fn load_row_adapter(&mut self, path: &Path, scale: f32) -> Result<AdapterId, InferError> {
+        (**self).load_row_adapter(path, scale)
+    }
+
+    fn unload_row_adapter(&mut self, id: AdapterId) -> Result<(), InferError> {
+        (**self).unload_row_adapter(id)
+    }
+
+    fn adapter_rows_info(&self) -> Result<AdapterRowsInfo, InferError> {
+        (**self).adapter_rows_info()
+    }
 }
 
 impl DecodeBackend for Engine {
@@ -308,6 +351,22 @@ impl DecodeBackend for Engine {
 
     fn active_adapter(&self) -> Result<Option<String>, InferError> {
         Ok(Engine::active_adapter(self)?)
+    }
+
+    fn supports_row_adapters(&self) -> bool {
+        true
+    }
+
+    fn load_row_adapter(&mut self, path: &Path, scale: f32) -> Result<AdapterId, InferError> {
+        Ok(Engine::adapter_load(self, path, scale)?)
+    }
+
+    fn unload_row_adapter(&mut self, id: AdapterId) -> Result<(), InferError> {
+        Ok(Engine::adapter_unload(self, id)?)
+    }
+
+    fn adapter_rows_info(&self) -> Result<AdapterRowsInfo, InferError> {
+        Ok(Engine::adapter_rows_info(self)?)
     }
 }
 

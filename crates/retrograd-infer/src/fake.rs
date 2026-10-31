@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use retrograd_core::{SamplingParams, SamplingParamsV2};
 use retrograd_engine::{
-    EngineMemory, STATE_SEQ_FLAGS_PARTIAL_ONLY, StepOutRow, StepOutput, StepRow,
+    AdapterId, EngineMemory, RowAdapter, STATE_SEQ_FLAGS_PARTIAL_ONLY, StepOutRow, StepOutput,
+    StepRow,
 };
 
 use crate::kv::KvCacheKey;
@@ -61,6 +62,14 @@ pub struct FakeBackend {
     pub active_adapter: Option<String>,
     /// Every adapter operation, for tests: `("load", name)` / `("activate", name)`.
     pub adapter_ops: Vec<(String, Option<String>)>,
+    /// Whether the fake serves adapters per row (off by default, like a
+    /// backend without the capability).
+    pub row_adapters_enabled: bool,
+    /// Per-row adapters loaded, by id (ids are never reused).
+    pub row_adapters: HashMap<AdapterId, std::path::PathBuf>,
+    next_row_adapter: i32,
+    /// The adapter of every row of every `step` call, parallel to `steps`.
+    pub step_adapters: Vec<Vec<RowAdapter>>,
 }
 
 impl FakeBackend {
@@ -99,7 +108,17 @@ impl FakeBackend {
             adapters: HashMap::new(),
             active_adapter: None,
             adapter_ops: Vec::new(),
+            row_adapters_enabled: false,
+            row_adapters: HashMap::new(),
+            next_row_adapter: 1,
+            step_adapters: Vec::new(),
         }
+    }
+
+    /// Serves adapters per row.
+    pub fn with_row_adapters(mut self) -> Self {
+        self.row_adapters_enabled = true;
+        self
     }
 
     /// A partitioned pool: partial-range `seq_cp` is refused, like the
@@ -226,6 +245,17 @@ impl DecodeBackend for FakeBackend {
                 })
                 .collect(),
         );
+        self.step_adapters
+            .push(rows.iter().map(|row| row.adapter).collect());
+        for row in rows {
+            if let RowAdapter::Loaded(id) = row.adapter
+                && !self.row_adapters.contains_key(&id)
+            {
+                return Err(InferError::invalid(format!(
+                    "step row adapter {id} is not a loaded per-row adapter"
+                )));
+            }
+        }
         // Validate spans and capacity before mutating anything.
         let mut used = self.cells_used();
         for row in rows {
@@ -521,6 +551,38 @@ impl DecodeBackend for FakeBackend {
     fn active_adapter(&self) -> Result<Option<String>, InferError> {
         Ok(self.active_adapter.clone())
     }
+
+    fn supports_row_adapters(&self) -> bool {
+        self.row_adapters_enabled
+    }
+
+    fn load_row_adapter(
+        &mut self,
+        path: &std::path::Path,
+        _scale: f32,
+    ) -> Result<AdapterId, InferError> {
+        if !self.row_adapters_enabled {
+            return Err(InferError::Failed("per-row adapters are disabled".into()));
+        }
+        let id = AdapterId::new(self.next_row_adapter).expect("ids start at 1");
+        self.next_row_adapter = self
+            .next_row_adapter
+            .checked_add(1)
+            .ok_or_else(|| InferError::Overflow("per-row adapter ids are exhausted".into()))?;
+        self.row_adapters.insert(id, path.to_owned());
+        self.adapter_ops
+            .push(("load_row".into(), Some(id.to_string())));
+        Ok(id)
+    }
+
+    fn unload_row_adapter(&mut self, id: AdapterId) -> Result<(), InferError> {
+        self.row_adapters
+            .remove(&id)
+            .ok_or_else(|| InferError::invalid(format!("no per-row adapter {id}")))?;
+        self.adapter_ops
+            .push(("unload_row".into(), Some(id.to_string())));
+        Ok(())
+    }
 }
 
 /// A sampling-params builder for tests: temperature 1, top-p 1.
@@ -646,5 +708,21 @@ impl DecodeBackend for SharedFake {
 
     fn active_adapter(&self) -> Result<Option<String>, InferError> {
         self.lock().active_adapter()
+    }
+
+    fn supports_row_adapters(&self) -> bool {
+        self.lock().supports_row_adapters()
+    }
+
+    fn load_row_adapter(
+        &mut self,
+        path: &std::path::Path,
+        scale: f32,
+    ) -> Result<AdapterId, InferError> {
+        self.lock().load_row_adapter(path, scale)
+    }
+
+    fn unload_row_adapter(&mut self, id: AdapterId) -> Result<(), InferError> {
+        self.lock().unload_row_adapter(id)
     }
 }

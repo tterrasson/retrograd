@@ -27,9 +27,12 @@ pub struct Request {
     /// post-transformation distribution) even when `n_top_logprobs` is 0.
     pub logprobs: bool,
     /// The named adapter (a LoRA checkpoint of the same base model) this
-    /// request runs under, or `None` for the base model. The scheduler
-    /// serializes per adapter: one step never mixes adapters, and switching
-    /// the active adapter invalidates the KV (weights version bump).
+    /// request runs under, or `None` for the base model. An adapter the
+    /// backend serves per row shares its steps with every other per-row
+    /// adapter and the base model; any other adapter serializes: one step
+    /// never mixes it with anything, and switching the active adapter
+    /// invalidates the KV (weights version bump). Either way the adapter is
+    /// resolved once, at admission, and stays the request's to its end.
     pub adapter: Option<String>,
     /// Render special tokens as text in the emitted pieces (a template-derived
     /// tool-call parser needs the call delimiters to read anything).

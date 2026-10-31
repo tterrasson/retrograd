@@ -16,6 +16,12 @@
 //! bumps the version), the scheduler drops the tree: no prefix computed under
 //! other weights is ever reused.
 //!
+//! Per-row adapters share one tree but never a prefix: the KV of a path
+//! depends on the adapter it was decoded under, so each adapter id is a
+//! *namespace* with its own root, and a lookup only walks the namespace of
+//! its request. Namespace 0 holds the rows decoded under the context's own
+//! adapter set.
+//!
 //! Reuse rule: a node is reused at its exact boundary via a whole-slot copy -
 //! always safe. A *mid-sequence* reuse (hit shorter than the node's depth,
 //! partial-range copy) is only offered when the backend's pool is unified (a
@@ -61,8 +67,12 @@ impl KvCacheKey {
 /// a stale handle cannot release another node's pin.
 pub type PinId = u64;
 
-/// Index of the root node; it carries no edge, slot or snapshot.
+/// Index of the root of namespace 0; a root carries no edge, slot or
+/// snapshot, and every other reachable node has a non-empty edge.
 const ROOT: usize = 0;
+
+/// A prefix-tree namespace: the adapter a path was decoded under.
+pub type Namespace = u64;
 
 #[derive(Default)]
 struct Node {
@@ -136,6 +146,8 @@ pub struct PrefixTree {
     next_pin: PinId,
     clock: u64,
     snapshot_bytes: u64,
+    /// Roots of the namespaces other than 0 (which is `ROOT`).
+    roots: HashMap<Namespace, usize>,
 }
 
 impl PrefixTree {
@@ -147,7 +159,31 @@ impl PrefixTree {
             next_pin: 1,
             clock: 0,
             snapshot_bytes: 0,
+            roots: HashMap::new(),
         }
+    }
+
+    /// The root of `ns`, if the namespace holds anything.
+    fn root(&self, ns: Namespace) -> Option<usize> {
+        match ns {
+            0 => Some(ROOT),
+            _ => self.roots.get(&ns).copied(),
+        }
+    }
+
+    /// The root of `ns`, created on first use.
+    fn root_or_insert(&mut self, ns: Namespace) -> usize {
+        if let Some(root) = self.root(ns) {
+            return root;
+        }
+        let root = self.alloc(Node::default());
+        self.nodes[root].parent = root;
+        self.roots.insert(ns, root);
+        root
+    }
+
+    fn is_root(&self, node: usize) -> bool {
+        self.nodes[node].edge.is_empty()
     }
 
     fn tick(&mut self) -> u64 {
@@ -176,12 +212,13 @@ impl PrefixTree {
     /// (e.g. the resident span really is `[0, depth)`).
     pub fn longest_prefix(
         &self,
+        ns: Namespace,
         tokens: &[i32],
         partial_ok: bool,
         usable: &mut dyn FnMut(usize, usize) -> bool,
     ) -> Option<(usize, usize)> {
         let mut best: Option<(usize, usize)> = None;
-        let mut cur = ROOT;
+        let mut cur = self.root(ns)?;
         let mut pos = 0_usize;
         loop {
             let depth = self.nodes[cur].depth;
@@ -251,8 +288,8 @@ impl PrefixTree {
     /// Returns `(node, attached)`: `attached` is false when the end node
     /// already owned a slot, in which case the caller must release the passed
     /// slot itself.
-    pub fn insert(&mut self, tokens: &[i32], slot: i32) -> (usize, bool) {
-        let mut cur = ROOT;
+    pub fn insert(&mut self, ns: Namespace, tokens: &[i32], slot: i32) -> (usize, bool) {
+        let mut cur = self.root_or_insert(ns);
         let mut pos = 0_usize;
         while pos < tokens.len() {
             let first = tokens[pos];
@@ -293,7 +330,7 @@ impl PrefixTree {
                 }
             }
         }
-        let attached = cur != ROOT && self.nodes[cur].slot.is_none();
+        let attached = !self.is_root(cur) && self.nodes[cur].slot.is_none();
         if attached {
             self.nodes[cur].slot = Some(slot);
             self.nodes[cur].last_use = self.tick();
@@ -331,8 +368,8 @@ impl PrefixTree {
     }
 
     /// Pins the node at exactly `tokens` (which must exist in the tree).
-    pub fn pin_at(&mut self, tokens: &[i32]) -> Option<PinId> {
-        let node = self.find_exact(tokens)?;
+    pub fn pin_at(&mut self, ns: Namespace, tokens: &[i32]) -> Option<PinId> {
+        let node = self.find_exact(ns, tokens)?;
         Some(self.pin_node(node))
     }
 
@@ -355,8 +392,8 @@ impl PrefixTree {
         true
     }
 
-    fn find_exact(&self, tokens: &[i32]) -> Option<usize> {
-        let mut cur = ROOT;
+    fn find_exact(&self, ns: Namespace, tokens: &[i32]) -> Option<usize> {
+        let mut cur = self.root(ns)?;
         let mut pos = 0_usize;
         while pos < tokens.len() {
             let child = *self.nodes[cur].children.get(&tokens[pos])?;
@@ -367,7 +404,7 @@ impl PrefixTree {
             cur = child;
             pos += edge.len();
         }
-        (cur != ROOT).then_some(cur)
+        (!self.is_root(cur)).then_some(cur)
     }
 
     /// The LRU eviction candidate: an unpinned node owning a slot, least
@@ -403,7 +440,7 @@ impl PrefixTree {
         }
         self.nodes[node].slot = None;
         let mut child = node;
-        while child != ROOT {
+        while !self.is_root(child) {
             let current = &self.nodes[child];
             if !current.children.is_empty()
                 || current.slot.is_some()
@@ -444,13 +481,50 @@ impl PrefixTree {
         self.nodes[ROOT] = Node::default();
         self.free.clear();
         self.pins.clear();
+        self.roots.clear();
         self.snapshot_bytes = 0;
         slots
     }
 
-    /// Reachable nodes, the root excluded.
+    /// Drops every node of namespace `ns` (pinned or not) and its pins;
+    /// returns the slots the caller must `seq_rm`. The KV of an unloaded
+    /// adapter is reusable by no one.
+    pub fn drop_namespace(&mut self, ns: Namespace) -> Vec<i32> {
+        let Some(root) = self.root(ns) else {
+            return Vec::new();
+        };
+        let mut slots = Vec::new();
+        let mut dropped = Vec::new();
+        let mut stack: Vec<usize> = self.nodes[root].children.values().copied().collect();
+        while let Some(node) = stack.pop() {
+            stack.extend(self.nodes[node].children.values());
+            slots.extend(self.nodes[node].slot);
+            if let Some(snapshot) = &self.nodes[node].snapshot {
+                self.snapshot_bytes = self.snapshot_bytes.saturating_sub(snapshot.len() as u64);
+            }
+            dropped.push(node);
+        }
+        // Clear pins in linear time even when a namespace contains many nodes.
+        for &node in &dropped {
+            self.nodes[node].pins = 0;
+        }
+        self.pins.retain(|_, node| self.nodes[*node].pins != 0);
+        for node in dropped {
+            self.nodes[node] = Node::default();
+            self.free.push(node);
+        }
+        self.nodes[root].children.clear();
+        if root != ROOT {
+            self.roots.remove(&ns);
+            self.nodes[root] = Node::default();
+            self.free.push(root);
+        }
+        slots
+    }
+
+    /// Reachable nodes, the roots excluded.
     pub fn node_count(&self) -> usize {
-        self.nodes.len() - 1 - self.free.len()
+        self.nodes.len() - 1 - self.roots.len() - self.free.len()
     }
 
     pub fn resident_slot_count(&self) -> usize {
@@ -475,7 +549,7 @@ mod tests {
     fn tree_with(paths: &[&[i32]]) -> PrefixTree {
         let mut tree = PrefixTree::new();
         for (i, path) in paths.iter().enumerate() {
-            tree.insert(path, (i + 1) as i32);
+            tree.insert(0, path, (i + 1) as i32);
         }
         tree
     }
@@ -486,56 +560,59 @@ mod tests {
         let all = |_: usize, _: usize| true;
         // Exact boundary of the first path.
         assert_eq!(
-            tree.longest_prefix(&[1, 2, 3, 4, 5], true, &mut |n, h| all(n, h)),
+            tree.longest_prefix(0, &[1, 2, 3, 4, 5], true, &mut |n, h| all(n, h)),
             Some((1, 4))
         );
         // Diverges mid-edge of the second path [1,2,9,9]: with partial hits
         // allowed, the common prefix with that edge (depth 3) is offered; with
         // only exact boundaries, the best is depth 2.
         assert_eq!(
-            tree.longest_prefix(&[1, 2, 9, 8], true, &mut |n, h| all(n, h))
+            tree.longest_prefix(0, &[1, 2, 9, 8], true, &mut |n, h| all(n, h))
                 .map(|(_, h)| h),
             Some(3)
         );
         assert_eq!(
-            tree.longest_prefix(&[1, 2, 9, 8], false, &mut |n, h| all(n, h))
+            tree.longest_prefix(0, &[1, 2, 9, 8], false, &mut |n, h| all(n, h))
                 .map(|(_, h)| h),
             Some(2)
         );
         // Mid-sequence: prompt ends inside an edge -> partial hit at prompt len.
         let tree = tree_with(&[&[1, 2, 3, 4]]);
         assert_eq!(
-            tree.longest_prefix(&[1, 2], true, &mut |_, _| true),
+            tree.longest_prefix(0, &[1, 2], true, &mut |_, _| true),
             Some((1, 2))
         );
         // Without partial_ok, the mid-sequence hit is not offered.
-        assert_eq!(tree.longest_prefix(&[1, 2], false, &mut |_, _| true), None);
+        assert_eq!(
+            tree.longest_prefix(0, &[1, 2], false, &mut |_, _| true),
+            None
+        );
         // Diverging at a branch point with no matching child: the shared
         // prefix up to the branch is still a partial hit from a child slot.
         let tree = tree_with(&[&[1, 2, 3], &[1, 2, 9]]);
         let with_slots = |node: usize, _hit: usize| tree.nodes[node].slot.is_some();
         assert_eq!(
-            tree.longest_prefix(&[1, 2, 7], true, &mut |n, h| with_slots(n, h))
+            tree.longest_prefix(0, &[1, 2, 7], true, &mut |n, h| with_slots(n, h))
                 .map(|(_, h)| h),
             Some(2)
         );
         assert_eq!(
-            tree.longest_prefix(&[1, 2, 7], false, &mut |n, h| with_slots(n, h)),
+            tree.longest_prefix(0, &[1, 2, 7], false, &mut |n, h| with_slots(n, h)),
             None
         );
         // Unusable nodes are skipped for a deeper... here no deeper node.
         let tree = tree_with(&[&[1, 2, 3], &[1, 2, 3, 4]]);
-        let res = tree.longest_prefix(&[1, 2, 3, 4, 5], false, &mut |node, _| node != 2);
+        let res = tree.longest_prefix(0, &[1, 2, 3, 4, 5], false, &mut |node, _| node != 2);
         assert_eq!(res, Some((1, 3)));
     }
 
     #[test]
     fn insert_attaches_once_and_pin_protects_from_eviction() {
         let mut tree = tree_with(&[&[7, 7, 7]]);
-        let (node, attached) = tree.insert(&[7, 7, 7], 42);
+        let (node, attached) = tree.insert(0, &[7, 7, 7], 42);
         assert!(!attached, "the node already owned a slot");
         assert_eq!(tree.slot(node), Some(1));
-        let pin = tree.pin_at(&[7, 7, 7]).expect("node exists");
+        let pin = tree.pin_at(0, &[7, 7, 7]).expect("node exists");
         assert_eq!(
             tree.eviction_candidate(),
             None,
@@ -545,7 +622,7 @@ mod tests {
         assert_eq!(tree.eviction_candidate(), Some(node));
         assert!(!tree.unpin(pin), "double unpin refused");
         assert_eq!(
-            tree.pin_at(&[8, 8]),
+            tree.pin_at(0, &[8, 8]),
             None,
             "unknown prefix cannot be pinned"
         );
@@ -565,16 +642,16 @@ mod tests {
     #[test]
     fn remove_prunes_up_to_the_root_and_recycles_indices() {
         let mut tree = tree_with(&[&[1, 2], &[5, 6]]);
-        let (node, _) = tree.insert(&[1, 2], 9);
+        let (node, _) = tree.insert(0, &[1, 2], 9);
         tree.remove(node);
         // The top-level node is detached from the root, not left dangling.
         assert_eq!(tree.node_count(), 1);
         assert_eq!(
-            tree.longest_prefix(&[1, 2, 3], true, &mut |_, _| true),
+            tree.longest_prefix(0, &[1, 2, 3], true, &mut |_, _| true),
             None
         );
         // Its index is reused by the next insertion.
-        let (reused, attached) = tree.insert(&[7, 8], 3);
+        let (reused, attached) = tree.insert(0, &[7, 8], 3);
         assert!(attached);
         assert_eq!(reused, node);
         assert_eq!(tree.node_count(), 2);
@@ -589,5 +666,36 @@ mod tests {
         };
         assert!((stats.prefilled_ratio() - 0.1).abs() < 1e-12);
         assert_eq!(KvStats::default().prefilled_ratio(), 0.0);
+    }
+
+    #[test]
+    fn namespaces_share_no_prefix_and_drop_alone() {
+        let mut tree = PrefixTree::new();
+        tree.insert(0, &[1, 2, 3, 4], 1);
+        tree.insert(7, &[1, 2, 3, 4], 2);
+        tree.insert(7, &[1, 2, 9], 3);
+        let all = &mut |_: usize, _: usize| true;
+        let (base, hit) = tree
+            .longest_prefix(0, &[1, 2, 3, 4, 5], false, all)
+            .unwrap();
+        assert_eq!((tree.slot(base), hit), (Some(1), 4));
+        let (routed, hit) = tree
+            .longest_prefix(7, &[1, 2, 3, 4, 5], false, all)
+            .unwrap();
+        assert_eq!((tree.slot(routed), hit), (Some(2), 4));
+        assert_eq!(tree.longest_prefix(8, &[1, 2, 3, 4], true, all), None);
+        assert_eq!(tree.node_count(), 4);
+
+        let pin = tree.pin_at(7, &[1, 2, 9]).unwrap();
+        let mut slots = tree.drop_namespace(7);
+        slots.sort_unstable();
+        assert_eq!(slots, vec![2, 3]);
+        assert!(!tree.unpin(pin));
+        assert_eq!(tree.longest_prefix(7, &[1, 2, 3, 4], true, all), None);
+        assert_eq!(tree.node_count(), 1);
+        assert_eq!(tree.resident_slots().collect::<Vec<_>>(), vec![1]);
+        // Freed indices are recycled by the next insertion.
+        tree.insert(7, &[5, 6], 4);
+        assert_eq!(tree.node_count(), 2);
     }
 }

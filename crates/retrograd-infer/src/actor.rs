@@ -124,15 +124,33 @@ impl ActorHandle {
             .map_err(|_| InferError::Failed("the actor thread is gone".into()))
     }
 
-    /// Registers a named adapter (a LoRA checkpoint of the same base model) on
-    /// the backend, without applying it. The actor thread runs the load, so
-    /// the backend never crosses a thread boundary.
+    /// Registers an adapter (a LoRA checkpoint of the same base model) on the
+    /// backend, without applying it: per row when the backend can, as a
+    /// serialized named adapter otherwise (see [`Scheduler::load_adapter`]).
+    /// The actor thread runs the load, so the backend never crosses a thread
+    /// boundary.
+    ///
+    /// [`Scheduler::load_adapter`]: crate::Scheduler::load_adapter
     pub fn load_adapter(&self, name: &str, path: &Path) -> Result<(), InferError> {
         let (reply, rx) = mpsc::channel();
         self.inbox
             .try_send(Envelope::LoadAdapter {
                 name: name.to_owned(),
                 path: path.to_owned(),
+                reply,
+            })
+            .map_err(|_| InferError::Failed("the actor thread is not running".into()))?;
+        rx.recv()
+            .map_err(|_| InferError::Failed("the actor thread is gone".into()))?
+    }
+
+    /// Unloads the per-row adapter `name` once its live requests end; see
+    /// [`Scheduler::unload_adapter`](crate::Scheduler::unload_adapter).
+    pub fn unload_adapter(&self, name: &str) -> Result<(), InferError> {
+        let (reply, rx) = mpsc::channel();
+        self.inbox
+            .try_send(Envelope::UnloadAdapter {
+                name: name.to_owned(),
                 reply,
             })
             .map_err(|_| InferError::Failed("the actor thread is not running".into()))?;
