@@ -25,6 +25,7 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use common::serialize_models;
+use retrograd::trainer::{JudgeWeights, SnapshotSource};
 use retrograd::{
     Device, Engine, EngineConfig, EngineKvDtype, LoraConfig, RowAdapter, SamplingParams,
     StepOutput, StepRow, TargetSet, TrainConfig, Trainer,
@@ -270,8 +271,9 @@ fn a_trainer_snapshot_stays_frozen_while_the_adapter_trains() {
     );
     let judge = |trainer: &mut Trainer| {
         trainer
-            .with_generation_adapter(
-                RowAdapter::Loaded(snapshot),
+            .with_weights(
+                JudgeWeights::Snapshot,
+                Some(SnapshotSource::Adapter(snapshot)),
                 |model| model.generate(&prompt, &sampling(3)),
             )
             .expect("generate under the snapshot")

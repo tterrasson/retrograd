@@ -76,7 +76,7 @@ pub use provenance::{Origin, Provenance, Source};
 pub use recipe::{Allow, DataSpec, JudgeRef, Limits, Objective, Recipe, RewardRef};
 pub use resolver::{
     CoResident, InsufficientMemory, MemoryPlan, PlanSummary, PlanWarning, Resolution, ResolveError,
-    ResolveInput, assess, local_snapshot_judge, resolve,
+    ResolveInput, assess, local_snapshot_judge, resolve, snapshot_judge_on_generation_context,
 };
 pub use rules::AppliedRule;
 pub use tuning::{DERIVATIONS, Derivation};

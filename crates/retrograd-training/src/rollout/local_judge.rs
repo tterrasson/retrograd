@@ -14,7 +14,9 @@
 //! use ([`ScheduledJudgeModel`]): the judge's requests are admitted, packed
 //! and prefix-cached exactly like rollout requests, bounded by the same slot
 //! and token budgets, on the trainer's own thread and with no weight update
-//! able to interleave. A `snapshot` judge keeps its separate engine - the
+//! able to interleave. A `snapshot` judge generates on the run's own
+//! generation context, under a frozen per-row copy of the adapter; only when
+//! that context cannot serve it does it keep a separate engine, and the
 //! scheduler is then built over that engine, not over the run's.
 //!
 //! The pieces are kept apart on purpose. [`JudgeModel`] is the model surface
@@ -29,7 +31,7 @@ use std::path::{Path, PathBuf};
 use retrograd_agent_core::config::JudgeFailurePolicy;
 use retrograd_agent_core::trajectory::TrajectoryGroup;
 use retrograd_core::{Error, Result, SamplingParams, SamplingParamsV2, TrainConfig};
-use retrograd_engine::{JudgeWeights, Trainer};
+use retrograd_engine::{AdapterId, JudgeWeights, SnapshotSource, Trainer};
 use retrograd_infer::{
     DecodeBackend, Request, Scheduler, SchedulerOptions, TrainerBackend, run_requests_with,
 };
@@ -554,16 +556,41 @@ impl<M: JudgeModel + ?Sized> JudgeTransport for LocalJudgeTransport<'_, M> {
     }
 }
 
+/// Whether a `snapshot` judge's frozen policy can be a per-row adapter of the
+/// run's own generation context: the context must exist (multi-sequence or
+/// fast sampling), and the strategy must only generate - `pointwise_logprob`
+/// scores labels teacher-forced on the training context, which per-row
+/// adapters never reach. The memory planner reads the same rule.
+pub fn snapshot_on_generation_context(training: &TrainConfig, pointwise: bool) -> bool {
+    !pointwise
+        && (training.effective_generation_concurrency() > 1
+            || training.fast_generation_context
+            || training.generation_batch != 0)
+}
+
+/// Where the frozen copy lives.
+enum Frozen {
+    /// A per-row adapter of the run's generation context, once taken.
+    Adapter(Option<AdapterId>),
+    /// A separate forward-only engine on the same GGUF, with the snapshot
+    /// exported to `dir` and loaded on top.
+    Engine { engine: Box<Trainer>, dir: PathBuf },
+}
+
 /// The frozen copy of the policy a `snapshot` judge reads.
 ///
-/// Version 1 is one more copy of the base weights plus the trained adapter,
-/// exported to a file every `refresh_every` updates and loaded into a
-/// forward-only engine owned here. The engine is never the run's anchor:
-/// replacing that would change the KL term, so the snapshot is a separate
-/// `Trainer` and `with_weights` hands it over explicitly.
+/// Wherever it can, the snapshot is a second adapter on the run's own base:
+/// the trained adapter's tensors are copied, device to device and without a
+/// file, into a per-row adapter of the generation context, and the judge
+/// generates under it - no second copy of the base weights, and the trained
+/// adapter is never toggled. Otherwise (a `pointwise_logprob` strategy, or a
+/// run with no dedicated generation context) it is one more copy of the base
+/// weights in a forward-only engine owned here, loaded with the adapter
+/// exported every `refresh_every` updates. Either way it is never the run's
+/// anchor: replacing that would change the KL term, so `with_weights` is
+/// handed the snapshot explicitly.
 pub struct SnapshotJudge {
-    engine: Trainer,
-    dir: PathBuf,
+    frozen: Frozen,
     refresh_every: u32,
     next_refresh: u32,
     version: u64,
@@ -571,14 +598,15 @@ pub struct SnapshotJudge {
 }
 
 impl SnapshotJudge {
-    /// Builds the judge engine from the same GGUF the run trains on. Refused
-    /// when the run trains base weights: a snapshot copies *the adapter*, and
-    /// there is no frozen base to copy it onto.
+    /// Refused when the run trains base weights: a snapshot copies *the
+    /// adapter*, and there is no frozen base to copy it onto. `dir` is where
+    /// a separate engine's exports go; the per-row form writes no file.
     pub fn new(
         model_path: impl AsRef<Path>,
         training: &TrainConfig,
         refresh_every: u32,
-        dir: impl Into<PathBuf>,
+        dir: Option<PathBuf>,
+        pointwise: bool,
     ) -> Result<Self> {
         if refresh_every == 0 {
             return Err(Error::config(
@@ -592,31 +620,41 @@ impl SnapshotJudge {
                  weights = \"reference\", or wait for a full frozen copy of the base",
             ));
         }
-        let dir = dir.into();
-        std::fs::create_dir_all(&dir)?;
-        // Forward-only, like the reference anchor: no adapter yet, no backward
-        // graph, no optimizer state - weights plus KV, and the rest of the
-        // geometry travels from the run so the judge scores the same shapes.
-        let engine = Trainer::new(
-            model_path,
-            TrainConfig {
-                device: training.device,
-                n_ctx: training.n_ctx,
-                n_batch: training.n_batch,
-                n_ubatch: training.n_ubatch,
-                n_seq_max: training.n_seq_max,
-                generation_concurrency: training.generation_concurrency,
-                generation_batch: training.generation_batch,
-                fast_generation_context: training.fast_generation_context,
-                generation_kv_dtype: training.generation_kv_dtype,
-                threads: training.threads,
-                kv_dtype: training.kv_dtype,
-                ..TrainConfig::default()
-            },
-        )?;
+        let frozen = if snapshot_on_generation_context(training, pointwise) {
+            Frozen::Adapter(None)
+        } else {
+            let dir = dir.ok_or_else(|| {
+                Error::config("snapshot judge weights need a directory for the frozen adapters")
+            })?;
+            std::fs::create_dir_all(&dir)?;
+            // Forward-only, like the reference anchor: no adapter yet, no
+            // backward graph, no optimizer state - weights plus KV, and the
+            // rest of the geometry travels from the run so the judge scores
+            // the same shapes.
+            let engine = Trainer::new(
+                model_path,
+                TrainConfig {
+                    device: training.device,
+                    n_ctx: training.n_ctx,
+                    n_batch: training.n_batch,
+                    n_ubatch: training.n_ubatch,
+                    n_seq_max: training.n_seq_max,
+                    generation_concurrency: training.generation_concurrency,
+                    generation_batch: training.generation_batch,
+                    fast_generation_context: training.fast_generation_context,
+                    generation_kv_dtype: training.generation_kv_dtype,
+                    threads: training.threads,
+                    kv_dtype: training.kv_dtype,
+                    ..TrainConfig::default()
+                },
+            )?;
+            Frozen::Engine {
+                engine: Box::new(engine),
+                dir,
+            }
+        };
         Ok(Self {
-            engine,
-            dir,
+            frozen,
             refresh_every,
             next_refresh: 0,
             version: 0,
@@ -624,11 +662,31 @@ impl SnapshotJudge {
         })
     }
 
-    pub fn engine(&mut self) -> &mut Trainer {
-        &mut self.engine
+    /// Whether the snapshot is a per-row adapter of the run's own generation
+    /// context rather than a separate engine.
+    pub fn on_generation_context(&self) -> bool {
+        matches!(self.frozen, Frozen::Adapter(_))
     }
 
-    /// The content fingerprint of the frozen adapter currently loaded.
+    /// The snapshot as [`Trainer::with_weights`] takes it; `None` before the
+    /// first refresh.
+    pub fn source(&mut self) -> Option<SnapshotSource<'_>> {
+        match &mut self.frozen {
+            Frozen::Adapter(id) => id.map(SnapshotSource::Adapter),
+            Frozen::Engine { engine, .. } => Some(SnapshotSource::Engine(engine)),
+        }
+    }
+
+    /// The separate engine holding the snapshot, when it is one.
+    pub fn engine(&mut self) -> Option<&mut Trainer> {
+        match &mut self.frozen {
+            Frozen::Engine { engine, .. } => Some(engine),
+            Frozen::Adapter(_) => None,
+        }
+    }
+
+    /// The identity of the frozen weights currently loaded: unique per
+    /// refresh, so a verdict cache keyed on it never reads a previous one.
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
     }
@@ -637,14 +695,24 @@ impl SnapshotJudge {
         self.version
     }
 
-    /// Freezes the policy's current adapter into the judge engine. The peak is
-    /// one adapter on disk plus the two engines already resident (the run's
-    /// and this one's base copy); the previous export is superseded, not kept.
+    /// Freezes the policy's current adapter. A per-row snapshot replaces the
+    /// previous one in place (it is unloaded before the copy is taken, so the
+    /// peak holds one); an engine snapshot goes through one adapter on disk,
+    /// the previous export superseded, not kept.
     pub fn refresh(&mut self, policy: &mut Trainer) -> Result<()> {
-        let path = self.dir.join("judge-snapshot.gguf");
-        policy.save_lora(&path)?;
-        self.engine.load_lora(&path)?;
-        self.fingerprint = retrograd_checkpoint::fingerprint_file(&path)?;
+        match &mut self.frozen {
+            Frozen::Adapter(id) => {
+                let taken = policy.generation_adapter_snapshot(id.take(), 1.0)?;
+                *id = Some(taken);
+                self.fingerprint = format!("generation-adapter-{}", self.version + 1);
+            }
+            Frozen::Engine { engine, dir } => {
+                let path = dir.join("judge-snapshot.gguf");
+                policy.save_lora(&path)?;
+                engine.load_lora(&path)?;
+                self.fingerprint = retrograd_checkpoint::fingerprint_file(&path)?;
+            }
+        }
         self.version += 1;
         Ok(())
     }
@@ -752,14 +820,14 @@ impl LocalJudge {
                 "the local judge needs a positive batch length (training.generation_concurrency)",
             ));
         }
+        let pointwise = ruler.strategy == retrograd_judge::JudgeStrategy::PointwiseLogprob;
         let snapshot = match weights {
             JudgeWeights::Snapshot => Some(SnapshotJudge::new(
                 model_path,
                 training,
                 refresh_every,
-                snapshot_dir.ok_or_else(|| {
-                    Error::config("snapshot judge weights need a directory for the frozen adapters")
-                })?,
+                snapshot_dir,
+                pointwise,
             )?),
             _ => None,
         };
@@ -793,7 +861,6 @@ impl LocalJudge {
                 ),
             ),
         };
-        let pointwise = ruler.strategy == retrograd_judge::JudgeStrategy::PointwiseLogprob;
         let judge =
             RulerJudge::with_cache(ruler, mode, identity).map_err(retrograd_core::Error::from)?;
         Ok(Self {
@@ -858,8 +925,8 @@ impl LocalJudge {
         // own template: verified once, here, under the selected weights, and
         // refused for the whole run rather than per group when they are not.
         if self.pointwise && !self.labels_verified {
-            let snapshot_engine = self.snapshot.as_mut().map(SnapshotJudge::engine);
-            trainer.with_weights(self.weights, snapshot_engine, |model| {
+            let snapshot = self.snapshot.as_mut().and_then(SnapshotJudge::source);
+            trainer.with_weights(self.weights, snapshot, |model| {
                 verify_pointwise_labels(model)
             })?;
             self.labels_verified = true;
@@ -890,16 +957,15 @@ impl LocalJudge {
         let training = &self.training;
         let pointwise = self.pointwise;
         // One weights selection for the whole judging session, not one per
-        // group: before multi-LoRA a scheduler batch is homogeneous (one step
-        // never mixes adapters), so every request of the update runs under the
-        // same weights - `base` included - and the snapshot's version is
-        // immutable for the whole update. The scheduler lives and dies inside
-        // this call, on the trainer's own thread, so no weight update can
-        // interleave with a judge request.
-        let snapshot_engine = self.snapshot.as_mut().map(SnapshotJudge::engine);
+        // group: every request of the update runs under the same weights -
+        // `base` included - and the snapshot's version is immutable for the
+        // whole update. The scheduler lives and dies inside this call, on the
+        // trainer's own thread, so no weight update can interleave with a
+        // judge request.
+        let snapshot = self.snapshot.as_mut().and_then(SnapshotJudge::source);
         // The protocol speaks the agent façade; the training loop speaks the
         // core one, and the two convert at this boundary with the class kept.
-        let results = trainer.with_weights(weights, snapshot_engine, |model| {
+        let results = trainer.with_weights(weights, snapshot, |model| {
             model.with_reasoning_budget(budget, |model| {
                 // Label scoring uses the training context, not the generation
                 // pool. Keep its own context limit and avoid initializing a
@@ -914,9 +980,10 @@ impl LocalJudge {
                 }
                 // The judge's requests go through the same step-wise
                 // scheduler as the rollouts, over the same backend (the
-                // run's trainer for policy/base/reference, the snapshot's
-                // own engine for `snapshot`), sized like the rollouts':
-                // same slots, same generation batch, same admission mode.
+                // run's trainer - for `snapshot`, with the snapshot adapter
+                // selected on its generation context, or the snapshot's own
+                // engine when it has one), sized like the rollouts': same
+                // slots, same generation batch, same admission mode.
                 let layout = RowLayout::resolve(model, training)?;
                 let options = scheduler_options(
                     layout.rollout_admission,

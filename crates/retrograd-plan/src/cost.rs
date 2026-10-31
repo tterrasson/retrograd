@@ -808,7 +808,8 @@ pub fn co_resident_model_bytes(model: &ModelInfo, training: &TrainConfig) -> u64
     co_resident_model_bytes_at(model, training, training.n_ctx)
 }
 
-/// Device bytes a co-resident snapshot judge holds beside the run: one more
+/// Device bytes a snapshot judge held by a separate engine adds beside the
+/// run (see [`snapshot_on_generation_context`] for when it is one): one more
 /// copy of the base weights with its training and generation KV, plus the
 /// frozen adapter it loads on top. Forward-only like a reference anchor, so
 /// no backward graph and no optimizer state - but the adapter is *added*
@@ -839,6 +840,32 @@ pub fn local_judge_snapshot_bytes(
         ])
     });
     total([base, generation_kv, adapter])
+}
+
+/// Device bytes a snapshot judge holds when it is a per-row adapter of the
+/// run's own generation context: the frozen copy of the adapter in its
+/// training dtype, plus two F32 slots in the stack (the frozen adapter and
+/// the null adapter). The small scale tensors and allocation alignment are
+/// covered by the planner's headroom. No second copy of the base weights and no KV of its own: the
+/// judge shares the run's generation pool. The previous snapshot is unloaded
+/// before the next is copied, so a refresh has no peak beyond this.
+pub fn local_judge_snapshot_adapter_bytes(model: &ModelInfo, lora: Option<&LoraConfig>) -> u64 {
+    lora.map_or(0, |lora| {
+        product([
+            trainable_parameters(model, Some(lora)),
+            lora_element_bytes(lora.dtype) + 8,
+        ])
+    })
+}
+
+/// Whether a snapshot judge is a per-row adapter of the run's generation
+/// context rather than a separate engine: the context must exist, and the
+/// strategy must only generate (`pointwise_logprob` scores on the training
+/// context, which per-row adapters never reach). Mirrors the training loop's
+/// own rule.
+pub fn snapshot_on_generation_context(training: &TrainConfig, pointwise: bool) -> bool {
+    let concurrency = u64::from(training.effective_generation_concurrency().max(1));
+    !pointwise && has_generation_context(training, concurrency)
 }
 
 /// Like [`co_resident_model_bytes`] but at a context width other than the
@@ -1788,6 +1815,16 @@ mod tests {
             inherited(GenerationKvDtype::Q8_0),
             inherited(GenerationKvDtype::F16)
         );
+    }
+
+    #[test]
+    fn snapshot_budget_includes_the_null_stack_slot() {
+        let model = tiny_model();
+        let lora = LoraConfig::qv(8, 16.0);
+        let factors = trainable_parameters(&model, Some(&lora));
+        let copy = factors * lora_element_bytes(lora.dtype);
+        let one_f32_slot = factors * 4;
+        assert!(local_judge_snapshot_adapter_bytes(&model, Some(&lora)) >= copy + 2 * one_f32_slot);
     }
 
     #[test]

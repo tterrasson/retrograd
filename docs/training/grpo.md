@@ -178,23 +178,33 @@ max_new_tokens = 1024             # the judge's own generation budget
 ```
 
 - `weights = "snapshot"` (default) judges with a frozen copy of the policy,
-  exported every `refresh_every` updates into a separate engine and scored
-  under one immutable version per update. `"base"` uses the frozen base model,
+  refreshed every `refresh_every` updates and immutable for a whole update.
+  `"base"` uses the frozen base model,
   `"reference"` the run's KL anchor, `"policy"` the weights being trained
   (experimental: every verdict comes from weights that just moved).
-- A snapshot judge holds a second engine (base copy + adapter) for the whole
-  run: the planner charges it to the device memory budget. Its verdict cache
-  is memory-only and re-keyed on the snapshot fingerprint at each refresh;
+- A snapshot judge is a second adapter on the run's own base whenever the run
+  has a dedicated generation context (more than one generation sequence, or
+  the fast generation context) and the strategy generates: the trained
+  adapter is copied in memory, without a file, and the judge generates under
+  the copy while the trained adapter stays applied to everything else. Its
+  cost is the copy plus an F32 stack with a null slot and a snapshot slot,
+  charged to the device memory
+  budget; a refresh frees the old copy before taking the new one. A
+  `pointwise_logprob` judge, whose label scores run on the training context,
+  or a run without a generation context, keeps a separate engine instead (base
+  copy + adapter, exported to `snapshot_dir`), which the planner charges as
+  such. The verdict cache is memory-only and re-keyed on each refresh;
   `policy` disables the cache entirely, since the weights move under it.
 - The judge's requests go through the same step-wise scheduler
   (`retrograd-infer`) as the rollouts: one weights selection per update, so
   the judge's batch is homogeneous, no weight update can interleave with a
   judge request, and a listwise group is judged only once complete. `base`
   uses the run's own engine; `reference` uses the attached anchor when one
-  exists, otherwise the base; `snapshot` keeps its separate engine. The
-  scheduler never mixes adapters in one step. Sharing one
-  batch between different adapters (e.g. `policy` next to rollouts) needs
-  per-line multi-LoRA, which does not exist yet.
+  exists, otherwise the base; `snapshot` runs on the run's own generation
+  context under its frozen adapter (or on its separate engine). The training
+  context itself stays single-adapter: per-row adapters exist on the
+  generation context only, so teacher-forced scoring (KL, label logprobs)
+  never sees them.
 - `strategy = { mode = "pointwise_logprob" }` skips generation entirely: each
   answer is scored by the log-probability the judge model puts on `yes` vs
   `no` after a fixed question. Deterministic, and local-only — an

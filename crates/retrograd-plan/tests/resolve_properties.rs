@@ -981,16 +981,22 @@ fn a_local_snapshot_judge_counts_a_second_engine_in_the_memory_budget() {
     let policy_bytes = policy.plan.memory.resources.device_peak_bytes;
     assert!(
         snapshot_bytes > http_bytes,
-        "a snapshot judge must add a second engine: {snapshot_bytes} vs {http_bytes}"
+        "a snapshot judge must add its frozen weights: {snapshot_bytes} vs {http_bytes}"
     );
     assert_eq!(
         policy_bytes, http_bytes,
         "the policy weights are the run's own: nothing co-resident"
     );
-    // The difference is exactly the judge engine: base copy + KV + adapter.
+    // The difference is exactly the frozen snapshot: a per-row adapter on the
+    // run's generation context when it has one, a judge engine (base copy +
+    // KV + adapter) otherwise.
     let training = &snapshot.config.training;
     let lora = snapshot.config.lora.as_ref().map(|lora| &lora.config);
-    let expected = retrograd_plan::cost::local_judge_snapshot_bytes(&model, training, lora);
+    let expected = if retrograd_plan::snapshot_judge_on_generation_context(&snapshot.config) {
+        retrograd_plan::cost::local_judge_snapshot_adapter_bytes(&model, lora)
+    } else {
+        retrograd_plan::cost::local_judge_snapshot_bytes(&model, training, lora)
+    };
     assert_eq!(snapshot_bytes - http_bytes, expected);
 }
 

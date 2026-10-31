@@ -512,7 +512,7 @@ pub use step::{
     StepRow,
 };
 pub use trainer::{
-    JudgeWeights, SampledRow, VOCABULARY_WITNESSES, VocabularyMismatch,
+    JudgeWeights, SampledRow, SnapshotSource, VOCABULARY_WITNESSES, VocabularyMismatch,
     parse_assistant_output, parse_assistant_output_partial, render_chat_template_source,
     tool_call_parser_from_source,
 };

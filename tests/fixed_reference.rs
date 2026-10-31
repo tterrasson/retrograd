@@ -493,21 +493,28 @@ fn judge_snapshots_refresh_without_replacing_the_reference_or_accumulating_files
     trainer.attach_reference(&model, &training, None).unwrap();
     let reference = trainer.reference_fingerprint().unwrap();
     let sequence = tokens(&trainer);
-    let mut snapshot = SnapshotJudge::new(&model, &training, 2, tmp.path()).unwrap();
+    // Teacher-forced scoring runs on the training context, which a per-row
+    // snapshot never reaches: the pointwise form keeps a separate engine.
+    let mut snapshot =
+        SnapshotJudge::new(&model, &training, 2, Some(tmp.path().to_path_buf()), true).unwrap();
+    assert!(!snapshot.on_generation_context());
     snapshot.maybe_refresh(0, &mut trainer).unwrap();
-    let frozen = snapshot.engine().score_tokens(&sequence).unwrap();
+    let frozen = snapshot.engine().unwrap().score_tokens(&sequence).unwrap();
     assert_eq!(snapshot.version(), 1);
     snapshot.maybe_refresh(1, &mut trainer).unwrap();
     assert_eq!(snapshot.version(), 1);
     let mut training_row = trainer.tokenize_text(&TEXT.repeat(8)).unwrap();
     training_row.truncate(257);
     trainer.train_tokens(&training_row).unwrap();
-    assert_eq!(snapshot.engine().score_tokens(&sequence).unwrap(), frozen);
+    assert_eq!(
+        snapshot.engine().unwrap().score_tokens(&sequence).unwrap(),
+        frozen
+    );
     snapshot.maybe_refresh(2, &mut trainer).unwrap();
     assert_eq!(snapshot.version(), 2);
     let current = trainer.score_tokens(&sequence).unwrap();
     let refreshed = trainer
-        .with_weights(JudgeWeights::Snapshot, Some(snapshot.engine()), |engine| {
+        .with_weights(JudgeWeights::Snapshot, snapshot.source(), |engine| {
             engine.score_tokens(&sequence)
         })
         .unwrap();

@@ -1,4 +1,5 @@
 use super::*;
+use crate::step::{AdapterId, RowAdapter};
 
 /// Which weights a forward-only caller reads: a judge is the main user, but
 /// any in-process consumer that must not disturb the training state picks its
@@ -14,11 +15,23 @@ pub enum JudgeWeights {
     /// otherwise the base model with the adapter disabled. Distinct from
     /// [`JudgeWeights::Base`] whenever the anchor is another file.
     Reference,
-    /// A frozen snapshot of the policy, held by a *separate* engine passed as
-    /// `snapshot` to [`Trainer::with_weights`]. Never served by swapping the
-    /// anchor of this trainer: there is only one anchor and replacing it would
-    /// change the run's KL term.
+    /// A frozen snapshot of the policy, handed to [`Trainer::with_weights`]
+    /// as a [`SnapshotSource`]. Never served by swapping the anchor of this
+    /// trainer: there is only one anchor and replacing it would change the
+    /// run's KL term.
     Snapshot,
+}
+
+/// Where a `snapshot` judge's frozen policy lives.
+pub enum SnapshotSource<'a> {
+    /// A per-row adapter of this trainer's generation context
+    /// ([`Trainer::generation_adapter_snapshot`]): the same base weights,
+    /// selected for the generation context only - its generators and step
+    /// rows, not the teacher-forced scorers of the training context.
+    Adapter(AdapterId),
+    /// A separate forward-only engine with the snapshot loaded, for what the
+    /// generation context cannot serve (teacher-forced scoring).
+    Engine(&'a mut Trainer),
 }
 
 impl Trainer {
@@ -27,28 +40,30 @@ impl Trainer {
     ///
     /// `Policy` needs no switch. `Base` and `Reference` disable the adapter for
     /// the duration (see [`Trainer::with_base_model`] and
-    /// [`Trainer::with_reference_policy`]). `Snapshot` runs `operation` on the
-    /// separate frozen engine handed in as `snapshot`, which the caller owns
-    /// and refreshes; this trainer is not touched at all.
+    /// [`Trainer::with_reference_policy`]). `Snapshot` runs `operation` under
+    /// the frozen copy the caller owns and refreshes: on this trainer with the
+    /// snapshot adapter selected on the generation context, or on the
+    /// separate engine that holds it; the trained adapter is never touched.
     pub fn with_weights<T>(
         &mut self,
         weights: JudgeWeights,
-        snapshot: Option<&mut Trainer>,
+        snapshot: Option<SnapshotSource<'_>>,
         operation: impl FnOnce(&mut Self) -> Result<T>,
     ) -> Result<T> {
         match weights {
             JudgeWeights::Policy => operation(self),
             JudgeWeights::Base => self.with_base_model(operation),
             JudgeWeights::Reference => self.with_reference_policy(operation),
-            JudgeWeights::Snapshot => {
-                let engine = snapshot.ok_or_else(|| {
-                    Error::invalid(
-                        "snapshot judge weights need the frozen judge engine: load one and pass \
-                         it to with_weights",
-                    )
-                })?;
-                operation(engine)
-            }
+            JudgeWeights::Snapshot => match snapshot {
+                Some(SnapshotSource::Adapter(id)) => {
+                    self.with_generation_adapter(RowAdapter::Loaded(id), operation)
+                }
+                Some(SnapshotSource::Engine(engine)) => operation(engine),
+                None => Err(Error::invalid(
+                    "snapshot judge weights need the frozen snapshot: take one and pass it \
+                         to with_weights",
+                )),
+            },
         }
     }
 

@@ -164,7 +164,8 @@ pub(super) fn workload_of(input: &ResolveInput<'_>, config: &RunConfig) -> Workl
 }
 
 /// Whether the document declares an in-process judge on a frozen snapshot: the
-/// one local-judge mode that holds a second engine for the whole run. `base`
+/// one local-judge mode that holds frozen weights for the whole run - a
+/// second adapter, or a second engine. `base`
 /// and `reference` reuse weights the run already loaded, and `policy` adds
 /// nothing, so none of them costs a co-resident model.
 pub fn local_snapshot_judge(config: &RunConfig) -> bool {
@@ -181,6 +182,22 @@ pub fn local_snapshot_judge(config: &RunConfig) -> bool {
         .local
         .as_ref()
         .is_some_and(|local| local.weights == retrograd_spec::judge::LocalJudgeWeights::Snapshot)
+}
+
+/// Whether the document's snapshot judge is a per-row adapter of the run's
+/// generation context (see [`crate::cost::snapshot_on_generation_context`]).
+pub fn snapshot_judge_on_generation_context(config: &RunConfig) -> bool {
+    let retrograd_config::Algorithm::Grpo(grpo) = &config.algorithm else {
+        return false;
+    };
+    let Some(judge) = &grpo.judge else {
+        return false;
+    };
+    let retrograd_spec::judge::JudgeConfig::Ruler { config: ruler } = &judge.config else {
+        return false;
+    };
+    let pointwise = ruler.strategy == retrograd_spec::judge::JudgeStrategy::PointwiseLogprob;
+    crate::cost::snapshot_on_generation_context(&config.training, pointwise)
 }
 
 /// The models a run holds beside the one being sized, as geometry the caller
@@ -222,14 +239,16 @@ pub(super) fn co_resident_bytes(config: &RunConfig, models: CoResident<'_>) -> u
         ),
         _ => 0,
     };
-    // A local snapshot judge is a second engine on the same model: base copy,
-    // its generation KV, and the frozen adapter - all resident for the run.
+    // A local snapshot judge is a frozen adapter beside the run's own on its
+    // generation context when it can be, and otherwise a second engine on the
+    // same model: base copy, its generation KV, and the frozen adapter - all
+    // resident for the run.
+    let lora = config.lora.as_ref().map(|lora| &lora.config);
     let judge = match models.judge_snapshot {
-        Some(model) => crate::cost::local_judge_snapshot_bytes(
-            model,
-            &config.training,
-            config.lora.as_ref().map(|lora| &lora.config),
-        ),
+        Some(model) if snapshot_judge_on_generation_context(config) => {
+            crate::cost::local_judge_snapshot_adapter_bytes(model, lora)
+        }
+        Some(model) => crate::cost::local_judge_snapshot_bytes(model, &config.training, lora),
         None => 0,
     };
     teacher.saturating_add(reference).saturating_add(judge)
