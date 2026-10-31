@@ -1061,9 +1061,17 @@ mod tests {
         let mut endless = request();
         endless.sampling.max_new_tokens = 60_000;
         let job = session.open(spec(None), endless).await.unwrap();
-        // Wait until the request is admitted and decoding.
+        // Wait until the request is admitted and decoding. The stream is
+        // drained while waiting, as a reading client would: a full bounded
+        // stream backpressures the serving thread for up to the slow-client
+        // timeout, and the stats answers this loop polls would time out
+        // behind that backpressure instead of reporting the admission.
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !session.stats().await.is_some_and(|stats| stats.live == 1) {
+        loop {
+            while job.stream.try_recv().is_some() {}
+            if session.stats().await.is_some_and(|stats| stats.live == 1) {
+                break;
+            }
             assert!(Instant::now() < deadline, "the request was never admitted");
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
