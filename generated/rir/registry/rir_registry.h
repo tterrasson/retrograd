@@ -257,3 +257,7 @@ GGML_API const uint32_t rir_op_policy_count;
 #ifdef __cplusplus
 }
 #endif
+
+// The largest step, in tokens (`ne11` of a MUL_MAT), still in the decode
+// regime. A site that serves one regime only offers a node within it.
+#define RIR_DECODE_MAX_TOKENS 32

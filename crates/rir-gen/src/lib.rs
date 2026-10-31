@@ -44,6 +44,9 @@ pub enum GenError {
     /// emitter" a checked property rather than an assumption.
     #[error("no emitter for backend {0}")]
     NoEmitter(&'static str),
+    /// A model profile that contradicts the catalogue it is published in.
+    #[error("model profiles: {0}")]
+    Profile(#[from] rir_core::catalog::ProfileError),
 }
 
 /// Everything one registry entry produces: a subdirectory name under
@@ -232,7 +235,7 @@ pub fn generate_all() -> Result<Vec<GeneratedKernel>, GenError> {
 
     out.push(GeneratedKernel {
         name: CATALOG_DIR.to_string(),
-        files: vec![(CATALOG_FILE.to_string(), emit_catalog(&refs, &specs))],
+        files: vec![(CATALOG_FILE.to_string(), emit_catalog(&refs, &specs)?)],
     });
 
     // The Metal aggregate: the fork includes this one

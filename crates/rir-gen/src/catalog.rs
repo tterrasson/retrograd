@@ -11,10 +11,14 @@ use crate::{GenError, MSL_HEADER_LINES};
 /// reconstructed here: policies and domain declarations come directly from
 /// `IntegrationSpec`, while variant metadata is read from the manifest emitter
 /// fed by the same `LoopKernel`.
+///
+/// The model profiles are `rir_core::profiles::reference()`, published as
+/// they are and checked against the rows just built: a selection naming a
+/// variant this catalogue does not carry refuses the generation.
 pub fn emit_catalog(
     variants: &[(&rir_lower::LoopKernel, &rir_emit::IntegrationSpec)],
     specs: &[rir_emit::IntegrationSpec],
-) -> String {
+) -> Result<String, GenError> {
     use std::collections::BTreeMap;
 
     use rir_core::catalog::{
@@ -188,7 +192,9 @@ pub fn emit_catalog(
                 .then(a.variant_id.cmp(&b.variant_id))
         });
     }
-    let content = serde_json::to_vec(&(SCHEMA_VERSION, &kernels)).expect("catalog content");
+    let profiles = rir_core::profiles::reference();
+    let content =
+        serde_json::to_vec(&(SCHEMA_VERSION, &kernels, &profiles)).expect("catalog content");
     let digest = Sha256::digest(content);
     let fingerprint = format!(
         "sha256:{}",
@@ -201,11 +207,13 @@ pub fn emit_catalog(
         schema_version: SCHEMA_VERSION,
         fingerprint,
         kernels,
+        profiles,
     };
-    format!(
+    catalog.check_profiles()?;
+    Ok(format!(
         "{}\n",
         serde_json::to_string_pretty(&catalog).expect("catalog JSON")
-    )
+    ))
 }
 
 /// Concatenates the production MSL bodies into the file `ggml-metal.metal`

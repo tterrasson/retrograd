@@ -14,6 +14,12 @@
     X(cumsum_blocked) \
     X(cumsum_strided) \
     X(cumsum_tiled) \
+    X(mul_mat_vec_q8_0) \
+    X(mul_mat_vec_q8_0_cols4) \
+    X(mul_mat_vec_q4_K) \
+    X(mul_mat_vec_q4_K_cols4) \
+    X(mul_mat_vec_q6_K) \
+    X(mul_mat_vec_q6_K_cols4) \
     X(out_prod) \
     X(out_prod_q4_0) \
     X(out_prod_q4_1) \

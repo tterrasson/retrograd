@@ -505,6 +505,549 @@ kernel void rir_cumsum_tiled(
     }
 }
 
+// ---- mul_mat_vec_q8_0 ----
+struct rir_mul_mat_vec_q8_0_params {
+    uint n_row;
+    uint n_plane;
+    uint n_col;
+    uint a_nb0;
+    uint a_nb1;
+    uint b_nb0;
+    uint b_nb1;
+    uint dst_nb0;
+    uint dst_nb1;
+};
+
+kernel void rir_mul_mat_vec_q8_0(
+    device const uchar* a [[buffer(0)]],
+    device const uchar* b [[buffer(1)]],
+    device uchar* dst [[buffer(2)]],
+    constant rir_mul_mat_vec_q8_0_params& pc [[buffer(3)]],
+    uint3 group_id [[threadgroup_position_in_grid]],
+    uint3 global_id [[thread_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]])
+{
+    const uint row_v0 = group_id.x;
+    if (row_v0 >= pc.n_row) {
+        return;
+    }
+    const uint plane_v1 = group_id.y;
+    if (plane_v1 >= pc.n_plane) {
+        return;
+    }
+    const uint lane_v2 = simd_lane_id;
+    float acc7_v3 = 0.0f;
+    const uint seg_start_v4 = lane_v2 * 4u;
+    for (uint col_seg_v5 = seg_start_v4; col_seg_v5 < pc.n_col; col_seg_v5 += 128u) {
+        const uint blk_v6 = col_seg_v5 / 32u;
+        const uint inb0_v7 = col_seg_v5 % 32u;
+        const float scale_v8 = float(*(device const half *)(a + (blk_v6 * pc.a_nb0 + row_v0 * pc.a_nb1)));
+        const uint base_v17 = blk_v6 * pc.a_nb0 + row_v0 * pc.a_nb1;
+        for (uint col_e_v9 = 0u; col_e_v9 < 4u; ++col_e_v9) {
+            const uint col_v10 = col_seg_v5 + col_e_v9;
+            const uint inb_v11 = inb0_v7 + col_e_v9;
+            const float q_v12 = float(*(device const char *)(a + (inb_v11 + base_v17 + 2u)));
+            const float t_v13 = scale_v8 * q_v12;
+            const float t_v14 = *(device const float *)(b + (col_v10 * pc.b_nb0 + plane_v1 * pc.b_nb1));
+            const float t_v15 = t_v13 * t_v14;
+            acc7_v3 += t_v15;
+        }
+    }
+    const float red7_v16 = simd_sum(acc7_v3);
+    if (lane_v2 == 0u) {
+        *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane_v1 * pc.dst_nb1)) = red7_v16;
+    }
+}
+
+// ---- mul_mat_vec_q8_0_cols4 ----
+struct rir_mul_mat_vec_q8_0_cols4_params {
+    uint n_row;
+    uint n_plane;
+    uint n_col;
+    uint a_nb0;
+    uint a_nb1;
+    uint b_nb0;
+    uint b_nb1;
+    uint dst_nb0;
+    uint dst_nb1;
+};
+
+kernel void rir_mul_mat_vec_q8_0_cols4(
+    device const uchar* a [[buffer(0)]],
+    device const uchar* b [[buffer(1)]],
+    device uchar* dst [[buffer(2)]],
+    constant rir_mul_mat_vec_q8_0_cols4_params& pc [[buffer(3)]],
+    uint3 group_id [[threadgroup_position_in_grid]],
+    uint3 global_id [[thread_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]])
+{
+    const uint row_v0 = group_id.x;
+    if (row_v0 >= pc.n_row) {
+        return;
+    }
+    const uint plane_v1 = group_id.y * 4u;
+    if (plane_v1 >= pc.n_plane) {
+        return;
+    }
+    const uint lane_v2 = simd_lane_id;
+    const uint plane1_v3 = plane_v1 + 1u;
+    const uint plane2_v4 = plane_v1 + 2u;
+    const uint plane3_v5 = plane_v1 + 3u;
+    float acc7_v6 = 0.0f;
+    float acc7_1_v7 = 0.0f;
+    float acc7_2_v8 = 0.0f;
+    float acc7_3_v9 = 0.0f;
+    const uint seg_start_v10 = lane_v2 * 4u;
+    for (uint col_seg_v11 = seg_start_v10; col_seg_v11 < pc.n_col; col_seg_v11 += 128u) {
+        const uint blk_v12 = col_seg_v11 / 32u;
+        const uint inb0_v13 = col_seg_v11 % 32u;
+        const float scale_v14 = float(*(device const half *)(a + (blk_v12 * pc.a_nb0 + row_v0 * pc.a_nb1)));
+        const uint base_v32 = blk_v12 * pc.a_nb0 + row_v0 * pc.a_nb1;
+        for (uint col_e_v15 = 0u; col_e_v15 < 4u; ++col_e_v15) {
+            const uint col_v16 = col_seg_v11 + col_e_v15;
+            const uint inb_v17 = inb0_v13 + col_e_v15;
+            const float q_v18 = float(*(device const char *)(a + (inb_v17 + base_v32 + 2u)));
+            const float t_v19 = scale_v14 * q_v18;
+            const float t_v20 = *(device const float *)(b + (col_v16 * pc.b_nb0 + plane_v1 * pc.b_nb1));
+            const float t_v21 = t_v19 * t_v20;
+            acc7_v6 += t_v21;
+            if (plane1_v3 < pc.n_plane) {
+                const float t_v22 = *(device const float *)(b + (col_v16 * pc.b_nb0 + plane1_v3 * pc.b_nb1));
+                const float t_v23 = t_v19 * t_v22;
+                acc7_1_v7 += t_v23;
+            }
+            if (plane2_v4 < pc.n_plane) {
+                const float t_v24 = *(device const float *)(b + (col_v16 * pc.b_nb0 + plane2_v4 * pc.b_nb1));
+                const float t_v25 = t_v19 * t_v24;
+                acc7_2_v8 += t_v25;
+            }
+            if (plane3_v5 < pc.n_plane) {
+                const float t_v26 = *(device const float *)(b + (col_v16 * pc.b_nb0 + plane3_v5 * pc.b_nb1));
+                const float t_v27 = t_v19 * t_v26;
+                acc7_3_v9 += t_v27;
+            }
+        }
+    }
+    const float red7_v28 = simd_sum(acc7_v6);
+    const float red7_v29 = simd_sum(acc7_1_v7);
+    const float red7_v30 = simd_sum(acc7_2_v8);
+    const float red7_v31 = simd_sum(acc7_3_v9);
+    if (lane_v2 == 0u) {
+        *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane_v1 * pc.dst_nb1)) = red7_v28;
+        if (plane1_v3 < pc.n_plane) {
+            *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane1_v3 * pc.dst_nb1)) = red7_v29;
+        }
+        if (plane2_v4 < pc.n_plane) {
+            *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane2_v4 * pc.dst_nb1)) = red7_v30;
+        }
+        if (plane3_v5 < pc.n_plane) {
+            *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane3_v5 * pc.dst_nb1)) = red7_v31;
+        }
+    }
+}
+
+// ---- mul_mat_vec_q4_K ----
+struct rir_mul_mat_vec_q4_K_params {
+    uint n_row;
+    uint n_plane;
+    uint n_col;
+    uint a_nb0;
+    uint a_nb1;
+    uint b_nb0;
+    uint b_nb1;
+    uint dst_nb0;
+    uint dst_nb1;
+};
+
+kernel void rir_mul_mat_vec_q4_K(
+    device const uchar* a [[buffer(0)]],
+    device const uchar* b [[buffer(1)]],
+    device uchar* dst [[buffer(2)]],
+    constant rir_mul_mat_vec_q4_K_params& pc [[buffer(3)]],
+    uint3 group_id [[threadgroup_position_in_grid]],
+    uint3 global_id [[thread_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]])
+{
+    const uint row_v0 = group_id.x;
+    if (row_v0 >= pc.n_row) {
+        return;
+    }
+    const uint plane_v1 = group_id.y;
+    if (plane_v1 >= pc.n_plane) {
+        return;
+    }
+    const uint lane_v2 = simd_lane_id;
+    float acc7_v3 = 0.0f;
+    const uint seg_start_v4 = lane_v2 * 4u;
+    const uint base_v55 = row_v0 * pc.a_nb1;
+    const float sub_half_c_v26 = 0.5;
+    for (uint col_seg_v5 = seg_start_v4; col_seg_v5 < pc.n_col; col_seg_v5 += 128u) {
+        const uint blk_v6 = col_seg_v5 / 256u;
+        const uint inb0_v7 = col_seg_v5 % 256u;
+        const float scale_v8 = float(*(device const half *)(a + (blk_v6 * pc.a_nb0 + row_v0 * pc.a_nb1)));
+        const float dmin_v9 = float(*(device const half *)(a + (blk_v6 * pc.a_nb0 + base_v55 + 2u)));
+        const uint sub_is_v10 = inb0_v7 / 32u;
+        const uint sub_jlo_v11 = sub_is_v10 & 3u;
+        const uint sub_jhi_v12 = sub_is_v10 >> 2u;
+        const uint sub_sa_v13 = uint(*(device const uchar *)(a + (blk_v6 * pc.a_nb0 + sub_jlo_v11 + base_v55 + 4u)));
+        const uint sub_sb_v14 = uint(*(device const uchar *)(a + (blk_v6 * pc.a_nb0 + sub_jlo_v11 + base_v55 + 8u)));
+        const uint sub_sc2_v15 = uint(*(device const uchar *)(a + (blk_v6 * pc.a_nb0 + sub_jlo_v11 + base_v55 + 12u)));
+        const uint sub_sc_low_v16 = sub_sa_v13 & 63u;
+        const uint sub_m_low_v17 = sub_sb_v14 & 63u;
+        const uint sub_sc_hl_v18 = sub_sc2_v15 & 15u;
+        const uint sub_sa_top_v19 = sub_sa_v13 >> 6u;
+        const uint sub_sa_t4_v20 = sub_sa_top_v19 * 16u;
+        const uint sub_sc_hi_v21 = sub_sc_hl_v18 | sub_sa_t4_v20;
+        const uint sub_m_hl_v22 = sub_sc2_v15 >> 4u;
+        const uint sub_sb_top_v23 = sub_sb_v14 >> 6u;
+        const uint sub_sb_t4_v24 = sub_sb_top_v23 * 16u;
+        const uint sub_m_hi_v25 = sub_m_hl_v22 | sub_sb_t4_v24;
+        const float sub_low_group_self_v27 = float(sub_jhi_v12);
+        const bool sub_low_group_v28 = sub_low_group_self_v27 < sub_half_c_v26;
+        const float sub_scale_t_v29 = float(sub_sc_low_v16);
+        const float sub_scale_f_v30 = float(sub_sc_hi_v21);
+        const float sub_scale_v31 = sub_low_group_v28 ? sub_scale_t_v29 : sub_scale_f_v30;
+        const float sub_min_t_v32 = float(sub_m_low_v17);
+        const float sub_min_f_v33 = float(sub_m_hi_v25);
+        const float sub_min_v34 = sub_low_group_v28 ? sub_min_t_v32 : sub_min_f_v33;
+        const uint base_v54 = blk_v6 * pc.a_nb0 + row_v0 * pc.a_nb1;
+        const float dl_v47 = scale_v8 * sub_scale_v31;
+        const float ml_v49 = dmin_v9 * sub_min_v34;
+        for (uint col_e_v35 = 0u; col_e_v35 < 4u; ++col_e_v35) {
+            const uint col_v36 = col_seg_v5 + col_e_v35;
+            const uint inb_v37 = inb0_v7 + col_e_v35;
+            const uint q_grp_v38 = inb_v37 / 64u;
+            const uint q_inp_v39 = inb_v37 % 32u;
+            const uint q_byte_v40 = uint(*(device const uchar *)(a + (q_grp_v38 * 32u + q_inp_v39 + base_v54 + 16u)));
+            const uint q_ing_v41 = inb_v37 % 64u;
+            const uint q_sel_v42 = q_ing_v41 / 32u;
+            const uint q_sh_v43 = q_sel_v42 * 4u;
+            const uint q_shr_v44 = q_byte_v40 >> q_sh_v43;
+            const uint q_v45 = q_shr_v44 & 15u;
+            const float q_f_v46 = float(q_v45);
+            const float t_v48 = dl_v47 * q_f_v46;
+            const float t_v50 = t_v48 - ml_v49;
+            const float t_v51 = *(device const float *)(b + (col_v36 * pc.b_nb0 + plane_v1 * pc.b_nb1));
+            const float t_v52 = t_v50 * t_v51;
+            acc7_v3 += t_v52;
+        }
+    }
+    const float red7_v53 = simd_sum(acc7_v3);
+    if (lane_v2 == 0u) {
+        *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane_v1 * pc.dst_nb1)) = red7_v53;
+    }
+}
+
+// ---- mul_mat_vec_q4_K_cols4 ----
+struct rir_mul_mat_vec_q4_K_cols4_params {
+    uint n_row;
+    uint n_plane;
+    uint n_col;
+    uint a_nb0;
+    uint a_nb1;
+    uint b_nb0;
+    uint b_nb1;
+    uint dst_nb0;
+    uint dst_nb1;
+};
+
+kernel void rir_mul_mat_vec_q4_K_cols4(
+    device const uchar* a [[buffer(0)]],
+    device const uchar* b [[buffer(1)]],
+    device uchar* dst [[buffer(2)]],
+    constant rir_mul_mat_vec_q4_K_cols4_params& pc [[buffer(3)]],
+    uint3 group_id [[threadgroup_position_in_grid]],
+    uint3 global_id [[thread_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]])
+{
+    const uint row_v0 = group_id.x;
+    if (row_v0 >= pc.n_row) {
+        return;
+    }
+    const uint plane_v1 = group_id.y * 4u;
+    if (plane_v1 >= pc.n_plane) {
+        return;
+    }
+    const uint lane_v2 = simd_lane_id;
+    const uint plane1_v3 = plane_v1 + 1u;
+    const uint plane2_v4 = plane_v1 + 2u;
+    const uint plane3_v5 = plane_v1 + 3u;
+    float acc7_v6 = 0.0f;
+    float acc7_1_v7 = 0.0f;
+    float acc7_2_v8 = 0.0f;
+    float acc7_3_v9 = 0.0f;
+    const uint seg_start_v10 = lane_v2 * 4u;
+    const uint base_v70 = row_v0 * pc.a_nb1;
+    const float sub_half_c_v32 = 0.5;
+    for (uint col_seg_v11 = seg_start_v10; col_seg_v11 < pc.n_col; col_seg_v11 += 128u) {
+        const uint blk_v12 = col_seg_v11 / 256u;
+        const uint inb0_v13 = col_seg_v11 % 256u;
+        const float scale_v14 = float(*(device const half *)(a + (blk_v12 * pc.a_nb0 + row_v0 * pc.a_nb1)));
+        const float dmin_v15 = float(*(device const half *)(a + (blk_v12 * pc.a_nb0 + base_v70 + 2u)));
+        const uint sub_is_v16 = inb0_v13 / 32u;
+        const uint sub_jlo_v17 = sub_is_v16 & 3u;
+        const uint sub_jhi_v18 = sub_is_v16 >> 2u;
+        const uint sub_sa_v19 = uint(*(device const uchar *)(a + (blk_v12 * pc.a_nb0 + sub_jlo_v17 + base_v70 + 4u)));
+        const uint sub_sb_v20 = uint(*(device const uchar *)(a + (blk_v12 * pc.a_nb0 + sub_jlo_v17 + base_v70 + 8u)));
+        const uint sub_sc2_v21 = uint(*(device const uchar *)(a + (blk_v12 * pc.a_nb0 + sub_jlo_v17 + base_v70 + 12u)));
+        const uint sub_sc_low_v22 = sub_sa_v19 & 63u;
+        const uint sub_m_low_v23 = sub_sb_v20 & 63u;
+        const uint sub_sc_hl_v24 = sub_sc2_v21 & 15u;
+        const uint sub_sa_top_v25 = sub_sa_v19 >> 6u;
+        const uint sub_sa_t4_v26 = sub_sa_top_v25 * 16u;
+        const uint sub_sc_hi_v27 = sub_sc_hl_v24 | sub_sa_t4_v26;
+        const uint sub_m_hl_v28 = sub_sc2_v21 >> 4u;
+        const uint sub_sb_top_v29 = sub_sb_v20 >> 6u;
+        const uint sub_sb_t4_v30 = sub_sb_top_v29 * 16u;
+        const uint sub_m_hi_v31 = sub_m_hl_v28 | sub_sb_t4_v30;
+        const float sub_low_group_self_v33 = float(sub_jhi_v18);
+        const bool sub_low_group_v34 = sub_low_group_self_v33 < sub_half_c_v32;
+        const float sub_scale_t_v35 = float(sub_sc_low_v22);
+        const float sub_scale_f_v36 = float(sub_sc_hi_v27);
+        const float sub_scale_v37 = sub_low_group_v34 ? sub_scale_t_v35 : sub_scale_f_v36;
+        const float sub_min_t_v38 = float(sub_m_low_v23);
+        const float sub_min_f_v39 = float(sub_m_hi_v31);
+        const float sub_min_v40 = sub_low_group_v34 ? sub_min_t_v38 : sub_min_f_v39;
+        const uint base_v69 = blk_v12 * pc.a_nb0 + row_v0 * pc.a_nb1;
+        const float dl_v53 = scale_v14 * sub_scale_v37;
+        const float ml_v55 = dmin_v15 * sub_min_v40;
+        for (uint col_e_v41 = 0u; col_e_v41 < 4u; ++col_e_v41) {
+            const uint col_v42 = col_seg_v11 + col_e_v41;
+            const uint inb_v43 = inb0_v13 + col_e_v41;
+            const uint q_grp_v44 = inb_v43 / 64u;
+            const uint q_inp_v45 = inb_v43 % 32u;
+            const uint q_byte_v46 = uint(*(device const uchar *)(a + (q_grp_v44 * 32u + q_inp_v45 + base_v69 + 16u)));
+            const uint q_ing_v47 = inb_v43 % 64u;
+            const uint q_sel_v48 = q_ing_v47 / 32u;
+            const uint q_sh_v49 = q_sel_v48 * 4u;
+            const uint q_shr_v50 = q_byte_v46 >> q_sh_v49;
+            const uint q_v51 = q_shr_v50 & 15u;
+            const float q_f_v52 = float(q_v51);
+            const float t_v54 = dl_v53 * q_f_v52;
+            const float t_v56 = t_v54 - ml_v55;
+            const float t_v57 = *(device const float *)(b + (col_v42 * pc.b_nb0 + plane_v1 * pc.b_nb1));
+            const float t_v58 = t_v56 * t_v57;
+            acc7_v6 += t_v58;
+            if (plane1_v3 < pc.n_plane) {
+                const float t_v59 = *(device const float *)(b + (col_v42 * pc.b_nb0 + plane1_v3 * pc.b_nb1));
+                const float t_v60 = t_v56 * t_v59;
+                acc7_1_v7 += t_v60;
+            }
+            if (plane2_v4 < pc.n_plane) {
+                const float t_v61 = *(device const float *)(b + (col_v42 * pc.b_nb0 + plane2_v4 * pc.b_nb1));
+                const float t_v62 = t_v56 * t_v61;
+                acc7_2_v8 += t_v62;
+            }
+            if (plane3_v5 < pc.n_plane) {
+                const float t_v63 = *(device const float *)(b + (col_v42 * pc.b_nb0 + plane3_v5 * pc.b_nb1));
+                const float t_v64 = t_v56 * t_v63;
+                acc7_3_v9 += t_v64;
+            }
+        }
+    }
+    const float red7_v65 = simd_sum(acc7_v6);
+    const float red7_v66 = simd_sum(acc7_1_v7);
+    const float red7_v67 = simd_sum(acc7_2_v8);
+    const float red7_v68 = simd_sum(acc7_3_v9);
+    if (lane_v2 == 0u) {
+        *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane_v1 * pc.dst_nb1)) = red7_v65;
+        if (plane1_v3 < pc.n_plane) {
+            *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane1_v3 * pc.dst_nb1)) = red7_v66;
+        }
+        if (plane2_v4 < pc.n_plane) {
+            *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane2_v4 * pc.dst_nb1)) = red7_v67;
+        }
+        if (plane3_v5 < pc.n_plane) {
+            *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane3_v5 * pc.dst_nb1)) = red7_v68;
+        }
+    }
+}
+
+// ---- mul_mat_vec_q6_K ----
+struct rir_mul_mat_vec_q6_K_params {
+    uint n_row;
+    uint n_plane;
+    uint n_col;
+    uint a_nb0;
+    uint a_nb1;
+    uint b_nb0;
+    uint b_nb1;
+    uint dst_nb0;
+    uint dst_nb1;
+};
+
+kernel void rir_mul_mat_vec_q6_K(
+    device const uchar* a [[buffer(0)]],
+    device const uchar* b [[buffer(1)]],
+    device uchar* dst [[buffer(2)]],
+    constant rir_mul_mat_vec_q6_K_params& pc [[buffer(3)]],
+    uint3 group_id [[threadgroup_position_in_grid]],
+    uint3 global_id [[thread_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]])
+{
+    const uint row_v0 = group_id.x;
+    if (row_v0 >= pc.n_row) {
+        return;
+    }
+    const uint plane_v1 = group_id.y;
+    if (plane_v1 >= pc.n_plane) {
+        return;
+    }
+    const uint lane_v2 = simd_lane_id;
+    float acc7_v3 = 0.0f;
+    const uint seg_start_v4 = lane_v2 * 4u;
+    const uint base_v41 = row_v0 * pc.a_nb1;
+    const float q_off_v33 = 32.0;
+    for (uint col_seg_v5 = seg_start_v4; col_seg_v5 < pc.n_col; col_seg_v5 += 128u) {
+        const uint blk_v6 = col_seg_v5 / 256u;
+        const uint inb0_v7 = col_seg_v5 % 256u;
+        const float scale_v8 = float(*(device const half *)(a + (blk_v6 * pc.a_nb0 + base_v41 + 208u)));
+        const uint sub_is_v9 = inb0_v7 / 16u;
+        const float sub_sc_f_v10 = float(*(device const char *)(a + (blk_v6 * pc.a_nb0 + sub_is_v9 + base_v41 + 192u)));
+        const uint base_v40 = blk_v6 * pc.a_nb0 + row_v0 * pc.a_nb1;
+        const float dl_v35 = scale_v8 * sub_sc_f_v10;
+        for (uint col_e_v11 = 0u; col_e_v11 < 4u; ++col_e_v11) {
+            const uint col_v12 = col_seg_v5 + col_e_v11;
+            const uint inb_v13 = inb0_v7 + col_e_v11;
+            const uint q_grp_v14 = inb_v13 / 128u;
+            const uint q_inp_v15 = inb_v13 % 64u;
+            const uint q_byte_v16 = uint(*(device const uchar *)(a + (q_grp_v14 * 64u + q_inp_v15 + base_v40)));
+            const uint q_ing_v17 = inb_v13 % 128u;
+            const uint q_sel_v18 = q_ing_v17 / 64u;
+            const uint q_sh_v19 = q_sel_v18 * 4u;
+            const uint q_shr_v20 = q_byte_v16 >> q_sh_v19;
+            const uint q_v21 = q_shr_v20 & 15u;
+            const uint qh_inp_v23 = inb_v13 % 32u;
+            const uint qh_byte_v24 = uint(*(device const uchar *)(a + (q_grp_v14 * 32u + qh_inp_v23 + base_v40 + 128u)));
+            const uint qh_sel_v26 = q_ing_v17 / 32u;
+            const uint qh_sh_v27 = qh_sel_v26 * 2u;
+            const uint qh_shr_v28 = qh_byte_v24 >> qh_sh_v27;
+            const uint qh_v29 = qh_shr_v28 & 3u;
+            const uint qh_up_v30 = qh_v29 * 16u;
+            const uint q_full_v31 = q_v21 | qh_up_v30;
+            const float q_f_v32 = float(q_full_v31);
+            const float q_c_v34 = q_f_v32 - q_off_v33;
+            const float t_v36 = dl_v35 * q_c_v34;
+            const float t_v37 = *(device const float *)(b + (col_v12 * pc.b_nb0 + plane_v1 * pc.b_nb1));
+            const float t_v38 = t_v36 * t_v37;
+            acc7_v3 += t_v38;
+        }
+    }
+    const float red7_v39 = simd_sum(acc7_v3);
+    if (lane_v2 == 0u) {
+        *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane_v1 * pc.dst_nb1)) = red7_v39;
+    }
+}
+
+// ---- mul_mat_vec_q6_K_cols4 ----
+struct rir_mul_mat_vec_q6_K_cols4_params {
+    uint n_row;
+    uint n_plane;
+    uint n_col;
+    uint a_nb0;
+    uint a_nb1;
+    uint b_nb0;
+    uint b_nb1;
+    uint dst_nb0;
+    uint dst_nb1;
+};
+
+kernel void rir_mul_mat_vec_q6_K_cols4(
+    device const uchar* a [[buffer(0)]],
+    device const uchar* b [[buffer(1)]],
+    device uchar* dst [[buffer(2)]],
+    constant rir_mul_mat_vec_q6_K_cols4_params& pc [[buffer(3)]],
+    uint3 group_id [[threadgroup_position_in_grid]],
+    uint3 global_id [[thread_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]])
+{
+    const uint row_v0 = group_id.x;
+    if (row_v0 >= pc.n_row) {
+        return;
+    }
+    const uint plane_v1 = group_id.y * 4u;
+    if (plane_v1 >= pc.n_plane) {
+        return;
+    }
+    const uint lane_v2 = simd_lane_id;
+    const uint plane1_v3 = plane_v1 + 1u;
+    const uint plane2_v4 = plane_v1 + 2u;
+    const uint plane3_v5 = plane_v1 + 3u;
+    float acc7_v6 = 0.0f;
+    float acc7_1_v7 = 0.0f;
+    float acc7_2_v8 = 0.0f;
+    float acc7_3_v9 = 0.0f;
+    const uint seg_start_v10 = lane_v2 * 4u;
+    const uint base_v56 = row_v0 * pc.a_nb1;
+    const float q_off_v39 = 32.0;
+    for (uint col_seg_v11 = seg_start_v10; col_seg_v11 < pc.n_col; col_seg_v11 += 128u) {
+        const uint blk_v12 = col_seg_v11 / 256u;
+        const uint inb0_v13 = col_seg_v11 % 256u;
+        const float scale_v14 = float(*(device const half *)(a + (blk_v12 * pc.a_nb0 + base_v56 + 208u)));
+        const uint sub_is_v15 = inb0_v13 / 16u;
+        const float sub_sc_f_v16 = float(*(device const char *)(a + (blk_v12 * pc.a_nb0 + sub_is_v15 + base_v56 + 192u)));
+        const uint base_v55 = blk_v12 * pc.a_nb0 + row_v0 * pc.a_nb1;
+        const float dl_v41 = scale_v14 * sub_sc_f_v16;
+        for (uint col_e_v17 = 0u; col_e_v17 < 4u; ++col_e_v17) {
+            const uint col_v18 = col_seg_v11 + col_e_v17;
+            const uint inb_v19 = inb0_v13 + col_e_v17;
+            const uint q_grp_v20 = inb_v19 / 128u;
+            const uint q_inp_v21 = inb_v19 % 64u;
+            const uint q_byte_v22 = uint(*(device const uchar *)(a + (q_grp_v20 * 64u + q_inp_v21 + base_v55)));
+            const uint q_ing_v23 = inb_v19 % 128u;
+            const uint q_sel_v24 = q_ing_v23 / 64u;
+            const uint q_sh_v25 = q_sel_v24 * 4u;
+            const uint q_shr_v26 = q_byte_v22 >> q_sh_v25;
+            const uint q_v27 = q_shr_v26 & 15u;
+            const uint qh_inp_v29 = inb_v19 % 32u;
+            const uint qh_byte_v30 = uint(*(device const uchar *)(a + (q_grp_v20 * 32u + qh_inp_v29 + base_v55 + 128u)));
+            const uint qh_sel_v32 = q_ing_v23 / 32u;
+            const uint qh_sh_v33 = qh_sel_v32 * 2u;
+            const uint qh_shr_v34 = qh_byte_v30 >> qh_sh_v33;
+            const uint qh_v35 = qh_shr_v34 & 3u;
+            const uint qh_up_v36 = qh_v35 * 16u;
+            const uint q_full_v37 = q_v27 | qh_up_v36;
+            const float q_f_v38 = float(q_full_v37);
+            const float q_c_v40 = q_f_v38 - q_off_v39;
+            const float t_v42 = dl_v41 * q_c_v40;
+            const float t_v43 = *(device const float *)(b + (col_v18 * pc.b_nb0 + plane_v1 * pc.b_nb1));
+            const float t_v44 = t_v42 * t_v43;
+            acc7_v6 += t_v44;
+            if (plane1_v3 < pc.n_plane) {
+                const float t_v45 = *(device const float *)(b + (col_v18 * pc.b_nb0 + plane1_v3 * pc.b_nb1));
+                const float t_v46 = t_v42 * t_v45;
+                acc7_1_v7 += t_v46;
+            }
+            if (plane2_v4 < pc.n_plane) {
+                const float t_v47 = *(device const float *)(b + (col_v18 * pc.b_nb0 + plane2_v4 * pc.b_nb1));
+                const float t_v48 = t_v42 * t_v47;
+                acc7_2_v8 += t_v48;
+            }
+            if (plane3_v5 < pc.n_plane) {
+                const float t_v49 = *(device const float *)(b + (col_v18 * pc.b_nb0 + plane3_v5 * pc.b_nb1));
+                const float t_v50 = t_v42 * t_v49;
+                acc7_3_v9 += t_v50;
+            }
+        }
+    }
+    const float red7_v51 = simd_sum(acc7_v6);
+    const float red7_v52 = simd_sum(acc7_1_v7);
+    const float red7_v53 = simd_sum(acc7_2_v8);
+    const float red7_v54 = simd_sum(acc7_3_v9);
+    if (lane_v2 == 0u) {
+        *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane_v1 * pc.dst_nb1)) = red7_v51;
+        if (plane1_v3 < pc.n_plane) {
+            *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane1_v3 * pc.dst_nb1)) = red7_v52;
+        }
+        if (plane2_v4 < pc.n_plane) {
+            *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane2_v4 * pc.dst_nb1)) = red7_v53;
+        }
+        if (plane3_v5 < pc.n_plane) {
+            *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane3_v5 * pc.dst_nb1)) = red7_v54;
+        }
+    }
+}
+
 // ---- out_prod ----
 struct rir_out_prod_params {
     uint n_i;

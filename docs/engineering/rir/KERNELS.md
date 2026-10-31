@@ -35,6 +35,7 @@ fails the lane.
 | `rms_norm_back` | 1 | gradient of the above | two reductions of one level - the shape a fused kernel wants under one set of barriers |
 | `cumsum` | 1 | `y[c,r,p,b] = Σ_{c'≤c} x[c',r,p,b]` | inclusive scan over the full ggml rank, and its transpose (a backward scan); three variants |
 | `mat_mul_naive` | 1 | `c[i,j] = Σ_k a[k,i]·b[k,j]` (ggml's `C = Aᵀ·B`) | N parallel axes + one inner axis (a contraction) |
+| `mul_mat_vec_<format>` | 3 | `dst[row,t] = Σ_col dequant(a[col,row])·b[col,t]` (`MUL_MAT`, quantized `src0`) | the decode GEMV: the fused quantized loader with a second operand in a subgroup contraction, and a lane tile that decodes one weight row for four tokens; one kernel per weight format of the reference model profiles |
 | `out_prod` | 1 | `d[i,j,p,b] = Σ_k a[i,k,…]·b[j,k,…]` | contraction over the full ggml rank, staged in shared memory (`TiledStage`) |
 | `out_prod_<format>` | 12 | same, with a quantized `src0` | the quantized loader under a *staged* tile, one kernel per format |
 | `sum_rows_<format>` | 12 | `y[row] = Σ_col dequant(x[col,row])` | fused quantized loader + row reduction, row-level store hoisting; on GLSL, 8/16-bit storage |

@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "fingerprint": "sha256:a76013f200afb9fa8b2de63963ab5faca3c5aba5671713b7d0fd1e2f36c1bfcc",
+  "schema_version": 2,
+  "fingerprint": "sha256:07e377d9d923972c9d04072a5d099397b8b6623aba69027be71532cf527aa7a2",
   "kernels": [
     {
       "ggml_op": "GGML_OP_ADD",
@@ -1739,6 +1739,464 @@
       "declared_domain": [],
       "native_retired": false,
       "native_exception": "the native strip serves four paths a RIR kernel cannot express - one node, one dispatch: fused ADD chains, RMS_NORM+MUL+ADD fusion, Metal snake fusion, and do_add_rms_partials on Vulkan, which is a correctness path. On Metal there is also no kernel to remove: one pattern serves ADD/SUB/MUL/DIV and ACC. Deliberate native exception, not a missed removal"
+    },
+    {
+      "ggml_op": "GGML_OP_MUL_MAT",
+      "op_variant": null,
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "mul_mat_vec_q8_0",
+          "why": "src0 in a format no model profile stores its weights in, F32/F16/BF16 src0, or a src1 that is not F32: a GEMV is generated per profiled weight format, and selection uses the node dtype"
+        },
+        {
+          "reject": "rank",
+          "kernel": "mul_mat_vec_q8_0",
+          "why": "batched MUL_MAT (ne2/ne3 > 1, with or without the src0 broadcast): the variant is rank 2, one weight matrix against a few columns"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_MUL_MAT",
+      "op_variant": null,
+      "backend": "cuda",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "mul_mat_vec_q8_0",
+          "why": "src0 in a format no model profile stores its weights in, F32/F16/BF16 src0, or a src1 that is not F32: a GEMV is generated per profiled weight format, and selection uses the node dtype"
+        },
+        {
+          "reject": "rank",
+          "kernel": "mul_mat_vec_q8_0",
+          "why": "batched MUL_MAT (ne2/ne3 > 1, with or without the src0 broadcast): the variant is rank 2, one weight matrix against a few columns"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_MUL_MAT",
+      "op_variant": null,
+      "backend": "metal",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_cols4",
+          "kernel": "mul_mat_vec_q4_K",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=q4_K",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "plane"
+              ],
+              "min": 4,
+              "max": 32
+            }
+          ],
+          "features": [
+            "metal>=2.1",
+            "simdgroup_reduction",
+            "simdgroup_size>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_cols4",
+          "kernel": "mul_mat_vec_q6_K",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=q6_K",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "plane"
+              ],
+              "min": 4,
+              "max": 32
+            }
+          ],
+          "features": [
+            "metal>=2.1",
+            "simdgroup_reduction",
+            "simdgroup_size>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_cols4",
+          "kernel": "mul_mat_vec_q8_0",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=q8_0",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "plane"
+              ],
+              "min": 4,
+              "max": 32
+            }
+          ],
+          "features": [
+            "metal>=2.1",
+            "simdgroup_reduction",
+            "simdgroup_size>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree",
+          "kernel": "mul_mat_vec_q4_K",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q4_K",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.1",
+            "simdgroup_reduction",
+            "simdgroup_size>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_mat_vec_q6_K_q6_K_2d_subgroup_tree",
+          "kernel": "mul_mat_vec_q6_K",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q6_K",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.1",
+            "simdgroup_reduction",
+            "simdgroup_size>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree",
+          "kernel": "mul_mat_vec_q8_0",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q8_0",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.1",
+            "simdgroup_reduction",
+            "simdgroup_size>=32"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "mul_mat_vec_q8_0",
+          "why": "src0 in a format no model profile stores its weights in, F32/F16/BF16 src0, or a src1 that is not F32: a GEMV is generated per profiled weight format, and selection uses the node dtype"
+        },
+        {
+          "reject": "rank",
+          "kernel": "mul_mat_vec_q8_0",
+          "why": "batched MUL_MAT (ne2/ne3 > 1, with or without the src0 broadcast): the variant is rank 2, one weight matrix against a few columns"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_MUL_MAT",
+      "op_variant": null,
+      "backend": "vulkan",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_cols4",
+          "kernel": "mul_mat_vec_q4_K",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=q4_K",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "plane"
+              ],
+              "min": 4,
+              "max": 32
+            }
+          ],
+          "features": [
+            "vulkan>=1.1",
+            "subgroup_arithmetic",
+            "subgroup_size>=32",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_cols4",
+          "kernel": "mul_mat_vec_q6_K",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=q6_K",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "plane"
+              ],
+              "min": 4,
+              "max": 32
+            }
+          ],
+          "features": [
+            "vulkan>=1.1",
+            "subgroup_arithmetic",
+            "subgroup_size>=32",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_cols4",
+          "kernel": "mul_mat_vec_q8_0",
+          "priority": 90,
+          "constraints": [
+            "dtype(a)=q8_0",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "plane"
+              ],
+              "min": 4,
+              "max": 32
+            }
+          ],
+          "features": [
+            "vulkan>=1.1",
+            "subgroup_arithmetic",
+            "subgroup_size>=32",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree",
+          "kernel": "mul_mat_vec_q4_K",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q4_K",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.1",
+            "subgroup_arithmetic",
+            "subgroup_size>=32",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_mat_vec_q6_K_q6_K_2d_subgroup_tree",
+          "kernel": "mul_mat_vec_q6_K",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q6_K",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.1",
+            "subgroup_arithmetic",
+            "subgroup_size>=32",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree",
+          "kernel": "mul_mat_vec_q8_0",
+          "priority": 80,
+          "constraints": [
+            "dtype(a)=q8_0",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.1",
+            "subgroup_arithmetic",
+            "subgroup_size>=32",
+            "storage_buffer_16bit",
+            "shader_float16",
+            "storage_buffer_8bit",
+            "shader_int8"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "mul_mat_vec_q8_0",
+          "why": "src0 in a format no model profile stores its weights in, F32/F16/BF16 src0, or a src1 that is not F32: a GEMV is generated per profiled weight format, and selection uses the node dtype"
+        },
+        {
+          "reject": "rank",
+          "kernel": "mul_mat_vec_q8_0",
+          "why": "batched MUL_MAT (ne2/ne3 > 1, with or without the src0 broadcast): the variant is rank 2, one weight matrix against a few columns"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
     },
     {
       "ggml_op": "GGML_OP_OUT_PROD",
@@ -6308,6 +6766,107 @@
       ],
       "native_retired": false,
       "native_exception": null
+    }
+  ],
+  "profiles": [
+    {
+      "name": "qwen3-0.6b-q8_0",
+      "backend": "metal",
+      "shape": {
+        "architecture": "qwen3",
+        "n_embd": 1024,
+        "n_head": 16,
+        "n_head_kv": 8,
+        "head_dim": 128,
+        "n_ff": 3072,
+        "weight_formats": [
+          "q8_0"
+        ]
+      },
+      "selections": []
+    },
+    {
+      "name": "qwen3-0.6b-q4_k_m",
+      "backend": "metal",
+      "shape": {
+        "architecture": "qwen3",
+        "n_embd": 1024,
+        "n_head": 16,
+        "n_head_kv": 8,
+        "head_dim": 128,
+        "n_ff": 3072,
+        "weight_formats": [
+          "q4_K",
+          "q6_K"
+        ]
+      },
+      "selections": []
+    },
+    {
+      "name": "qwen3-1.7b-q8_0",
+      "backend": "metal",
+      "shape": {
+        "architecture": "qwen3",
+        "n_embd": 2048,
+        "n_head": 16,
+        "n_head_kv": 8,
+        "head_dim": 128,
+        "n_ff": 6144,
+        "weight_formats": [
+          "q8_0"
+        ]
+      },
+      "selections": []
+    },
+    {
+      "name": "qwen3-1.7b-q4_k_m",
+      "backend": "metal",
+      "shape": {
+        "architecture": "qwen3",
+        "n_embd": 2048,
+        "n_head": 16,
+        "n_head_kv": 8,
+        "head_dim": 128,
+        "n_ff": 6144,
+        "weight_formats": [
+          "q4_K",
+          "q6_K"
+        ]
+      },
+      "selections": []
+    },
+    {
+      "name": "qwen3-4b-q8_0",
+      "backend": "metal",
+      "shape": {
+        "architecture": "qwen3",
+        "n_embd": 2560,
+        "n_head": 32,
+        "n_head_kv": 8,
+        "head_dim": 128,
+        "n_ff": 9728,
+        "weight_formats": [
+          "q8_0"
+        ]
+      },
+      "selections": []
+    },
+    {
+      "name": "qwen3-4b-q4_k_m",
+      "backend": "metal",
+      "shape": {
+        "architecture": "qwen3",
+        "n_embd": 2560,
+        "n_head": 32,
+        "n_head_kv": 8,
+        "head_dim": 128,
+        "n_ff": 9728,
+        "weight_formats": [
+          "q4_K",
+          "q6_K"
+        ]
+      },
+      "selections": []
     }
   ]
 }

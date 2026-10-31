@@ -17,7 +17,7 @@ pub mod header;
 
 pub use header::emit_params_header;
 
-pub(crate) use header::{REGISTRY_HEADER, max_rank};
+pub(crate) use header::{max_rank, registry_header};
 
 /// A registry rule that the declared tables do not satisfy.
 ///
@@ -139,7 +139,7 @@ pub fn emit_registry(
         "const uint32_t rir_op_policy_count = {n_policies};\n"
     ));
 
-    Ok((REGISTRY_HEADER.to_string(), cpp))
+    Ok((registry_header(), cpp))
 }
 
 /// Two variants of one (op, backend) with the same id would be one variant as

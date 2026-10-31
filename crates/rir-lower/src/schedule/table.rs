@@ -33,6 +33,9 @@ pub enum Family {
     Scale,
     /// The rank-2 oracle contraction.
     MatMulNaive,
+    /// The decode GEMV: a quantized weight row contracted against a few
+    /// activation columns, one output element per subgroup.
+    MulMatVec,
     /// The outer product over the full ggml rank: one kernel per `src0` dtype,
     /// all staged the same way.
     OutProd,
@@ -44,7 +47,7 @@ impl Family {
     /// Every family the table schedules. Exists so a test can walk the whole
     /// table without a kernel in hand, the way `GpuBackend::ALL` lets the
     /// coverage test walk every backend.
-    pub const ALL: [Family; 9] = [
+    pub const ALL: [Family; 10] = [
         Family::RowReduce,
         Family::RmsNorm,
         Family::Unary,
@@ -52,6 +55,7 @@ impl Family {
         Family::ElementwiseRepeat,
         Family::Scale,
         Family::MatMulNaive,
+        Family::MulMatVec,
         Family::OutProd,
         Family::Cumsum,
     ];
@@ -67,6 +71,7 @@ impl Family {
             Family::ElementwiseRepeat => "elementwise_repeat",
             Family::Scale => "scale",
             Family::MatMulNaive => "mat_mul_naive",
+            Family::MulMatVec => "mul_mat_vec",
             Family::OutProd => "out_prod",
             Family::Cumsum => "cumsum",
         }
@@ -100,6 +105,7 @@ pub fn schedules_for(family: Family) -> Vec<Schedule> {
         Family::Elementwise => elementwise(&mut v),
         Family::Scale => scale(&mut v),
         Family::MatMulNaive => mat_mul_naive(&mut v),
+        Family::MulMatVec => mul_mat_vec(&mut v),
         Family::OutProd => out_prod(&mut v),
         Family::Cumsum => cumsum(&mut v),
     }
@@ -433,6 +439,37 @@ fn mat_mul_naive(v: &mut Vec<Schedule>) {
     let family = Family::MatMulNaive;
     for gpu in targets_for(family) {
         v.push(Schedule::gpu_grid(gpu, [16, 16, 1]));
+    }
+}
+
+/// One output element per single-subgroup workgroup: the 32 lanes split the
+/// weight row's blocks, decode their share in place and multiply it by the
+/// matching slice of the activation column, and the subgroup sum closes the
+/// dot product. It is the `row_reduce` lowering with a second operand in the
+/// contraction.
+///
+/// That fallback reads and decodes the weight row once per token, so a decode
+/// step costs the token count times the weight traffic. The lane-tiled variant
+/// gives one workgroup four tokens and decodes the row once for them. Swept on
+/// the Qwen3 0.6B projections (Apple M5, shader alone), it wins from four
+/// tokens up - q8_0 1.2-1.5× on Metal and 1.2-1.4× on Vulkan, q4_K 1.2-1.6× on
+/// Metal - and loses about 2× at one token, where three of its four
+/// accumulators are guarded off. Hence the rule: four to 32 tokens, the decode
+/// steps measured; the fallback keeps one to three and the prefill.
+fn mul_mat_vec(v: &mut Vec<Schedule>) {
+    let family = Family::MulMatVec;
+    for gpu in targets_for(family) {
+        v.push(Schedule::gpu_subgroup(gpu));
+    }
+    let decode_steps = || {
+        vec![ShapeRule {
+            axes: &["plane"],
+            min: 4,
+            max: 32,
+        }]
+    };
+    for gpu in targets_for(family) {
+        v.push(Schedule::gpu_subgroup_cols(gpu, 4).claiming(90, decode_steps()));
     }
 }
 

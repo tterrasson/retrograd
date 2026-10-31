@@ -13,7 +13,7 @@ use rir_emit::{
 use super::{BROADCAST_BAND, cuda_policy, elementwise, gpu_policy, oracle_only, unary};
 use ArgSource::{Dst, Src};
 use BackendPolicy::{NativeOnly, ObserveGenerated, PreferGenerated};
-use DomainRestriction::{DType, OpVariant, Shape};
+use DomainRestriction::{DType, OpVariant, Rank, Shape};
 use GgmlBackend::{Cpu, Cuda, Metal, Vulkan};
 
 /// The production pilot. dz = src[0], x = src[1], dx = dst, eps at
@@ -102,6 +102,46 @@ pub(super) fn mat_mul_naive(name: String) -> IntegrationSpec {
     IntegrationSpec {
         ggml_op: Some("GGML_OP_MUL_MAT"),
         ..oracle_only(name, vec![Src(0), Src(1), Dst])
+    }
+}
+
+/// The decode GEMV: `MUL_MAT` with a quantized `src0`, one spec per weight
+/// format, merged into one policy row like `out_prod`'s.
+///
+/// The dispatch sites offer a node only in the decode regime - `ne11` at most
+/// `RIR_DECODE_MAX_TOKENS`, which the registry header publishes - and only
+/// when the backend fuses nothing into it: the native Metal encoder folds a
+/// following residual `ADD` into its few-row kernel, and a variant that
+/// computes one node would trade that dispatch for two. Prefill and fused
+/// nodes are therefore never seen, and the declared domain below only has to
+/// explain what *is* offered.
+pub(super) fn mul_mat_vec(name: String) -> IntegrationSpec {
+    IntegrationSpec {
+        kernel: name,
+        ggml_op_variant: None,
+        ggml_op: Some("GGML_OP_MUL_MAT"),
+        args: vec![Src(0), Src(1), Dst],
+        params: vec![],
+        production: true,
+        // Observed until the promotion lane has compared it with the native
+        // `mul_mv` kernels on the decode shapes of the model profiles. CUDA
+        // stays native: the family is refused there (`rir_lower::FAMILY_REFUSED`).
+        backend_policy: gpu_policy(ObserveGenerated),
+        assumed_domain: vec![
+            DomainAssumption {
+                restriction: DType,
+                why: "src0 in a format no model profile stores its weights in, F32/F16/BF16 \
+                      src0, or a src1 that is not F32: a GEMV is generated per profiled \
+                      weight format, and selection uses the node dtype",
+            },
+            DomainAssumption {
+                restriction: Rank,
+                why: "batched MUL_MAT (ne2/ne3 > 1, with or without the src0 broadcast): \
+                      the variant is rank 2, one weight matrix against a few columns",
+            },
+        ],
+        retired_native: vec![],
+        native_exception: None,
     }
 }
 

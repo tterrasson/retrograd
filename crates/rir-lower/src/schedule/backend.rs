@@ -58,7 +58,7 @@ pub const GPU_REFUSED: &[(GpuBackend, &str)] = &[];
 /// `rir_gen::check_gpu_coverage` requires that the family carry none - and
 /// requires a refusal for any backend a family is missing.
 ///
-/// Three entries today, all CUDA's, and they are the shape a new backend was
+/// Four entries today, all CUDA's, and they are the shape a new backend was
 /// predicted to take: it does not arrive whole. Two of
 /// the five it opened with are gone - `row_reduce` and `rms_norm` were refused
 /// for want of a collective printer, which RIR now has.
@@ -81,6 +81,15 @@ pub const FAMILY_REFUSED: &[(Family, GpuBackend, &str)] = &[
          kernel with its shared-memory decode (J4.5). Both win largely, and the \
          census puts the op second in the graph - aiming at it would be a \
          mistake already named and refused",
+    ),
+    (
+        Family::MulMatVec,
+        GpuBackend::Cuda,
+        "not a target on CUDA: the native `mul_mat_vec_q` quantizes the \
+         activations to q8_1 and runs integer dot products, a decode RIR \
+         does not express, and the decode profiles are taken on Metal. An \
+         oracle-only CUDA lowering would also add a row to the params header \
+         the fork copies, for a kernel nothing there dispatches",
     ),
     (
         Family::MatMulNaive,

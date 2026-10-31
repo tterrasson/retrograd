@@ -19,6 +19,7 @@ pub mod ir;
 pub mod layout;
 pub mod manifest;
 pub mod plan;
+pub mod profiles;
 pub mod quant;
 pub mod quant_table;
 pub mod supports;

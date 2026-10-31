@@ -12,6 +12,7 @@ mod integration;
 pub mod l2_norm_back;
 pub mod l2_norm_fwd;
 pub mod mat_mul_naive;
+pub mod mul_mat_vec;
 pub mod out_prod;
 pub mod rms_norm;
 pub mod rms_norm_back;
@@ -42,6 +43,8 @@ pub enum KernelId {
     L2NormFwdGrad,
     Cumsum,
     MatMulNaive,
+    /// One per weight format a reference model profile stores its matrices in.
+    MulMatVec(QuantType),
     /// One per `src0` dtype the compiler can read: `None` is F32.
     OutProd(Option<QuantType>),
     RmsNormBack,
@@ -68,6 +71,9 @@ pub fn ids() -> Vec<KernelId> {
         KernelId::Cumsum,
         KernelId::MatMulNaive,
     ]);
+    // The decode GEMV: one kernel per weight format of the reference
+    // profiles, straight from `mul_mat_vec::variants()`.
+    v.extend(mul_mat_vec::variants().into_iter().map(KernelId::MulMatVec));
     // One `out_prod` per `src0` dtype the compiler can read, straight from the
     // canonical table - F32 first, then the quantized weights of a LoRA backward.
     v.extend(out_prod::variants().into_iter().map(KernelId::OutProd));
@@ -104,6 +110,7 @@ impl KernelId {
             KernelId::L2NormFwdGrad => "l2_norm_fwd_grad".to_string(),
             KernelId::Cumsum => "cumsum".to_string(),
             KernelId::MatMulNaive => "mat_mul_naive".to_string(),
+            KernelId::MulMatVec(f) => mul_mat_vec::kernel_name(f),
             KernelId::OutProd(f) => out_prod::kernel_name(f),
             KernelId::RmsNormBack => "rms_norm_back".to_string(),
             KernelId::RmsNorm => "rms_norm".to_string(),
@@ -131,6 +138,7 @@ impl KernelId {
             KernelId::RmsNorm | KernelId::RmsNormBack => Family::RmsNorm,
             KernelId::Cumsum => Family::Cumsum,
             KernelId::MatMulNaive => Family::MatMulNaive,
+            KernelId::MulMatVec(_) => Family::MulMatVec,
             KernelId::OutProd(_) => Family::OutProd,
             KernelId::Unary(_) => Family::Unary,
             KernelId::Elementwise(b) => match b.op {
@@ -166,6 +174,7 @@ impl KernelId {
             }
             KernelId::Cumsum => named(cumsum::build()),
             KernelId::MatMulNaive => named(mat_mul_naive::build()),
+            KernelId::MulMatVec(f) => named(mul_mat_vec::build(f)),
             KernelId::OutProd(f) => named(out_prod::build_for(f)),
             KernelId::RmsNormBack => named(rms_norm_back::build()),
             KernelId::RmsNorm => named(rms_norm::build()),
@@ -327,6 +336,7 @@ impl KernelId {
             KernelId::SumRowsQuant(_) => oracle_only(name, vec![Src(0), Dst]),
             KernelId::Cumsum => integration::cumsum(name),
             KernelId::MatMulNaive => integration::mat_mul_naive(name),
+            KernelId::MulMatVec(_) => integration::mul_mat_vec(name),
             KernelId::OutProd(format) => integration::out_prod(name, format),
             KernelId::RmsNormBack => integration::rms_norm_back(name),
             KernelId::RmsNorm => integration::rms_norm(name),

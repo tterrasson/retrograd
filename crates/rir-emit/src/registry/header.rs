@@ -269,6 +269,20 @@ GGML_API const uint32_t rir_op_policy_count;
 #endif
 "#;
 
+/// The registry header: the fixed contract, then the regime bound the dispatch
+/// sites read. The bound is formatted from `rir_core::catalog::Regime` rather
+/// than written in the literal above, so the step size a site offers as decode
+/// is the one the profiles are measured and selected at.
+pub(crate) fn registry_header() -> String {
+    format!(
+        "{REGISTRY_HEADER}\n\
+         // The largest step, in tokens (`ne11` of a MUL_MAT), still in the decode\n\
+         // regime. A site that serves one regime only offers a node within it.\n\
+         #define RIR_DECODE_MAX_TOKENS {}\n",
+        rir_core::catalog::Regime::DECODE_MAX_TOKENS
+    )
+}
+
 pub(crate) fn max_rank(k: &LoopKernel) -> usize {
     // The published contract: the tightest declared Rank constraint, or the
     // widest argument rank when no constraint narrows it.
