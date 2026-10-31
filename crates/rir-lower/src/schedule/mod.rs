@@ -469,6 +469,19 @@ impl Schedule {
         !self.eligible_when.is_any() || self.vector_width > 1 || self.linear_addr
     }
 
+    /// Whether every node `other` accepts by layout this schedule accepts too,
+    /// so that its shape claim alone decides between the two.
+    ///
+    /// Layout is the only claim besides the shape that tells two schedules of
+    /// one kernel apart at selection: dtype, op member and axis relations are
+    /// the kernel's. A device that cannot run the selected variant hands the
+    /// node to the native kernel, not to the next candidate, so device
+    /// requirements do not reopen a shape to a lower priority.
+    pub(crate) fn layout_implied_by(&self, other: &Schedule) -> bool {
+        (self.vector_width == 1 || self.vector_width == other.vector_width)
+            && (!self.linear_addr || other.linear_addr)
+    }
+
     /// Artifact identity of this schedule for `kernel`: the kernel name for the
     /// fallback, `kernel_variant` otherwise. One string behind every per-variant
     /// name the pipeline emits, so they cannot drift apart.

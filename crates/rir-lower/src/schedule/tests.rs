@@ -274,3 +274,57 @@ fn each_backend_is_checked_on_its_own() {
         })
     ));
 }
+
+/// A specialization whose every shape a higher priority already claims is a
+/// generation error, named with what covers it - alone or together.
+#[test]
+fn a_variant_covered_by_higher_priorities_is_refused() {
+    let k = kernel();
+    let shadowed = [
+        fallback(),
+        special("wide", 95, Claim::any().on("row", 5..=32)),
+        special("narrow", 90, Claim::any().on("row", 5..=8)),
+    ];
+    assert_eq!(
+        check_schedule_table(&k, &shadowed),
+        Err(ScheduleError::ShadowedVariant {
+            backend: Backend::Vulkan,
+            variant: "narrow".into(),
+            by: vec!["wide".into()],
+        })
+    );
+
+    let together = [
+        fallback(),
+        special("low", 95, Claim::any().on("row", ..=4)),
+        special("high", 96, Claim::any().on("row", 5..)),
+        special("mid", 90, Claim::any().on("row", 2..=64)),
+    ];
+    assert!(matches!(
+        check_schedule_table(&k, &together),
+        Err(ScheduleError::ShadowedVariant { variant, .. }) if variant == "mid"
+    ));
+
+    // Partly outside the higher claim: rows 2 to 4 still reach it.
+    let reachable = [
+        fallback(),
+        special("wide", 95, Claim::any().on("row", 5..=32)),
+        special("narrow", 90, Claim::any().on("row", 2..=8)),
+    ];
+    assert_eq!(check_schedule_table(&k, &reachable), Ok(()));
+}
+
+/// A higher priority that also claims a layout only takes the nodes whose
+/// layout it fits: the scalar specialization keeps the rest.
+#[test]
+fn a_layout_claim_does_not_shadow_a_scalar_variant() {
+    let vec4 = Schedule::vulkan_grid_vec4([64, 1, 1])
+        .as_variant("vec4")
+        .claiming(95, Claim::any().on("row", ..=32));
+    let t = [
+        fallback(),
+        vec4,
+        special("few", 90, Claim::any().on("row", ..=8)),
+    ];
+    assert_eq!(check_schedule_table(&kernel(), &t), Ok(()));
+}

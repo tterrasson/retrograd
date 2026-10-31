@@ -70,6 +70,18 @@ pub enum ScheduleError {
         priority: u8,
         variants: (String, String),
     },
+    /// A specialization every shape of which a higher-priority variant of the
+    /// same backend already claims: the dispatcher takes the first candidate
+    /// that fits, so this one is never selected.
+    #[error(
+        "{}: variant '{variant}' is never selected - every shape it claims goes to {} first",
+        .backend.name(), .by.join(", ")
+    )]
+    ShadowedVariant {
+        backend: Backend,
+        variant: String,
+        by: Vec<String>,
+    },
     /// A numeric argument a constructor was handed leaves the schedule
     /// meaningless: a zero block, a zero vector width, a staged tile of depth
     /// zero.
@@ -175,6 +187,32 @@ pub fn check_schedule_table(kernel: &Kernel, schedules: &[Schedule]) -> Result<(
                         });
                     }
                 }
+            }
+        }
+
+        // A specialization the higher-ranked ones cover entirely is dead
+        // code, and nothing downstream would say so: it lowers, ships and
+        // counts zero dispatches. Decided here when the claims allow an exact
+        // answer (`Claim::covered_by`); a claim over interleaved axis products
+        // is left unproven rather than guessed.
+        for s in group.iter().filter(|s| s.variant.is_some()) {
+            let above: Vec<&&Schedule> = group
+                .iter()
+                .filter(|o| o.priority > s.priority && o.layout_implied_by(s))
+                .collect();
+            if above.is_empty() {
+                continue;
+            }
+            let claims: Vec<&Claim> = above.iter().map(|o| &o.eligible_when).collect();
+            if s.eligible_when.covered_by(&claims) == Some(true) {
+                return Err(ScheduleError::ShadowedVariant {
+                    backend,
+                    variant: s.variant.unwrap_or("<fallback>").to_string(),
+                    by: above
+                        .iter()
+                        .map(|o| o.variant.unwrap_or("<fallback>").to_string())
+                        .collect(),
+                });
             }
         }
 
