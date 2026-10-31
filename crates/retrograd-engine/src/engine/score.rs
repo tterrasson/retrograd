@@ -16,7 +16,7 @@
 use std::borrow::Cow;
 
 use super::*;
-use crate::step::{StepOutput, StepRow};
+use crate::step::{RowAdapter, StepOutput, StepRow};
 use crate::{first_masked_target, validate_suffix};
 
 /// The request id the scoring rows carry. The scheduler hands out small
@@ -114,6 +114,7 @@ impl Engine {
                 sampling: SamplingParamsV2::from(SCORING_SAMPLING),
                 n_top_logprobs: vocab,
                 want_logprob: false,
+                adapter: RowAdapter::Context,
             };
             self.step(std::slice::from_ref(&row), &mut out)?;
             if let &Some(target) = target {

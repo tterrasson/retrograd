@@ -294,6 +294,7 @@ mod introspect;
 #[path = "checkpoint.rs"]
 mod persistence;
 mod reference;
+mod rows;
 mod score;
 mod step;
 mod tokenize;

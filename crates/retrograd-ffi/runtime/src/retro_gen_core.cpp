@@ -1429,6 +1429,22 @@ bool gen_env_device_sampling(const gen_core_env & env, const float * out_logprob
 // gen_core
 
 int gen_core::decode(llama_batch & batch) {
+    // The owner's default adapter, for this decode's every sequence.
+    struct route_scope {
+        llama_context * ctx = nullptr;
+        ~route_scope() { if (ctx) llama_clear_seq_lora_routes(ctx); }
+    } routes;
+    if (env.lora_router && env.lora_router->default_adapter != 0) {
+        lora_row_router & router = *env.lora_router;
+        if (!router.installed && !lora_router_install(router, ctx)) {
+            return -1;
+        }
+        routes.ctx = ctx;
+        const int32_t route = lora_router_route(router, router.default_adapter);
+        for (uint32_t seq = 0; seq < llama_n_seq_max(ctx); ++seq) {
+            llama_set_seq_lora_route(ctx, static_cast<llama_seq_id>(seq), route);
+        }
+    }
     if (!env.duty_cycle || !env.duty_cycle->enabled()) {
         return llama_decode(ctx, batch);
     }
@@ -2399,8 +2415,15 @@ int gen_core::step_impl(
             return -3;
         }
         if (row.adapter != 0) {
-            set_error("step row adapter must be 0 (the active adapter) in this build");
-            return -3;
+            if (!env.lora_router) {
+                set_error("this context does not support per-row adapters: step row adapter must be 0");
+                return -3;
+            }
+            if (row.adapter != RETRO_STEP_ADAPTER_BASE
+                    && env.lora_router->adapters.find(row.adapter) == env.lora_router->adapters.end()) {
+                set_error("step row adapter " + std::to_string(row.adapter) + " is not a loaded per-row adapter");
+                return -3;
+            }
         }
         if (row.pos0 < 0 || static_cast<int64_t>(row.pos0) + row.n > n_ctx_seq) {
             set_error("step row positions exceed the per-sequence context");
@@ -2412,6 +2435,10 @@ int gen_core::step_impl(
                     && row.pos0 < static_cast<int64_t>(other.pos0) + other.n
                     && other.pos0 < static_cast<int64_t>(row.pos0) + row.n) {
                 set_error("step rows overlap in the same sequence slot");
+                return -3;
+            }
+            if (row.slot == other.slot && row.adapter != other.adapter) {
+                set_error("step rows of one sequence slot select different adapters");
                 return -3;
             }
         }
@@ -2480,6 +2507,33 @@ int gen_core::step_impl(
             }
         }
         compiled_grammars.push_back(std::move(compiled));
+    }
+
+    // Per-row adapters: route each row's slot for this decode only. The
+    // routes are cleared on every exit, so the batched generators, which know
+    // nothing of them, always decode under the context's own adapter set.
+    // A row with adapter 0 follows the owner's default (0 unless set).
+    const int32_t default_adapter = env.lora_router ? env.lora_router->default_adapter : 0;
+    const bool routed = default_adapter != 0 || std::any_of(rows, rows + n_rows,
+            [](const gen_detail::effective_step_row & row) { return row.adapter != 0; });
+    struct route_reset {
+        llama_context * ctx = nullptr;
+        ~route_reset() { if (ctx) llama_clear_seq_lora_routes(ctx); }
+    } reset_routes;
+    if (routed) {
+        lora_row_router & router = *env.lora_router;
+        if (!router.installed && !lora_router_install(router, ctx)) {
+            return -1;
+        }
+        reset_routes.ctx = ctx;
+        for (size_t r = 0; r < n_rows; ++r) {
+            const int32_t adapter = rows[r].adapter != 0 ? rows[r].adapter : default_adapter;
+            const int32_t route = lora_router_route(router, adapter);
+            if (llama_set_seq_lora_route(ctx, rows[r].slot, route) != 0) {
+                set_error("failed to route a step row to its adapter");
+                return -1;
+            }
+        }
     }
 
     // The step mutates raw KV outside the prefix-cache protocol: forget the
@@ -2901,6 +2955,83 @@ void top_token_logprobs(
         out_logprobs[j] = static_cast<float>(
                 static_cast<double>(logits[id]) - terms.max - terms.log_sum);
     }
+}
+
+bool lora_router_install(lora_row_router & router, llama_context * ctx) {
+    std::vector<llama_adapter_lora *> adapters;
+    std::vector<float> scales;
+    std::map<int32_t, int32_t> route_of;
+    for (const auto & [id, entry] : router.adapters) {
+        adapters.push_back(entry.adapter.get());
+        scales.push_back(entry.scale);
+        route_of.emplace(id, static_cast<int32_t>(adapters.size()));
+    }
+    router.installed = false;
+    router.route_of.clear();
+    std::string err;
+    if (llama_set_adapters_lora_rows(ctx, adapters.data(), adapters.size(), scales.data(), &err) != 0) {
+        set_error("failed to stack the per-row adapters: " + err);
+        return false;
+    }
+    router.installed = true;
+    router.route_of = std::move(route_of);
+    return true;
+}
+
+void lora_router_info(llama_context * ctx, retro_adapter_rows_info & out) {
+    out = retro_adapter_rows_info{};
+    out.struct_size = sizeof(retro_adapter_rows_info);
+    llama_adapter_lora_rows_info info {};
+    if (ctx && llama_get_adapters_lora_rows_info(ctx, &info)) {
+        out.n_adapters = static_cast<uint32_t>(info.n_adapters);
+        out.max_rank = static_cast<uint32_t>(info.r_max);
+        out.stacked_bytes = info.n_bytes;
+        out.unpadded_bytes = info.n_bytes_unpadded;
+    }
+}
+
+lora_adapter_ptr clone_lora_adapter(llama_model * model, const llama_adapter_lora & source) {
+    lora_adapter_ptr copy(new llama_adapter_lora(model));
+    copy->alpha = source.alpha;
+    copy->gguf_kv = source.gguf_kv;
+    std::map<ggml_backend_buffer_type_t, std::vector<std::pair<std::string, llama_adapter_lora_weight>>> by_buft;
+    for (const auto & [name, weight] : source.ab_map) {
+        by_buft[ggml_backend_buffer_get_type(weight.a->buffer)].emplace_back(name, weight);
+    }
+    std::vector<std::pair<llama_adapter_lora_weight, llama_adapter_lora_weight>> pairs;
+    for (const auto & [buft, weights] : by_buft) {
+        ggml_init_params params {
+            /*.mem_size   =*/ weights.size() * 2 * ggml_tensor_overhead(),
+            /*.mem_buffer =*/ nullptr,
+            /*.no_alloc   =*/ true,
+        };
+        ggml_context * ctx = ggml_init(params);
+        if (!ctx) {
+            set_error("failed to allocate the adapter copy's metadata");
+            return nullptr;
+        }
+        copy->ctxs.emplace_back(ctx);
+        for (const auto & [name, weight] : weights) {
+            ggml_tensor * a = ggml_dup_tensor(ctx, weight.a);
+            ggml_tensor * b = ggml_dup_tensor(ctx, weight.b);
+            ggml_set_name(a, weight.a->name);
+            ggml_set_name(b, weight.b->name);
+            copy->ab_map.emplace(name, llama_adapter_lora_weight(a, b));
+            pairs.emplace_back(weight, llama_adapter_lora_weight(a, b));
+        }
+        ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft));
+        if (!buffer) {
+            set_error("failed to allocate the adapter copy on " + std::string(ggml_backend_buft_name(buft)));
+            return nullptr;
+        }
+        copy->bufs.emplace_back(std::move(buffer));
+    }
+    for (const auto & [from, to] : pairs) {
+        ggml_backend_tensor_copy(from.a, to.a);
+        ggml_backend_tensor_copy(from.b, to.b);
+    }
+    model->loras.insert(copy.get());
+    return copy;
 }
 
 } // namespace retro

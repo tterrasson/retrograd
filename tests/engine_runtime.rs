@@ -13,8 +13,8 @@ use std::borrow::Cow;
 use common::serialize_models;
 use retrograd::trainer::SampledRow;
 use retrograd::{
-    Device, Engine, EngineConfig, EngineError, EngineKvDtype, LoraConfig, SamplingParams,
-    StepOutput, StepRow, TargetSet, TrainConfig, Trainer,
+    Device, Engine, EngineConfig, EngineError, EngineKvDtype, LoraConfig, RowAdapter,
+    SamplingParams, StepOutput, StepRow, TargetSet, TrainConfig, Trainer,
 };
 
 /// The trainer config the parity tests run with: four sequence slots, so the
@@ -592,6 +592,7 @@ fn step_generate<M: StepApi>(
                 sampling: rows[leader].sampling.into(),
                 n_top_logprobs: 0,
                 want_logprob: false,
+                adapter: RowAdapter::Context,
             };
             model.step(&[row], &mut out)?;
             if last {
@@ -616,6 +617,7 @@ fn step_generate<M: StepApi>(
                     sampling: rows[member].sampling.into(),
                     n_top_logprobs: 0,
                     want_logprob: false,
+                    adapter: RowAdapter::Context,
                 })
                 .collect();
             model.step(&wave, &mut out)?;
@@ -858,6 +860,7 @@ fn step_seq_ops_manage_the_kv_pool_as_documented() {
                     sampling: sampling.into(),
                     n_top_logprobs: 0,
                     want_logprob: false,
+                    adapter: RowAdapter::Context,
                 }],
                 &mut out,
             )
@@ -964,6 +967,7 @@ fn step_seq_ops_manage_the_kv_pool_as_documented() {
         sampling: sampling.into(),
         n_top_logprobs: 0,
         want_logprob: false,
+        adapter: RowAdapter::Context,
     };
     let err = engine.step(&[no_request], &mut out).unwrap_err();
     assert!(matches!(err, EngineError::InvalidArgument(_)), "{err}");
@@ -1032,6 +1036,7 @@ fn step_budget_handles_chunked_prompt_tails_and_configuration_changes() {
                 sampling: sampling.into(),
                 n_top_logprobs: 4,
                 want_logprob: false,
+                adapter: RowAdapter::Context,
             }],
             &mut out,
         )

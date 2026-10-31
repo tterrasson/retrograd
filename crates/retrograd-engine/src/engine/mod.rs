@@ -15,6 +15,7 @@ mod generate;
 mod score;
 mod step;
 
+pub use adapter::AdapterRowsInfo;
 pub use embed::PoolingType;
 
 use std::ffi::CString;

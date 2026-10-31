@@ -33,7 +33,13 @@ gen_core_env gen_env_of(trainer_state & state) {
 // A gen_core over the context a call runs on. The prefix-cache bookkeeping
 // stays owned by the trainer so it survives across calls.
 gen_core core_over(trainer_state & state, llama_context * ctx) {
-    return gen_core(state.model.get(), ctx, gen_env_of(state), &state.generation_cache);
+    gen_core_env env = gen_env_of(state);
+    // Per-row adapters live on the dedicated generation context only: the
+    // training graph never sees their stacks or masks.
+    if (state.generation_ctx && ctx == state.generation_ctx.get()) {
+        env.lora_router = &state.generation_rows;
+    }
+    return gen_core(state.model.get(), ctx, env, &state.generation_cache);
 }
 
 void clear_context_memory(llama_context * ctx) {
@@ -158,6 +164,158 @@ int generate_continuous_batch_v2_impl(
 // batched generators use.
 llama_context * generation_ctx_of(trainer_state & state) {
     return state.generation_ctx ? state.generation_ctx.get() : state.ctx.get();
+}
+
+// The checks every per-row adapter operation of the trainer shares: they
+// need the dedicated generation context, which is where the adapters live.
+static trainer_state * rows_trainer(retro_trainer * trainer) {
+    trainer_state * state = checked(trainer);
+    if (!state) {
+        return nullptr;
+    }
+    if (!state->generation_ctx) {
+        set_error("per-row adapters need the trainer's dedicated generation context "
+                  "(more than one generation sequence)");
+        return nullptr;
+    }
+    return state;
+}
+
+int generation_adapter_snapshot_impl(
+        retro_trainer * trainer, int32_t replace, float scale, int32_t * out_id) {
+    return boundary([&]() -> int {
+        trainer_state * state = rows_trainer(trainer);
+        if (!state) {
+            return -1;
+        }
+        if (!out_id) {
+            set_error("out_id is required");
+            return -1;
+        }
+        if (!std::isfinite(scale)) {
+            set_error("the adapter scale must be finite");
+            return -1;
+        }
+        if (!state->adapter || !state->has_lora) {
+            set_error("a snapshot copies the trained LoRA adapter, and the trainer has none");
+            return -1;
+        }
+        // A copied adapter only reproduces the policy over the base it was
+        // trained on: once the run changes the base, the copy means nothing.
+        if (trains_base_weights(*state)) {
+            set_error("the run trains base weights: an adapter snapshot would not freeze the policy");
+            return -1;
+        }
+        lora_row_router & router = state->generation_rows;
+        if (replace != 0) {
+            if (router.adapters.find(replace) == router.adapters.end()) {
+                set_error("no per-row adapter is loaded under id " + std::to_string(replace));
+                return -1;
+            }
+            if (router.default_adapter == replace) {
+                router.default_adapter = 0;
+                state->generation_cache.forget_bookkeeping();
+            }
+            // Freed before the copy is made, so a refresh never holds two
+            // snapshots at once.
+            router.adapters.erase(replace);
+        }
+        if (router.next_id == INT32_MAX) {
+            set_error("per-row adapter ids are exhausted");
+            return -1;
+        }
+        lora_adapter_ptr copy = clone_lora_adapter(state->model.get(), *state->adapter);
+        if (!copy) {
+            lora_router_install(router, state->generation_ctx.get());
+            return -1;
+        }
+        const int32_t id = router.next_id++;
+        router.adapters.emplace(id, lora_row_router::entry{ std::move(copy), scale });
+        if (!lora_router_install(router, state->generation_ctx.get())) {
+            const std::string error = retro_last_error();
+            router.adapters.erase(id);
+            lora_router_install(router, state->generation_ctx.get());
+            set_error(error);
+            return -1;
+        }
+        *out_id = id;
+        return 0;
+    });
+}
+
+int generation_adapter_unload_impl(retro_trainer * trainer, int32_t id) {
+    return boundary([&]() -> int {
+        trainer_state * state = rows_trainer(trainer);
+        if (!state) {
+            return -1;
+        }
+        lora_row_router & router = state->generation_rows;
+        auto found = router.adapters.find(id);
+        if (found == router.adapters.end()) {
+            set_error("no per-row adapter is loaded under id " + std::to_string(id));
+            return -1;
+        }
+        if (router.default_adapter == id) {
+            router.default_adapter = 0;
+            state->generation_cache.forget_bookkeeping();
+        }
+        lora_adapter_ptr adapter = std::move(found->second.adapter);
+        router.adapters.erase(found);
+        return lora_router_install(router, state->generation_ctx.get()) ? 0 : -1;
+    });
+}
+
+int get_generation_adapter_impl(retro_trainer * trainer, int32_t * out_adapter) {
+    return boundary([&]() -> int {
+        trainer_state * state = rows_trainer(trainer);
+        if (!state) {
+            return -1;
+        }
+        if (!out_adapter) {
+            set_error("out_adapter is required");
+            return -1;
+        }
+        *out_adapter = state->generation_rows.default_adapter;
+        return 0;
+    });
+}
+
+int set_generation_adapter_impl(retro_trainer * trainer, int32_t adapter) {
+    return boundary([&]() -> int {
+        trainer_state * state = rows_trainer(trainer);
+        if (!state) {
+            return -1;
+        }
+        lora_row_router & router = state->generation_rows;
+        if (adapter < RETRO_STEP_ADAPTER_BASE
+                || (adapter > 0 && router.adapters.find(adapter) == router.adapters.end())) {
+            set_error("adapter " + std::to_string(adapter) + " is not a loaded per-row adapter");
+            return -1;
+        }
+        if (router.default_adapter != adapter) {
+            router.default_adapter = adapter;
+            // The batched generators' prefix bookkeeping does not know which
+            // adapter a resident prefix was decoded under: forget it, the KV
+            // itself stays (the step API's own callers key by adapter).
+            state->generation_cache.forget_bookkeeping();
+        }
+        return 0;
+    });
+}
+
+int generation_adapter_rows_info_impl(retro_trainer * trainer, retro_adapter_rows_info * out_info) {
+    return boundary([&]() -> int {
+        trainer_state * state = checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        if (!out_info) {
+            set_error("out_info is required");
+            return -1;
+        }
+        lora_router_info(state->generation_ctx.get(), *out_info);
+        return 0;
+    });
 }
 
 int generation_step_impl(

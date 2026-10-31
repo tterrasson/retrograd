@@ -1158,6 +1158,28 @@ extern "C" int retro_trainer_generation_step_v2(
             trainer, rows, n_rows, out_rows, out_top_ids, out_top_logprobs, n_top_stride);
 }
 
+extern "C" int retro_trainer_generation_adapter_snapshot(
+        retro_trainer * trainer, int32_t replace, float scale, int32_t * out_id) {
+    return retro::generation_adapter_snapshot_impl(trainer, replace, scale, out_id);
+}
+
+extern "C" int retro_trainer_generation_adapter_unload(retro_trainer * trainer, int32_t id) {
+    return retro::generation_adapter_unload_impl(trainer, id);
+}
+
+extern "C" int retro_trainer_get_generation_adapter(retro_trainer * trainer, int32_t * out_adapter) {
+    return retro::get_generation_adapter_impl(trainer, out_adapter);
+}
+
+extern "C" int retro_trainer_set_generation_adapter(retro_trainer * trainer, int32_t adapter) {
+    return retro::set_generation_adapter_impl(trainer, adapter);
+}
+
+extern "C" int retro_trainer_generation_adapter_rows_info(
+        retro_trainer * trainer, retro_adapter_rows_info * out_info) {
+    return retro::generation_adapter_rows_info_impl(trainer, out_info);
+}
+
 extern "C" int retro_trainer_tool_call_grammar(
         retro_trainer * trainer,
         const char * tools_json,

@@ -498,7 +498,8 @@ pub mod step;
 mod trainer;
 
 pub use engine::{
-    Engine, EngineError, PoolingType, engine_config_from_train_config, generation_batch,
+    AdapterRowsInfo, Engine, EngineError, PoolingType, engine_config_from_train_config,
+    generation_batch,
 };
 pub use grammar::{grammar_from_gbnf, grammar_from_json_schema, json_object_grammar};
 pub use packed::PackedSequenceBatch;
@@ -506,10 +507,14 @@ pub use probe::*;
 pub use quant::*;
 pub use rir::*;
 pub use stats::{DutyCycleStats, GenerationStats, OptimizerMemory, OptimizerTiming, ScoringStats};
-pub use step::{EngineMemory, STATE_SEQ_FLAGS_PARTIAL_ONLY, StepOutRow, StepOutput, StepRow};
+pub use step::{
+    AdapterId, EngineMemory, RowAdapter, STATE_SEQ_FLAGS_PARTIAL_ONLY, StepOutRow, StepOutput,
+    StepRow,
+};
 pub use trainer::{
-    JudgeWeights, SampledRow, VOCABULARY_WITNESSES, VocabularyMismatch, parse_assistant_output,
-    parse_assistant_output_partial, render_chat_template_source, tool_call_parser_from_source,
+    JudgeWeights, SampledRow, VOCABULARY_WITNESSES, VocabularyMismatch,
+    parse_assistant_output, parse_assistant_output_partial, render_chat_template_source,
+    tool_call_parser_from_source,
 };
 
 // The "uninitialized buffer filled through FFI" helpers below each mark a

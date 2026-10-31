@@ -8,6 +8,7 @@
 #include "ggml-opt.h"
 #include "gguf.h"
 #include "llama-adapter.h"
+#include "llama-adapter-rows.h"
 #include "llama.h"
 #include "llama-model.h"
 
@@ -259,6 +260,46 @@ struct gen_cache {
 // The ambient execution policy of a gen_core's owner. The core itself knows
 // nothing about who owns it: the trainer lends its duty-cycle limiter and
 // device capabilities, the engine passes none.
+// Per-row LoRA selection on one context. The owner keeps the routed adapters
+// under ids that are never reused, so a reload never answers to the id of the
+// generation it replaced; the context holds them stacked (llama-adapter-rows.h)
+// and a step row's adapter field picks one through `route_of`:
+//   0                       the context's own adapter set (the default)
+//   RETRO_STEP_ADAPTER_BASE  no adapter at all
+//   id > 0                  the routed adapter loaded under that id
+struct lora_row_router {
+    struct entry {
+        lora_adapter_ptr adapter;
+        float scale = 1.0f;
+    };
+    std::map<int32_t, entry> adapters;
+    int32_t next_id = 1;
+    // A routed set (possibly empty) is installed on the context, and
+    // `route_of` maps every loaded id to its stacked slot.
+    bool installed = false;
+    std::map<int32_t, int32_t> route_of;
+    // What the batched generators and scorers decode under (every sequence
+    // of their decodes), with the step-row values: 0 keeps the context's own
+    // adapter set and adds nothing to their graphs. Step rows carry their own.
+    int32_t default_adapter = 0;
+};
+
+// The route of a step-row adapter value; the id must be loaded.
+inline int32_t lora_router_route(const lora_row_router & router, int32_t adapter) {
+    return adapter <= 0 ? adapter : router.route_of.at(adapter);
+}
+
+// Copies `source` into a new adapter owning its own tensors on the same
+// buffer types, so later updates of `source` leave the copy as it was.
+lora_adapter_ptr clone_lora_adapter(llama_model * model, const llama_adapter_lora & source);
+
+// Restacks every routed adapter of `router` on `ctx` (an empty set when none
+// is loaded). On failure the context keeps no routed set and the error is set.
+bool lora_router_install(lora_row_router & router, llama_context * ctx);
+
+// Bytes of the routed stacks on `ctx` (padding included) and the max rank.
+void lora_router_info(llama_context * ctx, retro_adapter_rows_info & out);
+
 struct gen_core_env {
     // Null means unthrottled: exactly `llama_decode(ctx, batch)`.
     duty_cycle_limiter * duty_cycle = nullptr;
@@ -267,6 +308,8 @@ struct gen_core_env {
     bool cap_device_logprobs = false;
     // Scoring counters of the owner, null when the owner does not report them.
     retro_scoring_stats * scoring_stats = nullptr;
+    // The owner's per-row adapters; null refuses any step row adapter but 0.
+    lora_row_router * lora_router = nullptr;
 };
 
 struct trainer_state {
@@ -279,6 +322,9 @@ struct trainer_state {
     // training datapoint.
     context_ptr generation_ctx;
     lora_adapter_ptr adapter;
+    // Per-row adapters of the generation context (frozen snapshots of
+    // `adapter`), beside the trained one the context applies by default.
+    lora_row_router generation_rows;
     bool has_lora = false;
     bool loaded_lora = false;
     // The resolved base trainable set, as names, owned here for the trainer's
@@ -896,6 +942,13 @@ int train_packed_sequences_impl(
         retro_train_metrics * out_metrics,
         retro_train_progress_callback progress_callback,
         void * progress_user_data);
+
+int generation_adapter_snapshot_impl(
+        retro_trainer * trainer, int32_t replace, float scale, int32_t * out_id);
+int generation_adapter_unload_impl(retro_trainer * trainer, int32_t id);
+int get_generation_adapter_impl(retro_trainer * trainer, int32_t * out_adapter);
+int set_generation_adapter_impl(retro_trainer * trainer, int32_t adapter);
+int generation_adapter_rows_info_impl(retro_trainer * trainer, retro_adapter_rows_info * out_info);
 
 int generate_batch_impl(
         retro_trainer * trainer,

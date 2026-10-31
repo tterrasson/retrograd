@@ -1453,6 +1453,25 @@ retro_memory_report memory_totals(const trainer_state & state) {
     report.device_bytes += base_device_training_bytes;
     (report.adapter_on_host ? report.host_bytes : report.device_bytes) += adapter_total_bytes;
 
+    // Frozen generation adapters have neither gradients nor optimizer state.
+    // Their factors and routed stacks still contribute to the resident totals.
+    auto add_frozen_buffer = [&](ggml_backend_buffer_t buffer) {
+        const bool host = ggml_backend_buft_is_host(ggml_backend_buffer_get_type(buffer));
+        (host ? report.host_bytes : report.device_bytes) += ggml_backend_buffer_get_size(buffer);
+    };
+    for (const auto & [id, entry] : state.generation_rows.adapters) {
+        for (const auto & buffer : entry.adapter->bufs) {
+            add_frozen_buffer(buffer.get());
+        }
+    }
+    if (state.generation_ctx) {
+        if (const auto * rows = state.generation_ctx->get_adapters_lora_rows()) {
+            for (const auto & buffer : rows->bufs) {
+                add_frozen_buffer(buffer.get());
+            }
+        }
+    }
+
     // Measured device memory is separate from the buffer totals: it also includes
     // backend scratch and the graph allocator's transient reserve. Report it only
     // after the runtime has sampled it, so zero is not mistaken for a measurement.

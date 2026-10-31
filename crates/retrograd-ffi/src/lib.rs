@@ -596,8 +596,30 @@ pub struct RetroStepRow {
     /// Read when `sample` is set (`seed` seeds the request's RNG once).
     pub sampling: RetroSamplingParams,
     pub n_top_logprobs: u32,
-    /// Reserved for per-line adapters; must be 0 in this build.
+    /// The adapter this row decodes under: 0 for the context's own adapter
+    /// set, [`RETRO_STEP_ADAPTER_BASE`] for the base model alone, or a
+    /// per-row adapter id. Rows of one slot in one step must agree.
     pub adapter: i32,
+}
+
+/// Mirror of `RETRO_STEP_ADAPTER_BASE`: a step row decoding under the base
+/// model alone, whatever adapter the context applies to its other rows.
+pub const RETRO_STEP_ADAPTER_BASE: i32 = -1;
+
+/// Mirror of `retro_adapter_rows_info`: what the per-row adapters of a
+/// context cost (F32 stacks, zero-padded to the largest rank).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RetroAdapterRowsInfo {
+    /// Filled by the runtime.
+    pub struct_size: u32,
+    pub n_adapters: u32,
+    /// The rank every stacked adapter is padded to.
+    pub max_rank: u32,
+    /// Bytes of the stacks, padding included.
+    pub stacked_bytes: u64,
+    /// What the same adapters would take unpadded, in F32.
+    pub unpadded_bytes: u64,
 }
 
 /// Mirror of `retro_step_out_row`: what one step produced for one row.
@@ -698,7 +720,7 @@ pub struct RetroStepRowV2 {
     pub n_top_logprobs: u32,
     /// Also fill `sampled_logprob`.
     pub want_logprob: u8,
-    /// Must be 0 in this build.
+    /// Same contract as [`RetroStepRow::adapter`].
     pub adapter: i32,
 }
 
@@ -1826,6 +1848,51 @@ unsafe extern "C" {
     /// version.
     pub fn retro_engine_activate_lora(engine: *mut RetroEngine, name: *const c_char) -> c_int;
 
+    /// Mirror of `retro_trainer_generation_adapter_snapshot`: copy the
+    /// trained adapter into a per-row adapter of the generation context.
+    pub fn retro_trainer_generation_adapter_snapshot(
+        trainer: *mut RetroTrainer,
+        replace: i32,
+        scale: c_float,
+        out_id: *mut i32,
+    ) -> c_int;
+
+    /// Mirror of `retro_trainer_generation_adapter_unload`.
+    pub fn retro_trainer_generation_adapter_unload(trainer: *mut RetroTrainer, id: i32) -> c_int;
+
+    /// Mirror of `retro_trainer_get_generation_adapter`.
+    pub fn retro_trainer_get_generation_adapter(
+        trainer: *mut RetroTrainer,
+        out_adapter: *mut i32,
+    ) -> c_int;
+
+    /// Mirror of `retro_trainer_set_generation_adapter`.
+    pub fn retro_trainer_set_generation_adapter(trainer: *mut RetroTrainer, adapter: i32) -> c_int;
+
+    /// Mirror of `retro_trainer_generation_adapter_rows_info`.
+    pub fn retro_trainer_generation_adapter_rows_info(
+        trainer: *mut RetroTrainer,
+        out_info: *mut RetroAdapterRowsInfo,
+    ) -> c_int;
+
+    /// Mirror of `retro_engine_adapter_load`: load a LoRA checkpoint of the
+    /// base model as a per-row adapter under a fresh id, never reused.
+    pub fn retro_engine_adapter_load(
+        engine: *mut RetroEngine,
+        adapter_path: *const c_char,
+        scale: c_float,
+        out_id: *mut i32,
+    ) -> c_int;
+
+    /// Mirror of `retro_engine_adapter_unload`.
+    pub fn retro_engine_adapter_unload(engine: *mut RetroEngine, id: i32) -> c_int;
+
+    /// Mirror of `retro_engine_adapter_rows_info`.
+    pub fn retro_engine_adapter_rows_info(
+        engine: *mut RetroEngine,
+        out_info: *mut RetroAdapterRowsInfo,
+    ) -> c_int;
+
     /// Mirror of `retro_engine_active_adapter`: writes the active adapter's
     /// name (empty = base), two-call sized-string contract.
     pub fn retro_engine_active_adapter(
@@ -2557,6 +2624,11 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroStepRow, sampling), 36);
         assert_eq!(offset_of!(RetroStepRow, n_top_logprobs), 52);
         assert_eq!(offset_of!(RetroStepRow, adapter), 56);
+        assert_eq!(size_of::<RetroAdapterRowsInfo>(), 32);
+        assert_eq!(align_of::<RetroAdapterRowsInfo>(), 8);
+        assert_eq!(offset_of!(RetroAdapterRowsInfo, max_rank), 8);
+        assert_eq!(offset_of!(RetroAdapterRowsInfo, stacked_bytes), 16);
+        assert_eq!(offset_of!(RetroAdapterRowsInfo, unpadded_bytes), 24);
         assert_eq!(size_of::<RetroStepOutRow>(), 20);
         assert_eq!(align_of::<RetroStepOutRow>(), 4);
         assert_eq!(offset_of!(RetroStepOutRow, struct_size), 0);

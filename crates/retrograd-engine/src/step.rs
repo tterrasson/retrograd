@@ -32,6 +32,53 @@ pub(crate) fn validate_snapshot_flags(flags: u32) -> Result<(), EngineError> {
 /// `RETRO_STATE_SEQ_FLAGS_PARTIAL_ONLY`.
 pub const STATE_SEQ_FLAGS_PARTIAL_ONLY: u32 = ffi::RETRO_STATE_SEQ_FLAGS_PARTIAL_ONLY;
 
+/// Id of a per-row adapter: positive, and never reused by the engine that
+/// returned it, so a reloaded checkpoint never answers to the id of the
+/// generation it replaced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct AdapterId(i32);
+
+impl AdapterId {
+    /// `None` unless `id > 0`.
+    pub fn new(id: i32) -> Option<Self> {
+        (id > 0).then_some(Self(id))
+    }
+
+    pub fn get(self) -> i32 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for AdapterId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// The adapter a step row decodes under. Rows of one slot in one step must
+/// agree, and a slot is only ever continued under the adapter that wrote its
+/// KV.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum RowAdapter {
+    /// The context's own adapter set: its active adapter, or none.
+    #[default]
+    Context,
+    /// The base model alone, whatever the context applies to its other rows.
+    Base,
+    /// A per-row adapter, by the id its load returned.
+    Loaded(AdapterId),
+}
+
+impl RowAdapter {
+    pub(crate) fn to_ffi(self) -> i32 {
+        match self {
+            Self::Context => 0,
+            Self::Base => ffi::RETRO_STEP_ADAPTER_BASE,
+            Self::Loaded(id) => id.get(),
+        }
+    }
+}
+
 /// One row of a step plan: `tokens` are decoded into `slot` at the absolute
 /// positions `pos0..pos0 + tokens.len() - 1`, and when `sample` is set the last
 /// token's logits are sampled through the same oracle as the batched
@@ -54,6 +101,8 @@ pub struct StepRow<'a> {
     /// Also report the sampled token's logprob under the post-transformation
     /// distribution (serving logprobs without top-k).
     pub want_logprob: bool,
+    /// The adapter the row decodes under.
+    pub adapter: RowAdapter,
 }
 
 impl<'a> StepRow<'a> {
@@ -73,6 +122,7 @@ impl<'a> StepRow<'a> {
             }),
             n_top_logprobs: 0,
             want_logprob: false,
+            adapter: RowAdapter::Context,
         }
     }
 
@@ -93,6 +143,7 @@ impl<'a> StepRow<'a> {
             sampling: sampling.clone().into(),
             n_top_logprobs: 0,
             want_logprob: false,
+            adapter: RowAdapter::Context,
         }
     }
 
@@ -147,8 +198,7 @@ impl<'a> StepRow<'a> {
             sampling,
             n_top_logprobs: self.n_top_logprobs,
             want_logprob: u8::from(self.want_logprob),
-            // Reserved for per-line adapters; 0 is the active adapter.
-            adapter: 0,
+            adapter: self.adapter.to_ffi(),
         })
     }
 }
@@ -487,6 +537,7 @@ mod tests {
             sampling: sampling(1),
             n_top_logprobs: 0,
             want_logprob: false,
+            adapter: RowAdapter::Context,
         }
         .to_ffi_v2(std::ptr::null(), std::ptr::null(), std::ptr::null())
         .unwrap_err();

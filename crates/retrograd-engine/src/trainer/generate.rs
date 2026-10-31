@@ -40,14 +40,24 @@ impl Trainer {
     }
 
     /// Samples a completion under this run's reference policy: the attached
-    /// anchor when there is one, otherwise the frozen base model with any
-    /// loaded LoRA adapter temporarily disabled. A base-weight run with no
-    /// anchor is refused: there is no frozen model left to sample from.
+    /// anchor when there is one, otherwise the frozen base model. With a
+    /// dedicated generation context the base model is selected there per row
+    /// (the adapter stays applied and no resident KV is dropped); without
+    /// one, the LoRA adapter is temporarily disabled. A base-weight run with
+    /// no anchor is refused: there is no frozen model left to sample from.
     pub fn generate_base(
         &mut self,
         prompt: &[i32],
         sampling: &SamplingParams,
     ) -> Result<Generation> {
+        if self.reference.is_none()
+            && !self.trains_base_weights()
+            && self.supports_generation_adapters()
+        {
+            return self.with_generation_adapter(crate::RowAdapter::Base, |trainer| {
+                trainer.generate(prompt, sampling)
+            });
+        }
         self.with_reference_policy(|trainer| trainer.generate(prompt, sampling))
     }
 

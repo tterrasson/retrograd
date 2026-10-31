@@ -7,6 +7,7 @@
 // zero optimizer state and zero gradient.
 #include "retro_gen_core.hpp"
 
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <limits>
@@ -39,6 +40,9 @@ struct engine_state {
     std::map<std::string, lora_adapter_ptr> adapters;
     std::string active_adapter;
     bool lora_enabled = false;
+    // Per-row adapters, selected by the step rows' adapter field. Declared
+    // after `model`: freeing an adapter unregisters it from its model.
+    lora_row_router lora_rows;
     chat_model_state chat;
     int32_t requested_device = 0;
     bool gpu_active = false;
@@ -252,6 +256,7 @@ bool load_engine_model_and_context(engine_state & state) {
         state.cap_device_sampling,
         state.cap_device_logprobs,
         nullptr,
+        &state.lora_rows,
     };
 
     state.model = std::move(model);
@@ -361,6 +366,16 @@ retro_memory_report engine_memory_totals(const engine_state & state) {
             }
         }
     }
+    // Per-row adapters hold their own factors plus the padded stacks the
+    // context gathers from; both stay resident while they are loaded.
+    for (const auto & [id, entry] : state.lora_rows.adapters) {
+        for (const auto & item : entry.adapter->ab_map) {
+            adapter_bytes += ggml_nbytes(item.second.a) + ggml_nbytes(item.second.b);
+        }
+    }
+    retro_adapter_rows_info rows {};
+    lora_router_info(state.ctx.get(), rows);
+    adapter_bytes += rows.stacked_bytes;
     report.trainable_parameter_bytes = adapter_bytes;
     // Adapter factors are allocated on top of the loaded model, never a slice
     // of it.
@@ -764,6 +779,93 @@ extern "C" int retro_engine_set_lora_enabled(retro_engine * engine, bool enabled
         // Adapter changes invalidate decoded sequence memory, in both
         // directions: disabling is as much a weights change as enabling.
         forget_engine_kv(*state);
+        return 0;
+    });
+}
+
+extern "C" int retro_engine_adapter_load(
+        retro_engine * engine, const char * adapter_path, float scale, int32_t * out_id) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        if (is_blank(adapter_path)) {
+            set_error("adapter_path is required");
+            return -1;
+        }
+        if (!out_id) {
+            set_error("out_id is required");
+            return -1;
+        }
+        if (!std::isfinite(scale)) {
+            set_error("the adapter scale must be finite");
+            return -1;
+        }
+        lora_row_router & router = state->lora_rows;
+        if (router.next_id == INT32_MAX) {
+            set_error("per-row adapter ids are exhausted");
+            return -1;
+        }
+        lora_adapter_ptr adapter(llama_adapter_lora_init(state->model.get(), adapter_path));
+        if (!adapter) {
+            set_error("failed to load LoRA adapter: " + std::string(adapter_path));
+            return -1;
+        }
+        if (!validate_lora_tensor_pairs(*adapter)) {
+            return -1;
+        }
+        const int32_t id = router.next_id++;
+        router.adapters.emplace(id, lora_row_router::entry{ std::move(adapter), scale });
+        if (!lora_router_install(router, state->ctx.get())) {
+            // Restack what was there before: a refused adapter (aLoRA, an
+            // embedding or expert target) must not take the others down.
+            const std::string error = retro_last_error();
+            router.adapters.erase(id);
+            lora_router_install(router, state->ctx.get());
+            set_error(error);
+            return -1;
+        }
+        *out_id = id;
+        return 0;
+    });
+}
+
+extern "C" int retro_engine_adapter_unload(retro_engine * engine, int32_t id) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        lora_row_router & router = state->lora_rows;
+        auto found = router.adapters.find(id);
+        if (found == router.adapters.end()) {
+            set_error("no per-row adapter is loaded under id " + std::to_string(id));
+            return -1;
+        }
+        // Restack first: the context's stacks are copies, so the adapter can
+        // only go once the routed set no longer names it.
+        lora_adapter_ptr adapter = std::move(found->second.adapter);
+        router.adapters.erase(found);
+        if (!lora_router_install(router, state->ctx.get())) {
+            return -1;
+        }
+        return 0;
+    });
+}
+
+extern "C" int retro_engine_adapter_rows_info(
+        retro_engine * engine, retro_adapter_rows_info * out_info) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        if (!out_info) {
+            set_error("out_info is required");
+            return -1;
+        }
+        lora_router_info(state->ctx.get(), *out_info);
         return 0;
     });
 }

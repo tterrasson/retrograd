@@ -1173,10 +1173,28 @@ typedef struct retro_step_row {
     // is not read by the runtime here.
     retro_sampling_params sampling;
     uint32_t n_top_logprobs; // top-k ids/logprobs to write for the sampled row
-    // Reserved for per-line adapters: must be 0 (the context's active adapter)
-    // in this build.
+    // The adapter this row decodes under: 0 for the context's own adapter set
+    // (the active adapter, or none), RETRO_STEP_ADAPTER_BASE for the base
+    // model alone, or an id returned by retro_*_adapter_load / _snapshot for a
+    // per-row adapter. Rows of one slot in one step must agree; the KV a slot
+    // holds was computed under the adapter of the rows that wrote it, so a
+    // caller never continues a slot under another one.
     int32_t  adapter;
 } retro_step_row;
+
+// Step-row adapter value selecting the base model alone, whatever adapter the
+// context applies to its other rows.
+#define RETRO_STEP_ADAPTER_BASE (-1)
+
+// What the per-row adapters of a context cost: they are stacked per target
+// weight, every one zero-padded to the largest rank among them, in F32.
+typedef struct retro_adapter_rows_info {
+    uint32_t struct_size;      // filled by the runtime: sizeof(retro_adapter_rows_info)
+    uint32_t n_adapters;       // per-row adapters loaded
+    uint32_t max_rank;         // the rank every stacked adapter is padded to
+    uint64_t stacked_bytes;    // device or host bytes of the stacks, padding included
+    uint64_t unpadded_bytes;   // what the same adapters would take unpadded, in F32
+} retro_adapter_rows_info;
 
 // What one step produced for one row. `token`/`logprob`/`forced`/`n_top` are
 // valid only when `sampled` is set.
@@ -1252,7 +1270,7 @@ typedef struct retro_step_row_v2 {
     retro_sampling_params_v2 sampling;
     uint32_t n_top_logprobs;
     uint8_t  want_logprob;  // also fill sampled_logprob
-    int32_t  adapter;       // must be 0 in this build
+    int32_t  adapter;       // same contract as retro_step_row.adapter
 } retro_step_row_v2;
 
 typedef struct retro_step_out_row_v2 {
@@ -1296,6 +1314,36 @@ int retro_trainer_generation_step_v2(
     int32_t * out_top_ids,
     float * out_top_logprobs,
     size_t n_top_stride);
+
+// Per-row adapters of the trainer's dedicated generation context (refused
+// without one): frozen in-memory copies of the trained LoRA adapter, selected
+// per step row like the engine's (retro_step_row.adapter), so a judge can
+// decode under a snapshot of the policy in the same batch as the policy and
+// on the same base weights. The training context never sees them.
+//
+// retro_trainer_generation_adapter_snapshot copies the trained adapter's
+// tensors (device to device, no file) into a new per-row adapter and returns
+// its id. `replace`, when not 0, is unloaded first, so a refresh never holds
+// two snapshots. Refused when the run trains base weights: an adapter copy
+// does not freeze a policy whose base moves.
+int retro_trainer_generation_adapter_snapshot(
+    retro_trainer * trainer,
+    int32_t replace,
+    float scale,
+    int32_t * out_id);
+int retro_trainer_generation_adapter_unload(retro_trainer * trainer, int32_t id);
+// What the batched generators on the generation context decode under, with
+// the step-row values: 0 (the default) for the trained adapter,
+// RETRO_STEP_ADAPTER_BASE for the base model, or a per-row adapter id; step
+// rows with adapter 0 follow it as well. Changing it forgets
+// the generators' prefix bookkeeping (the KV stays). The training context, and
+// with it the teacher-forced scorers that run there, is never affected.
+// Reads the generation default without changing adapter or cache state.
+int retro_trainer_get_generation_adapter(retro_trainer * trainer, int32_t * out_adapter);
+int retro_trainer_set_generation_adapter(retro_trainer * trainer, int32_t adapter);
+int retro_trainer_generation_adapter_rows_info(
+    retro_trainer * trainer,
+    retro_adapter_rows_info * out_info);
 
 // Tool-call grammar derived from the model's own chat template (the same derivation
 // build_tool_call_parser in retro_chat_parser.cpp uses). Two-call string contract like
@@ -2407,6 +2455,27 @@ int retro_engine_load_lora_named(
 // and bumps the weights version: a prefix computed under another adapter is
 // never reused.
 int retro_engine_activate_lora(retro_engine * engine, const char * name);
+
+// Per-row adapters. A LoRA checkpoint of the engine's base model is loaded
+// under a fresh id (never reused, so a reload never answers to the id of the
+// generation it replaced) and selected per step row through
+// retro_step_row.adapter: one decode can mix rows of several adapters, the
+// base model (RETRO_STEP_ADAPTER_BASE) and the active adapter (0). Loading
+// and unloading leave the resident KV alone - a slot's KV belongs to the
+// adapter of the rows that wrote it, and the caller owns that bookkeeping:
+// before unloading, finish or cancel the requests decoding under the id and
+// drop their slots and prefixes. Every load restacks all the per-row adapters,
+// zero-padded to the largest rank (exact; see retro_engine_adapter_rows_info
+// for the cost). Refused: activated LoRA, token-embedding and expert targets.
+int retro_engine_adapter_load(
+    retro_engine * engine,
+    const char * adapter_path,
+    float scale,
+    int32_t * out_id);
+int retro_engine_adapter_unload(retro_engine * engine, int32_t id);
+int retro_engine_adapter_rows_info(
+    retro_engine * engine,
+    retro_adapter_rows_info * out_info);
 
 // Writes the active adapter's name (empty when the base model is active),
 // following the render_string_out two-call contract.

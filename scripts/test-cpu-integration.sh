@@ -45,7 +45,7 @@ if [[ "${RETRO_PROFILE_TESTS:-0}" == "1" ]]; then
     --test trainable_inventory \
     --test base_training \
     --test f16_base_training \
-    --test fixed_reference \
+    --test fixed_reference --test lora_rows \
     --test preference_runtime \
     --test muon_gefen \
     --test judge_local \
@@ -93,7 +93,7 @@ timed_step run:capabilities-suite cargo test --no-default-features --features ag
   --test trainable_inventory \
   --test base_training \
   --test f16_base_training \
-  --test fixed_reference \
+  --test fixed_reference --test lora_rows \
   --test preference_runtime \
   --test muon_gefen \
   --test judge_local \

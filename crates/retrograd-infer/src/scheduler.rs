@@ -875,6 +875,7 @@ impl<B: DecodeBackend> Scheduler<B> {
                 sampling: member.sampling.clone(),
                 n_top_logprobs: member.n_top_logprobs,
                 want_logprob: member.want_logprob,
+                adapter: retrograd_engine::RowAdapter::Context,
             });
             kinds.push(RowKind::Decode {
                 group: gi,
@@ -913,6 +914,7 @@ impl<B: DecodeBackend> Scheduler<B> {
                             0
                         },
                         want_logprob: sampled_member.is_some() && leader.want_logprob,
+                        adapter: retrograd_engine::RowAdapter::Context,
                     });
                     kinds.push(RowKind::Prefill {
                         group: gi,
@@ -939,6 +941,7 @@ impl<B: DecodeBackend> Scheduler<B> {
                             sampling: member.sampling.clone(),
                             n_top_logprobs: member.n_top_logprobs,
                             want_logprob: member.want_logprob,
+                            adapter: retrograd_engine::RowAdapter::Context,
                         });
                         kinds.push(RowKind::Terminal {
                             group: gi,
