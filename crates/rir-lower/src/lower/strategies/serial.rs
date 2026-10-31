@@ -93,6 +93,7 @@ pub(crate) fn lower_serial(lo: &mut Lowerer, a: &Analysis) -> Result<Vec<Stmt>, 
                 inner_axis,
                 &accs,
                 Traversal::Whole,
+                None,
             )?);
 
             for (acc, _, _, rv) in &accs {

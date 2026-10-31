@@ -73,7 +73,7 @@ use crate::schedule::{ParallelMapping, ReductionStrategy, SUBGROUP_LANES, ScanSt
 
 use crate::schedule::check_schedule;
 use rir_core::ValidatedKernel;
-use strategies::reduction::lower_lanes;
+use strategies::reduction::{LaneTile, lower_lanes};
 use strategies::scan::{lower_blocked_scan, lower_strided_scan, lower_tiled_scan};
 use strategies::serial::lower_serial;
 use strategies::tiled::lower_tiled;
@@ -245,6 +245,35 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
         });
     }
 
+    // The lane tile: everything it needs in order to mean something, checked
+    // before lowering rather than discovered as a shader that walks one index
+    // where the dispatch counted `tile`.
+    let lane_tile = schedule.lane_tile;
+    if lane_tile > 1 {
+        let lanes = matches!(
+            schedule.reduction,
+            ReductionStrategy::SubgroupTree
+                | ReductionStrategy::SharedTree
+                | ReductionStrategy::HierarchicalTree
+        );
+        let why = if !lanes || schedule.par_map != ParallelMapping::Workgroup {
+            Some("a lane reduction over workgroup mapping required")
+        } else if schedule.flatten {
+            Some("a flattened row space has no second grid dimension to tile")
+        } else if a.par_axes.len() < 2 || schedule.grid_dims < 2 {
+            Some("the tile is the second grid dimension, and there is none")
+        } else if !a.scans.is_empty() {
+            Some("kernel with a scan: only a reduction carries one accumulator per index")
+        } else if !a.inner_writes.is_empty() {
+            Some("writes inside the reduced axis: only per-row writes are tiled")
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            return Err(LowerError::LaneTileUnsupported { why });
+        }
+    }
+
     let innermost = match schedule.reduction {
         ReductionStrategy::TiledStage => lower_tiled(&mut lo, &a, &par_vars, &schedule)?,
         // Linear addressing has no tail to branch on: the claim requires the
@@ -371,7 +400,17 @@ pub fn lower(kernel: &ValidatedKernel, schedule: Schedule) -> Result<LoopKernel,
                         why: "kernel without a scan: nothing would honor the strategy",
                     });
                 }
-                (true, _) => lower_lanes(&mut lo, &a, lanes, schedule.reduction)?,
+                (true, _) => {
+                    // The tiled axis and the register holding its first index:
+                    // the second parallel axis, whose grid dimension
+                    // `parallel_nest` multiplies by the tile.
+                    let tile = (lane_tile > 1).then(|| LaneTile {
+                        axis: a.par_axes[1],
+                        first: par_vars[1],
+                        count: lane_tile,
+                    });
+                    lower_lanes(&mut lo, &a, lanes, schedule.reduction, tile)?
+                }
                 (false, ScanStrategy::TiledLanes { items }) => {
                     lower_tiled_scan(&mut lo, &a, lanes, items)?
                 }
@@ -645,6 +684,10 @@ fn parallel_nest(
             // contiguous axis, which is the one on which `w` consecutive
             // elements are `w` consecutive addresses.
             vector: if i == 0 { vector } else { 1 },
+            // The lane tile sits on the second grid dimension, the one a
+            // row-per-workgroup reduction leaves to the other operand's
+            // columns (`Schedule::lane_tile`).
+            tile: if i == 1 { schedule.lane_tile } else { 1 },
             // A staged body holds barriers, so an invocation past the extent
             // may only leave early when *its whole workgroup* is past it,
             // which is exactly the dimensions a workgroup is one index wide on.

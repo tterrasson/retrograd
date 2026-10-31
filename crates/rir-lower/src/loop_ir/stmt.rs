@@ -106,6 +106,15 @@ pub enum Stmt {
         /// element of a `w`-wide vector, so the builtin is multiplied by `w` and
         /// the dispatcher divides the extent by `w` more (`grid_axes`).
         vector: u32,
+        /// Number of consecutive axis indices the **body** walks itself, from
+        /// `var`: `1` everywhere but a lane-tiled reduction, where one
+        /// workgroup owns `tile` indices of this axis and every lane carries
+        /// one accumulator per index. Like `vector`, the builtin is multiplied
+        /// by it and the dispatcher divides the extent by it (`grid_axes`);
+        /// unlike `vector`, there is no vector register and no layout claim -
+        /// the body names each index and guards the ones past the first
+        /// (`Stmt::InBounds`), so a partial tile reads nothing out of range.
+        tile: u32,
         /// Whether an invocation past the axis extent may leave immediately.
         ///
         /// True everywhere a workgroup's invocations are independent, which is

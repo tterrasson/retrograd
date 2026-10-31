@@ -88,6 +88,16 @@ pub struct Schedule {
     /// property of the kernel, checked at lowering, and the contract's axis
     /// agreement is what makes it hold on the tensors as well.
     pub(crate) linear_addr: bool,
+    /// Indices of the **second** parallel axis one workgroup owns, under a
+    /// lane reduction: every lane keeps one accumulator per index and reads
+    /// the operands that do not depend on that axis once for all of them.
+    ///
+    /// It is what a contraction against a few columns needs - a decode GEMV,
+    /// whose weight row would otherwise be read and decoded once per token. `1`
+    /// everywhere else, and refused by lowering where nothing would honour it:
+    /// no lane strategy, a flattened row space, a kernel with one parallel axis
+    /// or a write inside the reduced axis.
+    pub(crate) lane_tile: u32,
     pub(crate) reduction: ReductionStrategy,
     /// Indices of the reduction axis one staged tile covers, under
     /// `ReductionStrategy::TiledStage`. Zero everywhere else, and a
@@ -146,6 +156,12 @@ impl Schedule {
     /// element.
     pub fn linear_addr(&self) -> bool {
         self.linear_addr
+    }
+
+    /// Indices of the second parallel axis one workgroup owns; 1 unless the
+    /// lowering is lane-tiled.
+    pub fn lane_tile(&self) -> u32 {
+        self.lane_tile
     }
 
     pub fn reduction(&self) -> ReductionStrategy {
@@ -216,6 +232,12 @@ impl Schedule {
             return Err(ScheduleError::Malformed {
                 backend: self.backend,
                 why: "vector_width is zero: an invocation covers at least one element",
+            });
+        }
+        if self.lane_tile == 0 {
+            return Err(ScheduleError::Malformed {
+                backend: self.backend,
+                why: "lane_tile is zero: a workgroup owns at least one index",
             });
         }
         if self.reduction == ReductionStrategy::TiledStage && self.tile_depth == 0 {
@@ -339,6 +361,7 @@ impl Schedule {
             vector_width: 1,
             flatten: false,
             linear_addr: false,
+            lane_tile: 1,
             tile_depth: 0,
             scan: ScanStrategy::Serial,
             reduction: ReductionStrategy::Serial,
@@ -378,6 +401,7 @@ impl Schedule {
             vector_width: 1,
             flatten: false,
             linear_addr: false,
+            lane_tile: 1,
             tile_depth: 0,
             scan: ScanStrategy::Serial,
             reduction: ReductionStrategy::SubgroupTree,
@@ -403,6 +427,7 @@ impl Schedule {
             vector_width: 1,
             flatten: false,
             linear_addr: false,
+            lane_tile: 1,
             tile_depth: 0,
             scan: ScanStrategy::Serial,
             reduction: ReductionStrategy::Serial,
@@ -436,6 +461,29 @@ impl Schedule {
             ..Self::gpu_subgroup(gpu)
         }
         .named(FLAT_ROWS)
+    }
+
+    /// One row per single-subgroup workgroup, as `gpu_subgroup`, owning
+    /// `cols` consecutive indices of the second parallel axis: each lane
+    /// decodes its share of the row once and accumulates it against `cols`
+    /// columns of the other operand, then one subgroup sum per column.
+    ///
+    /// The decode GEMV's lowering at a few tokens: with one column per
+    /// workgroup the weight row is read and decoded once per token, so the
+    /// step costs the token count times the weight traffic.
+    pub fn gpu_subgroup_cols(gpu: GpuBackend, cols: u32) -> Self {
+        Self::gpu_subgroup(gpu).with_lane_tile(cols)
+    }
+
+    /// The same lowering owning `cols` indices of the second parallel axis per
+    /// workgroup (`lane_tile`), named after the count.
+    ///
+    /// A modifier rather than a constructor argument, because it composes with
+    /// every lane strategy: the short loop puts a two-stage tree under it as
+    /// readily as a single subgroup.
+    pub fn with_lane_tile(mut self, cols: u32) -> Self {
+        self.lane_tile = cols;
+        self.named(cols_variant(cols))
     }
 
     /// Blocked scan: one row per single-subgroup workgroup, the scanned axis
@@ -736,6 +784,20 @@ pub const FLAT: &str = "flat";
 /// instead of a decomposition, and a layout the dispatcher has to check before
 /// selecting it.
 pub const FLAT_LINEAR: &str = "flat_linear";
+
+/// Variant name of a lane-tiled reduction owning `cols` columns per
+/// workgroup. One name per count, since the count is the whole difference
+/// between two such artifacts; a count without a name of its own is still
+/// published, by `dispatch`, but shares `cols`.
+pub fn cols_variant(cols: u32) -> &'static str {
+    match cols {
+        2 => "cols2",
+        4 => "cols4",
+        8 => "cols8",
+        16 => "cols16",
+        _ => "cols",
+    }
+}
 
 /// Variant name of the flattened **row** space. Distinct
 /// from `FLAT` because what it flattens is the workgroup grid of a collective

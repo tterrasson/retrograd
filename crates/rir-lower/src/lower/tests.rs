@@ -18,6 +18,66 @@ fn kernel_with_reduce(sem: ReductionSemantics) -> rir_core::ValidatedKernel {
     k.finish().unwrap()
 }
 
+/// Each tiled column must read its own earlier reduction, including through
+/// expressions which no longer mention the column's index directly.
+#[test]
+fn a_lane_tile_keeps_dependent_reductions_per_column() {
+    use crate::interp::{BoundArg, TensorView, TensorViewMut, run};
+
+    let mut k = KernelBuilder::new("dependent_columns");
+    let x = k.input(
+        "x",
+        TensorType {
+            rank: 3,
+            ..TensorType::f32_2d()
+        },
+    );
+    let y = k.output("y", TensorType::f32_2d());
+    let row = k.axis("row", Extent::Dim { arg: x, dim: 1 });
+    let plane = k.axis("plane", Extent::Dim { arg: x, dim: 2 });
+    let col = k.axis("col", Extent::Dim { arg: x, dim: 0 });
+    let xv = k.read(x, &[col, row, plane]);
+    let sum = k.reduce(ReduceOp::Sum, col, xv, ReductionSemantics::Deterministic);
+    let square = k.mul(sum, sum);
+    let product = k.mul(xv, square);
+    let result = k.reduce(
+        ReduceOp::Sum,
+        col,
+        product,
+        ReductionSemantics::Deterministic,
+    );
+    k.write(y, &[row, plane], result);
+    let k = k.finish().unwrap();
+    let (cols, rows, planes) = (7, 2, 5);
+    let x: Vec<f32> = (0..cols * rows * planes).map(|i| (i % 13) as f32).collect();
+    let run_one = |schedule| {
+        let lk = lower(&k, schedule).unwrap();
+        let mut y = vec![0f32; rows * planes];
+        run(
+            &lk,
+            &mut [
+                BoundArg::In(TensorView {
+                    data: &x,
+                    shape: [cols, rows, planes, 1],
+                    nb: [4, 4 * cols, 4 * cols * rows, 4 * cols * rows * planes],
+                }),
+                BoundArg::Out(TensorViewMut::contiguous_2d(&mut y, rows, planes)),
+            ],
+            &[],
+        )
+        .unwrap();
+        y
+    };
+    let expected = run_one(Schedule::cpu_serial());
+    for schedule in [
+        Schedule::vulkan_subgroup(),
+        Schedule::vulkan_shared_reduce(),
+        Schedule::gpu_hier_reduce(crate::GpuBackend::Vulkan),
+    ] {
+        assert_eq!(run_one(schedule.with_lane_tile(4)), expected);
+    }
+}
+
 fn kernel_cumsum(dir: ScanDirection) -> rir_core::ValidatedKernel {
     let mut k = KernelBuilder::new("cumsum");
     let x = k.input("x", TensorType::f32_2d());

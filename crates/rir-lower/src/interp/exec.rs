@@ -348,11 +348,22 @@ fn exec_parallel(
             var,
             axis,
             vector,
+            tile,
             body,
             ..
         } => {
             let n = axis_extent(k, *axis, args);
             let w = (*vector).max(1) as usize;
+            // A lane-tiled axis is walked a tile at a time, and the body runs
+            // once per tile: it names the tile's indices itself, as the device
+            // does.
+            if *tile > 1 {
+                for i in (0..n).step_by(*tile as usize) {
+                    regs.i[var.0 as usize] = i;
+                    exec_stmts(k, body, regs, sh, args, params)?;
+                }
+                return Ok(());
+            }
             // One iteration per *invocation*, so a vectorized axis is
             // walked in strides of `vector` - the same indices the grid the
             // manifest publishes would produce. The invocation's body then

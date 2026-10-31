@@ -216,6 +216,7 @@ pub fn loops() -> Probe {
             axis: ROW,
             level: HwLevel::Grid(0),
             vector: 1,
+            tile: 1,
             bounded: true,
             body: vec![
                 Stmt::For {
@@ -407,6 +408,7 @@ pub fn memory() -> Probe {
             axis: ROW,
             level: HwLevel::Global(0),
             vector: 1,
+            tile: 1,
             bounded: false,
             body: vec![
                 Stmt::Load {
@@ -462,6 +464,7 @@ pub fn vectors() -> Probe {
             axis: COL,
             level: HwLevel::Global(0),
             vector: 4,
+            tile: 1,
             bounded: false,
             body: vec![Stmt::VecTail {
                 base: VarId(0),
@@ -657,6 +660,7 @@ pub fn staging() -> Probe {
             axis: ROW,
             level: HwLevel::Grid(0),
             vector: 1,
+            tile: 1,
             bounded: false,
             body: vec![Stmt::StageTiles {
                 tiles: vec![TileStage {

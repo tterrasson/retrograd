@@ -246,6 +246,7 @@ fn a_parallel_axis_writes_one_element_per_index() {
             axis: I,
             level: crate::loop_ir::HwLevel::Global(0),
             vector: 1,
+            tile: 1,
             bounded: false,
             body: vec![
                 Stmt::Compute(Inst {
@@ -275,6 +276,7 @@ fn a_binding_that_does_not_fit_the_kernel_is_an_error() {
             axis: I,
             level: crate::loop_ir::HwLevel::Global(0),
             vector: 1,
+            tile: 1,
             bounded: false,
             body: vec![
                 Stmt::Compute(Inst {
@@ -311,6 +313,7 @@ fn a_parameter_is_read_by_position() {
             axis: I,
             level: crate::loop_ir::HwLevel::Global(0),
             vector: 1,
+            tile: 1,
             bounded: false,
             body: vec![
                 Stmt::Compute(Inst {

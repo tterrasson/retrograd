@@ -177,6 +177,7 @@ fn mem_types_are_collected_per_argument_through_every_block() {
             axis: I,
             level: HwLevel::Grid(0),
             vector: 1,
+            tile: 1,
             bounded: false,
             body: vec![
                 load(VarId(1), MemType::F32),
@@ -280,6 +281,7 @@ fn the_vector_width_is_the_one_the_parallel_statement_declares() {
             axis: I,
             level: HwLevel::Global(0),
             vector: 4,
+            tile: 1,
             bounded: false,
             body: vec![Stmt::Load {
                 dst: VarId(3),
@@ -303,6 +305,7 @@ fn the_vector_width_is_the_one_the_parallel_statement_declares() {
                 axis: I,
                 level: HwLevel::Global(0),
                 vector: 4,
+                tile: 1,
                 bounded: false,
                 body: vec![],
             },

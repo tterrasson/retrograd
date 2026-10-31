@@ -366,6 +366,7 @@ pub(crate) fn grid_axes(k: &LoopKernel) -> Vec<(String, u32)> {
             axis,
             level,
             vector,
+            tile,
             body,
             ..
         },
@@ -379,7 +380,10 @@ pub(crate) fn grid_axes(k: &LoopKernel) -> Vec<(String, u32)> {
         // more per workgroup, so the grid is that much smaller. Read from the
         // nest for the same reason as the rest of this function: the dispatcher
         // must launch what the shader was printed for, not what was requested.
-        let per = k.schedule.par_map().per_workgroup(k.schedule.block(), d) * (*vector).max(1);
+        // A lane-tiled axis likewise: one workgroup owns `tile` indices.
+        let per = k.schedule.par_map().per_workgroup(k.schedule.block(), d)
+            * (*vector).max(1)
+            * (*tile).max(1);
         out.push((k.axes[axis.0 as usize].name.clone(), per));
         stmts = body;
     }

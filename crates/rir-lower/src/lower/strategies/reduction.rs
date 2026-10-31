@@ -38,6 +38,53 @@ pub(crate) fn reaches(k: &Kernel, from: ValueId, target: ValueId) -> bool {
     }
 }
 
+/// A lane tile: the second parallel axis, of which one workgroup owns `count`
+/// consecutive indices from `first` (`Schedule::lane_tile`).
+#[derive(Clone, Copy)]
+pub(crate) struct LaneTile {
+    pub(crate) axis: AxisId,
+    pub(crate) first: VarId,
+    pub(crate) count: u32,
+}
+
+/// One level's accumulators under a lane tile: one set per tiled index, the
+/// index registers they are lowered at, and the earlier levels' results each
+/// index sees.
+pub(crate) struct TiledAccums<'a> {
+    pub(crate) axis: AxisId,
+    /// `first`, `first + 1`, …: one register per tiled index.
+    pub(crate) idx: &'a [VarId],
+    /// `accs[r]` accumulates at `idx[r]`.
+    pub(crate) accs: &'a [Vec<Accum>],
+    /// `results[r]` is the results environment index `r` reads.
+    pub(crate) results: &'a [HashMap<ValueId, VarId>],
+}
+
+/// One accumulator: its register, its operator, the value it accumulates and
+/// the reduction it closes.
+pub(crate) type Accum = (VarId, rir_core::ReduceOp, ValueId, ValueId);
+
+/// Whether `v` depends on the index of `axis`.
+pub(crate) fn depends_on_axis(k: &Kernel, v: ValueId, axis: AxisId) -> bool {
+    let direct = k.ops().iter().enumerate().any(|(i, op)| {
+        matches!(op, Op::Index(a) if *a == axis) && reaches(k, v, ValueId(i as u32))
+    });
+    if direct {
+        return true;
+    }
+    // `reaches` deliberately stops at earlier reduction results. Those are
+    // still column-dependent values: sharing their registers (or expressions
+    // using them) would give every column the first column's result.
+    let mut results = Vec::new();
+    collect_result_deps(k, v, &mut results);
+    results
+        .into_iter()
+        .any(|result| match &k.ops()[result.0 as usize] {
+            Op::Reduce { value, .. } | Op::Scan { value, .. } => depends_on_axis(k, *value, axis),
+            _ => unreachable!("collect_result_deps returns only result nodes"),
+        })
+}
+
 /// How the reduced axis is walked by one invocation or one lane.
 #[derive(Clone, Copy)]
 pub(crate) enum Traversal {
@@ -70,6 +117,7 @@ pub(crate) fn lower_accum_loop(
     inner_axis: AxisId,
     accs: &[(VarId, rir_core::ReduceOp, ValueId, ValueId)],
     traversal: Traversal,
+    tile: Option<&TiledAccums>,
 ) -> Result<Vec<Stmt>, LowerError> {
     let inner_name = lo.k.axes()[inner_axis.0 as usize].name.clone();
     // Only the reads *this* level accumulates. A header emitted for a read the
@@ -88,7 +136,7 @@ pub(crate) fn lower_accum_loop(
         let col = lo.new_var(&inner_name, VarKind::Idx);
         lo.axis_vars.insert(inner_axis, col);
         lo.begin_scope(true);
-        emit_accums(lo, accs)?;
+        emit_level(lo, accs, tile)?;
         let body = lo.take_body();
         return Ok(vec![match traversal {
             Traversal::Whole => Stmt::For {
@@ -170,7 +218,7 @@ pub(crate) fn lower_accum_loop(
         // contraction uses for a staged read.
         lo.env.insert(head.read.value, value);
     }
-    emit_accums(lo, accs)?;
+    emit_level(lo, accs, tile)?;
     let inner_body = lo.take_body();
     body.push(Stmt::ForConst {
         var: elem,
@@ -198,6 +246,59 @@ pub(crate) fn lower_accum_loop(
         (Traversal::Lanes { .. }, None) => unreachable!("lane traversal without a start"),
     });
     Ok(out)
+}
+
+/// The accumulations of one level, tiled or not.
+fn emit_level(
+    lo: &mut Lowerer,
+    accs: &[(VarId, rir_core::ReduceOp, ValueId, ValueId)],
+    tile: Option<&TiledAccums>,
+) -> Result<(), LowerError> {
+    match tile {
+        None => emit_accums(lo, accs),
+        Some(tile) => emit_tiled_accums(lo, tile),
+    }
+}
+
+/// The accumulations of one level once per tiled index.
+///
+/// The first index is lowered as the untiled level is, and everything it
+/// computed that does not depend on the tiled axis - the decoded weight, its
+/// address, the scale of its block - stays in the memo for the others, which
+/// is the whole point: one read and one decode for `count` products. Each
+/// further index is guarded (`Stmt::InBounds`), since the last tile of an axis
+/// may be partial and its reads must not leave the tensor; the first needs no
+/// guard because the grid already returned past the axis.
+fn emit_tiled_accums(lo: &mut Lowerer, tile: &TiledAccums) -> Result<(), LowerError> {
+    let k = lo.k;
+    let mut shared: HashMap<ValueId, VarId> = HashMap::new();
+    for (r, (&idx, accs)) in tile.idx.iter().zip(tile.accs).enumerate() {
+        lo.axis_vars.insert(tile.axis, idx);
+        lo.results_env = tile.results[r].clone();
+        if r == 0 {
+            emit_accums(lo, accs)?;
+            shared = lo
+                .env
+                .iter()
+                .filter(|(v, _)| !depends_on_axis(k, **v, tile.axis))
+                .map(|(v, r)| (*v, *r))
+                .collect();
+            continue;
+        }
+        let outer = lo.take_body();
+        lo.env = shared.clone();
+        emit_accums(lo, accs)?;
+        let guarded = lo.take_body();
+        lo.body = outer;
+        lo.body.push(Stmt::InBounds {
+            bounds: vec![(idx, tile.axis)],
+            body: guarded,
+        });
+    }
+    lo.axis_vars.insert(tile.axis, tile.idx[0]);
+    lo.env = shared;
+    lo.results_env = tile.results[0].clone();
+    Ok(())
 }
 
 /// The accumulations of one level, in the current scope.
@@ -300,6 +401,7 @@ pub(crate) fn lower_lanes(
     a: &Analysis,
     lanes: u32,
     strategy: ReductionStrategy,
+    tile: Option<LaneTile>,
 ) -> Result<Vec<Stmt>, LowerError> {
     // The hierarchical tree's second parameter, decided once here rather than at
     // every use: `SUBGROUP_LANES` is the width the whole crate already assumes
@@ -311,8 +413,45 @@ pub(crate) fn lower_lanes(
     let inner_name = lo.k.axes()[inner_axis.0 as usize].name.clone();
     let lane_var = lo.new_var("lane", VarKind::Idx);
 
+    // Under a lane tile, one index register per tiled index - the first is the
+    // grid's own - and one results environment per index, which the levels
+    // below fill and the writes read.
+    let tile_idx: Vec<VarId> = match tile {
+        None => Vec::new(),
+        Some(t) => {
+            let mut idx = vec![t.first];
+            for r in 1..t.count {
+                let v = lo.new_var(
+                    &format!("{}{r}", lo.k.axes()[t.axis.0 as usize].name),
+                    VarKind::Idx,
+                );
+                lane_body.push(Stmt::Compute(Inst {
+                    dst: v,
+                    expr: LExpr::IAddC(t.first, r),
+                }));
+                idx.push(v);
+            }
+            idx
+        }
+    };
+    let mut tile_results: Vec<HashMap<ValueId, VarId>> =
+        vec![lo.results_env.clone(); tile_idx.len()];
+
     if !a.reduces.is_empty() {
         let plan = plan_segments(lo.k, inner_axis);
+        // A quantized read whose position moves with the tiled axis would have
+        // its block header decoded once, at the first index, and reused at the
+        // others. Nothing tiled reads one; refusing it is what keeps that true.
+        if let Some(t) = tile
+            && plan
+                .reads
+                .iter()
+                .any(|r| depends_on_axis(lo.k, r.value, t.axis))
+        {
+            return Err(LowerError::LaneTileUnsupported {
+                why: "a quantized read depends on the tiled axis",
+            });
+        }
         // Use the same dependency **levels** as the sequential path. Each
         // level is a strided loop followed by its collectives; because
         // `subgroupAdd` broadcasts, the next level sees each result in every
@@ -324,6 +463,26 @@ pub(crate) fn lower_lanes(
                 lane_body.push(Stmt::InitAcc { acc, op: *rop });
                 accs.push((acc, *rop, *rin, *rv));
             }
+            // The tiled indices past the first get accumulators of their own.
+            let mut tiled_accs: Vec<Vec<Accum>> = Vec::new();
+            if !tile_idx.is_empty() {
+                tiled_accs.push(accs.clone());
+                for r in 1..tile_idx.len() {
+                    let mut row = Vec::new();
+                    for (rv, rop, rin) in group {
+                        let acc = lo.new_var(&format!("acc{}_{r}", rv.0), VarKind::F32);
+                        lane_body.push(Stmt::InitAcc { acc, op: *rop });
+                        row.push((acc, *rop, *rin, *rv));
+                    }
+                    tiled_accs.push(row);
+                }
+            }
+            let tiled = tile.map(|t| TiledAccums {
+                axis: t.axis,
+                idx: &tile_idx,
+                accs: &tiled_accs,
+                results: &tile_results,
+            });
 
             // Results from earlier levels are visible. Referring to a level
             // not yet computed yields `NestedReduce` through an environment
@@ -337,6 +496,7 @@ pub(crate) fn lower_lanes(
                     lane: lane_var,
                     lanes,
                 },
+                tiled.as_ref(),
             )?);
 
             // The collectives of one level, together. `SubgroupTree` reduces
@@ -345,7 +505,16 @@ pub(crate) fn lower_lanes(
             // in shared memory, and grouping is what makes its levels - and its
             // barriers - serve every accumulator at once.
             let mut reds = Vec::new();
-            for (acc, rop, _, rv) in &accs {
+            let per_index: Vec<(usize, Accum)> = if tiled_accs.is_empty() {
+                accs.iter().map(|acc| (0, *acc)).collect()
+            } else {
+                tiled_accs
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(r, row)| row.iter().map(move |acc| (r, *acc)))
+                    .collect()
+            };
+            for (r, (acc, rop, _, rv)) in &per_index {
                 let red = lo.new_var(&format!("red{}", rv.0), VarKind::F32);
                 match strategy {
                     ReductionStrategy::SubgroupTree => lane_body.push(Stmt::LaneReduce {
@@ -372,7 +541,11 @@ pub(crate) fn lower_lanes(
                     }
                     _ => unreachable!("lower_lanes is called only for a lane strategy"),
                 }
-                lo.results_env.insert(*rv, red);
+                if tile_idx.is_empty() {
+                    lo.results_env.insert(*rv, red);
+                } else {
+                    tile_results[*r].insert(*rv, red);
+                }
             }
             if !reds.is_empty() {
                 lane_body.push(Stmt::WorkgroupReduce {
@@ -386,7 +559,28 @@ pub(crate) fn lower_lanes(
 
     if !a.row_writes.is_empty() {
         lo.axis_vars.remove(&inner_axis);
-        let stmts = lower_writes(lo, &a.row_writes)?;
+        let stmts = match tile {
+            None => lower_writes(lo, &a.row_writes)?,
+            // One write per tiled index, each reading its own results, and
+            // every index past the first guarded like its accumulation.
+            Some(t) => {
+                let mut stmts = Vec::new();
+                for (r, &idx) in tile_idx.iter().enumerate() {
+                    lo.axis_vars.insert(t.axis, idx);
+                    lo.results_env = tile_results[r].clone();
+                    let writes = lower_writes(lo, &a.row_writes)?;
+                    if r == 0 {
+                        stmts.extend(writes);
+                    } else {
+                        stmts.push(Stmt::InBounds {
+                            bounds: vec![(idx, t.axis)],
+                            body: writes,
+                        });
+                    }
+                }
+                stmts
+            }
+        };
         lane_body.push(Stmt::LaneZero {
             lane: lane_var,
             body: stmts,

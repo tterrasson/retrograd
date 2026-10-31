@@ -35,6 +35,7 @@ impl<'k, D: Dialect + MemoryModel> Printer<'k, D> {
                     axis,
                     level,
                     vector,
+                    tile,
                     bounded,
                     body,
                 } => {
@@ -46,9 +47,12 @@ impl<'k, D: Dialect + MemoryModel> Printer<'k, D> {
                     // A vectorized axis gives each invocation `vector`
                     // consecutive indices; `name` is the first of them, and the
                     // grid the dispatcher asks for is that many times smaller.
-                    if *vector > 1 {
+                    // A lane-tiled axis is the same multiplication: `name` is
+                    // the first of the `tile` indices the body walks.
+                    let per = (*vector).max(1) * (*tile).max(1);
+                    if per > 1 {
                         self.line(&format!(
-                            "const {uint} {name} = {} * {vector}u;",
+                            "const {uint} {name} = {} * {per}u;",
                             builtin.as_factor
                         ));
                     } else {

@@ -19,13 +19,18 @@ impl CpuPrinter<'_> {
         for s in stmts {
             match s {
                 Stmt::Parallel {
-                    var, axis, body, ..
+                    var,
+                    axis,
+                    tile,
+                    body,
+                    ..
                 } => {
-                    let head = format!(
-                        "for {} in 0..{} {{",
-                        self.k.var_names[var.0 as usize],
-                        self.extent_name(*axis)
-                    );
+                    let range = if *tile > 1 {
+                        format!("(0..{}).step_by({tile})", self.extent_name(*axis))
+                    } else {
+                        format!("0..{}", self.extent_name(*axis))
+                    };
+                    let head = format!("for {} in {range} {{", self.k.var_names[var.0 as usize]);
                     self.line(&head);
                     self.indent += 1;
                     self.stmts(body)?;

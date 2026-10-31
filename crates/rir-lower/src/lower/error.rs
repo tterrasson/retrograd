@@ -95,6 +95,11 @@ pub enum LowerError {
     /// computed for a linear one.
     #[error("flatten: {why}")]
     FlattenUnsupported { why: &'static str },
+    /// `Schedule::lane_tile` above one on a lowering that cannot honour it. A
+    /// tile nothing walks would publish a dispatch divided by a count the
+    /// shader ignores - one workgroup in `tile` computing anything at all.
+    #[error("lane_tile: {why}")]
+    LaneTileUnsupported { why: &'static str },
     /// `Schedule::linear_addr` on a kernel whose accesses are not the identity
     /// on the flattened space.
     ///
