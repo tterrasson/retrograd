@@ -56,6 +56,8 @@ pub struct Arbitrated {
     pub tag: String,
     pub source: String,
     pub origin: Origin,
+    /// See [`crate::candidates::Candidate::pick`].
+    pub pick: Option<(rir_lower::Pick, rir_lower::Geometry)>,
     pub footprint: Footprint,
     pub rows: Vec<Measured>,
     pub verdict: Verdict,
@@ -243,6 +245,7 @@ fn arbitrate_one(
         tag: candidate.tag.clone(),
         source: candidate.source.clone(),
         origin: candidate.origin,
+        pick: candidate.pick.clone(),
         footprint,
         rows,
         verdict,

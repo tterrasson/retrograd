@@ -9,7 +9,7 @@
 
 use std::fmt::Write as _;
 
-use crate::candidates::claim_source;
+use crate::candidates::{claim_source, geometry_source, pick_source};
 use crate::run::{Arbitrated, SweepReport};
 use crate::verdict::{Outcome, Refusal, Verdict};
 
@@ -108,19 +108,32 @@ pub fn proposal(a: &Arbitrated) -> String {
         return format!("{head}\n    control - {}", control(&a.verdict));
     }
     match &a.verdict {
-        Verdict::Replaces { best_gain } => format!(
-            "{head}\n    REPLACES the fallback: wins by up to {:.0}%, and on no measured shape \
-             does it lose by more than the noise.\n    \
-             v.push({}.unnamed());",
-            best_gain * 100.0,
-            a.source
-        ),
+        Verdict::Replaces { best_gain } => {
+            if let Some((pick, defaults)) = &a.pick {
+                // A space candidate that wins everywhere becomes the space's
+                // defaults rather than a pick above them.
+                format!(
+                    "{head}\n    REPLACES the fallback: wins by up to {:.0}%, and on no measured \
+                     shape does it lose by more than the noise.\n    \
+                     // becomes the space's defaults: {}",
+                    best_gain * 100.0,
+                    geometry_source(pick.geometry, *defaults)
+                )
+            } else {
+                format!(
+                    "{head}\n    REPLACES the fallback: wins by up to {:.0}%, and on no measured shape \
+                     does it lose by more than the noise.\n    \
+                     v.push({}.unnamed());",
+                    best_gain * 100.0,
+                    a.source
+                )
+            }
+        }
         Verdict::Claims {
             claim,
             best_gain,
             ties_claimed,
         } => {
-            let source = claim_source(claim);
             let ties = if ties_claimed.is_empty() {
                 String::new()
             } else {
@@ -130,12 +143,24 @@ pub fn proposal(a: &Arbitrated) -> String {
                     ties_claimed
                 )
             };
-            format!(
-                "{head}\n    CLAIMS a domain: up to {:.0}% on the shapes the rule covers.{ties}\n    \
-                 v.push({}.claiming(90, {source}));",
-                best_gain * 100.0,
-                a.source
-            )
+            if let Some((pick, defaults)) = &a.pick {
+                // A candidate from a geometry space is proposed as the pick it
+                // would be committed as, with the verdict's rule as its claim.
+                format!(
+                    "{head}\n    CLAIMS a domain: up to {:.0}% on the shapes the rule covers.{ties}\n    \
+                     {}",
+                    best_gain * 100.0,
+                    pick_source(pick, *defaults, claim)
+                )
+            } else {
+                format!(
+                    "{head}\n    CLAIMS a domain: up to {:.0}% on the shapes the rule covers.{ties}\n    \
+                     v.push({}.claiming(90, {}));",
+                    best_gain * 100.0,
+                    a.source,
+                    claim_source(claim)
+                )
+            }
         }
         Verdict::Refused(why) => format!("{head}\n    refused: {}", refusal(why)),
     }

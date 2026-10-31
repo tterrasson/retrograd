@@ -17,7 +17,8 @@
 use rir_core::ValidatedKernel;
 use rir_core::catalog::{ModelShape, Regime};
 use rir_lower::schedule::bench;
-use rir_lower::{Claim, Family, GpuBackend, Schedule};
+use rir_lower::schedule::spaces;
+use rir_lower::{Claim, Family, Geometry, GpuBackend, Pick, Schedule};
 
 use crate::SweepError;
 
@@ -44,6 +45,11 @@ pub struct Candidate {
     /// `schedules_for`. A proposal a reader has to translate back into source is
     /// a proposal nobody commits.
     pub source: String,
+    /// For a candidate drawn from a geometry space: the pick it would be
+    /// committed as, with the space's defaults to derive the literal against.
+    /// The pick's claim is a placeholder here - the verdict's claim is printed
+    /// in its place.
+    pub pick: Option<(Pick, Geometry)>,
 }
 
 impl Candidate {
@@ -53,6 +59,17 @@ impl Candidate {
             schedule,
             origin: Origin::Proposed,
             source: source.into(),
+            pick: None,
+        }
+    }
+
+    fn from_space(tag: impl Into<String>, schedule: Schedule, pick: Pick, defaults: Geometry) -> Self {
+        Candidate {
+            tag: tag.into(),
+            schedule,
+            origin: Origin::Proposed,
+            source: String::new(),
+            pick: Some((pick, defaults)),
         }
     }
 
@@ -335,86 +352,31 @@ pub fn candidates(subject: &Subject, gpu: GpuBackend) -> Vec<Candidate> {
         // measurement already saw it lose - a sweep that dropped the geometry a table already refused
         // could not reproduce the refusal.
         Family::RowReduce | Family::RmsNorm | Family::MulMatVec => {
-            // The GEMV's own question first: how many tokens one workgroup
-            // should own, so the weight row is decoded once for all of them -
-            // with the activation read in runs of four, as the table does, so
-            // a geometry is compared with the lowering it would ship with.
+            // The GEMV's candidates come from the schedule space the table
+            // picks from: `expand` is the cartesian product of the space's
+            // dimensions, filtered by the lowering itself - never a copy of
+            // its refusal rules. The control is the defaults, which the
+            // table's fallback row already carries. The label is the derived
+            // variant name, and the proposal is the pick the geometry would
+            // be committed as.
             if family == Family::MulMatVec {
-                v.push(Candidate::new(
-                    "subgroup 32 run4",
-                    format!("Schedule::gpu_subgroup({gpu_name}).with_reduce_run(4)"),
-                    Schedule::gpu_subgroup(gpu).with_reduce_run(4),
-                ));
-                for cols in [2u32, 4, 8, 16] {
-                    v.push(Candidate::new(
-                        format!("subgroup cols{cols} run4"),
-                        format!(
-                            "Schedule::gpu_subgroup_cols({gpu_name}, {cols}).with_reduce_run(4)"
-                        ),
-                        Schedule::gpu_subgroup_cols(gpu, cols).with_reduce_run(4),
-                    ));
-                }
-                // Keep the old lowering as a control, then vary the geometry,
-                // header reuse and arithmetic independently. Lowering remains
-                // the authority for backend and format refusals.
-                for cols in [1u32, 4, 8] {
-                    for rows in [1u32, 2] {
-                        for subgroups in [1u32, 2, 4] {
-                            for segment in [4u32, 16] {
-                                for factor in [false, true] {
-                                    let mut schedule = if cols == 1 {
-                                        Schedule::gpu_subgroup(gpu)
-                                    } else {
-                                        Schedule::gpu_subgroup_cols(gpu, cols)
-                                    };
-                                    let constructor = if cols == 1 {
-                                        format!("Schedule::gpu_subgroup({gpu_name})")
-                                    } else {
-                                        format!("Schedule::gpu_subgroup_cols({gpu_name}, {cols})")
-                                    };
-                                    schedule = schedule
-                                        .with_reduce_run(4)
-                                        .with_row_tile(rows, subgroups)
-                                        .with_segment(segment);
-                                    let mut source = format!(
-                                        "{constructor}.with_reduce_run(4).with_row_tile({rows}, {subgroups}).with_segment({segment})"
-                                    );
-                                    if factor {
-                                        schedule = schedule.with_factored_scales();
-                                        source.push_str(".with_factored_scales()");
-                                    }
-                                    v.push(Candidate::new(
-                                        format!("cols{cols} rows{rows} sg{subgroups} seg{segment} fact{factor}"),
-                                        source, schedule,
-                                    ));
-                                }
-                            }
-                        }
+                let space = spaces::mul_mat_vec::space();
+                let defaults = (space.defaults)(gpu);
+                for g in space.expand(gpu, &subject.kernel) {
+                    if g == defaults {
+                        continue;
                     }
-                }
-                for depth in [32u32, 64, 128] {
-                    for padding in [0u32, 8] {
-                        v.push(Candidate::new(
-                            format!("mma k{depth} pad{padding}"),
-                            format!("Schedule::gpu_matrix_tile({gpu_name}, {depth}).with_matrix_padding({padding})"),
-                            Schedule::gpu_matrix_tile(gpu, depth).with_matrix_padding(padding),
-                        ));
-                    }
-                }
-                for lanes in [64u32, 128] {
-                    for cols in [4u32, 8] {
-                        v.push(Candidate::new(
-                            format!("hier {lanes} cols{cols} run4"),
-                            format!(
-                                "Schedule::gpu_hier_reduce({gpu_name}).with_block([{lanes}, 1, \
-                                 1]).with_lane_tile({cols}).with_reduce_run(4)"
-                            ),
-                            Schedule::gpu_hier_reduce(gpu)
-                                .with_block([lanes, 1, 1])
-                                .with_lane_tile(cols)
-                                .with_reduce_run(4),
-                        ));
-                    }
+                    let tag = g
+                        .variant_name(defaults)
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "defaults".to_string());
+                    let pick = Pick {
+                        geometry: g,
+                        claim: Claim::any(),
+                        priority: 90,
+                        evidence: "",
+                    };
+                    v.push(Candidate::from_space(tag, g.schedule(gpu), pick, defaults));
                 }
             }
             v.push(Candidate::new(
@@ -497,6 +459,60 @@ pub fn rule_product(axes: &[&str], shape: [usize; 4]) -> u64 {
         })
 }
 
+/// A geometry as the table's pick list would write it: a lane geometry as the
+/// `map_lanes` diff against the space's `defaults` (so the literal is correct
+/// on every backend), a matrix geometry as the full literal.
+pub fn geometry_source(g: Geometry, defaults: Geometry) -> String {
+    match g {
+        Geometry::Matrix { depth, padding } => {
+            format!("Geometry::Matrix {{ depth: {depth}, padding: {padding} }}")
+        }
+        Geometry::Lanes { .. } => {
+            let l = g.lanes().expect("a lane geometry has lane dimensions");
+            let d = defaults.lanes().unwrap_or(rir_lower::schedule::geometry::Lanes::NEUTRAL);
+            let mut sets: Vec<String> = Vec::new();
+            if l.lane_tile != d.lane_tile {
+                sets.push(format!("l.lane_tile = {}", l.lane_tile));
+            }
+            if l.row_tile != d.row_tile {
+                sets.push(format!("l.row_tile = {}", l.row_tile));
+            }
+            if l.subgroups != d.subgroups {
+                sets.push(format!("l.subgroups = {}", l.subgroups));
+            }
+            if l.segment != d.segment {
+                sets.push(format!("l.segment = {}", l.segment));
+            }
+            if l.reduce_run != d.reduce_run {
+                sets.push(format!("l.reduce_run = {}", l.reduce_run));
+            }
+            if l.factor_scales != d.factor_scales {
+                sets.push(format!("l.factor_scales = {}", l.factor_scales));
+            }
+            if l.stage_b != d.stage_b {
+                sets.push(format!("l.stage_b = {}", l.stage_b));
+            }
+            match sets.len() {
+                0 => "defaults".to_string(),
+                1 => format!("defaults.map_lanes(|l| {})", sets[0]),
+                _ => format!("defaults.map_lanes(|l| {{ {} }})", sets.join("; ")),
+            }
+        }
+    }
+}
+
+/// A pick as the table's pick list would carry it, with `claim` as the rule
+/// the measurement justified - the verdict's claim when the pick is proposed.
+pub fn pick_source(pick: &Pick, defaults: Geometry, claim: &Claim) -> String {
+    format!(
+        "Pick {{ geometry: {}, claim: {}, priority: {}, evidence: {:?} }}",
+        geometry_source(pick.geometry, defaults),
+        claim_source(claim),
+        pick.priority,
+        pick.evidence
+    )
+}
+
 /// A claim as `schedules_for` would write it, with the open ends of
 /// `ShapeRule::new` left open.
 pub fn claim_source(claim: &Claim) -> String {
@@ -528,7 +544,46 @@ mod tests {
     use rir_core::catalog::Regime;
     use rir_lower::Family;
 
-    use super::profile_shapes;
+    use super::{candidates, profile_shapes, Origin, Subject};
+    use rir_lower::GpuBackend;
+    use rir_lower::schedule::spaces;
+
+    /// The GEMV's proposed candidates are the schedule space's geometries
+    /// (minus the defaults, which the table's fallback row already carries),
+    /// each labelled by its derived variant name and carrying the pick its
+    /// proposal would commit.
+    #[test]
+    fn the_gemv_candidates_come_from_the_schedule_space() {
+        let subject = Subject::resolve("mul_mat_vec_q4_K").unwrap();
+        let gpu = GpuBackend::Metal;
+        let cands = candidates(&subject, gpu);
+        let space = spaces::mul_mat_vec::space();
+        let defaults = (space.defaults)(gpu);
+        let expanded = space.expand(gpu, &subject.kernel);
+        let tags: Vec<&str> = cands.iter().map(|c| c.tag.as_str()).collect();
+        for g in &expanded {
+            if *g == defaults {
+                continue;
+            }
+            let name = g
+                .variant_name(defaults)
+                .map(|n| n.to_string())
+                .expect("a non-default geometry has a name");
+            assert!(
+                tags.contains(&name.as_str()),
+                "the space expands to {name} but no candidate carries it"
+            );
+        }
+        for c in &cands {
+            if let Some((pick, d)) = &c.pick {
+                assert_eq!(*d, defaults);
+                assert!(expanded.contains(&pick.geometry));
+            }
+        }
+        // The control is the table's fallback row, and it is there.
+        assert!(cands.iter().any(|c| c.origin == Origin::Fallback));
+    }
+
 
     /// The forward shapes of one profile follow its dimensions and the
     /// regime's step sizes; a training-only family has none.

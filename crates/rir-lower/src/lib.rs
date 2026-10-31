@@ -21,10 +21,11 @@ pub mod schedule;
 pub use loop_ir::*;
 pub use lower::{LowerError, can_lower_dequant, lower};
 pub use schedule::{
-    BLOCKED_SCAN, Backend, Claim, FALLBACK_PRIORITY, FAMILY_REFUSED, FLAT_LINEAR, FLAT_ROWS,
+    BLOCKED_SCAN, Backend, Claim, Dim, FALLBACK_PRIORITY, FAMILY_REFUSED, FLAT_LINEAR, FLAT_ROWS,
     Family, GPU_REFUSED, GPU_TARGETS, Geometry, GpuBackend, HIER_REDUCE, MATRIX_COLS, MATRIX_ROWS,
-    MATRIX_SUBGROUPS, MATRIX_TARGETS, MATRIX_TILE, PARTITION_TARGETS, ParallelMapping,
+    MATRIX_SUBGROUPS, MATRIX_TARGETS, MATRIX_TILE, PARTITION_TARGETS, ParallelMapping, Pick,
     ReductionStrategy, SHARED_REDUCE, STRIDED_SCAN, SUBGROUP_LANES, ScanStrategy, Schedule,
-    ScheduleError, ShapeRule, TILED_SCAN, VariantName, check_schedule, check_schedule_table,
-    family_refusal, matrix_targets_for, partitions_subgroups, schedules_for, targets_for,
+    ScheduleError, ShapeRule, Space, TILED_SCAN, VariantName, check_schedule,
+    check_schedule_table, family_refusal, matrix_targets_for, partitions_subgroups,
+    schedules_for, targets_for,
 };

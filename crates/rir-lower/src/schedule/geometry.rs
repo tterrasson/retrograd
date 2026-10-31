@@ -56,7 +56,7 @@ pub struct Lanes {
 impl Lanes {
     /// The lane dimensions of a plain `gpu_subgroup`: the reference a lane
     /// name is derived against when no space default applies.
-    pub(crate) const NEUTRAL: Lanes = Lanes {
+    pub const NEUTRAL: Lanes = Lanes {
         lane_tile: 1,
         row_tile: 1,
         subgroups: 1,
@@ -68,7 +68,8 @@ impl Lanes {
 }
 
 impl Geometry {
-    pub(crate) fn lanes(&self) -> Option<Lanes> {
+    /// The lane dimensions, when this is a lane geometry.
+    pub fn lanes(&self) -> Option<Lanes> {
         match self {
             Geometry::Lanes {
                 lane_tile,
