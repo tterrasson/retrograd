@@ -10,7 +10,7 @@
 //! RIR. Promotion is `scripts/test-rir.sh`.
 
 use rir_core::ValidatedKernel;
-use rir_emit::{emit_cuda, emit_manifest, emit_vulkan};
+use rir_emit::{emit_cuda, emit_manifest, emit_metal, emit_vulkan};
 use rir_lower::{LoopKernel, Schedule};
 use rir_runtime::any::{AnyGpu, AnyPipeline, AnySession, Artifact, Backend};
 use rir_runtime::{Manifest, ManifestReader};
@@ -76,21 +76,27 @@ impl Footprint {
 
 /// The device's shared-memory budget, when the backend publishes one.
 ///
-/// Vulkan does: `maxComputeSharedMemorySize`. What it does not publish is a
-/// multiprocessor count, so the quotient above is a ceiling on **concurrent
-/// workgroups per multiprocessor** and not an occupancy - which is why the field
-/// is named after what it divides rather than after what a CUDA profiler would
-/// call it.
-// The `if let` is irrefutable in a build without the CUDA feature, and that is
-// the point: the alternative arm exists only under it.
-#[expect(irrefutable_let_patterns)]
+/// Vulkan does: `maxComputeSharedMemorySize`, and Metal its
+/// `maxThreadgroupMemoryLength`. Neither publishes a multiprocessor count, so
+/// the quotient above is a ceiling on **concurrent workgroups per
+/// multiprocessor** and not an occupancy - which is why the field is named
+/// after what it divides rather than after what a CUDA profiler would call it.
+// The first `if let` is irrefutable in a build with neither the CUDA feature nor
+// an Apple target, and that is the point: the other arms exist only under them.
+#[allow(irrefutable_let_patterns)]
 fn shared_memory_limit(gpu: &AnyGpu) -> Option<u32> {
-    // Written as an `if let` and not a `match`, so this file carries no
+    // Written as `if let`s and not a `match`, so this file carries no
     // `#[cfg(feature = "cuda")]` of its own: `AnyGpu`'s CUDA arm exists only
     // under that feature, and a match here would stop compiling the moment a
-    // caller enabled it on the runtime without enabling it on the tool.
+    // caller enabled it on the runtime without enabling it on the tool. The
+    // Metal arm follows the target, which the two crates always share.
     if let AnyGpu::Vulkan(g) = gpu {
         return Some(g.max_shared_memory());
+    }
+    #[cfg(target_vendor = "apple")]
+    if let AnyGpu::Metal(g) = gpu {
+        // A budget: saturating keeps the quotient a ceiling.
+        return Some(u32::try_from(g.max_threadgroup_memory()).unwrap_or(u32::MAX));
     }
     None
 }
@@ -117,7 +123,9 @@ impl Mode {
     pub fn name(self) -> &'static str {
         match self {
             Mode::Latency => "latency (barrier between runs)",
-            Mode::Stream => "stream (Vulkan: serialized latency; CUDA: stream latency)",
+            Mode::Stream => {
+                "stream (Vulkan: serialized latency; CUDA: stream latency; Metal: serial encoder)"
+            }
         }
     }
 }
@@ -193,6 +201,7 @@ pub fn build<'g>(
     let source = match target {
         Backend::Vulkan => emit_vulkan(&lowered),
         Backend::Cuda => emit_cuda(&lowered),
+        Backend::Metal => emit_metal(&lowered),
     }?;
     let manifest = Manifest::from_json(&emit_manifest(&lowered, None))?;
     let artifact = rir_emit::artifact_name(&lowered);

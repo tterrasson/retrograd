@@ -1,4 +1,5 @@
-//! rir-runtime - execute a generated kernel on a real Vulkan device.
+//! rir-runtime - execute a generated kernel on a real Vulkan device (and, through
+//! `any`, on CUDA and Metal).
 //!
 //! The runtime counterpart of the AOT pipeline: `rir-gen` writes `kernel.comp`
 //! and `manifest.vulkan.json`; this crate takes them as-is and builds a compute
@@ -46,6 +47,8 @@ pub mod any;
 pub mod cuda;
 mod device;
 mod manifest;
+#[cfg(target_vendor = "apple")]
+pub mod metal;
 mod spirv;
 
 pub use device::{Gpu, Pipeline, Plan, PlanArg, PlanSession, Session};
@@ -176,7 +179,8 @@ pub enum RuntimeError {
         expected: usize,
         got: usize,
     },
-    /// GLSL → SPIR-V, or CUDA → shared object, compilation failed.
+    /// GLSL → SPIR-V, CUDA → shared object, or MSL → library compilation
+    /// failed.
     #[error("compilation: {0}")]
     Compile(String),
     /// No usable CUDA toolkit: `nvcc` absent, or unable to compile anything on
@@ -192,6 +196,13 @@ pub enum RuntimeError {
     Cuda { op: &'static str, detail: String },
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
+    /// No usable Metal device: not an Apple target, or no default device.
+    /// Recoverable, like `NoLoader`.
+    #[error("no usable Metal device: {0}")]
+    NoMetal(String),
+    /// A Metal call failed.
+    #[error("{op} failed: {detail}")]
+    Metal { op: &'static str, detail: String },
     /// A Vulkan call failed.
     #[error("{op} failed (VkResult {code})")]
     Vulkan { op: &'static str, code: i32 },
@@ -211,6 +222,7 @@ pub fn is_unavailable(e: &RuntimeError) -> bool {
             | RuntimeError::NoDevice
             | RuntimeError::NoCompiler
             | RuntimeError::NoToolkit(_)
+            | RuntimeError::NoMetal(_)
             | RuntimeError::MissingFeature { .. }
     )
 }

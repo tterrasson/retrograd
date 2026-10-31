@@ -219,6 +219,16 @@ impl Gpu {
     /// Builds a kernel pipeline: one storage-buffer binding per manifest
     /// argument, in order, and a push-constant block of the declared size.
     pub fn build(&self, m: &Manifest, spirv: &[u32]) -> Result<Pipeline<'_>, RuntimeError> {
+        // The reader accepts every backend this crate drives, so the one a
+        // manifest names is checked where it matters: another backend's
+        // features would otherwise read here as unmet, a skip instead of the
+        // caller's mistake.
+        if m.backend != rir_core::Backend::Vulkan {
+            return Err(RuntimeError::BadManifest(format!(
+                "backend '{}': this pipeline executes vulkan",
+                m.backend.name()
+            )));
+        }
         self.check_features(m)?;
 
         // The manifest push-constant block must fit the device limit: beyond it,

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
-description = "RIR - runs the generated shaders on a real Vulkan device"
+description = "RIR - runs the generated shaders on a real Vulkan, CUDA or Metal device"
 
 [dependencies]
 thiserror.workspace = true
@@ -24,6 +24,27 @@ rir-core.workspace = true
 # dlopen'ing through a different version of the same wrapper - for an API this
 # module uses two names of (`Library`, `Symbol`). Raise it when `ash` does.
 libloading = { version = "0.8", optional = true }
+
+# Metal, on Apple targets only: the framework ships with the OS, so there is no
+# feature to opt into, and every other build compiles without these crates and
+# reports Metal as unavailable. One family of bindings - objc2 - for the three.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError"] }
+objc2-metal = { version = "0.3", default-features = false, features = [
+    "std",
+    "MTLAllocation",
+    "MTLBuffer",
+    "MTLCommandBuffer",
+    "MTLCommandEncoder",
+    "MTLCommandQueue",
+    "MTLComputeCommandEncoder",
+    "MTLComputePipeline",
+    "MTLDevice",
+    "MTLLibrary",
+    "MTLResource",
+    "MTLTypes",
+] }
 
 [features]
 # CUDA is optional. Without its toolkit, the crate must compile and tests skip

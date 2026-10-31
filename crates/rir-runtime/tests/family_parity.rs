@@ -29,13 +29,13 @@
 //! and having to add it is the point.
 //!
 //! Like every device test here, this skips with an explanation when there is no
-//! device, no `libvulkan`, no GLSL compiler and no CUDA toolkit.
+//! device, no `libvulkan`, no GLSL compiler, no CUDA toolkit and no Metal device.
 //!
-//! **Two backends**, and the derivation is what made
+//! **Three backends** - Vulkan, CUDA, Metal - and the derivation is what made
 //! that cheap: everything above the device - the shapes, the geometry, the push
-//! constants, the tolerance - is read off the Loop IR and the manifest, so the
-//! second backend is a second *schedule* to look up and a second source file to
-//! read, not a second harness. A kernel CUDA does not serve is not a gap here
+//! constants, the tolerance - is read off the Loop IR and the manifest, so
+//! another backend is another *schedule* to look up and another source file to
+//! read, not another harness. A kernel CUDA does not serve is not a gap here
 //! either: it is a line in `FAMILY_REFUSED`, and this file prints it as such.
 
 #![allow(clippy::unwrap_used)]
@@ -52,7 +52,7 @@ use rir_lower::interp::{
     BoundArg, TensorView, TensorViewBytes, TensorViewBytesMut, TensorViewMut, f16_to_f32,
     f32_to_f16, run,
 };
-use rir_lower::{Backend, LoopKernel, Schedule};
+use rir_lower::{LoopKernel, Schedule};
 use rir_runtime::any::{AnyGpu, AnyPipeline, Artifact, Backend as Target};
 use rir_runtime::{Arg, Manifest, ManifestReader, Values, is_unavailable};
 
@@ -281,6 +281,17 @@ fn shapes(lk: &LoopKernel) -> Vec<Vec<usize>> {
         }
     }
     out.push(odd);
+    if lk.schedule.lane_tile() > 1 {
+        let mut partial = base.clone();
+        let rir_lower::Stmt::Parallel { body, .. } = &lk.body[0] else {
+            panic!("a lane tile has a parallel nest");
+        };
+        let rir_lower::Stmt::Parallel { axis, tile, .. } = &body[0] else {
+            panic!("a lane tile has a second parallel axis");
+        };
+        partial[axis.0 as usize] = *tile as usize + 1;
+        out.push(partial);
+    }
     if !lk.folds.is_empty() {
         let mut fold = base.clone();
         for (index, over) in &lk.folds {
@@ -513,10 +524,7 @@ fn every_registered_kernel_on(target: Target) {
         }
         Err(e) => panic!("opening device: {e}"),
     }
-    let backend = match target {
-        Target::Vulkan => Backend::Vulkan,
-        Target::Cuda => Backend::Cuda,
-    };
+    let backend = target.lower();
     let gpu_backend = backend.gpu().expect("a GPU target");
     // The parameter header a generated `.cu` includes.
     // Read from the committed registry like everything else here: what is under
@@ -558,18 +566,16 @@ fn every_registered_kernel_on(target: Target) {
                 target.name()
             );
         };
-        // The fallback, and every **flattened** variant beside it.
-        // The flattening is the one named variant this
-        // harness covers, and it is not an exception to "named variants keep
-        // their own tests": it introduces *arithmetic* - a magic-number
-        // decomposition - where every other variant only moves a block shape
-        // around, and arithmetic is what an oracle is for. A wrong multiplier
-        // computes the wrong index and nothing else notices.
+        // The fallback, and variants introducing index arithmetic: flattening
+        // decomposes a linear index, while a lane tile guards partial columns
+        // and shares the operands independent of them. Both need device parity
+        // beyond the fallback's geometry.
         work.push((index, name.clone(), schedule));
         for s in reg.schedules.iter() {
             // Named ones only: a flattened lowering that is the pair's fallback
             // is already the schedule above.
-            if s.backend() == backend && s.flatten() && s.variant().is_some() {
+            if s.backend() == backend && (s.flatten() || s.lane_tile() > 1) && s.variant().is_some()
+            {
                 work.push((index, s.artifact_name(&name), s.clone()));
             }
         }
@@ -671,7 +677,7 @@ fn every_registered_kernel_on(target: Target) {
     }
     // What must have run, derived from the same tables the loop walked: one
     // entry per kernel whose family serves this backend, plus one per flattened
-    // variant beside it.
+    // or lane-tiled variant beside it.
     let expected_artifacts: Vec<String> = entries
         .iter()
         .filter(|r| rir_lower::family_refusal(r.family, gpu_backend).is_none())
@@ -681,7 +687,11 @@ fn every_registered_kernel_on(target: Target) {
             v.extend(
                 r.schedules
                     .iter()
-                    .filter(|s| s.backend() == backend && s.flatten() && s.variant().is_some())
+                    .filter(|s| {
+                        s.backend() == backend
+                            && (s.flatten() || s.lane_tile() > 1)
+                            && s.variant().is_some()
+                    })
                     .map(|s| s.artifact_name(&name)),
             );
             v
@@ -734,6 +744,19 @@ fn every_registered_kernel_agrees_with_the_oracle_on_the_device() {
 #[test]
 fn every_registered_kernel_agrees_with_the_oracle_on_cuda() {
     every_registered_kernel_on(Target::Cuda);
+}
+
+/// The same witness on Metal: the generated `kernel.metal` of every registered
+/// lowering, compiled by the device at the language version its manifest
+/// claims and dispatched with the fork's binding convention, against the same
+/// oracle and the same tolerances.
+///
+/// Only an Apple target has the arm. Elsewhere there is no test rather than a
+/// green one: a skip that printed nothing would read as Metal coverage.
+#[cfg(target_vendor = "apple")]
+#[test]
+fn every_registered_kernel_agrees_with_the_oracle_on_metal() {
+    every_registered_kernel_on(Target::Metal);
 }
 
 /// A witness for the derivation itself: the geometry this harness computes is

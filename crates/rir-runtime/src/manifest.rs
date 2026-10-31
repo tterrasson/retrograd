@@ -201,13 +201,14 @@ impl ManifestReader for Manifest {
                 m.schema_version
             )));
         }
-        // Two backends, and the same reader for both:
+        // Three backends, and the same reader for all of them:
         // bindings, push-constant offsets and grid axes are the *contract*, and
-        // CUDA introduces no new one - the params struct is the push-constant
-        // layout, passed by value.
-        if !matches!(m.backend, Backend::Vulkan | Backend::Cuda) {
+        // neither CUDA nor Metal introduces a new one - the params struct is the
+        // push-constant layout, passed by value on CUDA and as a constant
+        // buffer after the tensors on Metal.
+        if !matches!(m.backend, Backend::Vulkan | Backend::Cuda | Backend::Metal) {
             return Err(RuntimeError::BadManifest(format!(
-                "backend '{}': this runtime executes vulkan and cuda",
+                "backend '{}': this runtime executes vulkan, cuda and metal",
                 m.backend.name()
             )));
         }

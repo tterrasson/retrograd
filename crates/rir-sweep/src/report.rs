@@ -35,6 +35,13 @@ pub fn render(r: &SweepReport) -> String {
         "# {} - median of the repetitions; a gain counts only above the two spreads added (floor 2%)",
         r.mode.name()
     );
+    if let Some((profile, regime)) = &r.profile {
+        let _ = writeln!(
+            out,
+            "# profile: {profile}, {} regime - shapes derived from the model's dimensions",
+            regime.name()
+        );
+    }
     if let Some(k) = r.contraction {
         let _ = writeln!(
             out,
@@ -70,7 +77,17 @@ pub fn render(r: &SweepReport) -> String {
     }
 
     let _ = writeln!(out);
-    let _ = writeln!(out, "## proposal");
+    match &r.profile {
+        // A proposal for a profile is a choice for that model in that regime:
+        // what is committed is a selection in the profile table, beside any
+        // table change, and the promotion lane still decides it.
+        Some((profile, regime)) => {
+            let _ = writeln!(out, "## proposal for {profile} ({})", regime.name());
+        }
+        None => {
+            let _ = writeln!(out, "## proposal");
+        }
+    }
     for a in &r.arbitrated {
         let _ = writeln!(out, "{}", proposal(a));
     }

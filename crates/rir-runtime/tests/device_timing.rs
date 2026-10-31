@@ -232,13 +232,7 @@ fn elementwise_band_cost_on_every_backend() {
                     &gpu,
                     target,
                     &kernel,
-                    Schedule::gpu_grid_vec4(
-                        match target {
-                            Backend::Vulkan => rir_lower::GpuBackend::Vulkan,
-                            Backend::Cuda => rir_lower::GpuBackend::Cuda,
-                        },
-                        [256, 1, 1],
-                    ),
+                    Schedule::gpu_grid_vec4(target.gpu(), [256, 1, 1]),
                     &tag,
                 ) else {
                     continue;
@@ -748,10 +742,7 @@ fn unary_flat_address() {
         let Ok(gpu) = AnyGpu::open(target) else {
             continue;
         };
-        let g = match target {
-            Backend::Vulkan => rir_lower::GpuBackend::Vulkan,
-            Backend::Cuda => rir_lower::GpuBackend::Cuda,
-        };
+        let g = target.gpu();
         println!("--- {} ---", target.name());
         let mut plan: Vec<(String, Schedule, usize, bool)> = Vec::new();
         // The baseline first, at the geometry the table ships, so every linear
@@ -858,10 +849,7 @@ fn rms_norm_back_reduction_stages() {
         let Ok(gpu) = AnyGpu::open(target) else {
             continue;
         };
-        let g = match target {
-            Backend::Vulkan => rir_lower::GpuBackend::Vulkan,
-            Backend::Cuda => rir_lower::GpuBackend::Cuda,
-        };
+        let g = target.gpu();
         println!("--- {} ---", target.name());
         for (tag, schedule, flat) in [
             ("rms_norm_back/subgroup", Schedule::gpu_subgroup(g), false),
@@ -919,6 +907,73 @@ fn rms_norm_back_reduction_stages() {
                 report(
                     tag,
                     &format!("ne=[{n_col},{n_row},{n_plane},{n_batch}]"),
+                    session.groups(),
+                    session.time(WARMUP, ITERS),
+                );
+            }
+        }
+    }
+}
+
+/// `rms_norm` on **every backend this build can drive**, with the same report
+/// on each: the subgroup fallback and the 256-lane shared reduction, on the row
+/// widths of the reference models' hidden sizes, at one token (decode) and at
+/// a prefill-sized batch of rows.
+///
+/// It is the witness that a backend's harness measures at all - Metal's first
+/// timed kernel - and it compares RIR to RIR only. Read each column down and
+/// never across (`elementwise_band_cost_on_every_backend`).
+#[test]
+fn rms_norm_cost_on_every_backend() {
+    if !enabled() {
+        return;
+    }
+    let kernel = rir_kernels::rms_norm::build().unwrap();
+    for target in Backend::available() {
+        let gpu = match AnyGpu::open(target) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("{} skipped: {e}", target.name());
+                continue;
+            }
+        };
+        let g = target.gpu();
+        println!("--- {} on '{}' ---", target.name(), gpu.name());
+        for (tag, schedule) in [
+            ("rms_norm/subgroup", Schedule::gpu_subgroup(g)),
+            ("rms_norm/shared256", Schedule::gpu_shared_reduce(g)),
+        ] {
+            let tag = format!("{tag}/{}", target.name());
+            let Some(pipe) = build_any(&gpu, target, &kernel, schedule, &tag) else {
+                continue;
+            };
+            for &(n_col, n_row) in &[
+                (1024usize, 1usize),
+                (2048, 1),
+                (2560, 1),
+                (1024, 8),
+                (2048, 32),
+                (1024, 512),
+            ] {
+                let len = n_col * n_row;
+                let x = vec![0.5f32; len];
+                let mut dst = vec![0f32; len];
+                let nb = [4usize, 4 * n_col, 4 * len, 4 * len];
+                let mut values = Values::new();
+                values
+                    .f32("eps", 1e-6)
+                    .u32("n_row", n_row as u32)
+                    .u32("n_plane", 1)
+                    .u32("n_batch", 1)
+                    .u32("n_col", n_col as u32)
+                    .strides("x", &nb)
+                    .strides("dst", &nb);
+                let session = pipe
+                    .prepare(&[Arg::input(&x), Arg::output(&mut dst)], &values)
+                    .unwrap_or_else(|e| panic!("preparing {tag}: {e}"));
+                report(
+                    &tag,
+                    &format!("ne=[{n_col},{n_row},1,1]"),
                     session.groups(),
                     session.time(WARMUP, ITERS),
                 );

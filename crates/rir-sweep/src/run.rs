@@ -8,6 +8,7 @@
 //! comparison a comparison; the third - same process - is what makes the
 //! agreement check free, since the reference is already in host memory.
 
+use rir_core::catalog::Regime;
 use rir_lower::LoopKernel;
 use rir_runtime::any::{AnyGpu, Backend};
 
@@ -28,6 +29,9 @@ pub struct Options {
     pub mode: Mode,
     /// OUT_PROD reduction depth, independent of its output shape.
     pub contraction: usize,
+    /// The model profile and regime the shapes were derived from, when they
+    /// were: the report then says which profile its proposal is for.
+    pub profile: Option<(String, Regime)>,
 }
 
 impl Default for Options {
@@ -39,6 +43,7 @@ impl Default for Options {
             shapes: None,
             mode: Mode::Stream,
             contraction: 64,
+            profile: None,
         }
     }
 }
@@ -58,6 +63,8 @@ pub struct SweepReport {
     pub mode: Mode,
     pub kernel: String,
     pub family: &'static str,
+    /// See [`Options::profile`].
+    pub profile: Option<(String, Regime)>,
     pub contraction: Option<usize>,
     pub backend: Backend,
     pub device: String,
@@ -79,10 +86,7 @@ pub fn sweep(
     gpu: &AnyGpu,
     options: &Options,
 ) -> Result<SweepReport, SweepError> {
-    let gpu_backend = match target {
-        Backend::Vulkan => rir_lower::GpuBackend::Vulkan,
-        Backend::Cuda => rir_lower::GpuBackend::Cuda,
-    };
+    let gpu_backend = target.gpu();
     let all = candidates(subject, gpu_backend);
     let base = all
         .iter()
@@ -144,6 +148,7 @@ pub fn sweep(
         mode: options.mode,
         kernel: subject.name.clone(),
         family: subject.family.name(),
+        profile: options.profile.clone(),
         backend: target,
         device: gpu.name(),
         base_tag: base.tag.clone(),
@@ -180,6 +185,17 @@ fn arbitrate_one(
         });
     }
     let mut verdict = arbitrate(&rows);
+    // The GEMV has no `batch` axis: its output count is `row · plane`, and a
+    // rule naming an axis the kernel lacks is refused by `check_schedule`.
+    if subject.family == rir_lower::Family::MulMatVec
+        && let Verdict::Claims { rules, .. } = &mut verdict
+    {
+        for rule in rules.iter_mut() {
+            if rule.axes == ["row", "plane", "batch"] {
+                rule.axes = &["row", "plane"];
+            }
+        }
+    }
     if subject.family == rir_lower::Family::OutProd {
         // One measured contraction depth cannot justify a claim on every k.
         let k = u32::try_from(options.contraction).map_err(|_| SweepError::Unbindable {

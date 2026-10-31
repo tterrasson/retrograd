@@ -3,6 +3,8 @@
 //! ```text
 //! cargo run --release -p rir-sweep -- --kernel rms_norm_back
 //! cargo run --release -p rir-sweep -- --kernel unary_silu --backend vulkan --reps 9
+//! cargo run --release -p rir-sweep -- --kernel rms_norm --backend metal
+//! cargo run --release -p rir-sweep -- --kernel rms_norm --profile qwen3-0.6b-q8_0 --regime decode
 //! cargo run --release -p rir-sweep -- --list
 //! ```
 //!
@@ -12,8 +14,9 @@
 //! `scripts/test-rir.sh` like any other table change, because a sweep compares
 //! RIR to RIR and promotion is decided against the native kernel.
 
+use rir_core::catalog::Regime;
 use rir_runtime::any::{AnyGpu, Backend};
-use rir_sweep::candidates::Subject;
+use rir_sweep::candidates::{Subject, profile_shapes};
 use rir_sweep::{Options, SweepError, report, sweep};
 
 fn main() -> std::process::ExitCode {
@@ -29,6 +32,8 @@ fn main() -> std::process::ExitCode {
 fn run() -> Result<(), SweepError> {
     let mut kernel: Option<String> = None;
     let mut backend: Option<Backend> = None;
+    let mut profile: Option<String> = None;
+    let mut regime: Option<Regime> = None;
     let mut options = Options::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -46,15 +51,29 @@ fn run() -> Result<(), SweepError> {
                 return Ok(());
             }
             "--kernel" => kernel = Some(value("--kernel")?),
+            "--profile" => profile = Some(value("--profile")?),
+            "--regime" => {
+                regime = Some(match value("--regime")?.as_str() {
+                    "decode" => Regime::Decode,
+                    "prefill" => Regime::Prefill,
+                    other => {
+                        return Err(SweepError::Unbindable {
+                            kernel: other.to_string(),
+                            why: "--regime is decode or prefill".to_string(),
+                        });
+                    }
+                })
+            }
             "--backend" => {
                 let name = value("--backend")?;
                 backend = Some(match name.as_str() {
                     "vulkan" => Backend::Vulkan,
                     "cuda" => Backend::Cuda,
+                    "metal" => Backend::Metal,
                     other => {
                         return Err(SweepError::Unbindable {
                             kernel: other.to_string(),
-                            why: "--backend is vulkan or cuda".to_string(),
+                            why: "--backend is vulkan, cuda or metal".to_string(),
                         });
                     }
                 });
@@ -79,8 +98,8 @@ fn run() -> Result<(), SweepError> {
             other => {
                 return Err(SweepError::Unbindable {
                     kernel: other.to_string(),
-                    why: "unknown argument; --kernel, --backend, --reps, --iters, --warmup, \
-                          --shape, --contraction, --latency, --list"
+                    why: "unknown argument; --kernel, --backend, --profile, --regime, --reps, \
+                          --iters, --warmup, --shape, --contraction, --latency, --list"
                         .to_string(),
                 });
             }
@@ -94,6 +113,64 @@ fn run() -> Result<(), SweepError> {
         });
     };
     let subject = Subject::resolve(&kernel)?;
+
+    // One sweep per regime: a profile's proposal is made for one regime, and
+    // a kernel may win in one and not in the other. Without a profile there
+    // is a single sweep, on `--shape` or the family's own list.
+    let runs: Vec<Options> = match profile {
+        None => {
+            if regime.is_some() {
+                return Err(SweepError::Unbindable {
+                    kernel: kernel.clone(),
+                    why: "--regime selects a profile's shapes; it needs --profile".to_string(),
+                });
+            }
+            vec![options]
+        }
+        Some(name) => {
+            if options.shapes.is_some() {
+                return Err(SweepError::Unbindable {
+                    kernel: kernel.clone(),
+                    why: "--profile derives the shapes; it does not combine with --shape"
+                        .to_string(),
+                });
+            }
+            let p = rir_core::profiles::named(&name).ok_or_else(|| SweepError::Unbindable {
+                kernel: name.clone(),
+                why: format!(
+                    "unknown profile; the catalogue publishes {}",
+                    rir_core::profiles::reference()
+                        .iter()
+                        .map(|p| p.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            })?;
+            let regimes = match regime {
+                Some(r) => vec![r],
+                None => vec![Regime::Decode, Regime::Prefill],
+            };
+            let mut runs = Vec::new();
+            for r in regimes {
+                let shapes = profile_shapes(subject.family, &p.shape, r).ok_or_else(|| {
+                    SweepError::Unbindable {
+                        kernel: kernel.clone(),
+                        why: format!(
+                            "the {} family does not run in a model's forward pass, so profile \
+                             {name} has no shape for it",
+                            subject.family.name()
+                        ),
+                    }
+                })?;
+                runs.push(Options {
+                    shapes: Some(shapes),
+                    profile: Some((name.clone(), r)),
+                    ..options.clone()
+                });
+            }
+            runs
+        }
+    };
 
     let targets: Vec<Backend> = match backend {
         Some(b) => vec![b],
@@ -109,10 +186,15 @@ fn run() -> Result<(), SweepError> {
                 continue;
             }
         };
-        match sweep(&subject, target, &gpu, &options) {
-            Ok(r) => print!("{}", report::render(&r)),
-            Err(e) if e.is_unavailable() => eprintln!("{}: skipped - {e}", target.name()),
-            Err(e) => return Err(e),
+        for options in &runs {
+            match sweep(&subject, target, &gpu, options) {
+                Ok(r) => print!("{}", report::render(&r)),
+                Err(e) if e.is_unavailable() => {
+                    eprintln!("{}: skipped - {e}", target.name());
+                    break;
+                }
+                Err(e) => return Err(e),
+            }
         }
     }
     Ok(())

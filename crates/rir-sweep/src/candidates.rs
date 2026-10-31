@@ -15,6 +15,7 @@
 //! compiler's own rules (`ScheduleError`, `LowerError`).
 
 use rir_core::ValidatedKernel;
+use rir_core::catalog::{ModelShape, Regime};
 use rir_lower::schedule::bench;
 use rir_lower::{Family, GpuBackend, Schedule, ShapeRule};
 
@@ -186,6 +187,15 @@ pub fn shapes(family: Family) -> Vec<[usize; 4]> {
             [20000, 40, 1, 1],
         ],
         Family::MatMulNaive => vec![[512, 512, 1, 1], [64, 64, 16, 1]],
+        // `[K, N, tokens, 1]`: the Qwen3 0.6B projections at one and eight
+        // tokens - the FFN up/gate and down and the attention output - every K a
+        // whole number of 256-element super-blocks.
+        Family::MulMatVec => vec![
+            [1024, 3072, 1, 1],
+            [3072, 1024, 1, 1],
+            [2048, 1024, 1, 1],
+            [1024, 3072, 8, 1],
+        ],
         // Synthetic coverage; --shape and --contraction reproduce census shapes.
         Family::OutProd => vec![
             [8, 3, 2, 3],
@@ -194,6 +204,63 @@ pub fn shapes(family: Family) -> Vec<[usize; 4]> {
             [64, 64, 16, 2],
         ],
     }
+}
+
+/// The shapes a family runs on in one model profile and one regime,
+/// `[col, row, plane, batch]`, at every step size the regime measures.
+///
+/// They are the forward pass's own shapes for that model, derived from its
+/// dimensions rather than listed: the hidden-state norm `[n_embd, t]` and the
+/// per-head query/key norms `[head_dim, n_head(_kv), t]`; the gated FFN's
+/// `[n_ff, t]` activation and product; the residual `[n_embd, t]`; and the
+/// weight products `[K, N, t]` - the Q, K/V, output, gate/up and down
+/// projections. A family
+/// the forward pass does not run - the backward and training kernels - has
+/// no shape in a profile, and `None` says so instead of inventing one.
+pub fn profile_shapes(
+    family: Family,
+    shape: &ModelShape,
+    regime: Regime,
+) -> Option<Vec<[usize; 4]>> {
+    let (embd, ff, head) = (
+        shape.n_embd as usize,
+        shape.n_ff as usize,
+        shape.head_dim as usize,
+    );
+    let (q, kv) = (
+        shape.n_head as usize * head,
+        shape.n_head_kv as usize * head,
+    );
+    let per_step = |t: usize| -> Vec<[usize; 4]> {
+        match family {
+            Family::RmsNorm => vec![
+                [embd, t, 1, 1],
+                [head, shape.n_head as usize, t, 1],
+                [head, shape.n_head_kv as usize, t, 1],
+            ],
+            Family::Unary => vec![[ff, t, 1, 1]],
+            Family::Elementwise | Family::ElementwiseRepeat | Family::Scale => {
+                vec![[ff, t, 1, 1], [embd, t, 1, 1]]
+            }
+            Family::MulMatVec => vec![
+                [embd, q, t, 1],
+                [embd, kv, t, 1],
+                [q, embd, t, 1],
+                [embd, ff, t, 1],
+                [ff, embd, t, 1],
+            ],
+            _ => Vec::new(),
+        }
+    };
+    let mut shapes: Vec<[usize; 4]> = Vec::new();
+    for &t in regime.tokens() {
+        for s in per_step(t as usize) {
+            if !shapes.contains(&s) {
+                shapes.push(s);
+            }
+        }
+    }
+    (!shapes.is_empty()).then_some(shapes)
 }
 
 /// The candidate product for `family` on `gpu`: the table's own lowerings
@@ -264,7 +331,32 @@ pub fn candidates(subject: &Subject, gpu: GpuBackend) -> Vec<Candidate> {
         // row space. The 1 024-lane tree is in the product although a
         // measurement already saw it lose - a sweep that dropped the geometry a table already refused
         // could not reproduce the refusal.
-        Family::RowReduce | Family::RmsNorm => {
+        Family::RowReduce | Family::RmsNorm | Family::MulMatVec => {
+            // The GEMV's own question first: how many tokens one workgroup
+            // should own, so the weight row is decoded once for all of them.
+            if family == Family::MulMatVec {
+                for cols in [2u32, 4, 8, 16] {
+                    v.push(Candidate::new(
+                        format!("subgroup cols{cols}"),
+                        format!("Schedule::gpu_subgroup_cols({gpu_name}, {cols})"),
+                        Schedule::gpu_subgroup_cols(gpu, cols),
+                    ));
+                }
+                for lanes in [64u32, 128] {
+                    for cols in [4u32, 8] {
+                        v.push(Candidate::new(
+                            format!("hier {lanes} cols{cols}"),
+                            format!(
+                                "Schedule::gpu_hier_reduce({gpu_name}).with_block([{lanes}, 1, \
+                                 1]).with_lane_tile({cols})"
+                            ),
+                            Schedule::gpu_hier_reduce(gpu)
+                                .with_block([lanes, 1, 1])
+                                .with_lane_tile(cols),
+                        ));
+                    }
+                }
+            }
             v.push(Candidate::new(
                 "subgroup 32",
                 format!("Schedule::gpu_subgroup({gpu_name})"),
@@ -365,5 +457,36 @@ pub fn rule_source(rule: &ShapeRule) -> String {
             "ShapeRule {{ axes: &[{axes}], min: {}, max: {} }}",
             rule.min, rule.max
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rir_core::catalog::Regime;
+    use rir_lower::Family;
+
+    use super::profile_shapes;
+
+    /// The forward shapes of one profile follow its dimensions and the
+    /// regime's step sizes; a training-only family has none.
+    #[test]
+    fn a_profile_derives_the_forward_shapes_of_its_model() {
+        let p = rir_core::profiles::named("qwen3-0.6b-q8_0").unwrap();
+        let decode = profile_shapes(Family::RmsNorm, &p.shape, Regime::Decode).unwrap();
+        assert!(decode.contains(&[1024, 1, 1, 1]), "hidden norm, one token");
+        assert!(decode.contains(&[128, 16, 32, 1]), "query norm, 32 tokens");
+        assert!(decode.contains(&[128, 8, 4, 1]), "key norm, 4 tokens");
+        assert!(decode.iter().all(|s| s[1] <= 32 && s[2] <= 32));
+
+        let prefill = profile_shapes(Family::Unary, &p.shape, Regime::Prefill).unwrap();
+        assert_eq!(prefill, vec![[3072, 512, 1, 1]]);
+
+        let gemv = profile_shapes(Family::MulMatVec, &p.shape, Regime::Decode).unwrap();
+        assert!(gemv.contains(&[1024, 2048, 1, 1]), "query projection");
+        assert!(gemv.contains(&[1024, 1024, 8, 1]), "key/value projection");
+        assert!(gemv.contains(&[3072, 1024, 32, 1]), "down projection");
+
+        assert!(profile_shapes(Family::OutProd, &p.shape, Regime::Decode).is_none());
+        assert!(profile_shapes(Family::Cumsum, &p.shape, Regime::Decode).is_none());
     }
 }

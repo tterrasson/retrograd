@@ -817,10 +817,7 @@ fn band_vec4_on_one_backend(target: Backend, kernel_name: &str, binary: bool, pa
     // defines it rather than by its name: `scale` publishes its vector lowering
     // as the pair's **fallback** - ggml guarantees the layout it claims - so it
     // carries the bare kernel name, while `add` and `mul` carry `vec4`.
-    let lower_backend = match target {
-        Backend::Vulkan => rir_lower::Backend::Vulkan,
-        Backend::Cuda => rir_lower::Backend::Cuda,
-    };
+    let lower_backend = target.lower();
     let Some(schedule) = entry
         .schedules
         .iter()

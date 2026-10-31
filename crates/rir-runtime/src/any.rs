@@ -23,6 +23,7 @@ use crate::{Arg, Manifest, RuntimeError, Values};
 pub enum Backend {
     Vulkan,
     Cuda,
+    Metal,
 }
 
 impl Backend {
@@ -30,6 +31,26 @@ impl Backend {
         match self {
             Backend::Vulkan => "vulkan",
             Backend::Cuda => "cuda",
+            Backend::Metal => "metal",
+        }
+    }
+
+    /// The domain's name for this backend - what a manifest and a schedule
+    /// carry.
+    pub fn lower(self) -> rir_core::Backend {
+        match self {
+            Backend::Vulkan => rir_core::Backend::Vulkan,
+            Backend::Cuda => rir_core::Backend::Cuda,
+            Backend::Metal => rir_core::Backend::Metal,
+        }
+    }
+
+    /// The same, as the GPU backend the schedule constructors take.
+    pub fn gpu(self) -> rir_core::GpuBackend {
+        match self {
+            Backend::Vulkan => rir_core::GpuBackend::Vulkan,
+            Backend::Cuda => rir_core::GpuBackend::Cuda,
+            Backend::Metal => rir_core::GpuBackend::Metal,
         }
     }
 
@@ -44,6 +65,7 @@ impl Backend {
         let ext = match self {
             Backend::Vulkan => "comp",
             Backend::Cuda => "cu",
+            Backend::Metal => "metal",
         };
         (
             format!("kernel{infix}.{ext}"),
@@ -51,13 +73,16 @@ impl Backend {
         )
     }
 
-    /// The backends this build can drive. CUDA is behind a feature, so a build
-    /// without it must not silently report the test as passed on a backend it
-    /// never touched.
+    /// The backends this build can drive. CUDA is behind a feature and Metal
+    /// behind an Apple target, so a build without them must not silently report
+    /// the test as passed on a backend it never touched.
     pub fn available() -> Vec<Backend> {
         let mut v = vec![Backend::Vulkan];
         if cfg!(feature = "cuda") {
             v.push(Backend::Cuda);
+        }
+        if cfg!(target_vendor = "apple") {
+            v.push(Backend::Metal);
         }
         v
     }
@@ -67,11 +92,12 @@ impl Backend {
 /// generator wrote it, and - on CUDA - the parameter header it includes.
 pub struct Artifact<'a> {
     /// `rir_<artifact>` is the launch symbol on CUDA; unused on Vulkan, whose
-    /// module has one entrypoint.
+    /// module has one entrypoint, and on Metal, whose entrypoint the manifest
+    /// names.
     pub artifact: &'a str,
     pub source: &'a str,
     /// `rir_kernel_params.h`, read by the caller from the generated registry.
-    /// Empty is legitimate on Vulkan, which does not include it.
+    /// Empty is legitimate on Vulkan and Metal, which do not include it.
     pub params_header: &'a str,
 }
 
@@ -81,6 +107,8 @@ pub enum AnyGpu {
     Vulkan(Box<crate::Gpu>),
     #[cfg(feature = "cuda")]
     Cuda(crate::cuda::Gpu),
+    #[cfg(target_vendor = "apple")]
+    Metal(crate::metal::Gpu),
 }
 
 impl AnyGpu {
@@ -93,6 +121,10 @@ impl AnyGpu {
             Backend::Cuda => Err(RuntimeError::NoToolkit(
                 "this build has no cuda feature".into(),
             )),
+            #[cfg(target_vendor = "apple")]
+            Backend::Metal => crate::metal::Gpu::open().map(AnyGpu::Metal),
+            #[cfg(not(target_vendor = "apple"))]
+            Backend::Metal => Err(RuntimeError::NoMetal("not an Apple target".into())),
         }
     }
 
@@ -104,6 +136,8 @@ impl AnyGpu {
             AnyGpu::Vulkan(g) => g.name(),
             #[cfg(feature = "cuda")]
             AnyGpu::Cuda(g) => g.name().to_string(),
+            #[cfg(target_vendor = "apple")]
+            AnyGpu::Metal(g) => g.name().to_string(),
         }
     }
 
@@ -140,6 +174,8 @@ impl AnyGpu {
                     },
                 )
                 .map(AnyPipeline::Cuda),
+            #[cfg(target_vendor = "apple")]
+            AnyGpu::Metal(g) => g.build(manifest, artifact.source).map(AnyPipeline::Metal),
         }
     }
 }
@@ -148,6 +184,8 @@ pub enum AnyPipeline<'g> {
     Vulkan(crate::Pipeline<'g>),
     #[cfg(feature = "cuda")]
     Cuda(crate::cuda::Pipeline<'g>),
+    #[cfg(target_vendor = "apple")]
+    Metal(crate::metal::Pipeline<'g>),
 }
 
 impl AnyPipeline<'_> {
@@ -156,6 +194,8 @@ impl AnyPipeline<'_> {
             AnyPipeline::Vulkan(p) => p.run(args, values),
             #[cfg(feature = "cuda")]
             AnyPipeline::Cuda(p) => p.run(args, values),
+            #[cfg(target_vendor = "apple")]
+            AnyPipeline::Metal(p) => p.run(args, values),
         }
     }
 
@@ -164,6 +204,8 @@ impl AnyPipeline<'_> {
             AnyPipeline::Vulkan(p) => p.prepare(args, values).map(AnySession::Vulkan),
             #[cfg(feature = "cuda")]
             AnyPipeline::Cuda(p) => p.prepare(args, values).map(AnySession::Cuda),
+            #[cfg(target_vendor = "apple")]
+            AnyPipeline::Metal(p) => p.prepare(args, values).map(AnySession::Metal),
         }
     }
 }
@@ -172,6 +214,8 @@ pub enum AnySession<'p> {
     Vulkan(crate::Session<'p>),
     #[cfg(feature = "cuda")]
     Cuda(crate::cuda::Session<'p>),
+    #[cfg(target_vendor = "apple")]
+    Metal(crate::metal::Session<'p>),
 }
 
 impl AnySession<'_> {
@@ -180,6 +224,8 @@ impl AnySession<'_> {
             AnySession::Vulkan(s) => s.groups(),
             #[cfg(feature = "cuda")]
             AnySession::Cuda(s) => s.groups(),
+            #[cfg(target_vendor = "apple")]
+            AnySession::Metal(s) => s.groups(),
         }
     }
 
@@ -188,6 +234,8 @@ impl AnySession<'_> {
             AnySession::Vulkan(s) => s.dispatch(),
             #[cfg(feature = "cuda")]
             AnySession::Cuda(s) => s.dispatch(),
+            #[cfg(target_vendor = "apple")]
+            AnySession::Metal(s) => s.dispatch(),
         }
     }
 
@@ -196,6 +244,8 @@ impl AnySession<'_> {
             AnySession::Vulkan(s) => s.read_outputs(args),
             #[cfg(feature = "cuda")]
             AnySession::Cuda(s) => s.read_outputs(args),
+            #[cfg(target_vendor = "apple")]
+            AnySession::Metal(s) => s.read_outputs(args),
         }
     }
 
@@ -204,11 +254,14 @@ impl AnySession<'_> {
             AnySession::Vulkan(s) => s.time(warmup, iters),
             #[cfg(feature = "cuda")]
             AnySession::Cuda(s) => s.time(warmup, iters),
+            #[cfg(target_vendor = "apple")]
+            AnySession::Metal(s) => s.time(warmup, iters),
         }
     }
 
     /// Compatibility stream timing: repeated dispatches serialize shared writes.
-    /// Vulkan includes a barrier; CUDA serializes launches on the same stream.
+    /// Vulkan includes a barrier; CUDA serializes launches on the same stream;
+    /// Metal runs them in one serial encoder.
     pub fn time_stream(
         &self,
         warmup: u32,
@@ -218,6 +271,8 @@ impl AnySession<'_> {
             AnySession::Vulkan(s) => s.time_stream(warmup, iters),
             #[cfg(feature = "cuda")]
             AnySession::Cuda(s) => s.time_stream(warmup, iters),
+            #[cfg(target_vendor = "apple")]
+            AnySession::Metal(s) => s.time_stream(warmup, iters),
         }
     }
 }

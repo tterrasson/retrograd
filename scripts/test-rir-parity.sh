@@ -16,9 +16,11 @@
 #                     its timing half stays behind RIR_TIME=1.
 #
 # They skip themselves, with the reason, when there is no `libvulkan`, no GPU
-# and no GLSL compiler. On a machine that has the stack (a macOS laptop with
-# MoltenVK and glslc is enough) they run the whole registry through an
-# interpreted oracle, which is only affordable in **release** - a debug build
+# and no GLSL compiler. On an Apple target `family_parity` and the vectorized
+# band of `device_parity` also run the generated MSL on the Metal device,
+# compiled at run time - no MoltenVK or offline Metal toolchain needed for that
+# half. On a machine that has the stack (a macOS laptop with MoltenVK and glslc
+# is enough) they run the whole registry through an interpreted oracle, which is only affordable in **release** - a debug build
 # takes over fifteen minutes. It builds in the shared `target/`: release
 # artifacts live in `target/release`, apart from the debug ones, and
 # `rir-runtime` does not depend on `retrograd-ffi`; it selects its own device.
