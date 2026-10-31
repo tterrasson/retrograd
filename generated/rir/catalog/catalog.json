@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "fingerprint": "sha256:e44ab9429c3f4e1bc076741a98103546154f0b5eba7299191e73b0a321d7fc34",
+  "fingerprint": "sha256:fa06b55349f1a8ae2a36b6f98c73e0bd38c5044735495773ae214d0f24cb84cb",
   "kernels": [
     {
       "ggml_op": "GGML_OP_ADD",
@@ -1789,6 +1789,108 @@
       "policy": "observe_generated",
       "variants": [
         {
+          "variant_id": "mul_mat_vec_q4_K_q4_K_2d_matrix_tile_mma",
+          "kernel": "mul_mat_vec_q4_K",
+          "priority": 100,
+          "constraints": [
+            "dtype(a)=q4_K",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "plane"
+              ],
+              "min": 32,
+              "max": 32
+            }
+          ],
+          "features": [
+            "metal>=2.3",
+            "simdgroup_reduction",
+            "simdgroup_size>=32",
+            "simdgroup_matrix"
+          ],
+          "workgroup": [
+            128,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "matrix_tile",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_mat_vec_q6_K_q6_K_2d_matrix_tile_mma",
+          "kernel": "mul_mat_vec_q6_K",
+          "priority": 100,
+          "constraints": [
+            "dtype(a)=q6_K",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "plane"
+              ],
+              "min": 32,
+              "max": 32
+            }
+          ],
+          "features": [
+            "metal>=2.3",
+            "simdgroup_reduction",
+            "simdgroup_size>=32",
+            "simdgroup_matrix"
+          ],
+          "workgroup": [
+            128,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "matrix_tile",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_mat_vec_q8_0_q8_0_2d_matrix_tile_mma",
+          "kernel": "mul_mat_vec_q8_0",
+          "priority": 100,
+          "constraints": [
+            "dtype(a)=q8_0",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "plane"
+              ],
+              "min": 32,
+              "max": 32
+            }
+          ],
+          "features": [
+            "metal>=2.3",
+            "simdgroup_reduction",
+            "simdgroup_size>=32",
+            "simdgroup_matrix"
+          ],
+          "workgroup": [
+            128,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "matrix_tile",
+          "scan": "serial"
+        },
+        {
           "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_cols8",
           "kernel": "mul_mat_vec_q4_K",
           "priority": 95,
@@ -1803,7 +1905,7 @@
               "axes": [
                 "plane"
               ],
-              "min": 8,
+              "min": 5,
               "max": 32
             }
           ],
@@ -1813,7 +1915,7 @@
             "simdgroup_size>=32"
           ],
           "workgroup": [
-            32,
+            64,
             1,
             1
           ],
@@ -1836,7 +1938,7 @@
               "axes": [
                 "plane"
               ],
-              "min": 8,
+              "min": 5,
               "max": 32
             }
           ],
@@ -1846,7 +1948,7 @@
             "simdgroup_size>=32"
           ],
           "workgroup": [
-            32,
+            64,
             1,
             1
           ],
@@ -1869,7 +1971,7 @@
               "axes": [
                 "plane"
               ],
-              "min": 8,
+              "min": 5,
               "max": 32
             }
           ],
@@ -1879,7 +1981,7 @@
             "simdgroup_size>=32"
           ],
           "workgroup": [
-            32,
+            64,
             1,
             1
           ],
@@ -1912,7 +2014,7 @@
             "simdgroup_size>=32"
           ],
           "workgroup": [
-            32,
+            64,
             1,
             1
           ],
@@ -1945,7 +2047,7 @@
             "simdgroup_size>=32"
           ],
           "workgroup": [
-            32,
+            64,
             1,
             1
           ],
@@ -1978,7 +2080,7 @@
             "simdgroup_size>=32"
           ],
           "workgroup": [
-            32,
+            64,
             1,
             1
           ],
@@ -2003,7 +2105,7 @@
             "simdgroup_size>=32"
           ],
           "workgroup": [
-            32,
+            64,
             1,
             1
           ],
@@ -2028,7 +2130,7 @@
             "simdgroup_size>=32"
           ],
           "workgroup": [
-            32,
+            64,
             1,
             1
           ],
@@ -2053,7 +2155,7 @@
             "simdgroup_size>=32"
           ],
           "workgroup": [
-            32,
+            64,
             1,
             1
           ],
@@ -2098,7 +2200,7 @@
               "axes": [
                 "plane"
               ],
-              "min": 8,
+              "min": 5,
               "max": 32
             }
           ],
@@ -2135,7 +2237,7 @@
               "axes": [
                 "plane"
               ],
-              "min": 8,
+              "min": 5,
               "max": 32
             }
           ],
@@ -2172,7 +2274,7 @@
               "axes": [
                 "plane"
               ],
-              "min": 8,
+              "min": 5,
               "max": 32
             }
           ],

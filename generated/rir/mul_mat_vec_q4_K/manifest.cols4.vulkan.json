@@ -135,7 +135,7 @@
   "dispatch": [
     {
       "axis": "row",
-      "per_workgroup": 1
+      "per_workgroup": 2
     },
     {
       "axis": "plane",

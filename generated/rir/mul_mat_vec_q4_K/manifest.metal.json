@@ -123,7 +123,7 @@
   "dispatch": [
     {
       "axis": "row",
-      "per_workgroup": 1
+      "per_workgroup": 4
     },
     {
       "axis": "plane",
@@ -132,7 +132,7 @@
   ],
   "flat": [],
   "workgroup": [
-    32,
+    64,
     1,
     1
   ]

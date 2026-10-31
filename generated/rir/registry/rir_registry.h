@@ -198,6 +198,11 @@ typedef struct rir_variant_desc {
     uint8_t      max_rank;          // maximum effective ggml rank accepted
     uint8_t      requires_subgroup; // 1 = needs the 32-lane collective below
     uint32_t     min_subgroup;
+    // 1 when the kernel multiplies matrix fragments (`simdgroup_matrix`): a
+    // device capability of its own, which a GPU able to run the collectives
+    // above may still lack. The device half of the contract refuses the
+    // variant on such a device, and the native kernel takes the node.
+    uint8_t      requires_matrix;
     uint32_t     workgroup[3];
     // Bytes of workgroup-shared storage the generated kernel declares.
     // Zero for a lowering that declares none.

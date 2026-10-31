@@ -23,9 +23,10 @@ kernel void rir_mul_mat_vec_q8_0_cols8(
     constant rir_mul_mat_vec_q8_0_cols8_params& pc [[buffer(3)]],
     uint3 group_id [[threadgroup_position_in_grid]],
     uint3 global_id [[thread_position_in_grid]],
-    uint simd_lane_id [[thread_index_in_simdgroup]])
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simdgroup_id [[simdgroup_index_in_threadgroup]])
 {
-    const uint row_v0 = group_id.x;
+    const uint row_v0 = group_id.x * 4u;
     if (row_v0 >= pc.n_row) {
         return;
     }
@@ -33,6 +34,7 @@ kernel void rir_mul_mat_vec_q8_0_cols8(
     if (plane_v1 >= pc.n_plane) {
         return;
     }
+    const uint sg_v10 = simdgroup_id;
     const uint lane_v2 = simd_lane_id;
     const uint plane1_v3 = plane_v1 + 1u;
     const uint plane2_v4 = plane_v1 + 2u;
@@ -41,250 +43,475 @@ kernel void rir_mul_mat_vec_q8_0_cols8(
     const uint plane5_v7 = plane_v1 + 5u;
     const uint plane6_v8 = plane_v1 + 6u;
     const uint plane7_v9 = plane_v1 + 7u;
-    float acc7_v10 = 0.0f;
-    float acc7_1_v11 = 0.0f;
-    float acc7_2_v12 = 0.0f;
-    float acc7_3_v13 = 0.0f;
-    float acc7_4_v14 = 0.0f;
-    float acc7_5_v15 = 0.0f;
-    float acc7_6_v16 = 0.0f;
-    float acc7_7_v17 = 0.0f;
+    const uint row_sg_v11 = sg_v10 * 2u;
+    const uint row_first_v12 = row_v0 + row_sg_v11;
+    const uint row_rd_v13 = row_first_v12 % pc.n_row;
+    const uint row1_v14 = row_first_v12 + 1u;
+    const uint row_rd_v15 = row1_v14 % pc.n_row;
+    float acc7_v16 = 0.0f;
+    float acc7_0_1_v17 = 0.0f;
+    float acc7_0_2_v18 = 0.0f;
+    float acc7_0_3_v19 = 0.0f;
+    float acc7_0_4_v20 = 0.0f;
+    float acc7_0_5_v21 = 0.0f;
+    float acc7_0_6_v22 = 0.0f;
+    float acc7_0_7_v23 = 0.0f;
+    float acc7_1_0_v24 = 0.0f;
+    float acc7_1_1_v25 = 0.0f;
+    float acc7_1_2_v26 = 0.0f;
+    float acc7_1_3_v27 = 0.0f;
+    float acc7_1_4_v28 = 0.0f;
+    float acc7_1_5_v29 = 0.0f;
+    float acc7_1_6_v30 = 0.0f;
+    float acc7_1_7_v31 = 0.0f;
     if (pc.b_nb0 == 4u) {
-        const uint seg_start_v18 = lane_v2 * 4u;
-        for (uint col_seg_v19 = seg_start_v18; col_seg_v19 < pc.n_col; col_seg_v19 += 128u) {
-            const uint blk_v20 = col_seg_v19 / 32u;
-            const uint inb0_v21 = col_seg_v19 % 32u;
-            const float scale_v22 = float(*(device const half *)(a + (blk_v20 * pc.a_nb0 + row_v0 * pc.a_nb1)));
-            const uint base_v142 = blk_v20 * pc.a_nb0 + row_v0 * pc.a_nb1;
-            for (uint col_g_v23 = 0u; col_g_v23 < 1u; ++col_g_v23) {
-                const uint e0_v24 = col_g_v23 * 4u;
-                const uint col_v25 = col_seg_v19 + e0_v24;
-                const uint inb_v26 = inb0_v21 + e0_v24;
-                const float q_v27 = float(*(device const char *)(a + (inb_v26 + base_v142 + 2u)));
-                const float t_v28 = scale_v22 * q_v27;
-                const uint e_v29 = e0_v24 + 1u;
-                const uint inb_v31 = inb0_v21 + e_v29;
-                const float q_v32 = float(*(device const char *)(a + (inb_v31 + base_v142 + 2u)));
-                const float t_v33 = scale_v22 * q_v32;
-                const uint e_v34 = e0_v24 + 2u;
-                const uint inb_v36 = inb0_v21 + e_v34;
-                const float q_v37 = float(*(device const char *)(a + (inb_v36 + base_v142 + 2u)));
-                const float t_v38 = scale_v22 * q_v37;
-                const uint e_v39 = e0_v24 + 3u;
-                const uint inb_v41 = inb0_v21 + e_v39;
-                const float q_v42 = float(*(device const char *)(a + (inb_v41 + base_v142 + 2u)));
-                const float t_v43 = scale_v22 * q_v42;
-                const uint t_v44_a = col_v25 * pc.b_nb0 + plane_v1 * pc.b_nb1;
-                const float4 t_v44_r = float4(*(device const packed_float4 *)(b + (t_v44_a)));
-                const float t_v44 = t_v44_r[0];
-                const float t_v45 = t_v44_r[1];
-                const float t_v46 = t_v44_r[2];
-                const float t_v47 = t_v44_r[3];
-                const float t_v48 = t_v28 * t_v44;
-                acc7_v10 += t_v48;
-                const float t_v49 = t_v33 * t_v45;
-                acc7_v10 += t_v49;
-                const float t_v50 = t_v38 * t_v46;
-                acc7_v10 += t_v50;
-                const float t_v51 = t_v43 * t_v47;
-                acc7_v10 += t_v51;
+        const uint seg_start_v32 = lane_v2 * 16u;
+        for (uint col_seg_v33 = seg_start_v32; col_seg_v33 < pc.n_col; col_seg_v33 += 512u) {
+            const uint blk_v34 = col_seg_v33 / 32u;
+            const uint inb0_v35 = col_seg_v33 % 32u;
+            const float scale_v36 = float(*(device const half *)(a + (blk_v34 * pc.a_nb0 + row_rd_v13 * pc.a_nb1)));
+            const float scale_v39 = float(*(device const half *)(a + (blk_v34 * pc.a_nb0 + row_rd_v15 * pc.a_nb1)));
+            float pq_v40 = 0.0f;
+            float pq_v41 = 0.0f;
+            float pq_v42 = 0.0f;
+            float pq_v43 = 0.0f;
+            float pq_v44 = 0.0f;
+            float pq_v45 = 0.0f;
+            float pq_v46 = 0.0f;
+            float pq_v47 = 0.0f;
+            float pq_v48 = 0.0f;
+            float pq_v49 = 0.0f;
+            float pq_v50 = 0.0f;
+            float pq_v51 = 0.0f;
+            float pq_v52 = 0.0f;
+            float pq_v53 = 0.0f;
+            float pq_v54 = 0.0f;
+            float pq_v55 = 0.0f;
+            const uint base_v291 = blk_v34 * pc.a_nb0 + row_rd_v13 * pc.a_nb1;
+            const uint base_v292 = blk_v34 * pc.a_nb0 + row_rd_v15 * pc.a_nb1;
+            for (uint col_g_v56 = 0u; col_g_v56 < 4u; ++col_g_v56) {
+                const uint e0_v57 = col_g_v56 * 4u;
+                const uint inb0r_v58 = inb0_v35 + e0_v57;
+                const uint q_v59_a = inb0r_v58 + base_v291 + 2u;
+                const float4 q_v59_r = float4(*(device const packed_char4 *)(a + (q_v59_a)));
+                const float q_v59 = q_v59_r[0];
+                const float q_v60 = q_v59_r[1];
+                const float q_v61 = q_v59_r[2];
+                const float q_v62 = q_v59_r[3];
+                const uint q_v64_a = inb0r_v58 + base_v292 + 2u;
+                const float4 q_v64_r = float4(*(device const packed_char4 *)(a + (q_v64_a)));
+                const float q_v64 = q_v64_r[0];
+                const float q_v65 = q_v64_r[1];
+                const float q_v66 = q_v64_r[2];
+                const float q_v67 = q_v64_r[3];
+                const uint col_v68 = col_seg_v33 + e0_v57;
+                const uint t_v91_a = col_v68 * pc.b_nb0 + plane_v1 * pc.b_nb1;
+                const float4 t_v91_r = float4(*(device const packed_float4 *)(b + (t_v91_a)));
+                const float t_v91 = t_v91_r[0];
+                const float t_v92 = t_v91_r[1];
+                const float t_v93 = t_v91_r[2];
+                const float t_v94 = t_v91_r[3];
+                const float t_v95 = q_v59 * t_v91;
+                pq_v40 += t_v95;
+                const float t_v96 = q_v60 * t_v92;
+                pq_v40 += t_v96;
+                const float t_v97 = q_v61 * t_v93;
+                pq_v40 += t_v97;
+                const float t_v98 = q_v62 * t_v94;
+                pq_v40 += t_v98;
+                const float t_v99 = q_v64 * t_v91;
+                pq_v48 += t_v99;
+                const float t_v100 = q_v65 * t_v92;
+                pq_v48 += t_v100;
+                const float t_v101 = q_v66 * t_v93;
+                pq_v48 += t_v101;
+                const float t_v102 = q_v67 * t_v94;
+                pq_v48 += t_v102;
                 if (plane1_v3 < pc.n_plane) {
-                    const uint t_v52_a = col_v25 * pc.b_nb0 + plane1_v3 * pc.b_nb1;
-                    const float4 t_v52_r = float4(*(device const packed_float4 *)(b + (t_v52_a)));
-                    const float t_v52 = t_v52_r[0];
-                    const float t_v53 = t_v52_r[1];
-                    const float t_v54 = t_v52_r[2];
-                    const float t_v55 = t_v52_r[3];
-                    const float t_v56 = t_v28 * t_v52;
-                    acc7_1_v11 += t_v56;
-                    const float t_v57 = t_v33 * t_v53;
-                    acc7_1_v11 += t_v57;
-                    const float t_v58 = t_v38 * t_v54;
-                    acc7_1_v11 += t_v58;
-                    const float t_v59 = t_v43 * t_v55;
-                    acc7_1_v11 += t_v59;
+                    const uint t_v103_a = col_v68 * pc.b_nb0 + plane1_v3 * pc.b_nb1;
+                    const float4 t_v103_r = float4(*(device const packed_float4 *)(b + (t_v103_a)));
+                    const float t_v103 = t_v103_r[0];
+                    const float t_v104 = t_v103_r[1];
+                    const float t_v105 = t_v103_r[2];
+                    const float t_v106 = t_v103_r[3];
+                    const float t_v107 = q_v59 * t_v103;
+                    pq_v41 += t_v107;
+                    const float t_v108 = q_v60 * t_v104;
+                    pq_v41 += t_v108;
+                    const float t_v109 = q_v61 * t_v105;
+                    pq_v41 += t_v109;
+                    const float t_v110 = q_v62 * t_v106;
+                    pq_v41 += t_v110;
+                    const float t_v111 = q_v64 * t_v103;
+                    pq_v49 += t_v111;
+                    const float t_v112 = q_v65 * t_v104;
+                    pq_v49 += t_v112;
+                    const float t_v113 = q_v66 * t_v105;
+                    pq_v49 += t_v113;
+                    const float t_v114 = q_v67 * t_v106;
+                    pq_v49 += t_v114;
                 }
                 if (plane2_v4 < pc.n_plane) {
-                    const uint t_v60_a = col_v25 * pc.b_nb0 + plane2_v4 * pc.b_nb1;
-                    const float4 t_v60_r = float4(*(device const packed_float4 *)(b + (t_v60_a)));
-                    const float t_v60 = t_v60_r[0];
-                    const float t_v61 = t_v60_r[1];
-                    const float t_v62 = t_v60_r[2];
-                    const float t_v63 = t_v60_r[3];
-                    const float t_v64 = t_v28 * t_v60;
-                    acc7_2_v12 += t_v64;
-                    const float t_v65 = t_v33 * t_v61;
-                    acc7_2_v12 += t_v65;
-                    const float t_v66 = t_v38 * t_v62;
-                    acc7_2_v12 += t_v66;
-                    const float t_v67 = t_v43 * t_v63;
-                    acc7_2_v12 += t_v67;
+                    const uint t_v115_a = col_v68 * pc.b_nb0 + plane2_v4 * pc.b_nb1;
+                    const float4 t_v115_r = float4(*(device const packed_float4 *)(b + (t_v115_a)));
+                    const float t_v115 = t_v115_r[0];
+                    const float t_v116 = t_v115_r[1];
+                    const float t_v117 = t_v115_r[2];
+                    const float t_v118 = t_v115_r[3];
+                    const float t_v119 = q_v59 * t_v115;
+                    pq_v42 += t_v119;
+                    const float t_v120 = q_v60 * t_v116;
+                    pq_v42 += t_v120;
+                    const float t_v121 = q_v61 * t_v117;
+                    pq_v42 += t_v121;
+                    const float t_v122 = q_v62 * t_v118;
+                    pq_v42 += t_v122;
+                    const float t_v123 = q_v64 * t_v115;
+                    pq_v50 += t_v123;
+                    const float t_v124 = q_v65 * t_v116;
+                    pq_v50 += t_v124;
+                    const float t_v125 = q_v66 * t_v117;
+                    pq_v50 += t_v125;
+                    const float t_v126 = q_v67 * t_v118;
+                    pq_v50 += t_v126;
                 }
                 if (plane3_v5 < pc.n_plane) {
-                    const uint t_v68_a = col_v25 * pc.b_nb0 + plane3_v5 * pc.b_nb1;
-                    const float4 t_v68_r = float4(*(device const packed_float4 *)(b + (t_v68_a)));
-                    const float t_v68 = t_v68_r[0];
-                    const float t_v69 = t_v68_r[1];
-                    const float t_v70 = t_v68_r[2];
-                    const float t_v71 = t_v68_r[3];
-                    const float t_v72 = t_v28 * t_v68;
-                    acc7_3_v13 += t_v72;
-                    const float t_v73 = t_v33 * t_v69;
-                    acc7_3_v13 += t_v73;
-                    const float t_v74 = t_v38 * t_v70;
-                    acc7_3_v13 += t_v74;
-                    const float t_v75 = t_v43 * t_v71;
-                    acc7_3_v13 += t_v75;
+                    const uint t_v127_a = col_v68 * pc.b_nb0 + plane3_v5 * pc.b_nb1;
+                    const float4 t_v127_r = float4(*(device const packed_float4 *)(b + (t_v127_a)));
+                    const float t_v127 = t_v127_r[0];
+                    const float t_v128 = t_v127_r[1];
+                    const float t_v129 = t_v127_r[2];
+                    const float t_v130 = t_v127_r[3];
+                    const float t_v131 = q_v59 * t_v127;
+                    pq_v43 += t_v131;
+                    const float t_v132 = q_v60 * t_v128;
+                    pq_v43 += t_v132;
+                    const float t_v133 = q_v61 * t_v129;
+                    pq_v43 += t_v133;
+                    const float t_v134 = q_v62 * t_v130;
+                    pq_v43 += t_v134;
+                    const float t_v135 = q_v64 * t_v127;
+                    pq_v51 += t_v135;
+                    const float t_v136 = q_v65 * t_v128;
+                    pq_v51 += t_v136;
+                    const float t_v137 = q_v66 * t_v129;
+                    pq_v51 += t_v137;
+                    const float t_v138 = q_v67 * t_v130;
+                    pq_v51 += t_v138;
                 }
                 if (plane4_v6 < pc.n_plane) {
-                    const uint t_v76_a = col_v25 * pc.b_nb0 + plane4_v6 * pc.b_nb1;
-                    const float4 t_v76_r = float4(*(device const packed_float4 *)(b + (t_v76_a)));
-                    const float t_v76 = t_v76_r[0];
-                    const float t_v77 = t_v76_r[1];
-                    const float t_v78 = t_v76_r[2];
-                    const float t_v79 = t_v76_r[3];
-                    const float t_v80 = t_v28 * t_v76;
-                    acc7_4_v14 += t_v80;
-                    const float t_v81 = t_v33 * t_v77;
-                    acc7_4_v14 += t_v81;
-                    const float t_v82 = t_v38 * t_v78;
-                    acc7_4_v14 += t_v82;
-                    const float t_v83 = t_v43 * t_v79;
-                    acc7_4_v14 += t_v83;
+                    const uint t_v139_a = col_v68 * pc.b_nb0 + plane4_v6 * pc.b_nb1;
+                    const float4 t_v139_r = float4(*(device const packed_float4 *)(b + (t_v139_a)));
+                    const float t_v139 = t_v139_r[0];
+                    const float t_v140 = t_v139_r[1];
+                    const float t_v141 = t_v139_r[2];
+                    const float t_v142 = t_v139_r[3];
+                    const float t_v143 = q_v59 * t_v139;
+                    pq_v44 += t_v143;
+                    const float t_v144 = q_v60 * t_v140;
+                    pq_v44 += t_v144;
+                    const float t_v145 = q_v61 * t_v141;
+                    pq_v44 += t_v145;
+                    const float t_v146 = q_v62 * t_v142;
+                    pq_v44 += t_v146;
+                    const float t_v147 = q_v64 * t_v139;
+                    pq_v52 += t_v147;
+                    const float t_v148 = q_v65 * t_v140;
+                    pq_v52 += t_v148;
+                    const float t_v149 = q_v66 * t_v141;
+                    pq_v52 += t_v149;
+                    const float t_v150 = q_v67 * t_v142;
+                    pq_v52 += t_v150;
                 }
                 if (plane5_v7 < pc.n_plane) {
-                    const uint t_v84_a = col_v25 * pc.b_nb0 + plane5_v7 * pc.b_nb1;
-                    const float4 t_v84_r = float4(*(device const packed_float4 *)(b + (t_v84_a)));
-                    const float t_v84 = t_v84_r[0];
-                    const float t_v85 = t_v84_r[1];
-                    const float t_v86 = t_v84_r[2];
-                    const float t_v87 = t_v84_r[3];
-                    const float t_v88 = t_v28 * t_v84;
-                    acc7_5_v15 += t_v88;
-                    const float t_v89 = t_v33 * t_v85;
-                    acc7_5_v15 += t_v89;
-                    const float t_v90 = t_v38 * t_v86;
-                    acc7_5_v15 += t_v90;
-                    const float t_v91 = t_v43 * t_v87;
-                    acc7_5_v15 += t_v91;
+                    const uint t_v151_a = col_v68 * pc.b_nb0 + plane5_v7 * pc.b_nb1;
+                    const float4 t_v151_r = float4(*(device const packed_float4 *)(b + (t_v151_a)));
+                    const float t_v151 = t_v151_r[0];
+                    const float t_v152 = t_v151_r[1];
+                    const float t_v153 = t_v151_r[2];
+                    const float t_v154 = t_v151_r[3];
+                    const float t_v155 = q_v59 * t_v151;
+                    pq_v45 += t_v155;
+                    const float t_v156 = q_v60 * t_v152;
+                    pq_v45 += t_v156;
+                    const float t_v157 = q_v61 * t_v153;
+                    pq_v45 += t_v157;
+                    const float t_v158 = q_v62 * t_v154;
+                    pq_v45 += t_v158;
+                    const float t_v159 = q_v64 * t_v151;
+                    pq_v53 += t_v159;
+                    const float t_v160 = q_v65 * t_v152;
+                    pq_v53 += t_v160;
+                    const float t_v161 = q_v66 * t_v153;
+                    pq_v53 += t_v161;
+                    const float t_v162 = q_v67 * t_v154;
+                    pq_v53 += t_v162;
                 }
                 if (plane6_v8 < pc.n_plane) {
-                    const uint t_v92_a = col_v25 * pc.b_nb0 + plane6_v8 * pc.b_nb1;
-                    const float4 t_v92_r = float4(*(device const packed_float4 *)(b + (t_v92_a)));
-                    const float t_v92 = t_v92_r[0];
-                    const float t_v93 = t_v92_r[1];
-                    const float t_v94 = t_v92_r[2];
-                    const float t_v95 = t_v92_r[3];
-                    const float t_v96 = t_v28 * t_v92;
-                    acc7_6_v16 += t_v96;
-                    const float t_v97 = t_v33 * t_v93;
-                    acc7_6_v16 += t_v97;
-                    const float t_v98 = t_v38 * t_v94;
-                    acc7_6_v16 += t_v98;
-                    const float t_v99 = t_v43 * t_v95;
-                    acc7_6_v16 += t_v99;
+                    const uint t_v163_a = col_v68 * pc.b_nb0 + plane6_v8 * pc.b_nb1;
+                    const float4 t_v163_r = float4(*(device const packed_float4 *)(b + (t_v163_a)));
+                    const float t_v163 = t_v163_r[0];
+                    const float t_v164 = t_v163_r[1];
+                    const float t_v165 = t_v163_r[2];
+                    const float t_v166 = t_v163_r[3];
+                    const float t_v167 = q_v59 * t_v163;
+                    pq_v46 += t_v167;
+                    const float t_v168 = q_v60 * t_v164;
+                    pq_v46 += t_v168;
+                    const float t_v169 = q_v61 * t_v165;
+                    pq_v46 += t_v169;
+                    const float t_v170 = q_v62 * t_v166;
+                    pq_v46 += t_v170;
+                    const float t_v171 = q_v64 * t_v163;
+                    pq_v54 += t_v171;
+                    const float t_v172 = q_v65 * t_v164;
+                    pq_v54 += t_v172;
+                    const float t_v173 = q_v66 * t_v165;
+                    pq_v54 += t_v173;
+                    const float t_v174 = q_v67 * t_v166;
+                    pq_v54 += t_v174;
                 }
                 if (plane7_v9 < pc.n_plane) {
-                    const uint t_v100_a = col_v25 * pc.b_nb0 + plane7_v9 * pc.b_nb1;
-                    const float4 t_v100_r = float4(*(device const packed_float4 *)(b + (t_v100_a)));
-                    const float t_v100 = t_v100_r[0];
-                    const float t_v101 = t_v100_r[1];
-                    const float t_v102 = t_v100_r[2];
-                    const float t_v103 = t_v100_r[3];
-                    const float t_v104 = t_v28 * t_v100;
-                    acc7_7_v17 += t_v104;
-                    const float t_v105 = t_v33 * t_v101;
-                    acc7_7_v17 += t_v105;
-                    const float t_v106 = t_v38 * t_v102;
-                    acc7_7_v17 += t_v106;
-                    const float t_v107 = t_v43 * t_v103;
-                    acc7_7_v17 += t_v107;
+                    const uint t_v175_a = col_v68 * pc.b_nb0 + plane7_v9 * pc.b_nb1;
+                    const float4 t_v175_r = float4(*(device const packed_float4 *)(b + (t_v175_a)));
+                    const float t_v175 = t_v175_r[0];
+                    const float t_v176 = t_v175_r[1];
+                    const float t_v177 = t_v175_r[2];
+                    const float t_v178 = t_v175_r[3];
+                    const float t_v179 = q_v59 * t_v175;
+                    pq_v47 += t_v179;
+                    const float t_v180 = q_v60 * t_v176;
+                    pq_v47 += t_v180;
+                    const float t_v181 = q_v61 * t_v177;
+                    pq_v47 += t_v181;
+                    const float t_v182 = q_v62 * t_v178;
+                    pq_v47 += t_v182;
+                    const float t_v183 = q_v64 * t_v175;
+                    pq_v55 += t_v183;
+                    const float t_v184 = q_v65 * t_v176;
+                    pq_v55 += t_v184;
+                    const float t_v185 = q_v66 * t_v177;
+                    pq_v55 += t_v185;
+                    const float t_v186 = q_v67 * t_v178;
+                    pq_v55 += t_v186;
                 }
             }
+            const float t_v187 = scale_v36 * pq_v40;
+            acc7_v16 += t_v187;
+            const float t_v188 = scale_v36 * pq_v41;
+            acc7_0_1_v17 += t_v188;
+            const float t_v189 = scale_v36 * pq_v42;
+            acc7_0_2_v18 += t_v189;
+            const float t_v190 = scale_v36 * pq_v43;
+            acc7_0_3_v19 += t_v190;
+            const float t_v191 = scale_v36 * pq_v44;
+            acc7_0_4_v20 += t_v191;
+            const float t_v192 = scale_v36 * pq_v45;
+            acc7_0_5_v21 += t_v192;
+            const float t_v193 = scale_v36 * pq_v46;
+            acc7_0_6_v22 += t_v193;
+            const float t_v194 = scale_v36 * pq_v47;
+            acc7_0_7_v23 += t_v194;
+            const float t_v195 = scale_v39 * pq_v48;
+            acc7_1_0_v24 += t_v195;
+            const float t_v196 = scale_v39 * pq_v49;
+            acc7_1_1_v25 += t_v196;
+            const float t_v197 = scale_v39 * pq_v50;
+            acc7_1_2_v26 += t_v197;
+            const float t_v198 = scale_v39 * pq_v51;
+            acc7_1_3_v27 += t_v198;
+            const float t_v199 = scale_v39 * pq_v52;
+            acc7_1_4_v28 += t_v199;
+            const float t_v200 = scale_v39 * pq_v53;
+            acc7_1_5_v29 += t_v200;
+            const float t_v201 = scale_v39 * pq_v54;
+            acc7_1_6_v30 += t_v201;
+            const float t_v202 = scale_v39 * pq_v55;
+            acc7_1_7_v31 += t_v202;
         }
     } else {
-        const uint seg_start_v108 = lane_v2 * 4u;
-        for (uint col_seg_v109 = seg_start_v108; col_seg_v109 < pc.n_col; col_seg_v109 += 128u) {
-            const uint blk_v110 = col_seg_v109 / 32u;
-            const uint inb0_v111 = col_seg_v109 % 32u;
-            const float scale_v112 = float(*(device const half *)(a + (blk_v110 * pc.a_nb0 + row_v0 * pc.a_nb1)));
-            const uint base_v143 = blk_v110 * pc.a_nb0 + row_v0 * pc.a_nb1;
-            for (uint col_e_v113 = 0u; col_e_v113 < 4u; ++col_e_v113) {
-                const uint col_v114 = col_seg_v109 + col_e_v113;
-                const uint inb_v115 = inb0_v111 + col_e_v113;
-                const float q_v116 = float(*(device const char *)(a + (inb_v115 + base_v143 + 2u)));
-                const float t_v117 = scale_v112 * q_v116;
-                const float t_v118 = *(device const float *)(b + (col_v114 * pc.b_nb0 + plane_v1 * pc.b_nb1));
-                const float t_v119 = t_v117 * t_v118;
-                acc7_v10 += t_v119;
+        const uint seg_start_v203 = lane_v2 * 16u;
+        for (uint col_seg_v204 = seg_start_v203; col_seg_v204 < pc.n_col; col_seg_v204 += 512u) {
+            const uint blk_v205 = col_seg_v204 / 32u;
+            const uint inb0_v206 = col_seg_v204 % 32u;
+            const float scale_v207 = float(*(device const half *)(a + (blk_v205 * pc.a_nb0 + row_rd_v13 * pc.a_nb1)));
+            const float scale_v210 = float(*(device const half *)(a + (blk_v205 * pc.a_nb0 + row_rd_v15 * pc.a_nb1)));
+            float pq_v211 = 0.0f;
+            float pq_v212 = 0.0f;
+            float pq_v213 = 0.0f;
+            float pq_v214 = 0.0f;
+            float pq_v215 = 0.0f;
+            float pq_v216 = 0.0f;
+            float pq_v217 = 0.0f;
+            float pq_v218 = 0.0f;
+            float pq_v219 = 0.0f;
+            float pq_v220 = 0.0f;
+            float pq_v221 = 0.0f;
+            float pq_v222 = 0.0f;
+            float pq_v223 = 0.0f;
+            float pq_v224 = 0.0f;
+            float pq_v225 = 0.0f;
+            float pq_v226 = 0.0f;
+            const uint base_v293 = blk_v205 * pc.a_nb0 + row_rd_v13 * pc.a_nb1;
+            const uint base_v294 = blk_v205 * pc.a_nb0 + row_rd_v15 * pc.a_nb1;
+            for (uint col_g_v227 = 0u; col_g_v227 < 16u; ++col_g_v227) {
+                const uint col_v228 = col_seg_v204 + col_g_v227;
+                const uint inb_v229 = inb0_v206 + col_g_v227;
+                const float q_v230 = float(*(device const char *)(a + (inb_v229 + base_v293 + 2u)));
+                const float q_v233 = float(*(device const char *)(a + (inb_v229 + base_v294 + 2u)));
+                const float t_v235 = *(device const float *)(b + (col_v228 * pc.b_nb0 + plane_v1 * pc.b_nb1));
+                const float t_v236 = q_v230 * t_v235;
+                pq_v211 += t_v236;
+                const float t_v237 = q_v233 * t_v235;
+                pq_v219 += t_v237;
                 if (plane1_v3 < pc.n_plane) {
-                    const float t_v120 = *(device const float *)(b + (col_v114 * pc.b_nb0 + plane1_v3 * pc.b_nb1));
-                    const float t_v121 = t_v117 * t_v120;
-                    acc7_1_v11 += t_v121;
+                    const float t_v238 = *(device const float *)(b + (col_v228 * pc.b_nb0 + plane1_v3 * pc.b_nb1));
+                    const float t_v239 = q_v230 * t_v238;
+                    pq_v212 += t_v239;
+                    const float t_v240 = q_v233 * t_v238;
+                    pq_v220 += t_v240;
                 }
                 if (plane2_v4 < pc.n_plane) {
-                    const float t_v122 = *(device const float *)(b + (col_v114 * pc.b_nb0 + plane2_v4 * pc.b_nb1));
-                    const float t_v123 = t_v117 * t_v122;
-                    acc7_2_v12 += t_v123;
+                    const float t_v241 = *(device const float *)(b + (col_v228 * pc.b_nb0 + plane2_v4 * pc.b_nb1));
+                    const float t_v242 = q_v230 * t_v241;
+                    pq_v213 += t_v242;
+                    const float t_v243 = q_v233 * t_v241;
+                    pq_v221 += t_v243;
                 }
                 if (plane3_v5 < pc.n_plane) {
-                    const float t_v124 = *(device const float *)(b + (col_v114 * pc.b_nb0 + plane3_v5 * pc.b_nb1));
-                    const float t_v125 = t_v117 * t_v124;
-                    acc7_3_v13 += t_v125;
+                    const float t_v244 = *(device const float *)(b + (col_v228 * pc.b_nb0 + plane3_v5 * pc.b_nb1));
+                    const float t_v245 = q_v230 * t_v244;
+                    pq_v214 += t_v245;
+                    const float t_v246 = q_v233 * t_v244;
+                    pq_v222 += t_v246;
                 }
                 if (plane4_v6 < pc.n_plane) {
-                    const float t_v126 = *(device const float *)(b + (col_v114 * pc.b_nb0 + plane4_v6 * pc.b_nb1));
-                    const float t_v127 = t_v117 * t_v126;
-                    acc7_4_v14 += t_v127;
+                    const float t_v247 = *(device const float *)(b + (col_v228 * pc.b_nb0 + plane4_v6 * pc.b_nb1));
+                    const float t_v248 = q_v230 * t_v247;
+                    pq_v215 += t_v248;
+                    const float t_v249 = q_v233 * t_v247;
+                    pq_v223 += t_v249;
                 }
                 if (plane5_v7 < pc.n_plane) {
-                    const float t_v128 = *(device const float *)(b + (col_v114 * pc.b_nb0 + plane5_v7 * pc.b_nb1));
-                    const float t_v129 = t_v117 * t_v128;
-                    acc7_5_v15 += t_v129;
+                    const float t_v250 = *(device const float *)(b + (col_v228 * pc.b_nb0 + plane5_v7 * pc.b_nb1));
+                    const float t_v251 = q_v230 * t_v250;
+                    pq_v216 += t_v251;
+                    const float t_v252 = q_v233 * t_v250;
+                    pq_v224 += t_v252;
                 }
                 if (plane6_v8 < pc.n_plane) {
-                    const float t_v130 = *(device const float *)(b + (col_v114 * pc.b_nb0 + plane6_v8 * pc.b_nb1));
-                    const float t_v131 = t_v117 * t_v130;
-                    acc7_6_v16 += t_v131;
+                    const float t_v253 = *(device const float *)(b + (col_v228 * pc.b_nb0 + plane6_v8 * pc.b_nb1));
+                    const float t_v254 = q_v230 * t_v253;
+                    pq_v217 += t_v254;
+                    const float t_v255 = q_v233 * t_v253;
+                    pq_v225 += t_v255;
                 }
                 if (plane7_v9 < pc.n_plane) {
-                    const float t_v132 = *(device const float *)(b + (col_v114 * pc.b_nb0 + plane7_v9 * pc.b_nb1));
-                    const float t_v133 = t_v117 * t_v132;
-                    acc7_7_v17 += t_v133;
+                    const float t_v256 = *(device const float *)(b + (col_v228 * pc.b_nb0 + plane7_v9 * pc.b_nb1));
+                    const float t_v257 = q_v230 * t_v256;
+                    pq_v218 += t_v257;
+                    const float t_v258 = q_v233 * t_v256;
+                    pq_v226 += t_v258;
                 }
             }
+            const float t_v259 = scale_v207 * pq_v211;
+            acc7_v16 += t_v259;
+            const float t_v260 = scale_v207 * pq_v212;
+            acc7_0_1_v17 += t_v260;
+            const float t_v261 = scale_v207 * pq_v213;
+            acc7_0_2_v18 += t_v261;
+            const float t_v262 = scale_v207 * pq_v214;
+            acc7_0_3_v19 += t_v262;
+            const float t_v263 = scale_v207 * pq_v215;
+            acc7_0_4_v20 += t_v263;
+            const float t_v264 = scale_v207 * pq_v216;
+            acc7_0_5_v21 += t_v264;
+            const float t_v265 = scale_v207 * pq_v217;
+            acc7_0_6_v22 += t_v265;
+            const float t_v266 = scale_v207 * pq_v218;
+            acc7_0_7_v23 += t_v266;
+            const float t_v267 = scale_v210 * pq_v219;
+            acc7_1_0_v24 += t_v267;
+            const float t_v268 = scale_v210 * pq_v220;
+            acc7_1_1_v25 += t_v268;
+            const float t_v269 = scale_v210 * pq_v221;
+            acc7_1_2_v26 += t_v269;
+            const float t_v270 = scale_v210 * pq_v222;
+            acc7_1_3_v27 += t_v270;
+            const float t_v271 = scale_v210 * pq_v223;
+            acc7_1_4_v28 += t_v271;
+            const float t_v272 = scale_v210 * pq_v224;
+            acc7_1_5_v29 += t_v272;
+            const float t_v273 = scale_v210 * pq_v225;
+            acc7_1_6_v30 += t_v273;
+            const float t_v274 = scale_v210 * pq_v226;
+            acc7_1_7_v31 += t_v274;
         }
     }
-    const float red7_v134 = simd_sum(acc7_v10);
-    const float red7_v135 = simd_sum(acc7_1_v11);
-    const float red7_v136 = simd_sum(acc7_2_v12);
-    const float red7_v137 = simd_sum(acc7_3_v13);
-    const float red7_v138 = simd_sum(acc7_4_v14);
-    const float red7_v139 = simd_sum(acc7_5_v15);
-    const float red7_v140 = simd_sum(acc7_6_v16);
-    const float red7_v141 = simd_sum(acc7_7_v17);
+    const float red7_v275 = simd_sum(acc7_v16);
+    const float red7_v276 = simd_sum(acc7_0_1_v17);
+    const float red7_v277 = simd_sum(acc7_0_2_v18);
+    const float red7_v278 = simd_sum(acc7_0_3_v19);
+    const float red7_v279 = simd_sum(acc7_0_4_v20);
+    const float red7_v280 = simd_sum(acc7_0_5_v21);
+    const float red7_v281 = simd_sum(acc7_0_6_v22);
+    const float red7_v282 = simd_sum(acc7_0_7_v23);
+    const float red7_v283 = simd_sum(acc7_1_0_v24);
+    const float red7_v284 = simd_sum(acc7_1_1_v25);
+    const float red7_v285 = simd_sum(acc7_1_2_v26);
+    const float red7_v286 = simd_sum(acc7_1_3_v27);
+    const float red7_v287 = simd_sum(acc7_1_4_v28);
+    const float red7_v288 = simd_sum(acc7_1_5_v29);
+    const float red7_v289 = simd_sum(acc7_1_6_v30);
+    const float red7_v290 = simd_sum(acc7_1_7_v31);
     if (lane_v2 == 0u) {
-        *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane_v1 * pc.dst_nb1)) = red7_v134;
-        if (plane1_v3 < pc.n_plane) {
-            *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane1_v3 * pc.dst_nb1)) = red7_v135;
+        if (row_first_v12 < pc.n_row) {
+            *(device float *)(dst + (row_first_v12 * pc.dst_nb0 + plane_v1 * pc.dst_nb1)) = red7_v275;
         }
-        if (plane2_v4 < pc.n_plane) {
-            *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane2_v4 * pc.dst_nb1)) = red7_v136;
+        if (row_first_v12 < pc.n_row && plane1_v3 < pc.n_plane) {
+            *(device float *)(dst + (row_first_v12 * pc.dst_nb0 + plane1_v3 * pc.dst_nb1)) = red7_v276;
         }
-        if (plane3_v5 < pc.n_plane) {
-            *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane3_v5 * pc.dst_nb1)) = red7_v137;
+        if (row_first_v12 < pc.n_row && plane2_v4 < pc.n_plane) {
+            *(device float *)(dst + (row_first_v12 * pc.dst_nb0 + plane2_v4 * pc.dst_nb1)) = red7_v277;
         }
-        if (plane4_v6 < pc.n_plane) {
-            *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane4_v6 * pc.dst_nb1)) = red7_v138;
+        if (row_first_v12 < pc.n_row && plane3_v5 < pc.n_plane) {
+            *(device float *)(dst + (row_first_v12 * pc.dst_nb0 + plane3_v5 * pc.dst_nb1)) = red7_v278;
         }
-        if (plane5_v7 < pc.n_plane) {
-            *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane5_v7 * pc.dst_nb1)) = red7_v139;
+        if (row_first_v12 < pc.n_row && plane4_v6 < pc.n_plane) {
+            *(device float *)(dst + (row_first_v12 * pc.dst_nb0 + plane4_v6 * pc.dst_nb1)) = red7_v279;
         }
-        if (plane6_v8 < pc.n_plane) {
-            *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane6_v8 * pc.dst_nb1)) = red7_v140;
+        if (row_first_v12 < pc.n_row && plane5_v7 < pc.n_plane) {
+            *(device float *)(dst + (row_first_v12 * pc.dst_nb0 + plane5_v7 * pc.dst_nb1)) = red7_v280;
         }
-        if (plane7_v9 < pc.n_plane) {
-            *(device float *)(dst + (row_v0 * pc.dst_nb0 + plane7_v9 * pc.dst_nb1)) = red7_v141;
+        if (row_first_v12 < pc.n_row && plane6_v8 < pc.n_plane) {
+            *(device float *)(dst + (row_first_v12 * pc.dst_nb0 + plane6_v8 * pc.dst_nb1)) = red7_v281;
+        }
+        if (row_first_v12 < pc.n_row && plane7_v9 < pc.n_plane) {
+            *(device float *)(dst + (row_first_v12 * pc.dst_nb0 + plane7_v9 * pc.dst_nb1)) = red7_v282;
+        }
+        if (row1_v14 < pc.n_row) {
+            *(device float *)(dst + (row1_v14 * pc.dst_nb0 + plane_v1 * pc.dst_nb1)) = red7_v283;
+        }
+        if (row1_v14 < pc.n_row && plane1_v3 < pc.n_plane) {
+            *(device float *)(dst + (row1_v14 * pc.dst_nb0 + plane1_v3 * pc.dst_nb1)) = red7_v284;
+        }
+        if (row1_v14 < pc.n_row && plane2_v4 < pc.n_plane) {
+            *(device float *)(dst + (row1_v14 * pc.dst_nb0 + plane2_v4 * pc.dst_nb1)) = red7_v285;
+        }
+        if (row1_v14 < pc.n_row && plane3_v5 < pc.n_plane) {
+            *(device float *)(dst + (row1_v14 * pc.dst_nb0 + plane3_v5 * pc.dst_nb1)) = red7_v286;
+        }
+        if (row1_v14 < pc.n_row && plane4_v6 < pc.n_plane) {
+            *(device float *)(dst + (row1_v14 * pc.dst_nb0 + plane4_v6 * pc.dst_nb1)) = red7_v287;
+        }
+        if (row1_v14 < pc.n_row && plane5_v7 < pc.n_plane) {
+            *(device float *)(dst + (row1_v14 * pc.dst_nb0 + plane5_v7 * pc.dst_nb1)) = red7_v288;
+        }
+        if (row1_v14 < pc.n_row && plane6_v8 < pc.n_plane) {
+            *(device float *)(dst + (row1_v14 * pc.dst_nb0 + plane6_v8 * pc.dst_nb1)) = red7_v289;
+        }
+        if (row1_v14 < pc.n_row && plane7_v9 < pc.n_plane) {
+            *(device float *)(dst + (row1_v14 * pc.dst_nb0 + plane7_v9 * pc.dst_nb1)) = red7_v290;
         }
     }
 }
