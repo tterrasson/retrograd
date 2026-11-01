@@ -1864,6 +1864,7 @@ dependencies = [
  "retrograd-config",
  "retrograd-core",
  "retrograd-dataset",
+ "retrograd-decision",
  "retrograd-engine",
  "retrograd-ffi",
  "retrograd-infer",
@@ -2019,10 +2020,13 @@ dependencies = [
 name = "retrograd-engine"
 version = "0.1.0"
 dependencies = [
+ "indexmap",
  "retrograd-checkpoint",
  "retrograd-core",
  "retrograd-dataset",
+ "retrograd-decision",
  "retrograd-ffi",
+ "serde",
  "serde_json",
  "thiserror",
  "tracing",

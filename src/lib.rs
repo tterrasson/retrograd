@@ -1,6 +1,7 @@
 pub use retrograd_checkpoint as checkpoint;
 pub use retrograd_config as config;
 pub use retrograd_dataset as dataset;
+pub use retrograd_decision as decision;
 pub use retrograd_engine as trainer;
 pub use retrograd_memory as memory;
 pub use retrograd_metrics as metrics;
