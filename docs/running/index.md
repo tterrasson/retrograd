@@ -108,6 +108,10 @@ file resolve against the working directory.
 | `admission` | `continuous` | `continuous` refills a freed slot at the next step. `lockstep` admits requests in waves, for evaluation and tests that need a fixed order. |
 | `idle_seconds` | `300` | Seconds without a request before the model is unloaded. The next request loads it again. |
 | `responses_store_dir` | none | Directory of the [on-disk Responses store](./api#stored-responses). Without it, stored responses stay in memory. |
+| `[decision]` | none | Replaces the head settings of a [decision model](./api#decisions). Refused at load for a model that is not one. |
+| `decision.template` | the model's | A `systemone` Jinja template rendered in place of the model's. It takes the same context and must keep one marker per option. |
+| `decision.max_head_tokens` | the model's | Tokens of the question and its options kept by the truncation, for a model that reads its options at markers. |
+| `decision.pack` | `1` | Questions evaluated together in one forward pass, at most `n_seq_max`. More is faster; the answer to a question then depends on the other questions of its request and drifts from llama-server's (by up to 1e-1 on a sensitive model). |
 
 `--host`, `--port` and `--api-key` override the file:
 

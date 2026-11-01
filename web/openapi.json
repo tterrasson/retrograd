@@ -7771,6 +7771,41 @@
         },
         "summary": "One group with every text; `-` is the group of a PPO update"
       }
+    },
+    "/v1/systemone": {
+      "post": {
+        "operationId": "post_systemone",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem document (RFC 9457)"
+          }
+        },
+        "summary": "Typed decisions of a decision model (llama-server's contract): answers to choice, score and noul questions, from the weights on disk",
+        "tags": [
+          "openai"
+        ]
+      }
     }
   }
 }

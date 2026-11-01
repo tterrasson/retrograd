@@ -117,6 +117,19 @@ retrograd inspect --model MODEL.gguf [--device D]
 Prints the model's architecture, tensor types, suggested LoRA targets and the
 device that will be used.
 
+## `decide`
+
+```text
+retrograd decide --model MODEL.gguf --request REQUEST.json|- [--adapter A.gguf]
+                 [--device D] [--template SYSTEMONE.jinja]
+                 [--max-head-tokens N] [--pack N]
+```
+
+Answers one `/v1/systemone` body with a decision model, without a server, and
+prints the answer document (`-` reads the body from stdin). The options are
+those of the [`[decision]` section](../running/#configuration-of-retrograd-infer).
+`retrograd chat` on a decision model points here.
+
 ## `preflight`
 
 ```text

@@ -119,8 +119,9 @@ regresses silently.
   `reward_batch` and `retrograd-training`'s `value_head`.
 
 - The serving stack, on a fake backend: `retrograd-infer`'s scheduler, prefix
-  cache and adapter tests, `retrograd-openai`'s `wire`, `responses` and
-  `responses_stateful` contract tests, and `retrograd-serve`'s `dep_boundary`,
+  cache and adapter tests, `retrograd-openai`'s `wire`, `responses`,
+  `responses_stateful` and `systemone` contract tests (the last one on a fake
+  decision model), and `retrograd-serve`'s `dep_boundary`,
   which checks that the standalone binary carries no training crate.
 
 - The root package's `tests/profile_cli.rs`: the `profile` binary's argument
@@ -340,7 +341,9 @@ build's ggml options (no BLAS, no Accelerate), which is what makes them
 reachable exactly. Built with Metal, the same binary also replays the Metal
 recording. `RETRO_DECISION_JULIA` and `RETRO_DECISION_LAYA` add the two real
 models, opt-in: exact on both backends at one question per pass, packed passes
-printed rather than asserted.
+printed rather than asserted. The same recordings are replayed through the
+serving session that answers `/v1/systemone`, with the production loader: the
+served answers and token counts must be the recorded ones, exactly.
 
 `e2e_cpu.rs` is the server's one model-dependent test, and it is here because a
 fake engine cannot answer whether the pieces *join*: it plans with

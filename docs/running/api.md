@@ -15,6 +15,7 @@ ignored.
 | `GET /v1/responses/{id}/input_items` | Its input items, paginated with `limit`, `order`, `before` and `after`. |
 | `POST /v1/completions` | Raw-prompt completions, without a chat template. |
 | `POST /v1/embeddings` | Pooled embeddings. |
+| `POST /v1/systemone` | [Typed decisions](#decisions) of a decision model, with llama-server's contract. |
 | `GET /v1/engine/stats` | The [scheduler's statistics](./#statistics). Not part of the OpenAI contract. |
 
 ## Chat Completions
@@ -155,6 +156,59 @@ lists. Embeddings are computed from the weights on disk, so a model id that
 names a run in progress is refused unless it has a suffix such as `@final`. A
 causal chat model that declares no pooling is refused.
 
+## Decisions
+
+`POST /v1/systemone` serves a decision model: a GGUF whose metadata declares
+`<arch>.decision.type`. It answers typed questions in one forward pass each
+and generates nothing. The body and the answer are llama-server's, so a client
+of its decision server works unchanged:
+
+```json
+{
+  "model": "base",
+  "state": {"message": "I was charged twice", "plan": "pro"},
+  "questions": {
+    "intent": {"type": "choice", "instructions": "What does the customer want?",
+               "criteria": {"refund": "wants money back", "other": "anything else"}},
+    "urgent": {"type": "noul", "instructions": "Does this need a human within the hour?"},
+    "frustration": {"type": "score", "instructions": "How frustrated?",
+                    "criteria": ["calm", "annoyed", "angry"]}
+  }
+}
+```
+
+```json
+{
+  "model": "base",
+  "answers": {
+    "intent": {"type": "choice", "choice": "refund", "probabilities": {"refund": 0.93, "other": 0.07}, "confidence": 0.62},
+    "urgent": {"type": "noul", "noul": 0.21},
+    "frustration": {"type": "score", "score": 0.8, "legend": {"0": "calm", "1": "annoyed", "2": "angry"},
+                    "probabilities": {"0": 0.38, "1": 0.44, "2": 0.18}, "confidence": 0.05}
+  },
+  "usage": {"input_tokens": 241, "output_tokens": 0}
+}
+```
+
+- The answers keep the order of the questions, and the `state` is read with
+  the order of its keys: it is part of the prompt.
+- `model` picks the base or one of its adapters, as on the other routes. It may
+  be omitted when the server serves one id, as llama-server reads no `model`.
+- The prompt is the model's `systemone` template. The model's
+  `max_head_tokens` and temperatures apply. `retrograd-infer` can replace the
+  template and the budget in its [`[decision]` section](./#configuration-of-retrograd-infer).
+- One question per forward pass by default: the answers then match
+  llama-server's on the same backend and build. Packing several questions in a
+  pass (`pack`) is faster, and makes each answer depend on the other questions
+  of its request.
+- Images are refused with a 501: the engine has no multimodal projector.
+- A decision model refuses `/v1/chat/completions`, `/v1/completions`,
+  `/v1/responses` and `/v1/embeddings` with a 501. A model that is not a
+  decision model refuses `/v1/systemone` the same way.
+
+`retrograd decide --model decision.gguf --request request.json` answers one
+body from the command line, without a server.
+
 ## Clients
 
 Anything that speaks this API can connect: the `openai` SDKs, lm-eval's
@@ -168,7 +222,7 @@ can be any string.
 {
   "object": "list",
   "data": [{"id": "base", "object": "model", "created": 1793421020, "owned_by": "retrograd"}],
-  "capabilities": {"completions": true, "embeddings": true, "responses_store": true}
+  "capabilities": {"completions": true, "embeddings": true, "responses_store": true, "systemone": true}
 }
 ```
 
@@ -191,6 +245,7 @@ These routes answer with the OpenAI error envelope, which the SDKs read:
 | 400 | A field is invalid or not served. `param` names it. |
 | 401 | The bearer token is missing or wrong. |
 | 404 | Unknown model, or unknown or evicted response. |
+| 501 | `not_supported_error`: the model cannot answer this route at all - a decision asked of a model that is not a decision model, images sent to a decision model, a decision model asked to generate. |
 | 503 | The queue is full or the device is held by a run. `Retry-After` says when to try again. |
 
 The other routes of `retrograd-server` use

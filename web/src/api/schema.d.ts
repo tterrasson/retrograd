@@ -725,6 +725,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/v1/systemone': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Typed decisions of a decision model (llama-server's contract): answers to choice, score and noul questions, from the weights on disk */
+    post: operations['post_systemone']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
 }
 export type webhooks = Record<string, never>
 export interface components {
@@ -4863,6 +4880,37 @@ export interface operations {
         content: {
           'application/json': components['schemas']['GroupDetail']
         }
+      }
+      /** @description a problem document (RFC 9457) */
+      default: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['Problem']
+        }
+      }
+    }
+  }
+  post_systemone: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': string
+      }
+    }
+    responses: {
+      /** @description ok */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
       }
       /** @description a problem document (RFC 9457) */
       default: {
