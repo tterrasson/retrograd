@@ -8,7 +8,7 @@ use crate::schedule::{
 };
 
 /// The measurement session that justified the current rows.
-const EVIDENCE: &str = "amidala-20261031T200650Z";
+const EVIDENCE: &str = "benchmark-20261031T200650Z";
 
 /// The GEMV's default geometry per backend: two rows per subgroup, two
 /// subgroups where the hardware fixes the subgroup width, segments of
@@ -55,17 +55,35 @@ pub fn space() -> Space {
 /// of the sweep's grid (up to 3.2x at K=14336, N=8, M=4096) and loses nowhere
 /// beyond the noise; raising the subgroup count to four on top measured
 /// nothing (881 against 905 µs at K=14336, N=8).
+///
+/// The `n1` pick is the single-token bucket: the default geometry claiming
+/// `plane == 1` at a priority between the fallback and `cols4`. Its name is
+/// the claim, not a geometry fragment, so the pick carries it explicitly. It
+/// exists to hold a per-variant policy - measured on Metal, where the
+/// single-token q8_0 step measured 0.68-0.73 of the native kernel - and is
+/// only scheduled there for that reason.
 pub fn picks(gpu: GpuBackend) -> Vec<Pick> {
     let space = space();
     let defaults = (space.defaults)(gpu);
     let decode_max = Regime::DECODE_MAX_TOKENS;
     let steps = |min: u32, max: u32| Claim::any().on("plane", min..=max);
-    vec![
+    let mut picks = Vec::new();
+    if gpu == GpuBackend::Metal {
+        picks.push(Pick {
+            geometry: defaults,
+            claim: steps(1, 1),
+            priority: 85,
+            evidence: "benchmark-20261031T160408Z",
+            name: Some("n1"),
+        });
+    }
+    picks.extend([
         Pick {
             geometry: defaults.map_lanes(|l| l.lane_tile = 4),
             claim: steps(2, decode_max),
             priority: 90,
             evidence: EVIDENCE,
+            name: None,
         },
         Pick {
             geometry: defaults.map_lanes(|l| {
@@ -77,8 +95,10 @@ pub fn picks(gpu: GpuBackend) -> Vec<Pick> {
             claim: steps(5, decode_max),
             priority: 95,
             evidence: EVIDENCE,
+            name: None,
         },
-    ]
+    ]);
+    picks
 }
 
 /// The production matrix picks on `gpu`: empty outside the matrix targets.
@@ -95,6 +115,7 @@ pub fn matrix_picks(gpu: GpuBackend) -> Vec<Pick> {
         claim: Claim::any().on("plane", 32..=decode_max),
         priority: 100,
         evidence: EVIDENCE,
+        name: None,
     }]
 }
 
@@ -162,13 +183,14 @@ mod tests {
         }
     }
 
-    /// The names the shipped artifacts carry are the derived ones: the
-    /// fallback is unnamed, the column tiles are `cols4` and
-    /// `cols8_rt4_seg4_nofs` - the same name on every GPU backend, since the
-    /// pick leaves the subgroup count at each backend's default - and the
-    /// matrix tile `mma` on every backend the family schedules.
+    /// The names the shipped artifacts carry: the fallback is unnamed, the
+    /// column tiles are `cols4` and `cols8_rt4_seg4_nofs` - the same name on
+    /// every GPU backend, since the pick leaves the subgroup count at each
+    /// backend's default - the matrix tile `mma` on every backend the family
+    /// schedules, and the single-token bucket `n1` on Metal only, where it is
+    /// named after its claim rather than derived from a geometry.
     #[test]
-    fn the_gemv_picks_derive_the_names_the_artifacts_carry() {
+    fn the_gemv_picks_carry_the_names_the_artifacts_carry() {
         for gpu in [GpuBackend::Vulkan, GpuBackend::Metal] {
             let space = space();
             let defaults = (space.defaults)(gpu);
@@ -177,15 +199,10 @@ mod tests {
                 .picks(gpu)
                 .iter()
                 .chain(space.matrix_picks(gpu).iter())
-                .map(|p| {
-                    p.geometry
-                        .variant_name(defaults)
-                        .map(|n| n.to_string())
-                        .unwrap_or_default()
-                })
+                .map(|p| space.pick(gpu, p).variant().unwrap_or("").to_string())
                 .collect();
-            if matrix_targets_for(Family::MulMatVec).any(|g| g == gpu) {
-                assert_eq!(names, ["cols4", "cols8_rt4_seg4_nofs", "mma"]);
+            if gpu == GpuBackend::Metal {
+                assert_eq!(names, ["n1", "cols4", "cols8_rt4_seg4_nofs", "mma"]);
             } else {
                 assert_eq!(names, ["cols4", "cols8_rt4_seg4_nofs"]);
             }

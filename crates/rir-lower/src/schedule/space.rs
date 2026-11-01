@@ -43,6 +43,10 @@ pub struct Pick {
     /// Identifier of the measurement session that justifies the row. Published
     /// nowhere: it is the evidence a reader asks for, not part of any artifact.
     pub evidence: &'static str,
+    /// An explicit variant name, for a pick named after what it arbitrates
+    /// rather than after its geometry (a policy bucket like `n1`). `None`
+    /// derives the name from the geometry against the defaults.
+    pub name: Option<&'static str>,
 }
 
 impl Space {
@@ -51,15 +55,19 @@ impl Space {
         (self.defaults)(gpu).schedule(gpu).unnamed()
     }
 
-    /// A pick as a table row on `gpu`: the geometry scheduled, named by
+    /// A pick as a table row on `gpu`: the geometry scheduled, named by the
+    /// pick's own `name` when it carries one, else by
     /// [`Geometry::variant_name`] against the defaults, claiming its rule at
     /// its priority.
     pub fn pick(&self, gpu: GpuBackend, pick: &Pick) -> Schedule {
         let defaults = (self.defaults)(gpu);
         let s = pick.geometry.schedule(gpu);
-        let s = match pick.geometry.variant_name(defaults) {
+        let s = match pick.name {
             Some(name) => s.as_variant(name),
-            None => s.unnamed(),
+            None => match pick.geometry.variant_name(defaults) {
+                Some(name) => s.as_variant(name),
+                None => s.unnamed(),
+            },
         };
         s.claiming(pick.priority, pick.claim.clone())
     }
@@ -118,11 +126,7 @@ impl Space {
 
 /// The cartesian product of `geos` with one lane dimension varied over
 /// `values`.
-fn cross<T: Copy>(
-    geos: Vec<Geometry>,
-    values: &[T],
-    set: impl Fn(&mut Lanes, T),
-) -> Vec<Geometry> {
+fn cross<T: Copy>(geos: Vec<Geometry>, values: &[T], set: impl Fn(&mut Lanes, T)) -> Vec<Geometry> {
     let mut out = Vec::with_capacity(geos.len() * values.len());
     for g in geos {
         for &v in values {

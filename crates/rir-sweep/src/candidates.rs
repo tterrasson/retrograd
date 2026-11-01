@@ -63,7 +63,12 @@ impl Candidate {
         }
     }
 
-    fn from_space(tag: impl Into<String>, schedule: Schedule, pick: Pick, defaults: Geometry) -> Self {
+    fn from_space(
+        tag: impl Into<String>,
+        schedule: Schedule,
+        pick: Pick,
+        defaults: Geometry,
+    ) -> Self {
         Candidate {
             tag: tag.into(),
             schedule,
@@ -375,6 +380,7 @@ pub fn candidates(subject: &Subject, gpu: GpuBackend) -> Vec<Candidate> {
                         claim: Claim::any(),
                         priority: 90,
                         evidence: "",
+                        name: None,
                     };
                     v.push(Candidate::from_space(tag, g.schedule(gpu), pick, defaults));
                 }
@@ -469,7 +475,9 @@ pub fn geometry_source(g: Geometry, defaults: Geometry) -> String {
         }
         Geometry::Lanes { .. } => {
             let l = g.lanes().expect("a lane geometry has lane dimensions");
-            let d = defaults.lanes().unwrap_or(rir_lower::schedule::geometry::Lanes::NEUTRAL);
+            let d = defaults
+                .lanes()
+                .unwrap_or(rir_lower::schedule::geometry::Lanes::NEUTRAL);
             let mut sets: Vec<String> = Vec::new();
             if l.lane_tile != d.lane_tile {
                 sets.push(format!("l.lane_tile = {}", l.lane_tile));
@@ -505,11 +513,12 @@ pub fn geometry_source(g: Geometry, defaults: Geometry) -> String {
 /// the measurement justified - the verdict's claim when the pick is proposed.
 pub fn pick_source(pick: &Pick, defaults: Geometry, claim: &Claim) -> String {
     format!(
-        "Pick {{ geometry: {}, claim: {}, priority: {}, evidence: {:?} }}",
+        "Pick {{ geometry: {}, claim: {}, priority: {}, evidence: {:?}, name: {:?} }}",
         geometry_source(pick.geometry, defaults),
         claim_source(claim),
         pick.priority,
-        pick.evidence
+        pick.evidence,
+        pick.name
     )
 }
 
@@ -544,7 +553,7 @@ mod tests {
     use rir_core::catalog::Regime;
     use rir_lower::Family;
 
-    use super::{candidates, profile_shapes, Origin, Subject};
+    use super::{Origin, Subject, candidates, profile_shapes};
     use rir_lower::GpuBackend;
     use rir_lower::schedule::spaces;
 
@@ -583,7 +592,6 @@ mod tests {
         // The control is the table's fallback row, and it is there.
         assert!(cands.iter().any(|c| c.origin == Origin::Fallback));
     }
-
 
     /// The forward shapes of one profile follow its dimensions and the
     /// regime's step sizes; a training-only family has none.

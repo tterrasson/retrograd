@@ -760,6 +760,27 @@ fn every_barrier_printed_by_a_scan_is_a_barrier_in_its_loop_nest() {
     }
 }
 
+/// Whether `schedule` is a named pick whose geometry is the family space's
+/// defaults on Metal - a policy bucket scheduled only where it was measured,
+/// not a divergent lowering.
+fn is_metal_only_named_default_pick(
+    family: rir_lower::Family,
+    schedule: &rir_lower::Schedule,
+) -> bool {
+    use rir_lower::schedule::spaces;
+    if family != rir_lower::Family::MulMatVec {
+        return false;
+    }
+    let Some(name) = schedule.variant() else {
+        return false;
+    };
+    let space = spaces::mul_mat_vec::space();
+    let defaults = (space.defaults)(GpuBackend::Metal);
+    spaces::mul_mat_vec::picks(GpuBackend::Metal)
+        .iter()
+        .any(|p| p.name == Some(name) && p.geometry == defaults)
+}
+
 /// The Metal schedules mirror their Vulkan twins field for field - up to the
 /// subgroup partition only Metal runs - and `lower` never reads
 /// `schedule.backend`. Asserting the two loop nests
@@ -844,6 +865,33 @@ fn a_metal_schedule_lowers_like_its_vulkan_twin() {
                 (None, Some(mtl))
                     if mtl.reduction() == ReductionStrategy::MatrixTile
                         && !rir_lower::MATRIX_TARGETS.contains(&GpuBackend::Vulkan) => {}
+                // A **policy bucket** measured on Metal only (the `n1`
+                // single-token pick): a named pick whose geometry is the
+                // space's defaults. The Vulkan fallback then lowers the
+                // identical nest for the shapes the bucket claims, asserted
+                // below, so the per-shape choice diverges in name only, never
+                // in emitted code.
+                (None, Some(mtl)) if is_metal_only_named_default_pick(entry.family, &mtl) => {
+                    let fb = schedules
+                        .iter()
+                        .find(|s| s.backend() == Backend::Vulkan && s.variant().is_none())
+                        .unwrap_or_else(|| panic!("{}/{name}: no Vulkan fallback", kernel.name()));
+                    // Same re-partition as the twin arm above: the bucket's
+                    // geometry is the defaults, so on Metal it runs the
+                    // fallback's nest at Metal's subgroup partition.
+                    let fb = if fb.subgroups() != mtl.subgroups() {
+                        let rows = fb.row_tile();
+                        fb.clone().with_row_tile(rows, mtl.subgroups())
+                    } else {
+                        fb.clone()
+                    };
+                    assert_eq!(
+                        format!("{:?}", rir_lower::lower(kernel, fb).unwrap().body),
+                        format!("{:?}", rir_lower::lower(kernel, mtl).unwrap().body),
+                        "{}/{name}: a Metal-only bucket must lower like the fallback it names",
+                        kernel.name()
+                    );
+                }
                 _ => panic!(
                     "{}/{name}: only one of the two GPU backends is scheduled",
                     kernel.name()
