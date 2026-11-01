@@ -19,6 +19,7 @@ use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use http::{StatusCode, header};
 use retrograd_checkpoint as checkpoint;
+use tokio::io::AsyncReadExt;
 
 use crate::dto;
 use crate::error::{ApiError, ApiResult, ErrorCode, ProblemKind};
@@ -83,9 +84,30 @@ pub async fn download(
     let handle = super::runs::lookup(&state, &id)?;
     let inventory = inventory(&handle.record.artifacts, handle.state_directory());
     let item = downloadable(&inventory, &id, &name)?;
-    let body = std::fs::read(&item.path).map_err(|error| {
+    let file = tokio::fs::File::open(&item.path).await.map_err(|error| {
         ApiError::internal(format!("could not read the artifact '{name}': {error}"))
     })?;
+    // Check the opened file as well: it may have grown since the inventory was
+    // read. Freeze the byte count so an active log does not stream forever.
+    let metadata = file.metadata().await.map_err(|error| {
+        ApiError::internal(format!("could not inspect the artifact '{name}': {error}"))
+    })?;
+    if !metadata.is_file() || metadata.len() > MAX_DOWNLOAD_BYTES {
+        return Err(ApiError::new(
+            ProblemKind::Conflict,
+            "the artifact is no longer a file within the download limit",
+        ));
+    }
+    let stream = futures_util::stream::try_unfold(file.take(metadata.len()), async |mut file| {
+        let mut chunk = vec![0; 64 * 1024];
+        let read = file.read(&mut chunk).await?;
+        if read == 0 {
+            return Ok::<_, std::io::Error>(None);
+        }
+        chunk.truncate(read);
+        Ok(Some((bytes::Bytes::from(chunk), file)))
+    });
+    let body = axum::body::Body::from_stream(stream);
     let filename = item
         .path
         .file_name()

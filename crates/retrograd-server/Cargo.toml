@@ -69,7 +69,7 @@ serde_json = { workspace = true, features = ["raw_value"] }
 serde_path_to_error = "0.1.20"
 sha2.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt-multi-thread", "signal", "sync", "time"] }
 toml.workspace = true
 tower = { workspace = true, features = ["limit"] }
 tower-http = { version = "0.7", features = ["limit", "timeout", "trace"] }

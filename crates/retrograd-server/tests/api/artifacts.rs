@@ -7,7 +7,10 @@
 
 use crate::support::*;
 use http::StatusCode;
+use http_body_util::BodyExt;
 use serde_json::json;
+use std::io::Write;
+use tower::ServiceExt;
 
 /// A finished run with a checkpoint directory, and its id.
 async fn finished(fixture: &Fixture, name: &str) -> (axum::Router, String, serde_json::Value) {
@@ -193,6 +196,41 @@ async fn an_artifact_is_downloaded_by_name_and_nothing_else_is() {
     // Neither is a file that is not there yet.
     let (status, body) = get(&router, &format!("/v1/runs/{id}/artifacts/adapter")).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+}
+
+#[tokio::test]
+async fn a_download_uses_bounded_chunks_and_stops_at_the_opened_length() {
+    let fixture = Fixture::new("artifacts-streaming");
+    let (router, id, _) = finished(&fixture, "streaming").await;
+    let path = fixture.state_dir().join(&id).join("events.jsonl");
+    let expected = vec![b'a'; 3 * 64 * 1024 + 17];
+    std::fs::write(&path, &expected).unwrap();
+    let response = router
+        .oneshot(
+            axum::http::Request::get(format!("/v1/runs/{id}/artifacts/events"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[http::header::CACHE_CONTROL], "no-store");
+    let mut body = response.into_body();
+    let first = body.frame().await.unwrap().unwrap().into_data().unwrap();
+    assert!(first.len() <= 64 * 1024, "download buffered the whole file");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(b"appended after opening")
+        .unwrap();
+    let mut received = first.to_vec();
+    while let Some(frame) = body.frame().await {
+        let chunk = frame.unwrap().into_data().unwrap();
+        assert!(chunk.len() <= 64 * 1024);
+        received.extend_from_slice(&chunk);
+    }
+    assert_eq!(received, expected);
 }
 
 #[tokio::test]
