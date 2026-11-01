@@ -11,10 +11,15 @@
 //! the token count of the response is exact, and the probabilities agree with
 //! the recorded answers of the same backend.
 //!
+//! The same recordings are replayed through the serving session that answers
+//! `/v1/systemone`, with the production loader: what a client of the server
+//! gets must be what the engine computes.
+//!
 //! The model is the small `laya` test model (`TINYLAYA_FIXTURE.toml`); the
 //! test skips when it is absent, unless `RETRO_REQUIRE_CPU_FIXTURE` is set.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use retrograd::decision::Json;
 use retrograd::decision::readout::Readout;
@@ -22,6 +27,9 @@ use retrograd::decision::request::SystemOneRequest;
 use retrograd::decision::template::{self, PromptInput};
 use retrograd::trainer::{DECISION_TEMPLATE, TemplateSource, decision_metadata};
 use retrograd::{Device, Engine, EngineConfig, EngineError, SamplingParams};
+use retrograd_openai::{
+    DecisionOptions, EngineLoader, Session, SessionOptions, Unshared, WeightsSpec,
+};
 use serde_json::Value;
 
 /// How far a probability may be from the recorded one on the same backend when
@@ -239,6 +247,81 @@ fn replay(
     (largest, choices_changed)
 }
 
+/// Replays every recorded request through the serving session, one question
+/// per pass (the serving default), the budget override of a request passed as
+/// the decision option of its spec. Returns the largest probability
+/// difference and the questions whose choice is not the recorded one; the
+/// token counts must be exact.
+async fn serve_replay(
+    model: &str,
+    path: &Path,
+    device: Device,
+    backend: &str,
+) -> (f64, Vec<String>) {
+    let golden = read_json(&fixtures().join(format!("golden-{model}.{backend}.json")));
+    let ordered: Json = serde_json::from_str(
+        &std::fs::read_to_string(fixtures().join("requests.json")).expect("requests readable"),
+    )
+    .expect("requests are JSON");
+    let session = Session::new(
+        Arc::new(EngineLoader),
+        Arc::new(Unshared),
+        SessionOptions {
+            idle: None,
+            ..SessionOptions::default()
+        },
+    )
+    .expect("the serving thread starts");
+    let mut largest = 0.0_f64;
+    let mut choices_changed = Vec::new();
+    for (entry, recorded) in ordered["requests"]
+        .as_array()
+        .expect("requests")
+        .iter()
+        .zip(golden["requests"].as_array().expect("golden requests"))
+    {
+        let name = entry["name"].as_str().expect("name");
+        let spec = WeightsSpec {
+            model: path.to_path_buf(),
+            adapter: None,
+            n_ctx: EngineConfig::default().n_ctx,
+            device,
+            n_seq_max: None,
+            chat_template_variables: None,
+            decision: DecisionOptions {
+                max_head_tokens: entry["max_head_tokens"]
+                    .as_u64()
+                    .map(|budget| usize::try_from(budget).expect("budget fits usize")),
+                ..DecisionOptions::default()
+            },
+        };
+        let decision = session
+            .decide(spec, entry["body"].clone())
+            .await
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert_eq!(
+            Some(decision.input_tokens as u64),
+            recorded["response"]["usage"]["input_tokens"].as_u64(),
+            "{name}: input tokens"
+        );
+        let answers = serde_json::to_value(&decision.answers).expect("answers serialize");
+        let expected = &recorded["response"]["answers"];
+        for (id, want) in expected.as_object().expect("answers") {
+            if let Some(choice) = want.get("choice")
+                && choice != &answers[id]["choice"]
+            {
+                choices_changed.push(format!("{name}/{id}"));
+            }
+        }
+        largest = largest.max(compare_answers(name, expected, &answers));
+    }
+    eprintln!(
+        "{model} on {backend}, served: largest probability difference {largest:e}, \
+         choices changed: {choices_changed:?}"
+    );
+    (largest, choices_changed)
+}
+
 fn metal_available() -> bool {
     let available = cfg!(target_os = "macos") && retrograd::gpu_runtime_available();
     if !available {
@@ -312,6 +395,55 @@ fn real_models_reproduce_the_recorded_answers_when_present() {
             assert!(
                 largest <= EXACT,
                 "{model}: one question per pass differs by {largest:e}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_service_reproduces_the_recorded_answers() {
+    let Some(path) = model_path() else { return };
+    let mut backends = vec![(Device::Cpu, "cpu")];
+    if metal_available() {
+        backends.push((Device::Gpu, "mtl"));
+    }
+    for (device, backend) in backends {
+        let (largest, changed) = serve_replay("tinylaya", &path, device, backend).await;
+        assert!(
+            changed.is_empty(),
+            "{backend}: choices changed: {changed:?}"
+        );
+        assert!(
+            largest <= EXACT,
+            "{backend}: served answers differ by {largest:e}"
+        );
+    }
+}
+
+/// The real models through the service, opt-in as for the engine replay.
+#[tokio::test]
+async fn the_service_reproduces_the_real_models_when_present() {
+    for (model, variable) in [
+        ("julia-1", "RETRO_DECISION_JULIA"),
+        ("laya", "RETRO_DECISION_LAYA"),
+    ] {
+        let Some(path) = std::env::var_os(variable).map(PathBuf::from) else {
+            eprintln!("skipping {model}: {variable} is not set");
+            continue;
+        };
+        let mut backends = vec![(Device::Cpu, "cpu")];
+        if metal_available() {
+            backends.push((Device::Gpu, "mtl"));
+        }
+        for (device, backend) in backends {
+            let (largest, changed) = serve_replay(model, &path, device, backend).await;
+            assert!(
+                changed.is_empty(),
+                "{model}/{backend}: choices changed: {changed:?}"
+            );
+            assert!(
+                largest <= EXACT,
+                "{model}/{backend}: served answers differ by {largest:e}"
             );
         }
     }

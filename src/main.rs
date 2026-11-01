@@ -3,6 +3,7 @@ mod bench;
 mod chat;
 #[cfg(feature = "agent")]
 mod collect;
+mod decide;
 mod distill_teacher;
 mod inspect;
 #[cfg(feature = "agent")]
@@ -44,6 +45,7 @@ fn run() -> retrograd::Result<()> {
         Some("bench") => bench::bench_model(args.collect()),
         Some("chat") => chat::chat_model(args.collect()),
         Some("inspect") => inspect::inspect_model(args.collect()),
+        Some("decide") => decide::decide(args.collect()),
         Some("distill-teacher") => distill_teacher::distill_teacher(args.collect()),
         #[cfg(feature = "agent")]
         Some("judge") => judge::judge(args.collect()),
@@ -80,6 +82,9 @@ Commands:
        [--model base.gguf] [--device auto|cpu|gpu] [--ctx N] [--system PROMPT]
        [--temp T] [--top-p P] [--max-new-tokens N] [--seed N]
   inspect --model base.gguf [--device auto|cpu|gpu]
+  decide --model decision.gguf --request request.json|- [--adapter adapter.gguf]
+         [--device auto|cpu|gpu] [--template systemone.jinja]
+         [--max-head-tokens N] [--pack N]
   distill-teacher <config.toml> [--data corpus.jsonl] [--out corpus.topk]
         [--k N] [--model base.gguf] [--device auto|cpu|gpu] [--ctx N]
   judge eval <config.toml> --fixtures fixtures.jsonl
@@ -108,6 +113,7 @@ mod help_tests {
             bench::FLAGS,
             chat::FLAGS,
             inspect::FLAGS,
+            decide::FLAGS,
             distill_teacher::FLAGS,
             preflight::FLAGS,
             #[cfg(feature = "agent")]

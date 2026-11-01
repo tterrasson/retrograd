@@ -6,6 +6,7 @@ use indicatif::HumanDuration;
 use std::time::Instant;
 
 use retrograd::config;
+use retrograd::trainer::decision_metadata;
 use retrograd::{Device, Engine, Error, Result, SamplingParams};
 
 use crate::args::{Args, parse_value};
@@ -65,6 +66,18 @@ pub(crate) fn chat_model(args: Vec<String>) -> Result<()> {
     )?;
     if let Some(ctx) = args.ctx {
         run_config.training.n_ctx = ctx;
+    }
+    // A decision model is an encoder that answers typed questions: read from
+    // the header, before any weight is loaded, so the redirect is immediate.
+    if decision_metadata(&run_config.model)?
+        .decision_type
+        .is_some()
+    {
+        return Err(Error::invalid(format!(
+            "{model} is a decision model: it answers typed questions and does not generate \
+             text; use `retrograd decide --model {model} --request request.json`",
+            model = run_config.model.display()
+        )));
     }
 
     let ui = CliUi::new();

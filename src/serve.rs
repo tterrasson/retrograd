@@ -156,6 +156,7 @@ fn served_models(args: &ServeArgs, run_config: &config::RunConfig) -> Result<Sin
         device: run_config.training.device,
         n_seq_max: args.slots,
         chat_template_variables: variables.clone(),
+        decision: Default::default(),
     };
     let base = spec(&run_config.model, None);
     let served = if args.base_only {
