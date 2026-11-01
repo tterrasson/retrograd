@@ -77,15 +77,16 @@ pub(crate) fn stage_b_tiles(
             match k.ops()[iv.0 as usize] {
                 Op::Index(ax) if ax == inner_axis => idx_vars.push(row_global),
                 Op::Index(ax) if ax == st.col_axis => idx_vars.push(depth_global),
-                Op::Index(ax) => idx_vars.push(
-                    *lo.axis_vars
-                        .get(&ax)
-                        .ok_or(LowerError::AxisOutOfScope { value: rv, axis: ax })?,
-                ),
+                Op::Index(ax) => {
+                    idx_vars.push(*lo.axis_vars.get(&ax).ok_or(LowerError::AxisOutOfScope {
+                        value: rv,
+                        axis: ax,
+                    })?)
+                }
                 _ => {
                     return Err(LowerError::StageUnsupported {
                         why: "computed index: the staged tile is an axis rectangle",
-                    })
+                    });
                 }
             }
         }

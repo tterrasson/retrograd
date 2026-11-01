@@ -489,5 +489,3 @@ fn consume_tiles(
     });
     Ok((kk, lo.take_body()))
 }
-
-

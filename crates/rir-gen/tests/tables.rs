@@ -553,7 +553,11 @@ fn the_gemv_space_expands_over_the_production_picks() {
     let space = mul_mat_vec::space();
     for gpu in [GpuBackend::Vulkan, GpuBackend::Metal] {
         let expanded = space.expand(gpu, &kernel);
-        for pick in space.picks(gpu).iter().chain(space.matrix_picks(gpu).iter()) {
+        for pick in space
+            .picks(gpu)
+            .iter()
+            .chain(space.matrix_picks(gpu).iter())
+        {
             assert!(
                 expanded.contains(&pick.geometry),
                 "{gpu:?}: the space does not expand to the pick {:?}",
