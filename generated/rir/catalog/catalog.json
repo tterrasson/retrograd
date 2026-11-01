@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "fingerprint": "sha256:079385f3d95cda173ec3ca54df5c59f9755d324445c9ff2d8319a50201350253",
+  "fingerprint": "sha256:b83126fb9f9e3b9c62122e2e68837ce345f6ab5d3a279621b481fb315fa816ce",
   "kernels": [
     {
       "ggml_op": "GGML_OP_ADD",
@@ -7479,6 +7479,37 @@
         "n_head_kv": 8,
         "head_dim": 128,
         "n_ff": 9728,
+        "weight_formats": [
+          "q4_K",
+          "q6_K"
+        ]
+      }
+    },
+    {
+      "name": "llama3-8b-q8_0",
+      "backend": "metal",
+      "shape": {
+        "architecture": "llama",
+        "n_embd": 4096,
+        "n_head": 32,
+        "n_head_kv": 8,
+        "head_dim": 128,
+        "n_ff": 14336,
+        "weight_formats": [
+          "q8_0"
+        ]
+      }
+    },
+    {
+      "name": "llama3-8b-q4_k_m",
+      "backend": "metal",
+      "shape": {
+        "architecture": "llama",
+        "n_embd": 4096,
+        "n_head": 32,
+        "n_head_kv": 8,
+        "head_dim": 128,
+        "n_ff": 14336,
         "weight_formats": [
           "q4_K",
           "q6_K"
