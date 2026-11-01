@@ -26,6 +26,7 @@ fn spec(adapter: Option<&str>) -> WeightsSpec {
         device: Device::Cpu,
         n_seq_max: None,
         chat_template_variables: None,
+        decision: Default::default(),
     }
 }
 

@@ -12,7 +12,8 @@ use serde::Serialize;
 retrograd_core::wire_enum! {
     /// The `error.type` of the envelope. The spellings are OpenAI's where it has
     /// one; `server_busy` and `timeout` are the two a local server needs and the
-    /// public API has no word for.
+    /// public API has no word for, and `not_supported_error` is llama-server's,
+    /// for a model that cannot answer a route at all.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum ErrorType {
         InvalidRequest = "invalid_request_error",
@@ -20,6 +21,7 @@ retrograd_core::wire_enum! {
         NotFound = "not_found_error",
         ServerBusy = "server_busy",
         Timeout = "timeout",
+        NotSupported = "not_supported_error",
         Api = "api_error",
     }
 }
@@ -172,6 +174,20 @@ impl OpenAiError {
         error
     }
 
+    /// The model cannot answer this route, whatever the request says: a model
+    /// that is not a decision model asked a decision, a decision model asked
+    /// to generate. 501, with llama-server's `not_supported_error`, so a client
+    /// written for that server branches the same way here.
+    pub fn not_supported(message: impl Into<String>) -> Self {
+        let mut error = Self::new(
+            StatusCode::NOT_IMPLEMENTED,
+            ErrorType::NotSupported,
+            message,
+        );
+        error.code = Some("not_supported");
+        error
+    }
+
     pub fn timeout(message: impl Into<String>) -> Self {
         Self::new(StatusCode::GATEWAY_TIMEOUT, ErrorType::Timeout, message)
     }
@@ -238,10 +254,31 @@ impl From<retrograd_agent_core::Error> for OpenAiError {
     }
 }
 
-/// The engine's errors reach this one through the applicative façade.
+/// The engine's errors reach this one through the applicative façade, except
+/// a decision failure, which keeps the status only its own variant knows.
 impl From<retrograd_engine::EngineError> for OpenAiError {
     fn from(error: retrograd_engine::EngineError) -> Self {
-        retrograd_core::Error::from(error).into()
+        match error {
+            retrograd_engine::EngineError::Decision(error) => error.into(),
+            error => retrograd_core::Error::from(error).into(),
+        }
+    }
+}
+
+/// A model that cannot answer a decision at all - no decision head, a head of
+/// a type this server does not implement, images it has no place for - is a
+/// 501, as llama-server answers it. The rest goes through the applicative
+/// façade: a bad request body is the caller's (400), a broken model file or
+/// template is the server's (500).
+impl From<retrograd_decision::DecisionError> for OpenAiError {
+    fn from(error: retrograd_decision::DecisionError) -> Self {
+        use retrograd_decision::DecisionError;
+        match error {
+            DecisionError::NotDecisionModel
+            | DecisionError::ImagesUnsupported
+            | DecisionError::UnknownType { .. } => Self::not_supported(error.to_string()),
+            error => retrograd_core::Error::from(error).into(),
+        }
     }
 }
 
@@ -258,7 +295,7 @@ impl From<retrograd_infer::InferError> for OpenAiError {
             InferError::Overflow(_) | InferError::Failed(_) | InferError::Cancelled => {
                 Self::internal(error.to_string())
             }
-            InferError::Backend(error) => retrograd_core::Error::from(error).into(),
+            InferError::Backend(error) => error.into(),
             InferError::Core(error) => error.into(),
         }
     }
@@ -304,6 +341,29 @@ mod tests {
         let ours = OpenAiError::from(retrograd_core::Error::runtime("x"));
         assert_eq!(ours.status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(ours.kind, ErrorType::Api);
+    }
+
+    #[test]
+    fn a_model_that_cannot_decide_is_not_implemented_and_a_bad_body_is_the_callers() {
+        use retrograd_decision::DecisionError;
+        for error in [
+            DecisionError::NotDecisionModel,
+            DecisionError::ImagesUnsupported,
+            DecisionError::UnknownType {
+                name: "other".into(),
+            },
+        ] {
+            let error = OpenAiError::from(retrograd_engine::EngineError::from(error));
+            assert_eq!(error.status, StatusCode::NOT_IMPLEMENTED);
+            assert_eq!(error.kind, ErrorType::NotSupported);
+        }
+        let error = OpenAiError::from(DecisionError::InvalidRequest(
+            "\"state\" must be provided".into(),
+        ));
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert_eq!(error.message, "\"state\" must be provided");
+        let error = OpenAiError::from(DecisionError::Layout);
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[test]

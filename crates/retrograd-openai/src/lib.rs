@@ -13,7 +13,8 @@
 //! disk, a live run's own thread for a run that is training. The surfaces live
 //! in their own subtrees: [`chat`] (Chat Completions), [`responses`] (the
 //! Responses API, with its store), [`completions`] (the legacy completions)
-//! and [`embeddings`].
+//! and [`embeddings`]. Beside them, [`systemone`] serves llama-server's typed
+//! decisions to a decision model, through the same session.
 //!
 //! The answer is rendered and parsed by the same code as the agentic rollouts
 //! (`retrograd_agent::rendering`), so a model evaluated through this endpoint
@@ -31,6 +32,7 @@ pub mod request;
 pub mod responses;
 pub mod session;
 pub mod stream;
+pub mod systemone;
 pub mod testing;
 
 use std::sync::Arc;
@@ -55,7 +57,8 @@ pub use responses::store::{
     FileStore, MemoryStore, ResponseStore, StoreOptions, StoreOwner, StoredResponse,
 };
 pub use session::{
-    DeviceLease, EngineStats, Lease, ServingJob, Session, SessionOptions, Unshared, WeightsSpec,
+    DecisionOptions, DeviceLease, EngineStats, Lease, ServingJob, Session, SessionOptions,
+    Unshared, WeightsSpec,
 };
 
 /// The header that reports how many calls the parser could not read, when some
@@ -116,9 +119,9 @@ pub struct Endpoint {
     pub store: Arc<dyn ResponseStore>,
 }
 
-/// `GET /models`, `GET /models/{model}`, and the generation surfaces
+/// `GET /models`, `GET /models/{model}`, the generation surfaces
 /// (`POST /chat/completions`, `POST /responses`, `POST /completions`,
-/// `POST /embeddings`), relative to wherever the caller mounts them - `/v1`
+/// `POST /embeddings`) and the decisions (`POST /systemone`), relative to wherever the caller mounts them - `/v1`
 /// for every OpenAI client.
 ///
 /// No timeout layer belongs over these: a stream stays open until its answer
@@ -131,6 +134,7 @@ pub fn router(endpoint: Endpoint) -> Router {
         .merge(responses::router())
         .merge(completions::router())
         .merge(embeddings::router())
+        .merge(systemone::router())
         .with_state(endpoint)
         .layer(axum::middleware::map_response(async |response| {
             error::normalize_response(response)
@@ -149,6 +153,9 @@ struct ServerCapabilities {
     /// `POST /v1/embeddings` is served; whether one model answers embeddings is
     /// decided per request (a model that declares no pooling is refused).
     embeddings: bool,
+    /// `POST /v1/systemone` is served; whether one model answers it is decided
+    /// per request (a model that is not a decision model is refused, 501).
+    systemone: bool,
 }
 
 async fn list_models(State(endpoint): State<Endpoint>) -> Result<Response, OpenAiError> {
@@ -162,6 +169,7 @@ async fn list_models(State(endpoint): State<Endpoint>) -> Result<Response, OpenA
                 responses_store: true,
                 completions: true,
                 embeddings: true,
+                systemone: true,
             })
             .unwrap_or(serde_json::Value::Null),
         ),

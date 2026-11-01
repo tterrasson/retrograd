@@ -14,12 +14,17 @@ async-trait.workspace = true
 axum.workspace = true
 futures-util.workspace = true
 http.workspace = true
+# The answers of a decision request, keyed in the order of its questions.
+indexmap = "2"
 # The rendering and the parsers the rollouts use, so what is served is what is
 # trained - from `retrograd-agent-core`, not `retrograd-agent`: nothing here
 # runs a tool, an environment or a judge, and the agent crate would drag all
 # of them (MCP, containers, the trainer) into this one.
 retrograd-agent-core = { workspace = true, features = ["template-parser"] }
 retrograd-core.workspace = true
+# `/v1/systemone`: the request, its validation and the answer of a decision
+# model are that crate's; this one carries them over HTTP and the session.
+retrograd-decision.workspace = true
 retrograd-engine.workspace = true
 retrograd-infer.workspace = true
 serde.workspace = true

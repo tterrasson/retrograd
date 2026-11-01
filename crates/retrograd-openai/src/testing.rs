@@ -7,12 +7,21 @@
 //! without a device. The fake serves through a
 //! [`FakeBackend`] scripted with the reply, so the
 //! whole session path (scheduler, event stream, collection) is exercised.
+//!
+//! [`FakeLoader::decision`] loads a fake decision model instead: a `laya`-like
+//! head whose first option always scores highest, answered through the real
+//! answer formatting, so the `/v1/systemone` contract is tested end to end.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use indexmap::IndexMap;
 use retrograd_core::{Result as CoreResult, SamplingParams};
-use retrograd_engine::{EngineMemory, StepOutput, StepRow};
+use retrograd_decision::answer::{self, Calibration};
+use retrograd_decision::layout::Budget;
+use retrograd_decision::readout::Readout;
+use retrograd_decision::request::SystemOneRequest;
+use retrograd_engine::{Decision, DecisionInfo, EngineMemory, StepOutput, StepRow, TemplateSource};
 use retrograd_infer::{
     AdmissionMode, DecodeBackend, FakeBackend, InferError, SchedulerOptions, SharedFake,
 };
@@ -324,6 +333,36 @@ impl ServeBackend for FakeServing {
         Ok(out)
     }
 
+    /// Scores option `i` of every question `-i`: the first option wins, and
+    /// the probabilities are the ones the real formatting gives those scores.
+    /// A question costs one token per option plus one.
+    fn decide(
+        &mut self,
+        info: &DecisionInfo,
+        request: &SystemOneRequest,
+    ) -> Result<Decision, OpenAiError> {
+        let mut answers = IndexMap::with_capacity(request.questions.len());
+        let mut input_tokens = 0;
+        for (id, question) in &request.questions {
+            let n = info.readout.n_outputs(question);
+            // Exact: an option index is at most the readout's option bound.
+            let scores: Vec<f32> = (0..n).map(|index| -(index as f32)).collect();
+            input_tokens += n + 1;
+            let answer = answer::format_answer(
+                &info.readout,
+                &info.calibration,
+                question,
+                &[scores],
+                false,
+            )?;
+            answers.insert(id.clone(), answer);
+        }
+        Ok(Decision {
+            answers,
+            input_tokens,
+        })
+    }
+
     fn set_reasoning_budget(&mut self, budget: i32) -> CoreResult<()> {
         let sampled = self
             .backend
@@ -355,6 +394,29 @@ pub struct FakeLoader {
     budget_changes: Arc<Mutex<Vec<(i32, usize)>>>,
     /// Whether the fake backend answers embeddings.
     embeddings: bool,
+    /// Whether the fake is loaded as a decision model.
+    decision: bool,
+}
+
+/// The head of the fake decision model: a marker readout with a 256-token
+/// budget, no temperatures, one question per pass.
+pub fn fake_decision_info() -> DecisionInfo {
+    let readout = Readout::MarkerColumn {
+        marker: 0,
+        sep: 1,
+        marker_text: "<mask>".into(),
+    };
+    DecisionInfo {
+        decision_type: "laya".into(),
+        n_options_max: readout.n_options_max(),
+        readout,
+        calibration: Calibration::default(),
+        temperatures: Default::default(),
+        budget: Some(Budget::new(256).expect("a positive budget")),
+        model_max_head_tokens: Some(256),
+        template: TemplateSource::Model,
+        pack: 1,
+    }
 }
 
 impl Clone for FakeLoader {
@@ -369,6 +431,7 @@ impl Clone for FakeLoader {
                 .as_ref()
                 .map(|shared| SharedFake(shared.0.clone())),
             embeddings: self.embeddings,
+            decision: self.decision,
         }
     }
 }
@@ -382,7 +445,15 @@ impl FakeLoader {
             budget_changes: Arc::default(),
             shared: None,
             embeddings: true,
+            decision: false,
         }
+    }
+
+    /// A loader whose model is a decision model: it answers `/v1/systemone`
+    /// and refuses generation and embeddings.
+    pub fn decision(mut self) -> Self {
+        self.decision = true;
+        self
     }
 
     /// A loader whose backend answers no embeddings - the refusal path a
@@ -404,6 +475,7 @@ impl FakeLoader {
             budget_changes: Arc::default(),
             shared: Some(SharedFake(serving.backend.0.clone())),
             embeddings: true,
+            decision: false,
         };
         (loader, shared)
     }
@@ -463,6 +535,7 @@ impl Loader for FakeLoader {
                 queue_capacity: queue.max(1),
                 ..SchedulerOptions::default()
             },
+            decision: self.decision.then(fake_decision_info),
         })
     }
 }

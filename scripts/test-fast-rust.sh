@@ -86,7 +86,7 @@ timed_step compile:contracts cargo test \
   -p retrograd-infer --test chain_boundary --test fake_backend --test prefix_cache --test sync_driver --test adapters --test row_adapters \
   -p retrograd-judge --test reward_batch \
   -p retrograd-openai --test wire --test responses --test responses_stateful \
-  --test completions --test embeddings --test dep_boundary \
+  --test completions --test embeddings --test systemone --test dep_boundary \
   -p retrograd-serve --test dep_boundary \
   -p retrograd-training --test value_head \
   --no-run
@@ -121,7 +121,7 @@ timed_step run:contracts cargo test \
   -p retrograd-infer --test chain_boundary --test fake_backend --test prefix_cache --test sync_driver --test adapters --test row_adapters \
   -p retrograd-judge --test reward_batch \
   -p retrograd-openai --test wire --test responses --test responses_stateful \
-  --test completions --test embeddings --test dep_boundary \
+  --test completions --test embeddings --test systemone --test dep_boundary \
   -p retrograd-serve --test dep_boundary \
   -p retrograd-training --test value_head
 timed_step run:server "$repo_root/scripts/test-server.sh"

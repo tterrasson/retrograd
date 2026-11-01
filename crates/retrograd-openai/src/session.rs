@@ -24,6 +24,11 @@
 //! the scheduler (and with it the engine's contexts and weights) is dropped on
 //! the session thread, and only then is the lease released - clearing the KV
 //! alone would not return the device memory to a run.
+//!
+//! A decision model (one whose GGUF declares `<arch>.decision.type`) is loaded
+//! by the same session and answers `/v1/systemone` on the same thread. It is
+//! an encoder that generates nothing: its scheduler is never initialized nor
+//! pumped, and the generation and embedding paths refuse it with a 501.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -34,7 +39,9 @@ use std::time::{Duration, Instant};
 
 use retrograd_agent_core::parser::ToolCallParser;
 use retrograd_core::Device;
-use retrograd_engine::{AdapterRowsInfo, EngineMemory};
+use retrograd_decision::Json;
+use retrograd_decision::request::SystemOneRequest;
+use retrograd_engine::{AdapterRowsInfo, Decision, DecisionInfo, EngineMemory};
 use retrograd_infer::{
     AdmissionMode, Event, EventStream, FinishReason, KvStats, Request, Scheduler,
 };
@@ -62,6 +69,9 @@ pub struct WeightsSpec {
     pub n_seq_max: Option<u32>,
     /// The chat-template variables the run rendered its data with, as JSON.
     pub chat_template_variables: Option<String>,
+    /// What replaces the decision head's own settings, for a decision model.
+    /// All absent: the model's.
+    pub decision: DecisionOptions,
 }
 
 impl WeightsSpec {
@@ -72,7 +82,28 @@ impl WeightsSpec {
             && self.device == other.device
             && self.n_seq_max == other.n_seq_max
             && self.chat_template_variables == other.chat_template_variables
+            && self.decision == other.decision
     }
+}
+
+/// The settings of a decision head an operator may replace. Each one changes
+/// the answers, so the defaults are the model's: what llama-server serves from
+/// the same file.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DecisionOptions {
+    /// A Jinja source rendered in place of the model's `systemone` template.
+    /// It takes the same context, so it must keep one marker per option.
+    pub template: Option<PathBuf>,
+    /// Replaces `<arch>.decision.max_head_tokens`, for a model that reads its
+    /// options at markers: how many tokens of the question and its options
+    /// survive the truncation.
+    pub max_head_tokens: Option<usize>,
+    /// How many questions one forward pass may evaluate together, within the
+    /// sequence slots. 1 when absent: several sequences in one pass change the
+    /// shapes of the matrix products, so an answer would depend on the other
+    /// questions of its request and drift from llama-server's (by 1e-1 on a
+    /// sensitive model). Raise it for throughput only.
+    pub pack: Option<usize>,
 }
 
 /// What holding the device looks like to whoever lends it. Dropped to give it
@@ -176,6 +207,14 @@ enum Envelope {
         inputs: Vec<EmbedItem>,
         reply: oneshot::Sender<Result<EmbeddingOutcome, OpenAiError>>,
     },
+    /// A `/v1/systemone` request on a decision model: one forward pass per
+    /// question, on the session's thread. The body is validated there, against
+    /// the readout of the loaded model.
+    Decide {
+        spec: WeightsSpec,
+        body: Box<Json>,
+        reply: oneshot::Sender<Result<Decision, OpenAiError>>,
+    },
     Stats(oneshot::Sender<Option<EngineStats>>),
     /// Nothing to do but look at the flags: sent so a thread asleep on an idle
     /// model notices a yield without waiting out its timeout.
@@ -202,6 +241,9 @@ struct Core {
     /// the embedding path activates (a per-row adapter only applies to step
     /// rows).
     named_adapters: HashSet<String>,
+    /// The decision head of a decision model, with the spec's options
+    /// applied; `None` for a model that generates.
+    decision: Option<DecisionInfo>,
     /// Held, never read: dropping it is what gives the device back - after the
     /// scheduler above, so the weights are freed first.
     _lease: Lease,
@@ -239,6 +281,30 @@ impl Core {
             self.named_adapters.insert(name.clone());
         }
         Ok(name)
+    }
+
+    /// Registers the adapter at `path` on a decision model: as a named adapter
+    /// only, applied around each decision. A decision model has no step rows,
+    /// so the scheduler's per-row path is never tried.
+    fn register_decision(&mut self, path: &std::path::Path) -> Result<String, OpenAiError> {
+        let name = adapter_name(path);
+        if !self.named_adapters.contains(&name) {
+            self.scheduler.backend_mut().load_adapter(&name, path)?;
+            self.adapters.insert(name.clone());
+            self.named_adapters.insert(name.clone());
+        }
+        Ok(name)
+    }
+
+    /// Refuses a generation or an embedding on a decision model, with the
+    /// sentence llama-server answers.
+    fn refuse_decision_model(&self) -> Result<(), OpenAiError> {
+        match self.decision {
+            Some(_) => Err(OpenAiError::not_supported(
+                "this model is a decision model without text generation; use /v1/systemone",
+            )),
+            None => Ok(()),
+        }
     }
 }
 
@@ -354,6 +420,35 @@ impl Session {
             .try_send(Envelope::Embed {
                 spec,
                 inputs,
+                reply,
+            })
+            .map_err(|error| match error {
+                TrySendError::Full(_) => OpenAiError::busy(
+                    "queue_full",
+                    "this server is already holding as many requests as it queues; retry \
+                     shortly",
+                    1,
+                ),
+                TrySendError::Disconnected(_) => {
+                    OpenAiError::internal("the serving thread is no longer running")
+                }
+            })?;
+        answer.await.map_err(|_| {
+            OpenAiError::internal("the serving thread stopped before answering the request")
+        })?
+    }
+
+    /// Answers the questions of a `/v1/systemone` body with the decision model
+    /// `spec` names, on the session's thread: the body is validated against
+    /// the model's readout there, and the answers come back in the order of
+    /// its questions. A model that is not a decision model is refused with a
+    /// 501.
+    pub async fn decide(&self, spec: WeightsSpec, body: Json) -> Result<Decision, OpenAiError> {
+        let (reply, answer) = oneshot::channel();
+        self.jobs
+            .try_send(Envelope::Decide {
+                spec,
+                body: Box::new(body),
                 reply,
             })
             .map_err(|error| match error {
@@ -619,6 +714,14 @@ impl Worker {
                             let _ = reply.send(outcome);
                         }
                     }
+                    Envelope::Decide { spec, body, reply } => {
+                        // The request was abandoned while it waited: no pass is
+                        // spent on it.
+                        if !reply.is_closed() {
+                            let outcome = self.decide(&mut core, &spec, &body);
+                            let _ = reply.send(outcome);
+                        }
+                    }
                     Envelope::Stats(reply) => {
                         let _ = reply.send(self.stats(&core));
                     }
@@ -685,6 +788,7 @@ impl Worker {
         let Some(request) = request else {
             return Ok(None);
         };
+        core.refuse_decision_model()?;
         let rendered =
             render::render_prompt(core.scheduler.backend(), &request, &mut core.parsers)?;
         let prompt_tokens = rendered.tokens.len();
@@ -739,6 +843,7 @@ impl Worker {
             return Err(OpenAiError::invalid_param("input", "`input` is required"));
         }
         let core = self.ensure(core, spec)?;
+        core.refuse_decision_model()?;
         let adapter = match &spec.adapter {
             Some(path) => Some(core.register_named(path)?),
             None => None,
@@ -800,6 +905,39 @@ impl Worker {
         }
     }
 
+    /// One decision on the loaded decision model. The body is validated
+    /// against its readout, the requested adapter is applied for the passes
+    /// and the previous one restored after, failure or not.
+    fn decide(
+        &self,
+        core: &mut Option<Core>,
+        spec: &WeightsSpec,
+        body: &Json,
+    ) -> Result<Decision, OpenAiError> {
+        let core = self.ensure(core, spec)?;
+        let Some(info) = core.decision.clone() else {
+            return Err(retrograd_decision::DecisionError::NotDecisionModel.into());
+        };
+        let request = SystemOneRequest::parse(body, &info.readout)?;
+        let adapter = match &spec.adapter {
+            Some(path) => Some(core.register_decision(path)?),
+            None => None,
+        };
+        let backend = core.scheduler.backend_mut();
+        let previous = backend.active_adapter()?;
+        if previous != adapter {
+            backend.activate_adapter(adapter.as_deref())?;
+        }
+        let result = backend.decide(&info, &request);
+        let restored = match previous != adapter {
+            true => backend.activate_adapter(previous.as_deref()),
+            false => Ok(()),
+        };
+        let decision = result?;
+        restored?;
+        Ok(decision)
+    }
+
     fn ensure<'a>(
         &self,
         core: &'a mut Option<Core>,
@@ -820,7 +958,11 @@ impl Worker {
         let started = Instant::now();
         let serving = self.loader.load(spec, self.queue, self.admission)?;
         let mut scheduler = Scheduler::new(serving.backend, serving.scheduler);
-        scheduler.initialize()?;
+        // A decision model has no sequence memory for the scheduler to clear,
+        // and nothing it would ever schedule.
+        if serving.decision.is_none() {
+            scheduler.initialize()?;
+        }
         tracing::info!(
             model = %spec.model.display(),
             adapter = ?spec.adapter,
@@ -835,6 +977,7 @@ impl Worker {
             reasoning_budget: -1,
             adapters: HashSet::new(),
             named_adapters: HashSet::new(),
+            decision: serving.decision,
             _lease: lease,
         }))
     }
@@ -861,6 +1004,7 @@ mod tests {
             device: Device::Cpu,
             n_seq_max: None,
             chat_template_variables: None,
+            decision: DecisionOptions::default(),
         }
     }
 
@@ -910,6 +1054,78 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(shared.lock().active_adapter.as_deref(), Some("a.gguf"));
+    }
+
+    fn decision_body() -> Json {
+        serde_json::from_str(
+            r#"{"state": "s", "questions": {"q": {"type": "noul", "instructions": "?"}}}"#,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_decision_applies_the_named_adapter_and_restores_the_previous_one() {
+        let (loader, shared) = FakeLoader::shared_endless("abc");
+        let session = Session::new(
+            Arc::new(loader.decision()),
+            Arc::new(Unshared),
+            SessionOptions::default(),
+        )
+        .unwrap();
+        // Loading a decision model clears no slot (it has no sequence memory)
+        // and registers no adapter.
+        session.preload(spec(None)).await.unwrap();
+        assert!(shared.lock().removed.is_empty());
+        assert!(shared.lock().adapter_ops.is_empty());
+
+        let decision = session
+            .decide(spec(Some("a.gguf")), decision_body())
+            .await
+            .unwrap();
+        assert_eq!(decision.answers.len(), 1);
+        let ops = shared.lock().adapter_ops.clone();
+        assert_eq!(
+            ops,
+            vec![
+                ("load".into(), Some("a.gguf".into())),
+                ("activate".into(), Some("a.gguf".into())),
+                ("activate".into(), None),
+            ]
+        );
+        assert_eq!(shared.lock().active_adapter, None);
+
+        // Registered once: the second decision only activates it.
+        shared.lock().adapter_ops.clear();
+        session
+            .decide(spec(Some("a.gguf")), decision_body())
+            .await
+            .unwrap();
+        assert_eq!(
+            shared.lock().adapter_ops.clone(),
+            vec![
+                ("activate".into(), Some("a.gguf".into())),
+                ("activate".into(), None),
+            ]
+        );
+
+        // The base answers without any adapter operation.
+        shared.lock().adapter_ops.clear();
+        session.decide(spec(None), decision_body()).await.unwrap();
+        assert!(shared.lock().adapter_ops.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_decision_body_is_validated_against_the_loaded_readout() {
+        let session = Session::new(
+            Arc::new(FakeLoader::default().decision()),
+            Arc::new(Unshared),
+            SessionOptions::default(),
+        )
+        .unwrap();
+        let body: Json = serde_json::from_str(r#"{"questions": {}}"#).unwrap();
+        let error = session.decide(spec(None), body).await.unwrap_err();
+        assert_eq!(error.status, http::StatusCode::BAD_REQUEST);
+        assert_eq!(error.message, "\"state\" must be provided");
     }
 
     /// A lease that can be taken away, and counts how often it was lent.

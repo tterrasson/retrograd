@@ -28,6 +28,7 @@ fn spec(adapter: Option<&str>) -> WeightsSpec {
         device: Device::Cpu,
         n_seq_max: None,
         chat_template_variables: None,
+        decision: Default::default(),
     }
 }
 
@@ -403,6 +404,7 @@ impl ModelSource for TwoBases {
                 device: Device::Cpu,
                 n_seq_max: None,
                 chat_template_variables: None,
+                decision: Default::default(),
             },
             "b" => WeightsSpec {
                 model: "b.gguf".into(),
@@ -411,6 +413,7 @@ impl ModelSource for TwoBases {
                 device: Device::Cpu,
                 n_seq_max: None,
                 chat_template_variables: None,
+                decision: Default::default(),
             },
             other => return Err(OpenAiError::model_not_found(other, "no such model")),
         };

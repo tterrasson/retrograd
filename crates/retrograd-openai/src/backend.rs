@@ -7,8 +7,9 @@
 //! [`EngineLoader`] builds it from a [`WeightsSpec`]; the crate's tests use
 //! [`crate::testing::FakeLoader`]'s fake instead.
 
-use retrograd_core::{Result as CoreResult, TrainConfig};
-use retrograd_engine::{Engine, generation_batch};
+use retrograd_core::{EngineConfig, Result as CoreResult, TrainConfig};
+use retrograd_decision::request::SystemOneRequest;
+use retrograd_engine::{Decision, DecisionInfo, Engine, decision_metadata, generation_batch};
 use retrograd_infer::{DecodeBackend, SchedulerOptions};
 
 use crate::error::OpenAiError;
@@ -31,6 +32,15 @@ pub trait ServeBackend: DecodeBackend + PromptModel {
     /// clears the KV before and after, so it never shares KV with a
     /// generation whose attention mode differs.
     fn embed(&mut self, tokens: &[i32]) -> CoreResult<Vec<f32>>;
+    /// Answers the questions of `request` with the decision head `info`
+    /// describes: one forward pass per question variant, no generation slot,
+    /// the active adapter applied. Only called on a backend loaded with
+    /// [`ServingBackend::decision`] set.
+    fn decide(
+        &mut self,
+        info: &DecisionInfo,
+        request: &SystemOneRequest,
+    ) -> Result<Decision, OpenAiError>;
 }
 
 impl ServeBackend for Engine {
@@ -44,6 +54,14 @@ impl ServeBackend for Engine {
 
     fn embed(&mut self, tokens: &[i32]) -> CoreResult<Vec<f32>> {
         Ok(Engine::embed(self, tokens)?)
+    }
+
+    fn decide(
+        &mut self,
+        info: &DecisionInfo,
+        request: &SystemOneRequest,
+    ) -> Result<Decision, OpenAiError> {
+        Ok(Engine::decide(self, info, request)?)
     }
 }
 
@@ -92,6 +110,10 @@ impl PromptModel for Engine {
 pub struct ServingBackend {
     pub backend: Box<dyn ServeBackend>,
     pub scheduler: SchedulerOptions,
+    /// The decision head, with the spec's options applied, when the model is
+    /// a decision model. Such a backend answers decisions only: the session
+    /// neither initializes nor pumps its scheduler.
+    pub decision: Option<DecisionInfo>,
 }
 
 /// Builds the serving backend from a weights spec, on the thread that will own
@@ -132,6 +154,17 @@ impl Loader for EngineLoader {
         queue: usize,
         admission: retrograd_infer::AdmissionMode,
     ) -> Result<ServingBackend, OpenAiError> {
+        // The header alone says whether this is a decision model, before any
+        // weight is mapped.
+        if decision_metadata(&spec.model)?.decision_type.is_some() {
+            return load_decision(spec, queue, admission);
+        }
+        if spec.decision != crate::session::DecisionOptions::default() {
+            return Err(OpenAiError::invalid(format!(
+                "{} is not a decision model: the decision options do not apply to it",
+                spec.model.display()
+            )));
+        }
         let defaults = TrainConfig::default();
         // Generation decodes the prompt in `n_batch` chunks inside one context,
         // so the batch only has to stay within the window.
@@ -164,6 +197,64 @@ impl Loader for EngineLoader {
         Ok(ServingBackend {
             backend: Box::new(engine),
             scheduler,
+            decision: None,
         })
     }
+}
+
+/// Loads a decision model in the geometry its answers were checked in: the
+/// engine defaults (one 512-token micro-batch, the longest prompt an encoder
+/// reads in one pass, as llama-server's default), the spec's context, device
+/// and slots. The template override and the head options are applied here, so
+/// a template that does not parse or an option the head refuses fails the
+/// load, not a client's request. Adapters are registered by the session on
+/// first use.
+fn load_decision(
+    spec: &WeightsSpec,
+    queue: usize,
+    admission: retrograd_infer::AdmissionMode,
+) -> Result<ServingBackend, OpenAiError> {
+    let n_seq_max = spec.n_seq_max.unwrap_or(DEFAULT_SERVING_SLOTS);
+    let mut engine = Engine::new(
+        &spec.model,
+        &EngineConfig {
+            n_ctx: spec.n_ctx,
+            n_seq_max,
+            device: spec.device,
+            ..EngineConfig::default()
+        },
+    )?;
+    let options = &spec.decision;
+    if let Some(path) = &options.template {
+        let source = std::fs::read_to_string(path).map_err(|error| {
+            retrograd_core::Error::config(format!(
+                "cannot read the decision template {}: {error}",
+                path.display()
+            ))
+        })?;
+        engine.set_decision_template(Some(&source))?;
+    }
+    let mut info = engine.decision_info()?;
+    if let Some(max_head_tokens) = options.max_head_tokens {
+        info = info.with_max_head_tokens(max_head_tokens)?;
+    }
+    if let Some(pack) = options.pack {
+        // Widening u32 -> usize.
+        let slots = n_seq_max as usize;
+        if pack == 0 || pack > slots {
+            return Err(OpenAiError::invalid(format!(
+                "decision pack must be between 1 and the {slots} sequence slots; got {pack}"
+            )));
+        }
+        info = info.with_packing(pack);
+    }
+    Ok(ServingBackend {
+        backend: Box::new(engine),
+        scheduler: SchedulerOptions {
+            mode: admission,
+            queue_capacity: queue.max(1),
+            ..SchedulerOptions::default()
+        },
+        decision: Some(info),
+    })
 }
