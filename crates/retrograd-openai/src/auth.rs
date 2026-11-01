@@ -46,7 +46,7 @@ pub fn bearer(value: &str) -> Option<&str> {
 
 /// Compares without an early exit, the length folded into the accumulator so
 /// that it does not leak either.
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     let mut difference = u8::from(left.len() != right.len());
     for index in 0..left.len().max(right.len()) {
         difference |=

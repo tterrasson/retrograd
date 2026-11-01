@@ -29,6 +29,7 @@ use http::header;
 
 use crate::error::{ApiError, ErrorCode, ProblemKind};
 use crate::state::AppState;
+use retrograd_openai::auth::{bearer, constant_time_eq};
 
 /// Paths under `/v1` reachable without a token: `/v1/health`, and nothing else
 /// under `/v1`.
@@ -102,34 +103,6 @@ fn signed(state: &AppState, path: &str, query: Option<&str>) -> bool {
     )
 }
 
-/// The token out of an `Authorization` header, scheme matched case-insensitively
-/// as RFC 9110 requires.
-fn bearer(value: &str) -> Option<&str> {
-    let (scheme, token) = value.split_once(' ')?;
-    scheme
-        .eq_ignore_ascii_case("bearer")
-        .then(|| token.trim())
-        .filter(|token| !token.is_empty())
-}
-
-/// Compares without an early exit.
-///
-/// The length is deliberately folded into the accumulator rather than checked
-/// first: an early `return false` on a length mismatch would still leak the
-/// token's length, which is the first thing an attacker needs.
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let mut difference = (left.len() ^ right.len()) as u8;
-    // Walk the longer of the two so the loop count does not depend on where the
-    // shorter one ends.
-    let length = left.len().max(right.len());
-    for index in 0..length {
-        let a = left.get(index).copied().unwrap_or(0);
-        let b = right.get(index).copied().unwrap_or(0);
-        difference |= a ^ b;
-    }
-    difference == 0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +124,6 @@ mod tests {
         assert!(!constant_time_eq(b"secret", b"secret-longer"));
         assert!(!constant_time_eq(b"", b"x"));
         assert!(constant_time_eq(b"", b""));
+        assert!(!constant_time_eq(&[0; 256], b""));
     }
 }
