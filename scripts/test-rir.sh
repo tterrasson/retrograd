@@ -12,6 +12,8 @@
 #   scripts/test-rir.sh --backend metal       # one backend
 #   scripts/test-rir.sh --op CUMSUM           # one op, while iterating
 #   scripts/test-rir.sh --no-perf             # correctness only
+#   scripts/test-rir.sh --emit-ratios P.tsv   # also write the per-shape ratios
+#                                             # (session-prefixed) for rir-gen promote
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -35,6 +37,7 @@ repeat=3
 # behaviour that produced a refusal from three draws.
 escalate=6
 update_baseline=0
+emit_ratios=""
 
 usage() {
     sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -51,6 +54,12 @@ Options:
                                reported as a regression (default 6, 0 to disable)
   --update-domain-baseline     record the claimed-node counts instead of
                                checking them (after a deliberate domain change)
+  --emit-ratios PATH           write the per-shape ratio rows (session-prefixed,
+                               min and max separated) to PATH, e.g. under
+                               generated/rir/perf/<session>.tsv; pairs whose
+                               variants do not all share one policy are then
+                               checked per variant at the end of the lane
+                               (rir-gen promote --check)
   --no-perf                    skip the timing pass
   --timeout S                  wall-clock budget per matrix run (default 300 s)
   --build                      reconfigure/rebuild the fork before running
@@ -65,6 +74,7 @@ while [[ $# -gt 0 ]]; do
         --repeat) repeat="$2"; shift 2 ;;
         --escalate) escalate="$2"; shift 2 ;;
         --update-domain-baseline) update_baseline=1; shift ;;
+        --emit-ratios) emit_ratios="$2"; shift 2 ;;
         --no-perf) run_perf=0; shift ;;
         --timeout) run_timeout="$2"; shift 2 ;;
         --build) force_build=1; shift ;;
@@ -79,6 +89,11 @@ done
 [[ "$escalate" =~ ^[0-9]+$ ]] || {
     echo "--escalate expects an integer >= 0 (got: $escalate)" >&2; exit 2
 }
+
+# Keep the output usable by the final cargo invocation, which changes directory.
+if [[ -n "$emit_ratios" && "$emit_ratios" != /* ]]; then
+    emit_ratios="$PWD/$emit_ratios"
+fi
 
 [[ -f "$registry" ]] || { echo "registry not found: $registry" >&2; exit 1; }
 [[ -d "$fork/ggml" ]] || {
@@ -167,7 +182,9 @@ while IFS= read -r line; do
     pairs+=("$line")
 done < <(
     awk -F'[{},]' '
-        /RIR_POLICY_/ && /RIR_BACKEND_(METAL|VULKAN|CUDA)/ {
+        /^const rir_op_policy rir_op_policies\[\]/ { policies = 1; next }
+        policies && /^};/ { policies = 0 }
+        policies && /RIR_POLICY_/ && /RIR_BACKEND_(METAL|VULKAN|CUDA)/ {
             op=$2; gsub(/[" ]/, "", op); sub(/^GGML_OP_/, "", op)
             be=$3; gsub(/[ ]/, "", be); sub(/^RIR_BACKEND_/, "", be)
             po=$4; gsub(/[ ]/, "", po); sub(/^RIR_POLICY_/, "", po)
@@ -197,6 +214,34 @@ registry_variants() {
     sed -E 's/^ *\{("[^"]*", "[^"]*", )(nullptr|"[^"]*"), /\1/' "$registry" \
     | awk -F'"' -v op="GGML_OP_$op" -v be="RIR_BACKEND_$(tr '[:lower:]' '[:upper:]' <<<"$2")" '
         $2 != "" && $4 == op && index($0, be) > 0 { print $6 }' | sort -u
+}
+
+# The per-row policies the registry declares for one (op, backend) pair, as
+# distinct `RIR_POLICY_*` spellings. More than one means the pair's variants do
+# not all share the pair's policy: the pair is then measured with
+# RETRO_RIR_TEST_PREFER (so every row can run) and its verdict is made per
+# variant by `rir-gen promote --check` at the end of the lane, not per pair.
+registry_variant_policies() {
+    local op="$1" be="$2"
+    sed -E 's/^ *\{("[^"]*", "[^"]*", )(nullptr|"[^"]*"), /\1/' "$registry" \
+    | awk -F'"' -v op="GGML_OP_$op" -v be="RIR_BACKEND_$(tr '[:lower:]' '[:upper:]' <<<"$be")" '
+        $2 != "" && $4 == op && index($0, be) > 0 {
+            line = $0
+            while (match(line, /RIR_POLICY_[A-Z_]+/)) {
+                print substr(line, RSTART, RLENGTH)
+                line = substr(line, RSTART + RLENGTH)
+            }
+        }' | sort -u
+}
+
+# The `variant_id`s of one pair's **named** rows (specializations): the row's
+# `variant` field is not `nullptr`. The fallback - the unnamed row - is what a
+# site fully covered by specializations never dispatches.
+registry_named_variants() {
+    local op="$1" be="$2"
+    sed -E 's/^ *\{("[^"]*", "[^"]*", )(nullptr|"[^"]*"), /\1/' "$registry" \
+    | awk -F'"' -v op="GGML_OP_$op" -v be="RIR_BACKEND_$(tr '[:lower:]' '[:upper:]' <<<"$be")" '
+        $2 != "" && $4 == op && index($0, be) > 0 && $9 !~ /nullptr/ { print $6 }' | sort -u
 }
 
 # --- which GPUs are actually here --------------------------------------------
@@ -351,7 +396,11 @@ run_matrix() {
     else
         envs+=(RETRO_RIR_MODE=prefer)
         # The promotion list is keyed by `ggml_op_name()`, i.e. the short name.
-        [[ "$policy" == "observe_generated" ]] && envs+=("RETRO_RIR_TEST_PREFER=$op")
+        # An observe pair is listed, and so is a pair whose variants do not all
+        # share one policy (`pair_mixed`): the elevation raises observe to
+        # prefer on the rows too, so every variant of the pair can be measured.
+        [[ "$policy" == "observe_generated" || "${pair_mixed:-0}" -eq 1 ]] \
+            && envs+=("RETRO_RIR_TEST_PREFER=$op")
     fi
     local -a cmd=("$bin")
     [[ "$what" == "perf" ]] && cmd+=(perf)
@@ -535,12 +584,10 @@ assert_counters() {
     cov_rows+=("$op/$be	$rir/$seen	${pct} %	${rejects:--}	$domain")
 
     # Every variant the registry declares for this pair must have run at least
-    # once, and the per-variant counts must add up to `rir`. Printing the
-    # distribution is not enough: a backend that resolves the pipeline by kernel
-    # name instead of by variant would send every node to the fallback and still
-    # pass every check above. This is the assertion that makes the arbitration
-    # itself covered on a device, which the synthetic self-test cannot do.
-    local total=0 missing=""
+    # once, and the per-variant counts must add up to `rir`. Whether every
+    # declared variant actually ran is checked after the timing passes, over
+    # the eval and perf logs merged (`assert_variants_dispatched`).
+    local total=0
     local -a declared=()
     while IFS= read -r v; do [[ -n "$v" ]] && declared+=("$v"); done < <(registry_variants "$op" "$be")
     for v in ${declared[@]+"${declared[@]}"}; do
@@ -548,15 +595,7 @@ assert_counters() {
         n="$(sed -nE "s/.*\[$v\]=([0-9]+).*/\1/p" <<<"$line")"
         n="${n:-0}"
         total=$((total + n))
-        [[ "$n" -eq 0 ]] && missing="$missing $v"
     done
-    if [[ -n "$missing" ]]; then
-        # Not a "shape not exercised" excuse: the matrix covers both regimes for
-        # every pair the registry arbitrates. A variant at zero means the
-        # dispatcher never chose it.
-        echo "    !! declared variant(s) never dispatched:$missing"
-        return 1
-    fi
     if [[ "$total" -ne "$rir" ]]; then
         echo "    !! sum of variants ($total) != rir ($rir): a variant outside the registry"
         return 1
@@ -590,6 +629,39 @@ assert_counters() {
     return 0
 }
 
+# Every **named** variant the registry declares for a pair must have been
+# dispatched at least once across the lane's runs of that pair (the eval matrix
+# and the last perf pass, merged): a named variant at zero means the dispatcher
+# never chose it - e.g. a backend resolving the pipeline by kernel name instead
+# of by variant, which would send every node to the fallback. The fallback
+# itself is exempt: on a regime-scoped site whose offered domain the
+# specializations cover entirely (the decode GEMV once the single-token pick
+# claims plane=1), it serves only shapes the site never offers.
+assert_variants_dispatched() {
+    local op="$1" be="$2" tag="$3"
+    local -a logs=("$tmp/$tag.rir.log")
+    [[ -f "$tmp/$tag.rir.perf" ]] && logs+=("$tmp/$tag.rir.perf")
+    local merged
+    merged="$(cat "${logs[@]}" 2>/dev/null | grep -E "^ggml-rir: site GGML_OP_$op/$be " | awk '
+        { line = $0
+          while (match(line, /\[[A-Za-z0-9_]+\]=[0-9]+/)) {
+              tok = substr(line, RSTART, RLENGTH); line = substr(line, RSTART + RLENGTH)
+              split(tok, a, /[\[\]=]/); s[a[2]] += a[3] } }
+        END { for (v in s) printf "%s=%d\n", v, s[v] }')"
+    local v n missing=""
+    while IFS= read -r v; do
+        [[ -z "$v" ]] && continue
+        n="$(awk -F= -v want="$v" '$1 == want { print $2 }' <<<"$merged")"
+        n="${n:-0}"
+        [[ "$n" -eq 0 ]] && missing="$missing $v"
+    done < <(registry_named_variants "$op" "$be")
+    if [[ -n "$missing" ]]; then
+        echo "    !! declared variant(s) never dispatched:$missing"
+        return 1
+    fi
+    return 0
+}
+
 # `  OP(args): N runs - X us/run -...`, the label and the time possibly split
 # across lines by a backend's own logging.
 extract_times() {
@@ -607,8 +679,26 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 failures=0
 declare -a perf_rows=()
+declare -a ratio_rows=()
 declare -a cov_rows=()
 declare -a new_baseline=()
+declare -a mixed_pairs=()
+declare -a dispatch_pairs=()
+mixed_measured=0
+# Per-pair flag read by run_matrix: 1 when the pair's variant rows do not all
+# share one policy, so the RIR run must elevate every row to measure them.
+pair_mixed=0
+
+# Writes the ratio rows collected this session, session-prefixed and with min
+# and max separated, in the column order `rir-gen promote --ratios` reads:
+# session pair regime label nat_us rir_us median min max passes verdict
+write_ratios() {
+    local path="$1"
+    mkdir -p "$(dirname "$path")"
+    { printf '# session\tpair\tregime\tlabel\tnat_us\trir_us\tmedian\tmin\tmax\tpasses\tverdict\n'
+      printf '%s\n' "${ratio_rows[@]}"; } >"$path"
+    echo "ratios written: $path (${#ratio_rows[@]} row(s))"
+}
 
 # Median, min, max and count of column `$1` of the samples recorded for shape
 # `$2` in file `$3`. One helper for the ratio and for the two columns that
@@ -684,6 +774,18 @@ for pair in ${pairs[@]+"${pairs[@]}"}; do
     [[ " ${selected[*]} " == *" $be "* ]] || continue
     if [[ -n "$ops_filter" && ",$ops_filter," != *",$op,"* ]]; then continue; fi
 
+    # A pair whose variant rows do not all carry the pair's policy (whether they
+    # differ from each other or all differ from the pair) is measured with every
+    # row elevated, and its verdict is made per variant at the end of the lane
+    # (`rir-gen promote --check`) instead of per pair below.
+    pair_mixed=0
+    pair_pol_enum="RIR_POLICY_$(tr '[:lower:]' '[:upper:]' <<<"$policy")"
+    n_variant_policies="$( { registry_variant_policies "$op" "$be"; echo "$pair_pol_enum"; } | sort -u | wc -l )"
+    if [[ "$n_variant_policies" -gt 1 ]]; then
+        pair_mixed=1
+        mixed_pairs+=("$op/$be")
+    fi
+
     if [[ "$native" == "retired" ]]; then
         echo "== $op / $be (policy: $policy, native retired)"
     else
@@ -734,6 +836,10 @@ for pair in ${pairs[@]+"${pairs[@]}"}; do
     fi
 
     assert_counters "$op" "$be" "$tmp/$tag.rir.log" || failures=$((failures + 1))
+    # The never-dispatched check runs after the timing passes, so the perf log
+    # can be merged in (a variant only the perf shapes exercise, like the
+    # matrix tile of a quantized format, must not be reported as never chosen).
+    dispatch_pairs+=("$op $be $tag")
 
     [[ $run_perf -eq 1 ]] || continue
     if [[ "$native" == "retired" ]]; then
@@ -783,14 +889,23 @@ for pair in ${pairs[@]+"${pairs[@]}"}; do
         # them - the displayed µs are then the same draw the verdict is made on.
         stats="$(col_stats 4 "$label" "$tmp/$tag.samples")" || continue
         IFS=$'\t' read -r ratio rmin rmax n <<<"$stats"
+        # Raw values, kept for the ratios file: `rir-gen promote` re-decides the
+        # verdict per variant on the median, and rounding it to two decimals
+        # here would make that a different number than the one displayed.
+        raw_ratio="$ratio"; raw_rmin="$rmin"; raw_rmax="$rmax"; raw_n="$n"
+        raw_nat="$(col_stats 2 "$label" "$tmp/$tag.samples" | cut -f1)"
+        raw_rir="$(col_stats 3 "$label" "$tmp/$tag.samples" | cut -f1)"
         ratio="$(printf '%.2f' "$ratio")"
         rmin="$(printf '%.2f' "$rmin")"
         rmax="$(printf '%.2f' "$rmax")"
-        nat_us="$(printf '%.2f' "$(col_stats 2 "$label" "$tmp/$tag.samples" | cut -f1)")"
-        rir_us="$(printf '%.2f' "$(col_stats 3 "$label" "$tmp/$tag.samples" | cut -f1)")"
+        nat_us="$(printf '%.2f' "$raw_nat")"
+        rir_us="$(printf '%.2f' "$raw_rir")"
         verdict="ok"
-        if awk -v r="$ratio" -v t="$tolerance" 'BEGIN { exit !(r > t) }'; then
-            if [[ "$policy" == "prefer_generated" ]]; then
+        if awk -v r="$raw_ratio" -v t="$tolerance" 'BEGIN { exit !(r > t) }'; then
+            # A mixed-policy pair is not failed per pair: its verdict is made
+            # per variant by `rir-gen promote --check` at the end of the lane,
+            # on the rows written below.
+            if [[ "$policy" == "prefer_generated" && $pair_mixed -eq 0 ]]; then
                 verdict="REGRESSION"; failures=$((failures + 1))
             else
                 verdict="work item"
@@ -810,8 +925,19 @@ for pair in ${pairs[@]+"${pairs[@]}"}; do
         # Braces around the two bounds: the separator is an en dash, and bash 3.2
         # reads its bytes as part of the name of the variable before it.
         regime="$(regime_of "$op" "$label")"
+        ratio_rows+=("$(printf '%s\t%s\t%s\t%s\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%s\t%s' \
+            "$session_id" "$op/$be" "$regime" "$label" \
+            "$raw_nat" "$raw_rir" "$raw_ratio" "$raw_rmin" "$raw_rmax" "$raw_n" "$verdict")")
+        if [[ $pair_mixed -eq 1 ]]; then
+            mixed_measured=1
+        fi
         perf_rows+=("$op/$be	$regime	$label	$nat_us	$rir_us	$ratio	${rmin}–${rmax}	$n	$verdict")
     done < <(awk -F'\t' '!seen[$1]++ { print $1 }' "$tmp/$tag.samples")
+done
+
+for entry in ${dispatch_pairs[@]+"${dispatch_pairs[@]}"}; do
+    IFS=' ' read -r op be tag <<<"$entry"
+    assert_variants_dispatched "$op" "$be" "$tag" || failures=$((failures + 1))
 done
 
 if [[ ${#cov_rows[@]} -gt 0 ]]; then
@@ -876,6 +1002,28 @@ if [[ ${#perf_rows[@]} -gt 0 ]]; then
           END { for (i = 1; i <= m; i++) { k = order[i]
                     printf "%s\t%d\t%.2f\t%d\t%d\t%d\n", k, n[k], worst[k], reg[k], wi[k], par[k] } }'
     } | column -t -s$'\t'
+fi
+
+# The per-shape ratios, session-prefixed, for `rir-gen promote` - written when
+# asked for, and always (to a temp file) when a mixed-policy pair was measured,
+# because the per-variant check below reads them.
+if [[ ${#ratio_rows[@]} -gt 0 && -n "$emit_ratios" ]]; then
+    write_ratios "$emit_ratios"
+fi
+if [[ $mixed_measured -eq 1 && ${#ratio_rows[@]} -gt 0 ]]; then
+    check_ratios="${emit_ratios:-$tmp/ratios.tsv}"
+    [[ -n "$emit_ratios" ]] || write_ratios "$check_ratios"
+    echo
+    echo "== per-variant policy check (pairs with mixed variant policies: ${mixed_pairs[*]})"
+    echo "   the pair verdict above is replaced for them by this one: a variant at"
+    echo "   prefer_generated must hold $tolerance on every shape attributed to it"
+    if (cd "$repo_root" && cargo run --quiet -p rir-gen -- \
+            promote --check --ratios "$check_ratios" --tolerance "$tolerance"); then
+        echo "   promote --check: OK"
+    else
+        echo "   !! promote --check failed - a prefer variant is beyond the tolerance"
+        failures=$((failures + 1))
+    fi
 fi
 
 echo

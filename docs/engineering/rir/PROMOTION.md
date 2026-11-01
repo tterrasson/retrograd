@@ -78,9 +78,8 @@ lane like any other.
 `rir_core::profiles`: hidden and head norms, FFN activations, residuals and
 weight projections. Decode covers 1, 4, 8, 16 and 32 tokens; prefill covers
 512. Without `--regime`, the two are reported separately. The catalogue
-publishes the profiles and validates their selections against its variants;
-their selections are currently empty, so no model-specific dispatch choice is
-installed.
+publishes the profiles as measurement geometries. They carry no selections;
+dispatch choices remain per-variant claims and policies.
 
 ### Level 2 - the promotion lane
 
@@ -99,7 +98,9 @@ same shapes. The lane:
 2. **builds the fork** if needed;
 3. **runs the matrix twice** per pair, native then RIR, on the same binary. A
    pair still in `observe_generated` is promoted for the process by
-   `RETRO_RIR_TEST_PREFER`, without which nothing would encode it;
+   `RETRO_RIR_TEST_PREFER`, without which nothing would encode it - and so is a
+   pair whose variants do not all share one policy, so every variant of it can
+   be measured (the elevation applies to the rows as well as to the pair);
 4. **checks the per-site counters**: `rir > 0`, and every native fallback must
    be explained by a portable-contract rejection the registry declares for that
    pair. A device rejection, or a fallback nobody declared, fails the lane;
@@ -108,9 +109,10 @@ same shapes. The lane:
    beside it.
 
 The ratio is a verdict for a `prefer_generated` pair and an open work item for
-an `observe_generated` one. A shape whose spread covers the whole distance to
-the native kernel prints `parity`: neither a gain to claim nor a regression to
-fail on.
+an `observe_generated` one - except for a pair whose variants do not all share
+one policy, whose verdict is made per variant at the end of the lane (see
+below). A shape whose spread covers the whole distance to the native kernel
+prints `parity`: neither a gain to claim nor a regression to fail on.
 
 Three properties the script enforces on itself: MoltenVK is configured by
 detection, a requested device that is missing fails the lane instead of
@@ -163,6 +165,38 @@ An `(op, backend)` pair moves to `prefer_generated` when, and only when:
 - the generated shader's device parity against the Loop IR oracle is green
   (`scripts/test-rir-parity.sh`);
 - `require` fails cleanly on a shape outside the contract.
+
+## Promotion is per variant, under the pair's ceiling
+
+A pair's policy in `rir_op_policies` is only a **ceiling**. Every variant row
+also carries its own `policy` (`rir_variant_desc.policy`), read from
+`crates/rir-kernels/policy/variants.tsv` at generation time: the effective policy
+at dispatch is `min(pair, variant)`, so a variant held at `observe_generated` on
+a `prefer_generated` pair is registered, measured and counted but never encodes
+- the node passes to the next candidate, then to the native kernel. A variant
+absent from the file carries the pair's policy, which is what makes adding the
+file a no-op for the pairs it does not name. `rir-gen` refuses a row that names
+an unknown variant, sits above its pair's ceiling, or belongs to an op with no
+attribution adapter.
+
+A variant moves to `prefer_generated` under the same criterion as a pair, but
+applied to the bucket: **at least one measured shape attributed to it, and a
+median ratio at or under the tolerance on every one of them**.
+
+- The lane writes the per-shape ratios with `--emit-ratios PATH`, committed
+  under `generated/rir/perf/<session>.tsv` when a promotion rests on them:
+  `session  pair  regime  label  nat_us  rir_us  median  min  max  passes
+  verdict`. `scripts/rir-domain-baseline.tsv` keeps its own role (coverage).
+- `cargo run -p rir-gen -- promote --ratios <file>` attributes each measured
+  shape to the variant that served it - the same selection the dispatcher ran,
+  replayed in Rust: same `src0` dtype claim, same shape claim, same priority
+  rule - and prints the proposed `variants.tsv` diff (`prefer_generated` when
+  the criterion holds, `observe_generated` otherwise, never above the pair's
+  ceiling). `--write` applies it to the file; the commit stays human.
+- `promote --check` is called at the end of `test-rir.sh` for every pair whose
+  variants do not all share one policy, and fails the lane when a variant at
+  `prefer_generated` has an attributed shape beyond the tolerance. For those
+  pairs it replaces the per-pair verdict.
 
 ## Retiring a native kernel
 
