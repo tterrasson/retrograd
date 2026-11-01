@@ -363,7 +363,7 @@ async fn redact_problem_paths(
     if !is_problem {
         return response;
     }
-    let (parts, body) = response.into_parts();
+    let (mut parts, body) = response.into_parts();
     let Ok(bytes) = axum::body::to_bytes(body, 64 * 1024).await else {
         // Unreadable, so it cannot be redacted; an empty problem body is a worse
         // answer than none, so the response is rebuilt as a bare status.
@@ -398,13 +398,14 @@ async fn redact_problem_paths(
         *meta = error::redact_paths_in_value(meta);
     }
     let body = serde_json::to_vec(&document).unwrap_or_else(|_| bytes.to_vec());
+    parts.headers.remove(header::CONTENT_LENGTH);
     (parts, body).into_response()
 }
 
 /// [`redact_problem_paths`] for the OpenAI envelope: its one prose field is
 /// `error.message`, and a model that failed to load names its file there.
 async fn redact_openai_envelope(response: Response) -> Response {
-    let (parts, body) = response.into_parts();
+    let (mut parts, body) = response.into_parts();
     let Ok(bytes) = axum::body::to_bytes(body, 64 * 1024).await else {
         return (parts.status, "").into_response();
     };
@@ -422,6 +423,7 @@ async fn redact_openai_envelope(response: Response) -> Response {
         }
     }
     let body = serde_json::to_vec(&document).unwrap_or_else(|_| bytes.to_vec());
+    parts.headers.remove(header::CONTENT_LENGTH);
     Response::from_parts(parts, axum::body::Body::from(body))
 }
 
