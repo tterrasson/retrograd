@@ -13,7 +13,7 @@
 //! the caller can still answer the request with an error.
 
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -138,13 +138,26 @@ impl Journal {
 /// reader could have seen anyway. Everything before it is intact by construction,
 /// which is exactly the guarantee a replay needs.
 pub fn read_events(dir: &Path, since: u64) -> Vec<dto::RunEvent> {
-    let Ok(text) = std::fs::read_to_string(dir.join("events.jsonl")) else {
+    let Ok(file) = File::open(dir.join("events.jsonl")) else {
         return Vec::new();
     };
-    text.lines()
-        .filter_map(|line| serde_json::from_str::<dto::RunEvent>(line).ok())
-        .filter(|event| event.seq > since)
-        .collect()
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    let mut events = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                if let Ok(event) = serde_json::from_str::<dto::RunEvent>(&line)
+                    && event.seq > since
+                {
+                    events.push(event);
+                }
+            }
+        }
+    }
+    events
 }
 
 /// Reads back every run in the state directory, newest first.
