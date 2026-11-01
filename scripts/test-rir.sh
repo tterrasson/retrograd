@@ -646,7 +646,8 @@ assert_variants_dispatched() {
         { line = $0
           while (match(line, /\[[A-Za-z0-9_]+\]=[0-9]+/)) {
               tok = substr(line, RSTART, RLENGTH); line = substr(line, RSTART + RLENGTH)
-              split(tok, a, /[\[\]=]/); s[a[2]] += a[3] } }
+              end = index(tok, "]")
+              s[substr(tok, 2, end - 2)] += substr(tok, end + 2) } }
         END { for (v in s) printf "%s=%d\n", v, s[v] }')"
     local v n missing=""
     while IFS= read -r v; do
