@@ -68,13 +68,19 @@ pub async fn stream(
 ) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
     let handle = super::runs::lookup(&state, &id)?;
     let since = resume_point(&headers, query.since);
+    Ok(stream_from(handle, since))
+}
 
+fn stream_from(
+    handle: std::sync::Arc<crate::runtime::RunHandle>,
+    since: u64,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     // Subscribe first, replay second. The other order loses every event emitted
     // between the two calls, which on a busy run is where the interesting ones
     // are.
     let mut live = handle.subscribe();
+    let terminal_already = handle.events_finished();
     let replay = handle.replay(since);
-    let terminal_already = handle.status().is_terminal();
 
     let stream = async_stream::stream! {
         let mut last = since;
@@ -83,8 +89,12 @@ pub async fn stream(
                 continue;
             }
             last = event.seq;
+            let done = matches!(event.payload, dto::RunEventPayload::Terminal { .. });
             if let Some(frame) = frame(&event) {
                 yield Ok(frame);
+            }
+            if done {
+                return;
             }
         }
         // A finished run has nothing more to say. Ending the stream is what lets
@@ -122,7 +132,7 @@ pub async fn stream(
             }
         }
     };
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 /// `GET /v1/events` - every run's events, merged.
@@ -245,4 +255,54 @@ fn frame(event: &dto::RunEvent) -> Option<Event> {
         .event(event.payload.kind())
         .json_data(event)
         .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_terminal_status_does_not_close_before_the_terminal_event() {
+        let handle = crate::runtime::registry::testing::detached_handle();
+        assert!(handle.transition(dto::RunStatus::Completed));
+        let response = stream_from(handle.clone(), 0).into_response();
+        let reader = tokio::spawn(async move {
+            axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .unwrap()
+        });
+        // The status and the final event are separate publications. Hold the
+        // latter back until the consumer has polled the replay.
+        tokio::task::yield_now().await;
+        assert!(!reader.is_finished(), "closed before the terminal event");
+        handle.emit(dto::RunEventPayload::Terminal {
+            status: dto::RunStatus::Completed,
+            error: None,
+        });
+        let bytes = tokio::time::timeout(Duration::from_secs(1), reader)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("event: terminal"));
+    }
+
+    #[tokio::test]
+    async fn replaying_the_terminal_event_closes_even_without_a_terminal_status() {
+        let handle = crate::runtime::registry::testing::detached_handle();
+        handle.emit(dto::RunEventPayload::Terminal {
+            status: dto::RunStatus::Completed,
+            error: None,
+        });
+        let response = stream_from(handle, 0).into_response();
+        let bytes = tokio::time::timeout(
+            Duration::from_secs(1),
+            axum::body::to_bytes(response.into_body(), 64 * 1024),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("event: terminal"));
+    }
 }

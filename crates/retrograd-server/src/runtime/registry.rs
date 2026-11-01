@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use retrograd_core::Result as CoreResult;
@@ -224,6 +224,8 @@ pub struct RunHandle {
     pub record: RunRecord,
     state: RwLock<RunState>,
     next_seq: AtomicU64,
+    /// Published only after the terminal event, not merely the terminal status.
+    events_finished: AtomicBool,
     /// Absent for a run restored from disk: its journal is complete and must not
     /// be appended to by a process that is not running it.
     journal: Option<Journal>,
@@ -343,6 +345,7 @@ impl RunHandle {
         // Serialize numbering, journaling and broadcasting as one publication.
         // An atomic counter alone lets another producer publish seq N+1 first.
         let mut ring = self.ring.write().recover();
+        let terminal = matches!(payload, dto::RunEventPayload::Terminal { .. });
         let event = Arc::new(dto::RunEvent {
             seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
             at: unix_millis(),
@@ -365,6 +368,14 @@ impl RunHandle {
             run: self.id.to_string(),
             event,
         });
+        if terminal {
+            self.events_finished.store(true, Ordering::Release);
+        }
+    }
+
+    /// Whether the event history is complete. Sample before replaying it.
+    pub fn events_finished(&self) -> bool {
+        self.events_finished.load(Ordering::Acquire)
     }
 
     /// A live subscription. Taken *before* replaying, so nothing emitted between
@@ -615,6 +626,7 @@ impl RunRegistry {
                     transitions: stored.transitions,
                 }),
                 next_seq: AtomicU64::new(1),
+                events_finished: AtomicBool::new(true),
                 journal: None,
                 dir: state_dir.join(&stored.id),
                 control: None,
@@ -693,6 +705,7 @@ impl RunRegistry {
                 }],
             }),
             next_seq: AtomicU64::new(1),
+            events_finished: AtomicBool::new(false),
             journal: Some(journal),
             dir: self.state_dir.join(id.to_string()),
             control: Some(control),
@@ -938,6 +951,7 @@ pub mod testing {
                 transitions: Vec::new(),
             }),
             next_seq: AtomicU64::new(1),
+            events_finished: AtomicBool::new(false),
             journal: None,
             dir: PathBuf::new(),
             control: None,
