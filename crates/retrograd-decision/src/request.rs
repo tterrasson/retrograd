@@ -100,6 +100,16 @@ pub struct SystemOneRequest {
 }
 
 impl SystemOneRequest {
+    /// A request that asks one question about `state`, with no media: how a
+    /// labelled example is put to the model.
+    pub fn single(state: Json, question_id: String, question: Question) -> Self {
+        Self {
+            state,
+            images: Vec::new(),
+            questions: IndexMap::from([(question_id, question)]),
+        }
+    }
+
     /// Parses and validates a body.
     pub fn from_slice(body: &[u8], readout: &Readout) -> Result<Self, DecisionError> {
         let body: Json = serde_json::from_slice(body)

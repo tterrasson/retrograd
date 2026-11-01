@@ -127,6 +127,11 @@ pub fn fit_temperature(samples: &[Sample]) -> Result<Fit, DecisionError> {
             "samples must share one temperature key".into(),
         ));
     }
+    Ok(fit(samples))
+}
+
+/// The search itself, over samples known to be non-empty.
+fn fit(samples: &[Sample]) -> Fit {
     let mean_nll = |temperature: f64| {
         samples
             .iter()
@@ -161,12 +166,12 @@ pub fn fit_temperature(samples: &[Sample]) -> Result<Fit, DecisionError> {
         }
     }
     let temperature = ((low + high) / 2.0).exp();
-    Ok(Fit {
+    Fit {
         temperature,
         nll_before: mean_nll(1.0),
         nll_after: mean_nll(temperature),
         n_samples: samples.len(),
-    })
+    }
 }
 
 /// Fits one temperature per key of `samples`.
@@ -179,6 +184,24 @@ pub fn fit_all(samples: &[Sample]) -> Result<BTreeMap<String, Fit>, DecisionErro
         .into_iter()
         .map(|(key, group)| Ok((key.to_owned(), fit_temperature(&group)?)))
         .collect()
+}
+
+/// Fits one temperature per question type, over all the buckets of the type:
+/// the `<type>` entry a question falls back to when its bucket has no
+/// temperature of its own.
+pub fn fit_types(samples: &[Sample]) -> Result<BTreeMap<String, Fit>, DecisionError> {
+    let mut groups: BTreeMap<&str, Vec<Sample>> = BTreeMap::new();
+    for sample in samples {
+        let kind = sample.key().split('.').next().unwrap_or(sample.key());
+        groups.entry(kind).or_default().push(sample.clone());
+    }
+    if groups.is_empty() {
+        return Err(DecisionError::Calibration("no sample to fit".into()));
+    }
+    Ok(groups
+        .into_iter()
+        .map(|(kind, group)| (kind.to_owned(), fit(&group)))
+        .collect())
 }
 
 /// A sample count as `f64`. Exact below 2^53, far above any validation set.
@@ -282,6 +305,16 @@ mod tests {
         assert!((fits["choice.2"].temperature - 0.5).abs() < 1e-4);
         assert!((fits["choice.3_5"].temperature - 3.0).abs() < 1e-4);
         assert!((fits["noul.2"].temperature - 1.5).abs() < 1e-4);
+
+        let types = fit_types(&samples).expect("fits");
+        assert_eq!(
+            types.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["choice", "noul"]
+        );
+        assert_eq!(types["choice"].n_samples, 40);
+        // One temperature for both buckets lies between theirs.
+        assert!(types["choice"].temperature > 0.5 && types["choice"].temperature < 3.0);
+        assert!((types["noul"].temperature - 1.5).abs() < 1e-4);
     }
 
     #[test]

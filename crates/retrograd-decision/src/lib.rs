@@ -14,7 +14,9 @@
 //! - [`layout`]: how the rendered tokens are cut and where the scores are read;
 //! - [`answer`]: raw scores to the JSON answer, temperatures and confidence;
 //! - [`dataset`]: the training examples;
-//! - [`calibrate`]: fitting the temperatures on a validation set.
+//! - [`calibrate`]: fitting the temperatures on a validation set;
+//! - [`metrics`]: accuracy, NLL, Brier, calibration error and coverage of a
+//!   labelled set.
 //!
 //! The behaviour is the one of the decision server of llama.cpp
 //! (`tools/server/server-decision.cpp`), so the same GGUF gives the same
@@ -40,6 +42,7 @@ pub mod dataset;
 mod error;
 pub mod json;
 pub mod layout;
+pub mod metrics;
 pub mod readout;
 pub mod request;
 pub mod template;

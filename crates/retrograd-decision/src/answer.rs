@@ -98,6 +98,32 @@ impl Calibration {
         Ok(calibration)
     }
 
+    /// The temperatures by name: `<type>`, `<type>.<bucket>`, `image`.
+    pub fn temperatures(&self) -> &BTreeMap<String, f32> {
+        &self.temperatures
+    }
+
+    /// This calibration with the temperatures of `entries` in place of its
+    /// own, its score biases kept. `entries` are metadata entries with their
+    /// `<arch>.decision.` or `adapter.decision.` prefix removed; only the
+    /// `temperature.*` ones are read. A set fitted together replaces a set
+    /// fitted on other weights instead of mixing with it: a bucket the new set
+    /// lacks falls back to its type, not to the old weights' bucket.
+    pub fn with_temperatures_of<'a>(
+        &self,
+        entries: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> Result<Self, DecisionError> {
+        let fitted = Self::from_metadata(
+            entries
+                .into_iter()
+                .filter(|(key, _)| key.starts_with("temperature.")),
+        )?;
+        Ok(Self {
+            temperatures: fitted.temperatures,
+            score_bias: self.score_bias.clone(),
+        })
+    }
+
     /// The temperature of `kind` with `n_options` options: `<type>.<bucket>`,
     /// then `<type>`, then 1.
     pub fn temperature(&self, readout: &Readout, kind: QuestionKind, n_options: usize) -> f32 {
@@ -132,7 +158,7 @@ fn index_f64(index: usize) -> f64 {
 }
 
 /// The position of the first largest value, as `std::max_element` finds it.
-fn argmax(values: &[f64]) -> usize {
+pub(crate) fn argmax(values: &[f64]) -> usize {
     let mut best = 0;
     for (i, value) in values.iter().enumerate() {
         if *value > values[best] {
@@ -144,7 +170,7 @@ fn argmax(values: &[f64]) -> usize {
 
 /// `(p_max - 1/n) / (1 - 1/n)`, 0 for a uniform distribution, 1 when one option
 /// takes everything.
-fn confidence_choice(probs: &[f64]) -> f64 {
+pub(crate) fn confidence_choice(probs: &[f64]) -> f64 {
     if probs.len() < 2 {
         return 1.0;
     }
@@ -155,7 +181,7 @@ fn confidence_choice(probs: &[f64]) -> f64 {
 
 /// One minus the mean distance to the mode, relative to the one of a uniform
 /// distribution around its center.
-fn confidence_score(probs: &[f64]) -> f64 {
+pub(crate) fn confidence_score(probs: &[f64]) -> f64 {
     if probs.len() < 2 {
         return 1.0;
     }
