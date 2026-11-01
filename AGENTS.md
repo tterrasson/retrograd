@@ -35,7 +35,8 @@ Two tools for shaping a kernel, neither of which decides a promotion:
   the test - RIR against RIR.
 - `cargo run --release -p rir-sweep -- --kernel <name>` runs the same loop over
   a small product of candidate geometries, refusing gains inside the measured
-  noise. Its last block is a proposal to read and commit by hand.
+  noise. Its last block is a proposal to read and commit by hand;
+  `--write-proposal PATH` gathers it in a file, never in the table.
 
 ## Errors
 

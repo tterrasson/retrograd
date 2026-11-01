@@ -57,6 +57,7 @@ kernel to compare against, and it does not take the ggml path.
 cargo run --release -p rir-sweep -- --kernel rms_norm_back --backend vulkan --reps 9
 cargo run --release -p rir-sweep -- --kernel rms_norm --backend metal
 cargo run --release -p rir-sweep -- --kernel rms_norm --backend metal --profile qwen3-0.6b-q8_0 --regime decode
+cargo run --release -p rir-sweep -- --kernel mul_mat_vec_q4_K --backend metal --candidate mma --write-proposal /tmp/q4_K.proposal
 ```
 
 `rir-sweep` runs the level-1 loop over a small product of valid candidates and
@@ -70,13 +71,28 @@ prints a proposal in `schedules_for`'s vocabulary. It refuses a candidate:
   `sqrt(n) * 8 * eps`, checked before its time is read: a kernel that is wrong
   and fast is never a proposal.
 
-Nothing is written automatically. The last block of a sweep is a proposal to
-review and commit by hand, and a table change then goes through the promotion
-lane like any other.
+Nothing is written into the source. The last block of a sweep is a proposal
+to review and commit by hand, and a table change then goes through the
+promotion lane like any other. `--write-proposal PATH` gathers the retained
+rows of every sweep of the run - a family with a geometry space proposes
+`Pick`s - into `PATH`, and refuses a path that holds anything but an earlier
+proposal.
+
+A family with a geometry space (`rir_lower::schedule::spaces`) draws its
+candidates from it, so a proposal is written in the vocabulary of the picks it
+would join. The GEMV's own grid crosses 1, 2, 4, 8, 16 and 32 tokens with
+depths and row counts of 1024, 4096 and 14336; against a space of a few
+hundred geometries, `--candidate` narrows a run to the question at hand.
+
+The loop end to end: `rir-sweep` (RIR against RIR) proposes picks; a human
+pastes them into the table and regenerates with `rir-gen`;
+`scripts/test-rir.sh --emit-ratios` measures them against the native kernel;
+`rir-gen promote` proposes the per-variant policies; a human commits.
 
 `--profile` derives the shapes from a reference model's dimensions in
 `rir_core::profiles`: hidden and head norms, FFN activations, residuals and
-weight projections. Decode covers 1, 4, 8, 16 and 32 tokens; prefill covers
+weight projections (`ModelShape::matmul_shapes`: Q, K, V, output, gate, up,
+down). Decode covers 1, 4, 8, 16 and 32 tokens; prefill covers
 512. Without `--regime`, the two are reported separately. The catalogue
 publishes the profiles as measurement geometries. They carry no selections;
 dispatch choices remain per-variant claims and policies.
