@@ -1,8 +1,8 @@
 # Configuration reference
 
 A run is described by one TOML file. `[run].algorithm` selects the algorithm
-and its section: `[sft]`, `[ppo]`, `[grpo]`, `[distill]`, `[preference]`, or
-`[agent]` for `agent_grpo`. Unknown keys, and sections that do not apply to the run, are
+and its section: `[sft]`, `[ppo]`, `[grpo]`, `[distill]`, `[preference]`,
+`[decision]`, or `[agent]` for `agent_grpo`. Unknown keys, and sections that do not apply to the run, are
 errors. Relative paths resolve against the directory of the TOML file.
 
 The same schema is published as JSON Schema, for an editor to complete and
@@ -22,7 +22,7 @@ and [Retrograd server](../running/server#configuration).
 
 | Key | Default | Description |
 | --- | ---: | --- |
-| `algorithm` | required | `sft`, `ppo`, `grpo`, `distill`, `preference` or `agent_grpo`. |
+| `algorithm` | required | `sft`, `ppo`, `grpo`, `distill`, `preference`, `decision` or `agent_grpo`. |
 | `verbose` | `false` | Extra runtime logging. |
 
 ### `[model]`
@@ -318,6 +318,25 @@ Keys of one mode are refused in the other.
 A key the chosen loss does not read is an error. `training.epochs` counts the
 passes over the pairs; `training.gradient_accumulation` is pinned to
 `ctx / micro_batch`. See [Preference optimization](../training/preference).
+
+## `[decision]` {#decision}
+
+| Key | Default | Description |
+| --- | ---: | --- |
+| `data` | required | Decision JSONL: one question per line with `answer` or `probabilities`. |
+| `data_format` | `native` | `native`, or `julia` for `question`/`options`/`type`/`target`/`teacher_logits`. |
+| `template` | the model's | A `systemone` template to render the questions with. |
+| `max_head_tokens` | the model's | The head budget the questions are laid out with. |
+| `option_shuffle` | `true` | Shuffle the options of every `choice` question at each epoch. |
+| `shuffle` | `true` | Shuffle the questions at each epoch, seeded from `lora.seed`. |
+| `calibrate` | with `[evaluation]` | Fit the temperatures on `[evaluation].data` and export them. |
+| `questions_per_batch` | `8` | Most questions one micro-batch holds. |
+| `export_base` | none | Also write a copy of the base model carrying the fitted temperatures. |
+
+A micro-batch also holds at most `training.micro_batch` tokens, which bounds
+the length of one question; `training.ctx` must be a multiple of it.
+`training.gradient_accumulation` counts micro-batches per optimizer update.
+The run trains on the CPU. See [Decision models](../training/decision).
 
 ## Agentic GRPO {#agentic-grpo}
 

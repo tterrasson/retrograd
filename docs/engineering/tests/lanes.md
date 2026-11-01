@@ -345,6 +345,14 @@ printed rather than asserted. The same recordings are replayed through the
 serving session that answers `/v1/systemone`, with the production loader: the
 served answers and token counts must be the recorded ones, exactly.
 
+`decision_training.rs` fine-tunes the generated tiny decision model
+(`TINY_DECISION_FIXTURE.toml`) on questions whose answer the untrained model
+cannot know: the grouped steps must lower the held-out NLL; an adapter run
+must write its fitted temperatures into the adapter and into the calibrated
+copy of the base, whose size changes by its header only; and a `full` run's
+model GGUF must be served by the engine with the probabilities the trainer
+computes for it, which is what `exports_model` grants `modern-bert`.
+
 `e2e_cpu.rs` is the server's one model-dependent test, and it is here because a
 fake engine cannot answer whether the pieces *join*: it plans with
 `?calibrate=true` (so the resolver's measured pass is checked against

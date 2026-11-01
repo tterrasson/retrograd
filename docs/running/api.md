@@ -194,6 +194,9 @@ of its decision server works unchanged:
   the order of its keys: it is part of the prompt.
 - `model` picks the base or one of its adapters, as on the other routes. It may
   be omitted when the server serves one id, as llama-server reads no `model`.
+  An adapter [trained by retrograd](../training/decision) is served with the
+  temperatures fitted on it (`adapter.decision.temperature.*`) in place of the
+  model's.
 - The prompt is the model's `systemone` template. The model's
   `max_head_tokens` and temperatures apply. `retrograd-infer` can replace the
   template and the budget in its [`[decision]` section](./#configuration-of-retrograd-infer).

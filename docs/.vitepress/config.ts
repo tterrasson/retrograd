@@ -8,7 +8,7 @@ const base = `${(process.env.DOCS_BASE_PATH ?? '').replace(/\/+$/, '')}/`
 
 export default defineConfig({
   title: 'Retrograd',
-  description: 'Run and train GGUF models: an OpenAI-compatible server, and LoRA or full-weight training with SFT, preference optimization, PPO, GRPO, agentic GRPO and distillation',
+  description: 'Run and train GGUF models: an OpenAI-compatible server, and LoRA or full-weight training with SFT, preference optimization, PPO, GRPO, agentic GRPO, distillation and decision models',
   base,
   cleanUrls: true,
   srcExclude: ['**/README.md', '**/CLAUDE.md'],
@@ -61,6 +61,7 @@ export default defineConfig({
           items: [
             { text: 'SFT', link: '/training/sft' },
             { text: 'Preference optimization', link: '/training/preference' },
+            { text: 'Decision models', link: '/training/decision' },
             { text: 'PPO', link: '/training/ppo' },
             { text: 'GRPO', link: '/training/grpo' },
             { text: 'Agentic GRPO', link: '/training/agent' },

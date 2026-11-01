@@ -44,6 +44,7 @@ defaults to `[evaluation].data`.
 | `distill` | KL to the teacher, top-1 agreement, perplexity. Loads the teacher. |
 | `agent_grpo` | Not supported. |
 | `preference` | Not supported. A run with [`[evaluation]`](../training/preference#evaluation) reports its preference accuracy at each evaluation. |
+| `decision` | Accuracy, NLL, Brier and calibration error per question type, and the questions kept at each confidence threshold. The adapter is served with its own temperatures. |
 
 ## `chat`
 
@@ -128,6 +129,7 @@ retrograd decide --model MODEL.gguf --request REQUEST.json|- [--adapter A.gguf]
 Answers one `/v1/systemone` body with a decision model, without a server, and
 prints the answer document (`-` reads the body from stdin). The options are
 those of the [`[decision]` section](../running/#configuration-of-retrograd-infer).
+An adapter trained by retrograd is served with the temperatures it carries.
 `retrograd chat` on a decision model points here.
 
 ## `preflight`
