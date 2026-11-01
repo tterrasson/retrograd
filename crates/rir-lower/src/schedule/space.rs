@@ -9,7 +9,7 @@
 use rir_core::ValidatedKernel;
 
 use super::geometry::Lanes;
-use super::{Claim, Family, Geometry, GpuBackend, MATRIX_COLS, Schedule};
+use super::{Claim, Family, Geometry, GpuBackend, MATRIX_COLS, MATRIX_ROWS, Schedule};
 
 /// The geometry space of one family.
 pub struct Space {
@@ -29,6 +29,7 @@ pub enum Dim {
     Segment(&'static [u32]),
     FactorScales,
     StageB,
+    MatrixRows(&'static [u32]),
     MatrixDepth(&'static [u32]),
     MatrixPadding(&'static [u32]),
 }
@@ -90,6 +91,7 @@ impl Space {
     pub fn expand(&self, gpu: GpuBackend, kernel: &ValidatedKernel) -> Vec<Geometry> {
         let defaults = (self.defaults)(gpu);
         let mut lane_geos = vec![defaults];
+        let mut rows: Option<&'static [u32]> = None;
         let mut depths: Option<&'static [u32]> = None;
         let mut paddings: Option<&'static [u32]> = None;
         for dim in self.dims {
@@ -102,17 +104,25 @@ impl Space {
                     lane_geos = cross(lane_geos, &[false, true], |l, v| l.factor_scales = v)
                 }
                 Dim::StageB => lane_geos = cross(lane_geos, &[false, true], |l, v| l.stage_b = v),
+                Dim::MatrixRows(vals) => rows = Some(vals),
                 Dim::MatrixDepth(vals) => depths = Some(vals),
                 Dim::MatrixPadding(vals) => paddings = Some(vals),
             }
         }
         let mut matrix_geos = Vec::new();
-        if depths.is_some() || paddings.is_some() {
+        if rows.is_some() || depths.is_some() || paddings.is_some() {
+            let rows = rows.unwrap_or(&[MATRIX_ROWS]);
             let depths = depths.unwrap_or(&[MATRIX_COLS]);
             let paddings = paddings.unwrap_or(&[0]);
-            for &depth in depths {
-                for &padding in paddings {
-                    matrix_geos.push(Geometry::Matrix { depth, padding });
+            for &rows in rows {
+                for &depth in depths {
+                    for &padding in paddings {
+                        matrix_geos.push(Geometry::Matrix {
+                            rows,
+                            depth,
+                            padding,
+                        });
+                    }
                 }
             }
         }

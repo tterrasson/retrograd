@@ -16,9 +16,9 @@ pub mod table;
 mod tests;
 
 pub use backend::{
-    Backend, FAMILY_REFUSED, FLAT_TARGETS, GPU_REFUSED, GPU_TARGETS, GpuBackend,
-    MATRIX_TARGETS, MAX_STAGED_SHARED_BYTES, PARTITION_TARGETS, family_refusal, flat_targets_for,
-    grid_targets_for, matrix_targets_for, partitions_subgroups, targets_for,
+    Backend, FAMILY_REFUSED, FLAT_TARGETS, GPU_REFUSED, GPU_TARGETS, GpuBackend, MATRIX_TARGETS,
+    MAX_STAGED_SHARED_BYTES, PARTITION_TARGETS, family_refusal, flat_targets_for, grid_targets_for,
+    matrix_targets_for, partitions_subgroups, targets_for,
 };
 pub use error::{ScheduleError, check_schedule, check_schedule_table};
 pub use geometry::Geometry;
@@ -171,6 +171,8 @@ pub struct Schedule {
     pub(crate) tile_depth: u32,
     /// Extra shared words between operand rows under MatrixTile.
     pub(crate) matrix_padding: u32,
+    /// Output rows one MatrixTile workgroup owns; zero outside MatrixTile.
+    pub(crate) matrix_rows: u32,
     /// Scan-axis strategy. Independent of `reduction` because v1 forbids a
     /// kernel from carrying both a scan and a reduction.
     pub(crate) scan: ScanStrategy,
@@ -254,6 +256,11 @@ impl Schedule {
     /// Extra shared words between MatrixTile operand rows.
     pub fn matrix_padding(&self) -> u32 {
         self.matrix_padding
+    }
+
+    /// Output rows one MatrixTile workgroup owns; zero outside MatrixTile.
+    pub fn matrix_rows(&self) -> u32 {
+        self.matrix_rows
     }
 
     /// Whether segmented sums factor the block scale out of their terms.
@@ -372,6 +379,12 @@ impl Schedule {
             return Err(ScheduleError::Malformed {
                 backend: self.backend,
                 why: "matrix padding requires MatrixTile",
+            });
+        }
+        if (self.matrix_rows > 0) != (self.reduction == ReductionStrategy::MatrixTile) {
+            return Err(ScheduleError::Malformed {
+                backend: self.backend,
+                why: "matrix rows are set exactly under MatrixTile",
             });
         }
         if self.subgroups > 1 && self.block != [self.subgroups.saturating_mul(SUBGROUP_LANES), 1, 1]
@@ -529,6 +542,7 @@ impl Schedule {
             stage_b: false,
             tile_depth: 0,
             matrix_padding: 0,
+            matrix_rows: 0,
             scan: ScanStrategy::Serial,
             reduction: ReductionStrategy::Serial,
             par_map: ParallelMapping::Workgroup,
@@ -576,6 +590,7 @@ impl Schedule {
             stage_b: false,
             tile_depth: 0,
             matrix_padding: 0,
+            matrix_rows: 0,
             scan: ScanStrategy::Serial,
             reduction: ReductionStrategy::SubgroupTree,
             par_map: ParallelMapping::Workgroup,
@@ -609,6 +624,7 @@ impl Schedule {
             stage_b: false,
             tile_depth: 0,
             matrix_padding: 0,
+            matrix_rows: 0,
             scan: ScanStrategy::Serial,
             reduction: ReductionStrategy::Serial,
             par_map: ParallelMapping::Invocation,
@@ -916,6 +932,16 @@ impl Schedule {
         self
     }
 
+    /// Output rows one MatrixTile workgroup owns, `MATRIX_ROWS` unless set:
+    /// a taller tile decodes each staged slice of the column operand against
+    /// more weight rows, at the price of shared memory and accumulators.
+    /// The lowering refuses a count that is not a whole number of fragments
+    /// per subgroup row.
+    pub fn with_matrix_rows(mut self, rows: u32) -> Self {
+        self.matrix_rows = rows;
+        self
+    }
+
     /// A contraction against a few dozen columns computed by the **subgroup
     /// matrix product** (`ReductionStrategy::MatrixTile`).
     ///
@@ -936,6 +962,7 @@ impl Schedule {
             subgroups: MATRIX_SUBGROUPS,
             reduction: ReductionStrategy::MatrixTile,
             tile_depth: depth,
+            matrix_rows: MATRIX_ROWS,
             ..Self::gpu_subgroup(gpu)
         }
         .named(MATRIX_TILE)
@@ -1095,8 +1122,8 @@ pub const MATRIX_TILE: &str = "mma";
 /// over the output tile.
 pub const MATRIX_SUBGROUPS: u32 = 4;
 
-/// Output rows one `MatrixTile` workgroup owns: two subgroups of four
-/// fragments each.
+/// Output rows one `MatrixTile` workgroup owns by default
+/// (`Schedule::with_matrix_rows`): two subgroups of four fragments each.
 pub const MATRIX_ROWS: u32 = 64;
 
 /// Output columns one `MatrixTile` workgroup owns: two subgroups of two

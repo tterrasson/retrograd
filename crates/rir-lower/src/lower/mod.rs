@@ -70,8 +70,8 @@ use rir_core::{ArgId, Kernel, Op, ReductionSemantics, ValueId};
 
 use crate::loop_ir::*;
 use crate::schedule::{
-    MATRIX_COLS, MATRIX_ROWS, MAX_STAGED_SHARED_BYTES, ParallelMapping, ReductionStrategy,
-    SUBGROUP_LANES, ScanStrategy, Schedule, partitions_subgroups,
+    MATRIX_COLS, MAX_STAGED_SHARED_BYTES, ParallelMapping, ReductionStrategy, SUBGROUP_LANES,
+    ScanStrategy, Schedule, partitions_subgroups,
 };
 
 use crate::schedule::check_schedule;
@@ -815,7 +815,7 @@ fn parallel_nest(
     // Indices of each grid axis one workgroup walks itself: the matrix tile on
     // both, the row tile on the first, the lane tile on the second.
     let tiles = match schedule.reduction {
-        ReductionStrategy::MatrixTile => [MATRIX_ROWS, MATRIX_COLS, 1],
+        ReductionStrategy::MatrixTile => [schedule.matrix_rows, MATRIX_COLS, 1],
         _ => [
             schedule.row_tile * schedule.subgroups,
             schedule.lane_tile,

@@ -8,7 +8,7 @@
 //! two rows that differ cannot collide, and a row that *is* the defaults stays
 //! the unnamed fallback.
 
-use super::{GpuBackend, MATRIX_COLS, MATRIX_TILE, Schedule, VariantName};
+use super::{GpuBackend, MATRIX_COLS, MATRIX_ROWS, MATRIX_TILE, Schedule, VariantName};
 
 /// One point in a family's geometry space.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -31,8 +31,11 @@ pub enum Geometry {
         /// Stage the shared operand through workgroup memory.
         stage_b: bool,
     },
-    /// The subgroup matrix product: `gpu_matrix_tile` with its padding.
+    /// The subgroup matrix product: `gpu_matrix_tile` with its rows and
+    /// padding.
     Matrix {
+        /// Output rows one workgroup owns.
+        rows: u32,
         /// Reduction-axis indices one staged tile covers.
         depth: u32,
         /// Extra shared words between operand rows.
@@ -147,9 +150,13 @@ impl Geometry {
                 }
                 s
             }
-            Geometry::Matrix { depth, padding } => {
-                Schedule::gpu_matrix_tile(gpu, depth).with_matrix_padding(padding)
-            }
+            Geometry::Matrix {
+                rows,
+                depth,
+                padding,
+            } => Schedule::gpu_matrix_tile(gpu, depth)
+                .with_matrix_rows(rows)
+                .with_matrix_padding(padding),
         }
     }
 
@@ -157,8 +164,8 @@ impl Geometry {
     /// it **is** the defaults - the fallback stays unnamed - otherwise the
     /// fragments that differ, in a fixed order: `cols{n}`, `rt{n}`, `sg{n}`,
     /// `seg{n}`, `run{n}`, `nofs`, `stb` for a lane geometry, then `mma` with
-    /// `k{depth}` and `pad{n}` when they differ from the matrix variant's own
-    /// defaults.
+    /// `r{rows}`, `k{depth}` and `pad{n}` when they differ from the matrix
+    /// variant's own defaults.
     pub fn variant_name(self, defaults: Geometry) -> Option<VariantName> {
         if self == defaults {
             return None;
@@ -203,8 +210,15 @@ impl Geometry {
                 }
                 fragments.join("_")
             }
-            Geometry::Matrix { depth, padding } => {
+            Geometry::Matrix {
+                rows,
+                depth,
+                padding,
+            } => {
                 let mut fragments = vec![MATRIX_TILE.to_string()];
+                if rows != MATRIX_ROWS {
+                    fragments.push(format!("r{rows}"));
+                }
                 if depth != MATRIX_COLS {
                     fragments.push(format!("k{depth}"));
                 }
@@ -260,6 +274,7 @@ mod tests {
             );
             assert_eq!(
                 Geometry::Matrix {
+                    rows: MATRIX_ROWS,
                     depth: MATRIX_COLS,
                     padding: 0
                 }
@@ -288,12 +303,23 @@ mod tests {
         );
         assert_eq!(
             Geometry::Matrix {
+                rows: MATRIX_ROWS,
                 depth: 64,
                 padding: 8
             }
             .variant_name(defaults)
             .map(|n| n.to_string()),
             Some("mma_k64_pad8".to_string())
+        );
+        assert_eq!(
+            Geometry::Matrix {
+                rows: 128,
+                depth: 64,
+                padding: 8
+            }
+            .variant_name(defaults)
+            .map(|n| n.to_string()),
+            Some("mma_r128_k64_pad8".to_string())
         );
     }
 
@@ -332,10 +358,12 @@ mod tests {
         assert_eq!(s.variant(), Some("cols8"));
 
         let m = Geometry::Matrix {
+            rows: 128,
             depth: 64,
             padding: 8,
         }
         .schedule(GpuBackend::Metal);
+        assert_eq!(m.matrix_rows(), 128);
         assert_eq!(m.tile_depth(), 64);
         assert_eq!(m.matrix_padding(), 8);
         assert_eq!(m.variant(), Some(MATRIX_TILE));

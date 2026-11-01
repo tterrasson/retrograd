@@ -557,6 +557,35 @@ mod tests {
         }
     }
 
+    /// A taller output tile computes the same product, partial row tile
+    /// included; a row count that is not a whole number of fragments per
+    /// subgroup is refused.
+    #[test]
+    fn matrix_rows_preserve_the_product() {
+        use rir_lower::{GpuBackend, LowerError};
+        for format in variants() {
+            for depth in [32, 64] {
+                run_case(
+                    format,
+                    Schedule::gpu_matrix_tile(GpuBackend::Metal, depth).with_matrix_rows(128),
+                    1,
+                    130,
+                    9,
+                );
+            }
+        }
+        let kernel = build(QuantType::Q8_0).unwrap();
+        let err = rir_lower::lower(
+            &kernel,
+            Schedule::gpu_matrix_tile(GpuBackend::Metal, 32).with_matrix_rows(24),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, LowerError::MatrixTileUnsupported { .. }),
+            "{err}"
+        );
+    }
+
     #[test]
     fn staged_schedules_refuse_ignored_scalar_knobs() {
         use rir_lower::GpuBackend;

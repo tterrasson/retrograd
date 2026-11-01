@@ -3,8 +3,8 @@
 use rir_core::catalog::Regime;
 
 use crate::schedule::{
-    Claim, Dim, Family, Geometry, GpuBackend, MATRIX_COLS, Pick, Space, matrix_targets_for,
-    partitions_subgroups,
+    Claim, Dim, Family, Geometry, GpuBackend, MATRIX_COLS, MATRIX_ROWS, Pick, Space,
+    matrix_targets_for, partitions_subgroups,
 };
 
 /// The measurement session that justified the current rows.
@@ -27,7 +27,11 @@ fn defaults(gpu: GpuBackend) -> Geometry {
 }
 
 /// The geometry space of the decode GEMV: the lane levers and the matrix tile,
-/// at the values a sweep explores.
+/// at the values a sweep explores. The sixteen-column lane tile and the matrix
+/// tile's depth and padding are there for the steps between the two (`plane`
+/// 9 to 31), where the native side has left its vector kernel for its matrix
+/// one; the 128-row tile for the deepest projections, where a taller tile
+/// decodes each staged slice of the activations against twice the rows.
 pub fn space() -> Space {
     Space {
         family: Family::MulMatVec,
@@ -39,6 +43,7 @@ pub fn space() -> Space {
             Dim::Segment(&[4, 16]),
             Dim::FactorScales,
             Dim::StageB,
+            Dim::MatrixRows(&[MATRIX_ROWS, 128]),
             Dim::MatrixDepth(&[32, 64, 128]),
             Dim::MatrixPadding(&[0, 8]),
         ],
@@ -109,6 +114,7 @@ pub fn matrix_picks(gpu: GpuBackend) -> Vec<Pick> {
     let decode_max = Regime::DECODE_MAX_TOKENS;
     vec![Pick {
         geometry: Geometry::Matrix {
+            rows: MATRIX_ROWS,
             depth: MATRIX_COLS,
             padding: 0,
         },

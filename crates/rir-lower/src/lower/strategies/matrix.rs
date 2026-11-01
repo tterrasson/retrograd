@@ -5,17 +5,11 @@
 use rir_core::{ArgId, AxisId, Op, ValueId};
 
 use crate::loop_ir::*;
-use crate::schedule::{
-    MATRIX_COLS, MATRIX_ROWS, MATRIX_SUBGROUPS, ParallelMapping, SUBGROUP_LANES, Schedule,
-};
+use crate::schedule::{MATRIX_COLS, MATRIX_SUBGROUPS, ParallelMapping, SUBGROUP_LANES, Schedule};
 
 use crate::lower::strategies::stage::stage_loader;
 use crate::lower::strategies::tiled::collect_contraction_reads;
 use crate::lower::{Analysis, LowerError, Lowerer, lower_writes};
-
-/// Fragments one subgroup owns along the rows of the tile: its half of
-/// `MATRIX_ROWS`.
-const SG_ROW_FRAGS: u32 = MATRIX_ROWS / 2 / FRAG_DIM;
 
 /// Fragments one subgroup owns along the columns of the tile: its half of
 /// `MATRIX_COLS`.
@@ -32,7 +26,7 @@ struct Operand {
 /// The matrix-tiled contraction.
 ///
 /// ```text
-/// parallel m0 (grid x, MATRIX_ROWS)   parallel n0 (grid y, MATRIX_COLS)
+/// parallel m0 (grid x, matrix_rows)   parallel n0 (grid y, MATRIX_COLS)
 ///   subgroup sg: lanes                         // MATRIX_SUBGROUPS × 32
 ///     c[i][j] = 0                              // the subgroup's quarter
 ///     for k0 = 0.. n_k step depth:             // one tile round
@@ -88,10 +82,24 @@ pub(crate) fn lower_matrix(
             "segment and scale factoring apply to scalar reductions, not matrix staging",
         ));
     }
+    // Two subgroups share the tile's rows, each owning a whole number of
+    // fragments of them.
+    let rows = schedule.matrix_rows;
+    if rows == 0 || !rows.is_multiple_of(2 * FRAG_DIM) {
+        return Err(unsupported(
+            "the tile's rows are not a whole number of fragments per subgroup",
+        ));
+    }
+    let sg_row_frags = rows / 2 / FRAG_DIM;
     let depth = schedule.tile_depth;
     let stride = depth
         .checked_add(schedule.matrix_padding)
-        .filter(|s| s.checked_mul((MATRIX_ROWS + MATRIX_COLS) * 4).is_some())
+        .filter(|s| {
+            rows.checked_add(MATRIX_COLS)
+                .and_then(|r| r.checked_mul(4))
+                .and_then(|r| s.checked_mul(r))
+                .is_some()
+        })
         .ok_or(unsupported(
             "shared operand stride overflows the storage counter",
         ))?;
@@ -168,7 +176,7 @@ pub(crate) fn lower_matrix(
     let lane = lo.new_var("lane", VarKind::Idx);
 
     // ---- per lane: its index in the workgroup, and the subgroup's quarter
-    // of the tile - rows `sg_m..sg_m + 32`, columns `sg_n..sg_n + 16`.
+    // of the tile - rows `sg_m..sg_m + rows / 2`, columns `sg_n..sg_n + 16`.
     lo.begin_scope(true);
     let sg_base = lo.emit("sg_base", VarKind::Idx, LExpr::IMulC(sg, SUBGROUP_LANES));
     let local = lo.emit("local", VarKind::Idx, LExpr::IAdd(sg_base, lane));
@@ -176,7 +184,7 @@ pub(crate) fn lower_matrix(
     let sg_m = lo.emit(
         "sg_m",
         VarKind::Idx,
-        LExpr::IMulC(sg_row, SG_ROW_FRAGS * FRAG_DIM),
+        LExpr::IMulC(sg_row, sg_row_frags * FRAG_DIM),
     );
     let sg_col = lo.emit("sg_col", VarKind::Idx, LExpr::IShrC(sg, 1));
     let sg_n = lo.emit(
@@ -185,7 +193,7 @@ pub(crate) fn lower_matrix(
         LExpr::IMulC(sg_col, SG_COL_FRAGS * FRAG_DIM),
     );
     let mut acc = Vec::new();
-    for i in 0..SG_ROW_FRAGS {
+    for i in 0..sg_row_frags {
         let mut row = Vec::new();
         for j in 0..SG_COL_FRAGS {
             let c = lo.new_var(&format!("c{i}{j}"), VarKind::Frag);
@@ -199,7 +207,7 @@ pub(crate) fn lower_matrix(
     // ---- the tile round: both operands staged, then the fragments.
     let inner_name = lo.k.axes()[inner_axis.0 as usize].name.clone();
     let k0 = lo.new_var(&format!("{inner_name}0"), VarKind::Idx);
-    let tile_lhs = stage(lo, &lhs, k0, m0, inner_axis, depth, stride, MATRIX_ROWS)?;
+    let tile_lhs = stage(lo, &lhs, k0, m0, inner_axis, depth, stride, rows)?;
     let tile_rhs = stage(lo, &rhs, k0, n0, inner_axis, depth, stride, MATRIX_COLS)?;
     let (a_tile, b_tile) = (tile_lhs.tile, tile_rhs.tile);
 
@@ -209,7 +217,7 @@ pub(crate) fn lower_matrix(
     let b_base = lo.emit("b_base", VarKind::Idx, LExpr::IMulC(sg_n, stride));
     let k_off = lo.emit("k_off", VarKind::Idx, LExpr::IMulC(kk, FRAG_DIM));
     let mut frag_a = Vec::new();
-    for i in 0..SG_ROW_FRAGS {
+    for i in 0..sg_row_frags {
         let row = lo.emit(
             "a_row",
             VarKind::Idx,
@@ -278,11 +286,11 @@ pub(crate) fn lower_matrix(
     // every fragment is stored once the second is.
     lo.begin_scope(true);
     lane_body.push(Stmt::Barrier);
-    let c_base = lo.emit("c_base", VarKind::Idx, LExpr::IMulC(sg_n, MATRIX_ROWS));
+    let c_base = lo.emit("c_base", VarKind::Idx, LExpr::IMulC(sg_n, rows));
     let c_first = lo.emit("c_first", VarKind::Idx, LExpr::IAdd(c_base, sg_m));
     for (i, row) in acc.iter().enumerate() {
         for (j, &c) in row.iter().enumerate() {
-            let off = (j as u32) * FRAG_DIM * MATRIX_ROWS + (i as u32) * FRAG_DIM;
+            let off = (j as u32) * FRAG_DIM * rows + (i as u32) * FRAG_DIM;
             let index = lo.emit("c_at", VarKind::Idx, LExpr::IAddC(c_first, off));
             // `C[n][m]`, so that consecutive invocations write consecutive
             // rows of the destination below.
@@ -290,7 +298,7 @@ pub(crate) fn lower_matrix(
                 src: c,
                 array: a_tile,
                 index,
-                stride: MATRIX_ROWS,
+                stride: rows,
                 transpose: true,
             });
         }
@@ -302,8 +310,8 @@ pub(crate) fn lower_matrix(
     lo.begin_scope(true);
     let l_base = lo.emit("l_base", VarKind::Idx, LExpr::IMulC(t, threads));
     let l = lo.emit("l", VarKind::Idx, LExpr::IAdd(l_base, local));
-    let m = lo.emit("m", VarKind::Idx, LExpr::IModC(l, MATRIX_ROWS));
-    let n = lo.emit("n", VarKind::Idx, LExpr::IDivC(l, MATRIX_ROWS));
+    let m = lo.emit("m", VarKind::Idx, LExpr::IModC(l, rows));
+    let n = lo.emit("n", VarKind::Idx, LExpr::IDivC(l, rows));
     let row = lo.emit("row", VarKind::Idx, LExpr::IAdd(m0, m));
     let col = lo.emit("col", VarKind::Idx, LExpr::IAdd(n0, n));
     let value = lo.new_var("c", VarKind::F32);
@@ -325,7 +333,7 @@ pub(crate) fn lower_matrix(
     });
     lane_body.push(Stmt::ForConst {
         var: t,
-        count: MATRIX_ROWS * MATRIX_COLS / threads,
+        count: rows * MATRIX_COLS / threads,
         body: out_body,
     });
 

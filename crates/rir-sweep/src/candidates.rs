@@ -470,8 +470,12 @@ pub fn rule_product(axes: &[&str], shape: [usize; 4]) -> u64 {
 /// on every backend), a matrix geometry as the full literal.
 pub fn geometry_source(g: Geometry, defaults: Geometry) -> String {
     match g {
-        Geometry::Matrix { depth, padding } => {
-            format!("Geometry::Matrix {{ depth: {depth}, padding: {padding} }}")
+        Geometry::Matrix {
+            rows,
+            depth,
+            padding,
+        } => {
+            format!("Geometry::Matrix {{ rows: {rows}, depth: {depth}, padding: {padding} }}")
         }
         Geometry::Lanes { .. } => {
             let l = g.lanes().expect("a lane geometry has lane dimensions");
