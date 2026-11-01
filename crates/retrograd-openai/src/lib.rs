@@ -132,6 +132,9 @@ pub fn router(endpoint: Endpoint) -> Router {
         .merge(completions::router())
         .merge(embeddings::router())
         .with_state(endpoint)
+        .layer(axum::middleware::map_response(async |response| {
+            error::normalize_response(response)
+        }))
 }
 
 /// The Retrograd extension of `GET /v1/models`: the capabilities this server

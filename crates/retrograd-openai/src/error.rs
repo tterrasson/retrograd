@@ -29,6 +29,36 @@ retrograd_core::wire_enum! {
 #[derive(Clone, Copy, Debug)]
 pub struct OpenAiEnvelope;
 
+/// Gives routing and extractor rejections the same envelope as handler errors.
+/// Attach this outside any body-limit layer supplied by the frontend as well.
+pub fn normalize_response(response: Response) -> Response {
+    let status = response.status();
+    if !(status.is_client_error() || status.is_server_error())
+        || response.extensions().get::<OpenAiEnvelope>().is_some()
+    {
+        return response;
+    }
+    let detail = match status {
+        StatusCode::PAYLOAD_TOO_LARGE => "the request body is larger than this server accepts",
+        StatusCode::METHOD_NOT_ALLOWED => "that method is not allowed on this path",
+        StatusCode::NOT_FOUND => "no route or resource exists at this path",
+        _ => "the request could not be served",
+    };
+    let error = if status.is_client_error() {
+        OpenAiError::invalid(detail)
+    } else {
+        OpenAiError::internal(detail)
+    };
+    let mut normalized = error.with_status(status).into_response();
+    // Method routing supplies Allow; capacity middleware may supply Retry-After.
+    for name in [header::ALLOW, header::RETRY_AFTER, header::WWW_AUTHENTICATE] {
+        if let Some(value) = response.headers().get(&name) {
+            normalized.headers_mut().insert(name, value.clone());
+        }
+    }
+    normalized
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
 pub struct OpenAiError {
