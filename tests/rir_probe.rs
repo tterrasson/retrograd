@@ -247,7 +247,7 @@ fn variant_report_matches_the_registry() {
 /// the published `priority` load-bearing rather than descriptive.
 #[test]
 fn priority_and_policy_decide_the_selected_variant() {
-    const CASES: [(u32, &str); 10] = [
+    const CASES: [(u32, &str); 17] = [
         (1 << 0, "highest priority first in the table must win"),
         (1 << 1, "highest priority last in the table must still win"),
         (1 << 2, "a NATIVE_ONLY policy must veto the variant"),
@@ -259,7 +259,8 @@ fn priority_and_policy_decide_the_selected_variant() {
         (1 << 5, "a row for another backend must never be selected"),
         (
             1 << 6,
-            "an OBSERVE_GENERATED policy must still select, by priority",
+            "an OBSERVE_GENERATED pair must still select under the TEST_PREFER \
+             elevation, by priority",
         ),
         (
             1 << 14,
@@ -273,6 +274,35 @@ fn priority_and_policy_decide_the_selected_variant() {
             1 << 16,
             "a permuted folded operand must fall to the scalar row: the stride \
              check on the vectorized axis never looks at it",
+        ),
+        (
+            1 << 18,
+            "a row held at OBSERVE_GENERATED on a PREFER pair must be skipped, \
+             the PREFER fallback must win",
+        ),
+        (
+            1 << 19,
+            "with no row at PREFER_GENERATED, nothing may be selected",
+        ),
+        (
+            1 << 20,
+            "the TEST_PREFER elevation must apply to the rows too",
+        ),
+        (
+            1 << 21,
+            "evaluation must prefer a dispatchable fallback over an observation row",
+        ),
+        (
+            1 << 22,
+            "observation-only rows must remain available for evaluation and counters",
+        ),
+        (
+            1 << 23,
+            "native-only rows must not be evaluated even under TEST_PREFER",
+        ),
+        (
+            1 << 24,
+            "a contract miss must retain its diagnostic row for require and counters",
         ),
     ];
     let failures = rir_selection_selftest();
