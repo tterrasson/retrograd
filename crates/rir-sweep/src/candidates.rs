@@ -253,8 +253,7 @@ pub fn shapes(family: Family) -> Vec<[usize; 4]> {
 /// dimensions rather than listed: the hidden-state norm `[n_embd, t]` and the
 /// per-head query/key norms `[head_dim, n_head(_kv), t]`; the gated FFN's
 /// `[n_ff, t]` activation and product; the residual `[n_embd, t]`; and the
-/// weight products `[K, N, t]` - the Q, K/V, output, gate/up and down
-/// projections. A family
+/// weight products `[K, M, t]` of `ModelShape::matmul_shapes`. A family
 /// the forward pass does not run - the backward and training kernels - has
 /// no shape in a profile, and `None` says so instead of inventing one.
 pub fn profile_shapes(
@@ -267,10 +266,6 @@ pub fn profile_shapes(
         shape.n_ff as usize,
         shape.head_dim as usize,
     );
-    let (q, kv) = (
-        shape.n_head as usize * head,
-        shape.n_head_kv as usize * head,
-    );
     let per_step = |t: usize| -> Vec<[usize; 4]> {
         match family {
             Family::RmsNorm => vec![
@@ -282,13 +277,11 @@ pub fn profile_shapes(
             Family::Elementwise | Family::ElementwiseRepeat | Family::Scale => {
                 vec![[ff, t, 1, 1], [embd, t, 1, 1]]
             }
-            Family::MulMatVec => vec![
-                [embd, q, t, 1],
-                [embd, kv, t, 1],
-                [q, embd, t, 1],
-                [embd, ff, t, 1],
-                [ff, embd, t, 1],
-            ],
+            Family::MulMatVec => shape
+                .matmul_shapes()
+                .into_iter()
+                .map(|(m, k)| [k as usize, m as usize, t, 1])
+                .collect(),
             _ => Vec::new(),
         }
     };

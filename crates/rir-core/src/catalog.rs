@@ -214,6 +214,31 @@ pub struct ModelShape {
 }
 
 impl ModelShape {
+    /// The `(m, k)` of the forward pass's weight products - output rows by
+    /// reduction depth - in the order Q, K, V, output, gate, up, down: the
+    /// attention projections from and back to `n_embd` through `n_head` (or
+    /// `n_head_kv`) heads of `head_dim`, and the gated FFN through `n_ff`.
+    /// Repeated shapes are kept (K and V always agree, gate and up too), so
+    /// the list reads as the projections and not as a set.
+    ///
+    /// A head count times `head_dim` saturates rather than wraps: no model a
+    /// profile describes comes near `u32::MAX` features per token, and the
+    /// reference profiles are checked to stay below it.
+    pub fn matmul_shapes(&self) -> Vec<(u32, u32)> {
+        let q = self.n_head.saturating_mul(self.head_dim);
+        let kv = self.n_head_kv.saturating_mul(self.head_dim);
+        let (embd, ff) = (self.n_embd, self.n_ff);
+        vec![
+            (q, embd),
+            (kv, embd),
+            (kv, embd),
+            (embd, q),
+            (ff, embd),
+            (ff, embd),
+            (embd, ff),
+        ]
+    }
+
     /// The same key with its format set sorted and deduplicated, which is the
     /// form two keys are compared in.
     pub fn normalized(&self) -> ModelShape {
