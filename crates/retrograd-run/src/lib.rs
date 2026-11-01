@@ -20,6 +20,7 @@ mod collect;
 pub use collect::{CollectOptions, CollectOutcome, collect};
 mod control;
 mod controller;
+mod decision;
 #[cfg(feature = "agent")]
 mod interrupt;
 mod observe;
@@ -110,6 +111,8 @@ pub fn execute_controlled(
 ) -> Result<RunOutcome> {
     let span = tracing::info_span!(target: "retrograd::run", "run");
     let _entered = span.enter();
+    let pinned = decision::pin_training_device(config, observer)?;
+    let config = pinned.as_ref().unwrap_or(config);
     let verbose = config.training.verbose;
     let started = Instant::now();
     let mut tracker = MemoryTracker::new();
@@ -207,6 +210,7 @@ pub fn execute_controlled(
     bus.emit(&MetricEvent::RunStarted { metadata })?;
     let mut controller = RunController::new(config)?;
     let mut trainer = TrainerSlot(Some(trainer));
+    let mut decision_export = None;
     let result = {
         let mut ctx = algorithm::Context {
             config,
@@ -225,6 +229,14 @@ pub fn execute_controlled(
             }
             Algorithm::Preference(preference) => {
                 algorithm::run_preference(trainer.as_mut(), preference, &mut ctx)
+            }
+            Algorithm::Decision(config) => {
+                decision::run_decision(trainer.as_mut(), config, &mut ctx).map(
+                    |(metrics, export)| {
+                        decision_export = Some(export);
+                        metrics
+                    },
+                )
             }
             // The agentic loop owns the trainer while it runs - the policy actor
             // holds it on its own task - so it is handed over and handed back
@@ -272,6 +284,9 @@ pub fn execute_controlled(
         observer.diagnostic("memory", &summary);
     }
     save_output(&mut trainer, config, observer)?;
+    if let Some(export) = &decision_export {
+        export.write(config, observer)?;
+    }
     Ok(RunOutcome {
         metrics,
         early_stopped: controller.early_stopped(),

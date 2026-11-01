@@ -105,6 +105,10 @@ impl RunController {
                 "preference",
                 BTreeMap::from([("shuffle".to_string(), u64::from(preference.seed))]),
             ),
+            Algorithm::Decision(decision) => (
+                "decision",
+                BTreeMap::from([("shuffle".to_string(), u64::from(decision.seed))]),
+            ),
         };
         Ok(Self {
             evaluation: config.evaluation.clone(),
@@ -120,7 +124,7 @@ impl RunController {
                 algorithm: algorithm.into(),
                 trajectory_signature: trajectory_signature(config)?,
                 resume_boundary: match algorithm {
-                    "sft" => "epoch",
+                    "sft" | "decision" => "epoch",
                     "preference" => "step",
                     _ => "update",
                 }

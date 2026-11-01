@@ -86,7 +86,8 @@ pub struct AdHocEvaluation {
     pub loss: Option<f64>,
     pub perplexity: Option<f64>,
     /// Preference: share of evaluation pairs whose chosen response earns the
-    /// larger implicit reward.
+    /// larger implicit reward. Decision: share of questions whose top option
+    /// is the right one.
     pub accuracy: Option<f64>,
     /// PPO/GRPO: mean reward over the evaluated prompts.
     pub mean_reward: Option<f32>,

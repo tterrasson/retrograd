@@ -31,7 +31,7 @@ pub(crate) struct Context<'a> {
 impl Context<'_> {
     /// Reports what the prepared datasets added to memory, then publishes the
     /// dataset series, plus `extra`, at step zero.
-    fn datasets_prepared(
+    pub(crate) fn datasets_prepared(
         &mut self,
         examples: usize,
         supervised_tokens: usize,
@@ -61,7 +61,7 @@ impl Context<'_> {
 
 /// Optimizer steps per prepared row: the runtime advances `n_batch` tokens per
 /// step over an `n_ctx`-token row.
-fn steps_per_row(config: &RunConfig) -> u64 {
+pub(crate) fn steps_per_row(config: &RunConfig) -> u64 {
     (config.training.n_ctx / config.training.n_batch) as u64
 }
 
@@ -256,6 +256,7 @@ pub(crate) struct SupervisedEval {
 pub(crate) enum EvalDetail {
     Sft { perplexity: f64 },
     Preference(training::preference::PreferenceEval),
+    Decision(Box<training::decision::DecisionEval>),
 }
 
 impl SupervisedEval {
@@ -266,6 +267,7 @@ impl SupervisedEval {
                 value: *perplexity as f32,
             }],
             EvalDetail::Preference(eval) => eval.values(),
+            EvalDetail::Decision(eval) => eval.values(),
         }
     }
 
@@ -280,6 +282,12 @@ impl SupervisedEval {
             EvalDetail::Preference(eval) => AdHocEvaluation {
                 loss: Some(self.loss),
                 accuracy: Some(eval.accuracy),
+                examples: self.examples,
+                ..Default::default()
+            },
+            EvalDetail::Decision(eval) => AdHocEvaluation {
+                loss: Some(self.loss),
+                accuracy: Some(eval.metrics.overall.accuracy),
                 examples: self.examples,
                 ..Default::default()
             },
@@ -301,6 +309,14 @@ impl SupervisedEval {
                 margin: eval.margin,
                 outcome,
             },
+            EvalDetail::Decision(eval) => EvaluationReport::Decision {
+                epoch,
+                loss: self.loss,
+                accuracy: eval.metrics.overall.accuracy,
+                brier: eval.metrics.overall.brier,
+                ece: eval.metrics.overall.ece,
+                outcome,
+            },
         }
     }
 }
@@ -316,7 +332,7 @@ pub(crate) type SupervisedEvaluator<'a> = dyn FnMut(&mut Trainer) -> Result<Supe
 /// responses - and in what their held-out pass measures, which `evaluate`
 /// carries. Everything else is the same: epochs, forward-pass evaluation, the
 /// control plane, and checkpoints at the boundaries the algorithm emits.
-fn run_supervised_epochs(
+pub(crate) fn run_supervised_epochs(
     trainer: &mut Trainer,
     ctx: &mut Context<'_>,
     mut evaluate: Option<&mut SupervisedEvaluator<'_>>,

@@ -111,6 +111,17 @@ pub enum EvaluationReport {
         margin: f64,
         outcome: EvalOutcome,
     },
+    /// A decision run's held-out questions at temperature 1: the NLL it
+    /// minimizes, the share whose top option is right, the Brier score and
+    /// the expected calibration error.
+    Decision {
+        epoch: u32,
+        loss: f64,
+        accuracy: f64,
+        brier: f64,
+        ece: f64,
+        outcome: EvalOutcome,
+    },
     Rollout {
         update: u64,
         updates: u32,

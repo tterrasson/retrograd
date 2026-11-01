@@ -285,6 +285,25 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
             descriptor.field("shuffle", preference.shuffle);
             descriptor.debug("pps", preference.pairs_per_step);
         }
+        // The rendered questions are fingerprinted with the dataset; what is
+        // here is what lays them out and what the run does once trained.
+        Algorithm::Decision(decision) => {
+            descriptor.tag("decision");
+            descriptor.field("data", decision.data.display());
+            descriptor.debug("format", decision.data_format);
+            descriptor.debug(
+                "template",
+                decision
+                    .template
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+            );
+            descriptor.debug("max_head_tokens", decision.max_head_tokens);
+            descriptor.field("option_shuffle", decision.option_shuffle);
+            descriptor.field("shuffle", decision.shuffle);
+            descriptor.field("qpb", decision.questions_per_batch);
+            descriptor.field("accumulation", decision.gradient_accumulation);
+        }
         Algorithm::AgentGrpo(agent) => {
             let config = &agent.config;
             let corpus = fs::read(&agent.scenarios)?;
@@ -431,6 +450,7 @@ pub fn metadata(config: &RunConfig) -> RunMetadata {
         ),
         Algorithm::AgentGrpo(value) => ("agent_grpo", value.scenarios.display().to_string()),
         Algorithm::Preference(value) => ("preference", value.data.display().to_string()),
+        Algorithm::Decision(value) => ("decision", value.data.display().to_string()),
     };
     RunMetadata {
         algorithm: algorithm.into(),

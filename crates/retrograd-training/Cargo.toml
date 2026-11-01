@@ -17,6 +17,7 @@ retrograd-checkpoint.workspace = true
 retrograd-config.workspace = true
 retrograd-core.workspace = true
 retrograd-dataset.workspace = true
+retrograd-decision.workspace = true
 retrograd-engine = { workspace = true, features = ["train"] }
 # The step-wise inference policy: rollouts are sampled through its Scheduler,
 # driven synchronously on the trainer's own thread through TrainerBackend.

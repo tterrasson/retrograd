@@ -1,9 +1,10 @@
-//! The training algorithms: SFT, PPO, GRPO, distillation and preference
-//! optimization. Each owns its
+//! The training algorithms: SFT, PPO, GRPO, distillation, preference
+//! optimization and decision models. Each owns its
 //! dataset and its objective; `retrograd-run` owns the model and adapter
 //! lifecycle, checkpoints, metrics sinks and the output.
 
 pub mod batch;
+pub mod decision;
 pub mod distill;
 pub mod features;
 pub mod grpo;
