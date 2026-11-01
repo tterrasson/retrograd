@@ -123,10 +123,20 @@ pub(super) fn mul_mat_vec(name: String) -> IntegrationSpec {
         args: vec![Src(0), Src(1), Dst],
         params: vec![],
         production: true,
-        // Observed until the promotion lane has compared it with the native
-        // `mul_mv` kernels on the decode shapes of the model profiles. CUDA
-        // stays native: the family is refused there (`rir_lower::FAMILY_REFUSED`).
-        backend_policy: gpu_policy(ObserveGenerated),
+        // Metal's ceiling is open: the pair is `prefer_generated`, and which
+        // of its variants may actually encode is decided per variant in
+        // `policy/variants.tsv` (effective policy = min(pair, variant)).
+        // Until a variant is promoted there, every MUL_MAT/metal node takes
+        // the native kernel, exactly as under an `observe_generated` pair.
+        // Vulkan stays observed as a pair - no variant of it is measured yet -
+        // and CUDA stays native: the family is refused there
+        // (`rir_lower::FAMILY_REFUSED`).
+        backend_policy: vec![
+            (Cuda, NativeOnly),
+            (Vulkan, ObserveGenerated),
+            (Metal, PreferGenerated),
+            (Cpu, NativeOnly),
+        ],
         assumed_domain: vec![
             DomainAssumption {
                 restriction: DType,
