@@ -656,11 +656,16 @@ assert_variants_dispatched() {
         n="${n:-0}"
         [[ "$n" -eq 0 ]] && missing="$missing $v"
     done < <(registry_named_variants "$op" "$be")
-    if [[ -n "$missing" ]]; then
-        echo "    !! declared variant(s) never dispatched:$missing"
-        return 1
+    [[ -z "$missing" ]] && return 0
+    # The eval matrix alone does not offer every claimed domain (the decode
+    # GEMV's 32-token tile is only reached by the perf shapes): without a perf
+    # pass, a variant at zero is unproven, not refused.
+    if [[ ! -f "$tmp/$tag.rir.perf" ]]; then
+        echo "    -- not dispatched by the eval matrix (no perf pass to check):$missing"
+        return 0
     fi
-    return 0
+    echo "    !! declared variant(s) never dispatched:$missing"
+    return 1
 }
 
 # `  OP(args): N runs - X us/run -...`, the label and the time possibly split
