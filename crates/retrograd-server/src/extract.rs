@@ -77,7 +77,15 @@ fn is_json(headers: &header::HeaderMap) -> bool {
 /// suggestion.
 pub fn from_json_slice<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ApiError> {
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
-    serde_path_to_error::deserialize(&mut deserializer).map_err(to_api_error)
+    let value = serde_path_to_error::deserialize(&mut deserializer).map_err(to_api_error)?;
+    deserializer.end().map_err(|error| {
+        ApiError::invalid(format!("invalid request: {error}")).with_field(
+            "",
+            ErrorCode::InvalidValue,
+            "expected a single JSON document",
+        )
+    })?;
+    Ok(value)
 }
 
 /// The same, starting from a tree already parsed rather than raw bytes - for
@@ -279,5 +287,17 @@ mod tests {
         }
         let error = from_json_slice::<Outer>(br#"{"recipe":{"objectif":"x"}}"#).unwrap_err();
         assert_eq!(error.errors[0].pointer, "/recipe/objectif");
+    }
+
+    #[test]
+    fn trailing_whitespace_is_allowed_but_a_second_document_is_not() {
+        let value = from_json_slice::<Value>(b"{} \r\n\t").unwrap();
+        assert_eq!(value, serde_json::json!({}));
+        for body in [b"{}{}".as_slice(), b"{} false", b"{} garbage"] {
+            let error = from_json_slice::<Value>(body).unwrap_err();
+            assert_eq!(error.kind, ProblemKind::InvalidRequest);
+            assert_eq!(error.errors[0].pointer, "");
+            assert_eq!(error.errors[0].code, ErrorCode::InvalidValue);
+        }
     }
 }
