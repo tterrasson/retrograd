@@ -670,7 +670,8 @@ impl RunRegistry {
 
     /// Registers a run whose id was allocated by the caller. Run creation uses
     /// this to derive managed artifact paths before the effective configuration
-    /// and journal are rendered.
+    /// and journal are rendered. A concurrent use of the same idempotency key
+    /// returns the winner's handle; callers must start a worker only for their id.
     pub fn create_with_id(
         &self,
         id: Uuid,
@@ -713,14 +714,35 @@ impl RunRegistry {
             live,
             all: self.all.clone(),
         });
-        handle.persist();
-
         let mut inner = self.inner.write().recover();
+        // Resolution happens outside the registry lock. Two retries can both
+        // pass the handler's early lookup, so registration is the arbiter.
+        if let Some(existing) = idempotency_key
+            .as_ref()
+            .and_then(|key| inner.keys.get(key))
+            .and_then(|id| inner.runs.get(id))
+            .cloned()
+        {
+            drop(inner);
+            if existing.id != id {
+                let directory = handle.dir.clone();
+                drop(handle);
+                // Only this unpublished candidate's bookkeeping exists here.
+                if let Err(error) = std::fs::remove_dir_all(&directory) {
+                    tracing::warn!(%error, path = %directory.display(), "could not remove a duplicate run candidate");
+                }
+            }
+            return Ok(existing);
+        }
         if let Some(key) = idempotency_key {
             inner.keys.insert(key, id);
         }
         inner.order.push(id);
         inner.runs.insert(id, handle.clone());
+        drop(inner);
+        // A rejected candidate never gets a run.json that a restart could
+        // restore as a second run, even if removing its empty directory fails.
+        handle.persist();
         Ok(handle)
     }
 

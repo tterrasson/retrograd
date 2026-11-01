@@ -165,6 +165,9 @@ pub async fn create(
         .create_with_id(id, response.name.clone(), record, idempotency_key, sender)
         .map_err(ApiError::from)?;
     let view = state.registry.view(&handle);
+    if handle.id != id {
+        return Ok((StatusCode::OK, Json(view)).into_response());
+    }
     worker::spawn(
         state.engine.clone(),
         state.device.clone(),

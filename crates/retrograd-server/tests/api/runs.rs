@@ -242,6 +242,53 @@ async fn a_repeated_request_with_the_same_key_does_not_start_a_second_run() {
     assert_eq!(engine.executions(), 2);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_idempotent_requests_start_only_one_worker() {
+    let fixture = Fixture::new("idempotency-concurrent");
+    let engine = FakeEngine::succeeding();
+    let state = state_of(&fixture, engine.clone(), false);
+    let router = build_router(state.clone());
+    let barrier = Arc::new(tokio::sync::Barrier::new(8));
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let router = router.clone();
+        let body = recipe(&fixture, "once-concurrently");
+        let barrier = barrier.clone();
+        tasks.push(tokio::spawn(async move {
+            barrier.wait().await;
+            post_with(
+                &router,
+                "/v1/runs",
+                body,
+                &[("idempotency-key", "concurrent-key")],
+            )
+            .await
+        }));
+    }
+    let mut ids = Vec::new();
+    let mut creations = 0;
+    for task in tasks {
+        let (status, body) = task.await.unwrap();
+        assert!(
+            matches!(status, StatusCode::OK | StatusCode::CREATED),
+            "{body}"
+        );
+        creations += usize::from(status == StatusCode::CREATED);
+        ids.push(body["id"].as_str().unwrap().to_owned());
+    }
+    assert_eq!(creations, 1);
+    assert!(ids.iter().all(|id| id == &ids[0]));
+    wait_for_terminal(&router, &ids[0]).await;
+    assert_eq!(engine.executions(), 1);
+    assert_eq!(state.registry.handles().len(), 1);
+    let restored = retrograd_server::RunRegistry::open(fixture.state_dir());
+    assert_eq!(
+        restored.handles().len(),
+        1,
+        "no duplicate restored after restart"
+    );
+}
+
 #[tokio::test]
 async fn the_listing_is_newest_first_filterable_and_paged() {
     let fixture = Fixture::new("listing");
