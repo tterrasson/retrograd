@@ -181,6 +181,12 @@ pub async fn metrics(
     // a truncated one resumes exactly where it stopped.
     let mut next_since = since;
     for event in handle.replay(since) {
+        // Never advance past an event that was not part of this snapshot.
+        // Reading last_seq after the replay can skip a concurrent metric.
+        if samples.len() == limit {
+            break;
+        }
+        next_since = event.seq;
         let dto::RunEventPayload::Metrics {
             iteration,
             global_step,
@@ -189,9 +195,6 @@ pub async fn metrics(
         else {
             continue;
         };
-        if samples.len() == limit {
-            break;
-        }
         let values = match &wanted {
             Some(names) => values
                 .iter()
@@ -200,7 +203,6 @@ pub async fn metrics(
                 .collect(),
             None => values.clone(),
         };
-        next_since = event.seq;
         samples.push(dto::MetricsSample {
             seq: event.seq,
             at: event.at,
@@ -208,11 +210,6 @@ pub async fn metrics(
             global_step: *global_step,
             values,
         });
-    }
-    // Nothing matched, so the whole range was consumed: move the cursor past it
-    // or a poller would rescan the same events forever.
-    if samples.is_empty() {
-        next_since = handle.last_seq().max(since);
     }
     Ok(Json(dto::MetricsPage {
         metrics: samples,
