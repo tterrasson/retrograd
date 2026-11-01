@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "fingerprint": "sha256:b83126fb9f9e3b9c62122e2e68837ce345f6ab5d3a279621b481fb315fa816ce",
+  "fingerprint": "sha256:7166f4796df0c8e30d978537ba15ed0e409c3e3bb6ba2eb7075450c95a2212e3",
   "kernels": [
     {
       "ggml_op": "GGML_OP_ADD",
@@ -2232,7 +2232,7 @@
           "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_n1",
           "kernel": "mul_mat_vec_q8_0",
           "priority": 85,
-          "policy": "observe_generated",
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q8_0",
             "dtype(b)=f32",

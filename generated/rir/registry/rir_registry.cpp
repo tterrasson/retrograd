@@ -137,7 +137,7 @@ const rir_variant_desc rir_variants[] = {
      {{0, 4}, {1, 8}, {-1, 1}},
      0, {{-1, 1}, {-1, 1}, {-1, 1}, {-1, 1}, {-1, 1}, {-1, 1}, {-1, 1}, {-1, 1}, {-1, 1}},
      32, 1, 0, 2, 1, 32, 0, {32, 1, 1}, 0, 36},
-    {"mul_mat_vec_q8_0", "GGML_OP_MUL_MAT", nullptr, "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_n1", "rir_mul_mat_vec_q8_0_n1", "n1", "mul_mat_vec_q8_0_n1", RIR_BACKEND_METAL, 85, RIR_POLICY_OBSERVE_GENERATED,
+    {"mul_mat_vec_q8_0", "GGML_OP_MUL_MAT", nullptr, "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_n1", "rir_mul_mat_vec_q8_0_n1", "n1", "mul_mat_vec_q8_0_n1", RIR_BACKEND_METAL, 85, RIR_POLICY_PREFER_GENERATED,
      1, {{{1, -1, -1, -1, -1, -1, -1, -1, -1}, 1, 1, 1}, {{-1, -1, -1, -1}, 0, 0, 0}},
      3, 0,
      {{"a", 0, RIR_ACCESS_READ, "q8_0", 2, 34, 32}, {"b", 1, RIR_ACCESS_READ, "f32", 2, 4, 1}, {"dst", -1, RIR_ACCESS_WRITE, "f32", 2, 4, 1}, {0, 0, 0, 0, 0, 0, 0}},
