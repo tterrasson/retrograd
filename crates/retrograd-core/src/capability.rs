@@ -160,6 +160,21 @@ const QWEN35_BLOCK: [&str; 21] = [
     "ssm_out",
 ];
 
+/// ModernBERT with a decision head: dense encoder blocks with a fused QKV,
+/// then plain pre-norm head blocks with biases (the same families, so the
+/// dense block covers both). The head adds globals: the per-type embedding
+/// `token_types`, and the scorer `cls`, `cls.norm` and `cls.output`.
+const MODERN_BERT_BLOCK: [&str; 12] = DENSE_BLOCK;
+const MODERN_BERT_GLOBAL: [&str; 7] = [
+    "output_norm",
+    "output",
+    "token_embd_norm",
+    "token_types",
+    "cls",
+    "cls.norm",
+    "cls.output",
+];
+
 /// Global families of a dense transformer. `output` is the untied vocabulary
 /// projection; a tied one is frozen by storage identity before this check.
 const DENSE_GLOBAL: [&str; 3] = ["output_norm", "output", "token_embd_norm"];
@@ -169,7 +184,8 @@ const DENSE_GLOBAL: [&str; 3] = ["output_norm", "output", "token_embd_norm"];
 /// `lfm2` and `qwen2` are the CPU fixtures, each checked against a real file
 /// by `tests/trainable_inventory.rs`; `qwen35` is checked there too, against
 /// the opt-in model `RETRO_QWEN3NEXT_TEST_MODEL` names; `llama` follows
-/// llama.cpp naming. A row lists parameters; the dtype rule decides what a
+/// llama.cpp naming; `modern-bert` is the tiny decision fixture's, resolved by
+/// `tests/decision_training.rs`. A row lists parameters; the dtype rule decides what a
 /// given file can carry.
 pub const CAPABILITY_TABLE: &[ArchitectureCapability] = &[
     ArchitectureCapability {
@@ -198,6 +214,14 @@ pub const CAPABILITY_TABLE: &[ArchitectureCapability] = &[
         architecture: "lfm2",
         block_families: &LFM2_BLOCK,
         global_families: &DENSE_GLOBAL,
+        exports_model: true,
+    },
+    ArchitectureCapability {
+        architecture: "modern-bert",
+        block_families: &MODERN_BERT_BLOCK,
+        global_families: &MODERN_BERT_GLOBAL,
+        // `tests/decision_training.rs` trains the tiny decision fixture with
+        // `full`, writes the model and serves it back through the engine.
         exports_model: true,
     },
 ];
@@ -359,11 +383,12 @@ mod tests {
         assert!(architecture_exports_model("lfm2"));
         assert!(architecture_exports_model("qwen2"));
         assert!(architecture_exports_model("qwen35"));
+        assert!(architecture_exports_model("modern-bert"));
         assert!(!architecture_exports_model("llama"));
         assert!(!architecture_exports_model("an-architecture-with-no-row"));
 
         let granted: Vec<&str> = model_export_architectures().collect();
-        assert_eq!(granted, vec!["qwen2", "qwen35", "lfm2"]);
+        assert_eq!(granted, vec!["qwen2", "qwen35", "lfm2", "modern-bert"]);
         assert!(
             granted
                 .iter()
