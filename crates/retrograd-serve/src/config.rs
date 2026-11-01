@@ -1,6 +1,7 @@
 //! The standalone server's minimal TOML configuration: the model, its
-//! adapters, the KV pool geometry, the device, the auth, the queue. Nothing
-//! about training - this file is parsed here, not by the run-config crate.
+//! adapters, the KV pool geometry, the device, the auth, the queue, and the
+//! head options of a decision model. Nothing about training - this file is
+//! parsed here, not by the run-config crate.
 
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -55,6 +56,40 @@ pub struct ServeConfig {
     /// writes). Absent: the bounded in-memory LRU, which never writes to disk.
     #[serde(default)]
     pub responses_store_dir: Option<PathBuf>,
+    /// `[decision]`: what replaces the head settings of a decision model.
+    /// Refused at load for a model that is not one.
+    #[serde(default)]
+    pub decision: DecisionSection,
+}
+
+/// `[decision]`. Every key is absent by default, and absent means the model's
+/// own value - what llama-server serves from the same file.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionSection {
+    /// A `systemone` Jinja template rendered in place of the model's. It takes
+    /// the same context and must keep one marker per option.
+    #[serde(default)]
+    pub template: Option<PathBuf>,
+    /// Replaces `<arch>.decision.max_head_tokens` (marker readouts only).
+    #[serde(default)]
+    pub max_head_tokens: Option<usize>,
+    /// Questions evaluated together in one forward pass, at most `n_seq_max`.
+    /// Default 1. More is faster, and costs exactness: the answer to a
+    /// question then depends on the other questions of its request, and
+    /// drifts from llama-server's by up to 1e-1 on a sensitive model.
+    #[serde(default)]
+    pub pack: Option<usize>,
+}
+
+impl DecisionSection {
+    pub fn options(&self) -> retrograd_openai::DecisionOptions {
+        retrograd_openai::DecisionOptions {
+            template: self.template.clone(),
+            max_head_tokens: self.max_head_tokens,
+            pack: self.pack,
+        }
+    }
 }
 
 fn default_host() -> String {
@@ -172,6 +207,30 @@ impl ServeConfig {
                 "n_seq_max must be greater than zero".into(),
             ));
         }
+        if let Some(template) = &self.decision.template
+            && !template.is_file()
+        {
+            return Err(ConfigError::Invalid(format!(
+                "decision.template: {} does not exist",
+                template.display()
+            )));
+        }
+        if self.decision.max_head_tokens == Some(0) {
+            return Err(ConfigError::Invalid(
+                "decision.max_head_tokens must be greater than zero".into(),
+            ));
+        }
+        if let Some(pack) = self.decision.pack {
+            let slots = self
+                .n_seq_max
+                .unwrap_or(retrograd_openai::backend::DEFAULT_SERVING_SLOTS);
+            // Widening u32 -> usize.
+            if pack == 0 || pack > slots as usize {
+                return Err(ConfigError::Invalid(format!(
+                    "decision.pack must be between 1 and n_seq_max ({slots}); got {pack}"
+                )));
+            }
+        }
         // Fail at load, not at first use.
         self.admission()?;
         self.device()?;
@@ -282,6 +341,28 @@ mod tests {
         );
         assert!(matches!(config.device().unwrap(), Device::Cpu));
         assert_eq!(config.address().unwrap().port(), 9000);
+        assert_eq!(
+            config.decision.options(),
+            retrograd_openai::DecisionOptions::default()
+        );
+    }
+
+    #[test]
+    fn the_decision_section_parses_into_the_head_options() {
+        let config = config(
+            r#"
+            model = "/dev/null"
+            n_seq_max = 4
+            [decision]
+            max_head_tokens = 512
+            pack = 4
+            "#,
+        )
+        .unwrap();
+        let options = config.decision.options();
+        assert_eq!(options.max_head_tokens, Some(512));
+        assert_eq!(options.pack, Some(4));
+        assert_eq!(options.template, None);
     }
 
     #[test]
@@ -303,6 +384,18 @@ mod tests {
             (
                 format!("{base}\nn_seq_max = 0"),
                 "n_seq_max must be greater than zero",
+            ),
+            (
+                format!("{base}\n[decision]\nmax_head_tokens = 0"),
+                "decision.max_head_tokens must be greater than zero",
+            ),
+            (
+                format!("{base}\nn_seq_max = 2\n[decision]\npack = 3"),
+                "decision.pack must be between 1 and n_seq_max (2)",
+            ),
+            (
+                format!("{base}\n[decision]\ntemplate = \"/no/such/template.jinja\""),
+                "decision.template: /no/such/template.jinja does not exist",
             ),
             (
                 format!("{base}\ndevice = \"tpu\""),

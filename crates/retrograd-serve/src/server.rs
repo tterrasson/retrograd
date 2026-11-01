@@ -250,6 +250,7 @@ mod tests {
                     device: retrograd_core::Device::Cpu,
                     n_seq_max: None,
                     chat_template_variables: None,
+                    decision: Default::default(),
                 },
                 base: None,
                 created: 1,
@@ -342,6 +343,7 @@ mod tests {
             "/v1/completions",
             "/v1/responses",
             "/v1/embeddings",
+            "/v1/systemone",
         ] {
             let (status, headers, _) =
                 send(&router, Request::get(path).body(Body::empty()).unwrap()).await;
