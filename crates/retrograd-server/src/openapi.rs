@@ -572,6 +572,15 @@ const OPERATIONS: &[Operation] = &[
     )
     .accepts(&["application/json"])
     .openai(),
+    op(
+        "post",
+        "/v1/systemone",
+        "Typed decisions of a decision model (llama-server's contract): answers to choice, score and noul questions, from the weights on disk",
+        None,
+        None,
+    )
+    .accepts(&["application/json"])
+    .openai(),
 ];
 
 /// The paths object, built from [`OPERATIONS`].

@@ -47,6 +47,7 @@ pub fn is_openai_path(path: &str) -> bool {
     path == "/v1/chat/completions"
         || path == "/v1/completions"
         || path == "/v1/embeddings"
+        || path == "/v1/systemone"
         || path == "/v1/responses"
         || path.starts_with("/v1/responses/")
         || path == "/v1/models"
@@ -123,6 +124,7 @@ fn weights(serving: &ServingSpec, model: &Path, adapter: Option<PathBuf>) -> Wei
         device: serving.device.parse().unwrap_or_default(),
         n_seq_max: None,
         chat_template_variables: serving.chat_template_variables.clone(),
+        decision: Default::default(),
     }
 }
 
@@ -553,6 +555,7 @@ mod tests {
         assert!(is_openai_path("/v1/chat/completions"));
         assert!(is_openai_path("/v1/completions"));
         assert!(is_openai_path("/v1/embeddings"));
+        assert!(is_openai_path("/v1/systemone"));
         assert!(is_openai_path("/v1/responses"));
         assert!(is_openai_path("/v1/responses/resp_1"));
         assert!(is_openai_path("/v1/responses/resp_1/input_items"));
