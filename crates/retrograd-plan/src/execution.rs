@@ -247,7 +247,16 @@ pub fn select_variant<'a>(
     }
     let mut saw_shape = false;
     let mut saw_feature = false;
+    let mut saw_policy = false;
     for variant in &policy.variants {
+        // The pair's policy is only a ceiling: the effective policy of a
+        // variant is min(pair, variant), and a variant below
+        // `prefer_generated` is never dispatched - the node goes to the next
+        // candidate, then to the native kernel.
+        if variant.policy.min(policy.policy) != BackendPolicy::PreferGenerated {
+            saw_policy = true;
+            continue;
+        }
         if !variant
             .eligible_when
             .holds(|axis| axis_extents.get(axis).copied())
@@ -278,6 +287,8 @@ pub fn select_variant<'a>(
         VariantSelection::Rejected("missing_feature")
     } else if saw_shape {
         VariantSelection::Rejected("shape")
+    } else if saw_policy {
+        VariantSelection::Rejected("policy_native")
     } else {
         VariantSelection::Rejected("wrong_op")
     }
@@ -293,6 +304,7 @@ mod tests {
         let variant = |id: &str, priority, min, max| KernelVariantPolicy {
             variant_id: id.into(),
             priority,
+            policy: BackendPolicy::PreferGenerated,
             eligible_when: Claim::any().on("row", min..=max),
             workgroup: [32, 1, 1],
             ..Default::default()
@@ -312,6 +324,51 @@ mod tests {
         assert!(matches!(
             select_variant(&policy, &extents, &features, Some(64)),
             VariantSelection::Selected(v) if v.variant_id == "wide"
+        ));
+    }
+
+    /// The pair's policy is only a ceiling: a variant held below
+    /// `prefer_generated` is never dispatched, even on a promoted pair, and the
+    /// shape goes to the next candidate.
+    #[test]
+    fn a_variant_below_the_pair_ceiling_is_never_selected() {
+        let mut observed = KernelVariantPolicy {
+            variant_id: "observed".into(),
+            priority: 90,
+            policy: BackendPolicy::ObserveGenerated,
+            eligible_when: Claim::any(),
+            workgroup: [32, 1, 1],
+            ..Default::default()
+        };
+        let fallback = KernelVariantPolicy {
+            variant_id: "fallback".into(),
+            priority: 80,
+            policy: BackendPolicy::PreferGenerated,
+            eligible_when: Claim::any(),
+            workgroup: [32, 1, 1],
+            ..Default::default()
+        };
+        let policy = KernelPolicy {
+            policy: BackendPolicy::PreferGenerated,
+            variants: vec![observed.clone(), fallback],
+            ..Default::default()
+        };
+        let extents = BTreeMap::new();
+        let features = BTreeSet::new();
+        assert!(matches!(
+            select_variant(&policy, &extents, &features, None),
+            VariantSelection::Selected(v) if v.variant_id == "fallback"
+        ));
+        // With no prefer variant at all, the node leaves for the native kernel.
+        observed.policy = BackendPolicy::ObserveGenerated;
+        let policy = KernelPolicy {
+            policy: BackendPolicy::PreferGenerated,
+            variants: vec![observed],
+            ..Default::default()
+        };
+        assert!(matches!(
+            select_variant(&policy, &extents, &features, None),
+            VariantSelection::Rejected("policy_native")
         ));
     }
 }
