@@ -498,7 +498,8 @@ pub mod step;
 mod trainer;
 
 pub use engine::{
-    AdapterRowsInfo, Engine, EngineError, PoolingType, engine_config_from_train_config,
+    AdapterRowsInfo, DECISION_TEMPLATE, Decision, DecisionInfo, DecisionMetadata, Engine,
+    EngineError, PoolingType, TemplateSource, decision_metadata, engine_config_from_train_config,
     generation_batch,
 };
 pub use grammar::{grammar_from_gbnf, grammar_from_json_schema, json_object_grammar};

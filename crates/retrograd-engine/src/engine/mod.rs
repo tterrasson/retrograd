@@ -10,12 +10,16 @@
 
 mod adapter;
 mod chat;
+mod decide;
 mod embed;
 mod generate;
 mod score;
 mod step;
 
 pub use adapter::AdapterRowsInfo;
+pub use decide::{
+    DECISION_TEMPLATE, Decision, DecisionInfo, DecisionMetadata, TemplateSource, decision_metadata,
+};
 pub use embed::PoolingType;
 
 use std::ffi::CString;
@@ -109,6 +113,11 @@ pub enum EngineError {
     /// helpers), carried unchanged.
     #[error(transparent)]
     Core(#[from] retrograd_core::Error),
+    /// A decision request or model refused by the decision logic, carried
+    /// unchanged so a server can still tell a non-decision model (501) from a
+    /// bad request.
+    #[error(transparent)]
+    Decision(#[from] retrograd_decision::DecisionError),
 }
 
 impl EngineError {
@@ -126,6 +135,7 @@ impl From<EngineError> for retrograd_core::Error {
             EngineError::Overflow(message) => retrograd_core::Error::Overflow(message),
             EngineError::Runtime(message) => retrograd_core::Error::Runtime(message),
             EngineError::Core(error) => error,
+            EngineError::Decision(error) => error.into(),
         }
     }
 }
@@ -195,6 +205,9 @@ pub struct Engine {
     raw: NonNull<ffi::RetroEngine>,
     // Fixed at construction, bounded by LLAMA_MAX_SEQ in config validation.
     n_seq_max: usize,
+    // Whether the decision template is a source set by the caller rather than
+    // the model's own.
+    decision_template_overridden: bool,
 }
 
 impl Engine {
@@ -230,6 +243,7 @@ impl Engine {
             .map(|raw| Self {
                 raw,
                 n_seq_max: config.n_seq_max as usize,
+                decision_template_overridden: false,
             })
     }
 
