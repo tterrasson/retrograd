@@ -305,7 +305,7 @@ fn as_problem(response: Response, status: StatusCode, openai: bool) -> Response 
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.starts_with("application/problem+json"));
-    if is_problem {
+    if is_problem && !openai {
         return response;
     }
     let detail = match status {
@@ -318,12 +318,19 @@ fn as_problem(response: Response, status: StatusCode, openai: bool) -> Response 
         _ => "the request could not be served",
     };
     let problem = problem_from_rejection(status, detail);
-    if openai {
-        return retrograd_openai::OpenAiError::from(problem)
+    let mut replacement = if openai {
+        retrograd_openai::OpenAiError::from(problem)
             .with_status(status)
-            .into_response();
+            .into_response()
+    } else {
+        problem.into_response()
+    };
+    for name in [header::ALLOW, header::RETRY_AFTER, header::WWW_AUTHENTICATE] {
+        if let Some(value) = response.headers().get(&name) {
+            replacement.headers_mut().insert(name, value.clone());
+        }
     }
-    problem.into_response()
+    replacement
 }
 
 /// Trims absolute paths out of problem documents on the way out.
