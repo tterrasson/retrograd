@@ -25,6 +25,11 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sig
 toml.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+futures-util.workspace = true
+http-body-util.workspace = true
+tower = { workspace = true, features = ["util"] }
+
 [lints]
 workspace = true
 

@@ -183,15 +183,25 @@ impl ServeConfig {
     /// a key on an address other machines reach should be a decision, never a
     /// typo.
     pub fn check_network_rule(&self) -> Result<(), ConfigError> {
-        let loopback = self.address()?.ip().is_loopback();
-        if !loopback && self.api_key.as_deref().is_none_or(str::is_empty) {
-            return Err(ConfigError::Invalid(format!(
-                "refusing to serve on {} without api_key: the model would be open to the network",
-                self.host
-            )));
-        }
-        Ok(())
+        check_network_rule(self.address()?, self.api_key.as_deref())
     }
+}
+
+pub(crate) fn check_network_rule(
+    address: std::net::SocketAddr,
+    api_key: Option<&str>,
+) -> Result<(), ConfigError> {
+    if api_key.is_some_and(|key| key.is_empty() || key.trim() != key) {
+        return Err(ConfigError::Invalid(
+            "api_key must not be empty or have surrounding whitespace".into(),
+        ));
+    }
+    if !address.ip().is_loopback() && api_key.is_none() {
+        return Err(ConfigError::Invalid(format!(
+            "refusing to serve on {address} without api_key: the model would be open to the network"
+        )));
+    }
+    Ok(())
 }
 
 /// The configuration file's failures, as the binary reports them.
@@ -303,6 +313,14 @@ mod tests {
                 "host must be an IP address",
             ),
             (format!("{base}\nhost = \"0.0.0.0\""), "without api_key"),
+            (
+                format!("{base}\napi_key = \"\""),
+                "api_key must not be empty",
+            ),
+            (
+                format!("{base}\napi_key = \" token \""),
+                "surrounding whitespace",
+            ),
             (
                 format!("{base}\n[[adapters]]\nname = \"base\"\npath = \"/dev/null\""),
                 "that id serves the base model",

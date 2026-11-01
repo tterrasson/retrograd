@@ -2212,7 +2212,9 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "futures-util",
  "http",
+ "http-body-util",
  "retrograd-core",
  "retrograd-infer",
  "retrograd-openai",
@@ -2221,6 +2223,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml",
+ "tower",
  "tracing",
 ]
 
