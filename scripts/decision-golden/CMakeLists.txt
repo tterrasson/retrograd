@@ -18,6 +18,15 @@ set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_APP      OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_UI       OFF CACHE BOOL "" FORCE)
 
+# The CPU backend is built as crates/retrograd-ffi/build.rs builds it: no BLAS,
+# no Accelerate, no host-specific instructions. llama.cpp's defaults route
+# matrix products through Accelerate on macOS, which changes their arithmetic,
+# and a reference the workspace build cannot run the kernels of is not one it
+# can match. The GPU backends are not affected.
+set(GGML_BLAS       OFF CACHE BOOL "" FORCE)
+set(GGML_ACCELERATE OFF CACHE BOOL "" FORCE)
+set(GGML_NATIVE     OFF CACHE BOOL "" FORCE)
+
 add_subdirectory("${FORK_DIR}" llama.cpp)
 
 add_executable(decision-golden decision_golden.cpp)

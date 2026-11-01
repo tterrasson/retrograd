@@ -329,6 +329,19 @@ For iteration on one expensive binary, pass it as an argument:
 backend, runtime lock, thread count and hard-failure guarantees of the full
 lane.
 
+`decision_engine.rs` replays `tests/fixtures/decision` on the engine with the
+small `laya` model (`decision/TINYLAYA_FIXTURE.toml`, fetched by the lane on
+its own since it sits outside the `*_FIXTURE.toml` glob): the rendered
+`systemone` prompt and its tokens must be the recorded ones exactly, the token
+count of each response too, and the probabilities those of the recording of
+the same backend: exactly with one question per forward pass (the default),
+within 1e-3 with several packed in one. The CPU recordings are built with this
+build's ggml options (no BLAS, no Accelerate), which is what makes them
+reachable exactly. Built with Metal, the same binary also replays the Metal
+recording. `RETRO_DECISION_JULIA` and `RETRO_DECISION_LAYA` add the two real
+models, opt-in: exact on both backends at one question per pass, packed passes
+printed rather than asserted.
+
 `e2e_cpu.rs` is the server's one model-dependent test, and it is here because a
 fake engine cannot answer whether the pieces *join*: it plans with
 `?calibrate=true` (so the resolver's measured pass is checked against

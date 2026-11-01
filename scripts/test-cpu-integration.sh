@@ -16,6 +16,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$repo_root/scripts/lib-step-timing.sh"
 "$repo_root/scripts/fetch-cpu-fixture.sh"
+# The decision model sits outside the glob above, under tests/fixtures/decision.
+"$repo_root/scripts/fetch-cpu-fixture.sh" decision/TINYLAYA_FIXTURE >/dev/null
 
 export RETRO_CPU_FIXTURE="${RETRO_CPU_FIXTURE:-$repo_root/tests/fixtures/LFM2.5-230M-Q4_K_M.gguf}"
 export RETRO_TINY_FIXTURE="${RETRO_TINY_FIXTURE:-$repo_root/tests/fixtures/retrograd-tiny-qwen2-f32.gguf}"
@@ -23,6 +25,7 @@ export RETRO_TINY_F16_FIXTURE="${RETRO_TINY_F16_FIXTURE:-$repo_root/tests/fixtur
 export RETRO_TINY_BF16_FIXTURE="${RETRO_TINY_BF16_FIXTURE:-$repo_root/tests/fixtures/retrograd-tiny-qwen2-bf16.gguf}"
 export RETRO_TINY_BF16_CONTROL_FIXTURE="${RETRO_TINY_BF16_CONTROL_FIXTURE:-$repo_root/tests/fixtures/retrograd-tiny-qwen2-bf16ctl-f32.gguf}"
 export RETRO_TINY_Q8_FIXTURE="${RETRO_TINY_Q8_FIXTURE:-$repo_root/tests/fixtures/retrograd-tiny-qwen2-q8_0.gguf}"
+export RETRO_TINYLAYA_FIXTURE="${RETRO_TINYLAYA_FIXTURE:-$repo_root/tests/fixtures/decision/tinylaya-for-testing-Q8_0.gguf}"
 export RETRO_REQUIRE_CPU_FIXTURE=1
 export RETRO_RUNTIME_LOCK_PATH="${RETRO_RUNTIME_LOCK_PATH:-${TMPDIR:-/tmp}/retrograd-runtime.lock}"
 export RETRO_THREADS="${RETRO_TEST_CPU_THREADS:-4}"
@@ -57,6 +60,7 @@ if [[ "${RETRO_PROFILE_TESTS:-0}" == "1" ]]; then
     --test cli \
     --test engine_contracts \
     --test engine_runtime \
+    --test decision_engine \
     --test infer_runtime \
     --test serve_runtime \
     --test rollout_scheduler \
@@ -85,6 +89,7 @@ timed_step run:capabilities-suite cargo test --no-default-features --features ag
   --test cli \
   --test engine_contracts \
   --test engine_runtime \
+  --test decision_engine \
   --test infer_runtime \
   --test serve_runtime \
   --test rollout_scheduler \

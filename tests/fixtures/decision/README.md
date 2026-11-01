@@ -43,17 +43,24 @@ files themselves are never committed.
 
 ## Tolerance
 
+The CPU references are built as the workspace builds its CPU backend: no BLAS,
+no Accelerate, no host-specific instructions (`scripts/decision-golden/CMakeLists.txt`).
+llama.cpp's default macOS build multiplies matrices through Accelerate, which
+changes the arithmetic; a reference the workspace cannot run the kernels of is
+not one it can match. The Metal references do not depend on these options.
+
 Measured on the recorded files (Apple M-series, CPU and Metal backends):
 
 | Comparison | Largest probability difference |
 |---|---|
-| capture tool against `llama-server`, same backend | 0 (same code, same kernels) |
+| capture tool against `llama-server` built the same way, same backend | 0 (same code, same kernels) |
 | two runs, same backend | 0 |
 | CPU against Metal, `tinylaya` Q8_0 | 1.2e-3 |
-| CPU against Metal, `laya` Q8_0 | 1.0e-1 (`twenty_long_options`, two near-tied options); 3.4e-3 elsewhere |
-| CPU against Metal, `julia-1` Q8_0 | 2.4e-1 |
-| CPU against Metal, `julia-1` BF16 | 2.7e-2 |
-| `julia-1` Q8_0 against BF16, CPU | 2.6e-1 |
+| CPU against Metal, `laya` Q8_0 | 1.1e-1 (`twenty_long_options`, two near-tied options) |
+| CPU against Metal, `julia-1` Q8_0 | 3.1e-1, and one choice changes |
+| this CPU build against llama.cpp's default (Accelerate) build | `tinylaya` 3.8e-4, `laya` 4.9e-2, `julia-1` 3.6e-1 (two choices change) |
+| CPU against Metal, `julia-1` BF16, default build | 2.7e-2 |
+| `julia-1` Q8_0 against BF16, CPU, default build | 2.6e-1 |
 
 What follows from it:
 
@@ -67,6 +74,6 @@ What follows from it:
   against the PyTorch reference, 2.2e-2, measured on a higher-precision file).
 - Laya on Metal reproduces the values the upstream pull request reports for
   `reference_example` within 1.4e-3, and its token count (414) exactly.
-- The head budget changes answers: Julia-1 picks `legal` on
-  `long_question_model_budget` (256) and `support` with 512. The value in the
-  model file is the default for that reason.
+- The head budget changes answers: on Metal (and on the default CPU build),
+  Julia-1 picks `legal` on `long_question_model_budget` (256) and `support` with
+  512. The value in the model file is the default for that reason.
