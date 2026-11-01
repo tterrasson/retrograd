@@ -18,7 +18,8 @@
 //! are left as they are: the next start reads them back as `interrupted`,
 //! which is true and is what `fork_from` picks up.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use crate::dto;
 use crate::runtime::control::{CancelAt, RunCommand};
@@ -44,6 +45,7 @@ pub async fn drain(state: &AppState, bound: Duration) -> usize {
         return 0;
     }
     tracing::info!(runs = live.len(), "draining live runs before shutdown");
+    let deadline = Instant::now() + bound;
     for handle in &live {
         let Some(control) = handle.control() else {
             continue;
@@ -52,13 +54,22 @@ pub async fn drain(state: &AppState, bound: Duration) -> usize {
         // run; `Cancel { checkpoint: true }` alone would be enough, but sending the
         // request first means a run that reaches its boundary between the two
         // messages still writes one.
-        let _ = control.send_waiting(RunCommand::Checkpoint).await;
-        let _ = control
-            .send_waiting(RunCommand::Cancel {
-                at: CancelAt::Boundary,
-                checkpoint: true,
-            })
-            .await;
+        // Sending can itself wait on a full command queue. It shares the drain's
+        // deadline, including when the training thread never polls again.
+        if tokio::time::timeout_at(deadline, async {
+            let _ = control.send_waiting(RunCommand::Checkpoint).await;
+            let _ = control
+                .send_waiting(RunCommand::Cancel {
+                    at: CancelAt::Boundary,
+                    checkpoint: true,
+                })
+                .await;
+        })
+        .await
+        .is_err()
+        {
+            break;
+        }
         handle.emit(dto::RunEventPayload::Log {
             message: "the server is shutting down: checkpointing and stopping at the next \
                       boundary"
@@ -67,7 +78,6 @@ pub async fn drain(state: &AppState, bound: Duration) -> usize {
         handle.transition(dto::RunStatus::Cancelling);
     }
 
-    let deadline = Instant::now() + bound;
     loop {
         let remaining = live
             .iter()
@@ -84,6 +94,6 @@ pub async fn drain(state: &AppState, bound: Duration) -> usize {
             );
             return remaining;
         }
-        tokio::time::sleep(POLL).await;
+        tokio::time::sleep_until(deadline.min(Instant::now() + POLL)).await;
     }
 }

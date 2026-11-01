@@ -290,6 +290,35 @@ async fn concurrent_idempotent_requests_start_only_one_worker() {
 }
 
 #[tokio::test]
+async fn a_shutdown_deadline_includes_waiting_for_a_full_command_queue() {
+    use retrograd_server::runtime::control::{self, RunCommand};
+    use std::time::Duration;
+
+    let fixture = Fixture::new("shutdown-full-queue");
+    let state = state_of(&fixture, FakeEngine::succeeding(), false);
+    let router = build_router(state.clone());
+    let (_, body) = post(&router, "/v1/runs", recipe(&fixture, "template")).await;
+    let id = body["id"].as_str().unwrap();
+    wait_for_terminal(&router, id).await;
+    let record = state
+        .registry
+        .get(&id.parse().unwrap())
+        .unwrap()
+        .record
+        .clone();
+    let (sender, _receiver) = control::channel();
+    while sender.send(RunCommand::Pause).is_ok() {}
+    state.registry.create(None, record, None, sender).unwrap();
+    let remaining = tokio::time::timeout(
+        Duration::from_secs(1),
+        retrograd_server::shutdown::drain(&state, Duration::from_millis(20)),
+    )
+    .await
+    .expect("shutdown exceeded its deadline on a saturated queue");
+    assert_eq!(remaining, 1);
+}
+
+#[tokio::test]
 async fn the_listing_is_newest_first_filterable_and_paged() {
     let fixture = Fixture::new("listing");
     let router = router_for(&fixture, FakeEngine::succeeding());
