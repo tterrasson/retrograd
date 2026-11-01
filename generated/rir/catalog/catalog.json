@@ -1,6 +1,6 @@
 {
-  "schema_version": 2,
-  "fingerprint": "sha256:47040da94bc8a70beae6352555da06fa46b6f4b1e68841d25f30c6ed3c8ebd40",
+  "schema_version": 3,
+  "fingerprint": "sha256:079385f3d95cda173ec3ca54df5c59f9755d324445c9ff2d8319a50201350253",
   "kernels": [
     {
       "ggml_op": "GGML_OP_ADD",
@@ -22,6 +22,7 @@
           "variant_id": "add_f16_f16_4d_serial_flat_linear",
           "kernel": "add_f16",
           "priority": 100,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -46,6 +47,7 @@
           "variant_id": "add_f32_4d_serial_flat_linear",
           "kernel": "add",
           "priority": 100,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -70,6 +72,7 @@
           "variant_id": "add_f16_f16_4d_serial_vec4",
           "kernel": "add_f16",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -94,6 +97,7 @@
           "variant_id": "add_f32_4d_serial_vec4",
           "kernel": "add",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -118,6 +122,7 @@
           "variant_id": "add_repeat_f16_f16_4d_serial_vec4",
           "kernel": "add_repeat_f16",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -142,6 +147,7 @@
           "variant_id": "add_repeat_f32_4d_serial_vec4",
           "kernel": "add_repeat",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -166,6 +172,7 @@
           "variant_id": "add_f16_f16_4d_serial",
           "kernel": "add_f16",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -190,6 +197,7 @@
           "variant_id": "add_f32_4d_serial",
           "kernel": "add",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -214,6 +222,7 @@
           "variant_id": "add_repeat_f16_f16_4d_serial",
           "kernel": "add_repeat_f16",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -238,6 +247,7 @@
           "variant_id": "add_repeat_f32_4d_serial",
           "kernel": "add_repeat",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -273,6 +283,7 @@
           "variant_id": "add_f16_f16_4d_serial_vec4",
           "kernel": "add_f16",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -296,6 +307,7 @@
           "variant_id": "add_f32_4d_serial_vec4",
           "kernel": "add",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -319,6 +331,7 @@
           "variant_id": "add_repeat_f16_f16_4d_serial_vec4",
           "kernel": "add_repeat_f16",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -342,6 +355,7 @@
           "variant_id": "add_repeat_f32_4d_serial_vec4",
           "kernel": "add_repeat",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -365,6 +379,7 @@
           "variant_id": "add_f16_f16_4d_serial",
           "kernel": "add_f16",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -388,6 +403,7 @@
           "variant_id": "add_f32_4d_serial",
           "kernel": "add",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -411,6 +427,7 @@
           "variant_id": "add_repeat_f16_f16_4d_serial",
           "kernel": "add_repeat_f16",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -434,6 +451,7 @@
           "variant_id": "add_repeat_f32_4d_serial",
           "kernel": "add_repeat",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -468,6 +486,7 @@
           "variant_id": "add_f16_f16_4d_serial_vec4",
           "kernel": "add_f16",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -493,6 +512,7 @@
           "variant_id": "add_f32_4d_serial_vec4",
           "kernel": "add",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -516,6 +536,7 @@
           "variant_id": "add_repeat_f16_f16_4d_serial_vec4",
           "kernel": "add_repeat_f16",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -541,6 +562,7 @@
           "variant_id": "add_repeat_f32_4d_serial_vec4",
           "kernel": "add_repeat",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -564,6 +586,7 @@
           "variant_id": "add_f16_f16_4d_serial",
           "kernel": "add_f16",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -589,6 +612,7 @@
           "variant_id": "add_f32_4d_serial",
           "kernel": "add",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -612,6 +636,7 @@
           "variant_id": "add_repeat_f16_f16_4d_serial",
           "kernel": "add_repeat_f16",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -637,6 +662,7 @@
           "variant_id": "add_repeat_f32_4d_serial",
           "kernel": "add_repeat",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -691,6 +717,7 @@
           "variant_id": "cumsum_f32_4d_shared_tree_tiled",
           "kernel": "cumsum",
           "priority": 100,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -729,6 +756,7 @@
           "variant_id": "cumsum_f32_4d_subgroup_tree_strided",
           "kernel": "cumsum",
           "priority": 95,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -769,6 +797,7 @@
           "variant_id": "cumsum_f32_4d_subgroup_tree_blocked",
           "kernel": "cumsum",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -802,6 +831,7 @@
           "variant_id": "cumsum_f32_4d_serial",
           "kernel": "cumsum",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -834,6 +864,7 @@
           "variant_id": "cumsum_f32_4d_shared_tree_tiled",
           "kernel": "cumsum",
           "priority": 100,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -872,6 +903,7 @@
           "variant_id": "cumsum_f32_4d_subgroup_tree_strided",
           "kernel": "cumsum",
           "priority": 95,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -912,6 +944,7 @@
           "variant_id": "cumsum_f32_4d_subgroup_tree_blocked",
           "kernel": "cumsum",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -945,6 +978,7 @@
           "variant_id": "cumsum_f32_4d_serial",
           "kernel": "cumsum",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -987,6 +1021,7 @@
           "variant_id": "l2_norm_back_f32_4d_subgroup_tree",
           "kernel": "l2_norm_back",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(dz)=f32",
             "dtype(x)=f32",
@@ -1021,6 +1056,7 @@
           "variant_id": "l2_norm_back_f32_4d_subgroup_tree",
           "kernel": "l2_norm_back",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(dz)=f32",
             "dtype(x)=f32",
@@ -1056,6 +1092,7 @@
           "variant_id": "l2_norm_back_f32_4d_subgroup_tree",
           "kernel": "l2_norm_back",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(dz)=f32",
             "dtype(x)=f32",
@@ -1101,6 +1138,7 @@
           "variant_id": "mul_f16_f16_4d_serial_flat_linear",
           "kernel": "mul_f16",
           "priority": 100,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -1125,6 +1163,7 @@
           "variant_id": "mul_f32_4d_serial_flat_linear",
           "kernel": "mul",
           "priority": 100,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -1149,6 +1188,7 @@
           "variant_id": "mul_f16_f16_4d_serial_vec4",
           "kernel": "mul_f16",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -1173,6 +1213,7 @@
           "variant_id": "mul_f32_4d_serial_vec4",
           "kernel": "mul",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -1197,6 +1238,7 @@
           "variant_id": "mul_repeat_f16_f16_4d_serial_vec4",
           "kernel": "mul_repeat_f16",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -1221,6 +1263,7 @@
           "variant_id": "mul_repeat_f32_4d_serial_vec4",
           "kernel": "mul_repeat",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -1245,6 +1288,7 @@
           "variant_id": "mul_f16_f16_4d_serial",
           "kernel": "mul_f16",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -1269,6 +1313,7 @@
           "variant_id": "mul_f32_4d_serial",
           "kernel": "mul",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -1293,6 +1338,7 @@
           "variant_id": "mul_repeat_f16_f16_4d_serial",
           "kernel": "mul_repeat_f16",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -1317,6 +1363,7 @@
           "variant_id": "mul_repeat_f32_4d_serial",
           "kernel": "mul_repeat",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -1352,6 +1399,7 @@
           "variant_id": "mul_f16_f16_4d_serial_vec4",
           "kernel": "mul_f16",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -1375,6 +1423,7 @@
           "variant_id": "mul_f32_4d_serial_vec4",
           "kernel": "mul",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -1398,6 +1447,7 @@
           "variant_id": "mul_repeat_f16_f16_4d_serial_vec4",
           "kernel": "mul_repeat_f16",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -1421,6 +1471,7 @@
           "variant_id": "mul_repeat_f32_4d_serial_vec4",
           "kernel": "mul_repeat",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -1444,6 +1495,7 @@
           "variant_id": "mul_f16_f16_4d_serial",
           "kernel": "mul_f16",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -1467,6 +1519,7 @@
           "variant_id": "mul_f32_4d_serial",
           "kernel": "mul",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -1490,6 +1543,7 @@
           "variant_id": "mul_repeat_f16_f16_4d_serial",
           "kernel": "mul_repeat_f16",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -1513,6 +1567,7 @@
           "variant_id": "mul_repeat_f32_4d_serial",
           "kernel": "mul_repeat",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -1547,6 +1602,7 @@
           "variant_id": "mul_f16_f16_4d_serial_vec4",
           "kernel": "mul_f16",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -1572,6 +1628,7 @@
           "variant_id": "mul_f32_4d_serial_vec4",
           "kernel": "mul",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -1595,6 +1652,7 @@
           "variant_id": "mul_repeat_f16_f16_4d_serial_vec4",
           "kernel": "mul_repeat_f16",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -1620,6 +1678,7 @@
           "variant_id": "mul_repeat_f32_4d_serial_vec4",
           "kernel": "mul_repeat",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -1643,6 +1702,7 @@
           "variant_id": "mul_f16_f16_4d_serial",
           "kernel": "mul_f16",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -1668,6 +1728,7 @@
           "variant_id": "mul_f32_4d_serial",
           "kernel": "mul",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -1691,6 +1752,7 @@
           "variant_id": "mul_repeat_f16_f16_4d_serial",
           "kernel": "mul_repeat_f16",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f16",
             "dtype(b)=f16",
@@ -1716,6 +1778,7 @@
           "variant_id": "mul_repeat_f32_4d_serial",
           "kernel": "mul_repeat",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -1786,12 +1849,13 @@
       "ggml_op": "GGML_OP_MUL_MAT",
       "op_variant": null,
       "backend": "metal",
-      "policy": "observe_generated",
+      "policy": "prefer_generated",
       "variants": [
         {
           "variant_id": "mul_mat_vec_q4_K_q4_K_2d_matrix_tile_mma",
           "kernel": "mul_mat_vec_q4_K",
           "priority": 100,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q4_K",
             "dtype(b)=f32",
@@ -1826,6 +1890,7 @@
           "variant_id": "mul_mat_vec_q6_K_q6_K_2d_matrix_tile_mma",
           "kernel": "mul_mat_vec_q6_K",
           "priority": 100,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q6_K",
             "dtype(b)=f32",
@@ -1860,6 +1925,7 @@
           "variant_id": "mul_mat_vec_q8_0_q8_0_2d_matrix_tile_mma",
           "kernel": "mul_mat_vec_q8_0",
           "priority": 100,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q8_0",
             "dtype(b)=f32",
@@ -1894,6 +1960,7 @@
           "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_cols8_rt4_seg4_nofs",
           "kernel": "mul_mat_vec_q4_K",
           "priority": 95,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q4_K",
             "dtype(b)=f32",
@@ -1927,6 +1994,7 @@
           "variant_id": "mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_cols8_rt4_seg4_nofs",
           "kernel": "mul_mat_vec_q6_K",
           "priority": 95,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q6_K",
             "dtype(b)=f32",
@@ -1960,6 +2028,7 @@
           "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_cols8_rt4_seg4_nofs",
           "kernel": "mul_mat_vec_q8_0",
           "priority": 95,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q8_0",
             "dtype(b)=f32",
@@ -1993,6 +2062,7 @@
           "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_cols4",
           "kernel": "mul_mat_vec_q4_K",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q4_K",
             "dtype(b)=f32",
@@ -2026,6 +2096,7 @@
           "variant_id": "mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_cols4",
           "kernel": "mul_mat_vec_q6_K",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q6_K",
             "dtype(b)=f32",
@@ -2059,6 +2130,7 @@
           "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_cols4",
           "kernel": "mul_mat_vec_q8_0",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q8_0",
             "dtype(b)=f32",
@@ -2089,9 +2161,112 @@
           "scan": "serial"
         },
         {
+          "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_n1",
+          "kernel": "mul_mat_vec_q4_K",
+          "priority": 85,
+          "policy": "observe_generated",
+          "constraints": [
+            "dtype(a)=q4_K",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "plane"
+              ],
+              "min": 1,
+              "max": 1
+            }
+          ],
+          "features": [
+            "metal>=2.1",
+            "simdgroup_reduction",
+            "simdgroup_size>=32"
+          ],
+          "workgroup": [
+            64,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_n1",
+          "kernel": "mul_mat_vec_q6_K",
+          "priority": 85,
+          "policy": "observe_generated",
+          "constraints": [
+            "dtype(a)=q6_K",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "plane"
+              ],
+              "min": 1,
+              "max": 1
+            }
+          ],
+          "features": [
+            "metal>=2.1",
+            "simdgroup_reduction",
+            "simdgroup_size>=32"
+          ],
+          "workgroup": [
+            64,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_n1",
+          "kernel": "mul_mat_vec_q8_0",
+          "priority": 85,
+          "policy": "observe_generated",
+          "constraints": [
+            "dtype(a)=q8_0",
+            "dtype(b)=f32",
+            "rank(a)<=2",
+            "rank(b)<=2"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "plane"
+              ],
+              "min": 1,
+              "max": 1
+            }
+          ],
+          "features": [
+            "metal>=2.1",
+            "simdgroup_reduction",
+            "simdgroup_size>=32"
+          ],
+          "workgroup": [
+            64,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "subgroup_tree",
+          "scan": "serial"
+        },
+        {
           "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree",
           "kernel": "mul_mat_vec_q4_K",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q4_K",
             "dtype(b)=f32",
@@ -2117,6 +2292,7 @@
           "variant_id": "mul_mat_vec_q6_K_q6_K_2d_subgroup_tree",
           "kernel": "mul_mat_vec_q6_K",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q6_K",
             "dtype(b)=f32",
@@ -2142,6 +2318,7 @@
           "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree",
           "kernel": "mul_mat_vec_q8_0",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q8_0",
             "dtype(b)=f32",
@@ -2189,6 +2366,7 @@
           "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_cols8_rt4_seg4_nofs",
           "kernel": "mul_mat_vec_q4_K",
           "priority": 95,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q4_K",
             "dtype(b)=f32",
@@ -2226,6 +2404,7 @@
           "variant_id": "mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_cols8_rt4_seg4_nofs",
           "kernel": "mul_mat_vec_q6_K",
           "priority": 95,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q6_K",
             "dtype(b)=f32",
@@ -2263,6 +2442,7 @@
           "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_cols8_rt4_seg4_nofs",
           "kernel": "mul_mat_vec_q8_0",
           "priority": 95,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q8_0",
             "dtype(b)=f32",
@@ -2300,6 +2480,7 @@
           "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_cols4",
           "kernel": "mul_mat_vec_q4_K",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q4_K",
             "dtype(b)=f32",
@@ -2337,6 +2518,7 @@
           "variant_id": "mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_cols4",
           "kernel": "mul_mat_vec_q6_K",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q6_K",
             "dtype(b)=f32",
@@ -2374,6 +2556,7 @@
           "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_cols4",
           "kernel": "mul_mat_vec_q8_0",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q8_0",
             "dtype(b)=f32",
@@ -2411,6 +2594,7 @@
           "variant_id": "mul_mat_vec_q4_K_q4_K_2d_subgroup_tree",
           "kernel": "mul_mat_vec_q4_K",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q4_K",
             "dtype(b)=f32",
@@ -2440,6 +2624,7 @@
           "variant_id": "mul_mat_vec_q6_K_q6_K_2d_subgroup_tree",
           "kernel": "mul_mat_vec_q6_K",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q6_K",
             "dtype(b)=f32",
@@ -2469,6 +2654,7 @@
           "variant_id": "mul_mat_vec_q8_0_q8_0_2d_subgroup_tree",
           "kernel": "mul_mat_vec_q8_0",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(a)=q8_0",
             "dtype(b)=f32",
@@ -2572,6 +2758,7 @@
           "variant_id": "out_prod_f32_4d_tiled_stage_w4",
           "kernel": "out_prod",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -2595,6 +2782,7 @@
           "variant_id": "out_prod_iq4_nl_iq4_nl_4d_tiled_stage_w4",
           "kernel": "out_prod_iq4_nl",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=iq4_nl",
             "dtype(b)=f32",
@@ -2618,6 +2806,7 @@
           "variant_id": "out_prod_iq4_xs_iq4_xs_4d_tiled_stage_w4",
           "kernel": "out_prod_iq4_xs",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=iq4_xs",
             "dtype(b)=f32",
@@ -2641,6 +2830,7 @@
           "variant_id": "out_prod_q2_K_q2_K_4d_tiled_stage_w4",
           "kernel": "out_prod_q2_K",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q2_K",
             "dtype(b)=f32",
@@ -2664,6 +2854,7 @@
           "variant_id": "out_prod_q3_K_q3_K_4d_tiled_stage_w4",
           "kernel": "out_prod_q3_K",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q3_K",
             "dtype(b)=f32",
@@ -2687,6 +2878,7 @@
           "variant_id": "out_prod_q4_0_q4_0_4d_tiled_stage_w4",
           "kernel": "out_prod_q4_0",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q4_0",
             "dtype(b)=f32",
@@ -2710,6 +2902,7 @@
           "variant_id": "out_prod_q4_1_q4_1_4d_tiled_stage_w4",
           "kernel": "out_prod_q4_1",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q4_1",
             "dtype(b)=f32",
@@ -2733,6 +2926,7 @@
           "variant_id": "out_prod_q4_K_q4_K_4d_tiled_stage_w4",
           "kernel": "out_prod_q4_K",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q4_K",
             "dtype(b)=f32",
@@ -2756,6 +2950,7 @@
           "variant_id": "out_prod_q5_0_q5_0_4d_tiled_stage_w4",
           "kernel": "out_prod_q5_0",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q5_0",
             "dtype(b)=f32",
@@ -2779,6 +2974,7 @@
           "variant_id": "out_prod_q5_1_q5_1_4d_tiled_stage_w4",
           "kernel": "out_prod_q5_1",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q5_1",
             "dtype(b)=f32",
@@ -2802,6 +2998,7 @@
           "variant_id": "out_prod_q5_K_q5_K_4d_tiled_stage_w4",
           "kernel": "out_prod_q5_K",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q5_K",
             "dtype(b)=f32",
@@ -2825,6 +3022,7 @@
           "variant_id": "out_prod_q6_K_q6_K_4d_tiled_stage_w4",
           "kernel": "out_prod_q6_K",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q6_K",
             "dtype(b)=f32",
@@ -2848,6 +3046,7 @@
           "variant_id": "out_prod_q8_0_q8_0_4d_tiled_stage_w4",
           "kernel": "out_prod_q8_0",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q8_0",
             "dtype(b)=f32",
@@ -2898,6 +3097,7 @@
           "variant_id": "out_prod_f32_4d_tiled_stage_w4",
           "kernel": "out_prod",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "dtype(b)=f32",
@@ -2921,6 +3121,7 @@
           "variant_id": "out_prod_iq4_nl_iq4_nl_4d_tiled_stage_w4",
           "kernel": "out_prod_iq4_nl",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=iq4_nl",
             "dtype(b)=f32",
@@ -2948,6 +3149,7 @@
           "variant_id": "out_prod_iq4_xs_iq4_xs_4d_tiled_stage_w4",
           "kernel": "out_prod_iq4_xs",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=iq4_xs",
             "dtype(b)=f32",
@@ -2975,6 +3177,7 @@
           "variant_id": "out_prod_q2_K_q2_K_4d_tiled_stage_w4",
           "kernel": "out_prod_q2_K",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q2_K",
             "dtype(b)=f32",
@@ -3002,6 +3205,7 @@
           "variant_id": "out_prod_q3_K_q3_K_4d_tiled_stage_w4",
           "kernel": "out_prod_q3_K",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q3_K",
             "dtype(b)=f32",
@@ -3029,6 +3233,7 @@
           "variant_id": "out_prod_q4_0_q4_0_4d_tiled_stage_w4",
           "kernel": "out_prod_q4_0",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q4_0",
             "dtype(b)=f32",
@@ -3056,6 +3261,7 @@
           "variant_id": "out_prod_q4_1_q4_1_4d_tiled_stage_w4",
           "kernel": "out_prod_q4_1",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q4_1",
             "dtype(b)=f32",
@@ -3083,6 +3289,7 @@
           "variant_id": "out_prod_q4_K_q4_K_4d_tiled_stage_w4",
           "kernel": "out_prod_q4_K",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q4_K",
             "dtype(b)=f32",
@@ -3110,6 +3317,7 @@
           "variant_id": "out_prod_q5_0_q5_0_4d_tiled_stage_w4",
           "kernel": "out_prod_q5_0",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q5_0",
             "dtype(b)=f32",
@@ -3137,6 +3345,7 @@
           "variant_id": "out_prod_q5_1_q5_1_4d_tiled_stage_w4",
           "kernel": "out_prod_q5_1",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q5_1",
             "dtype(b)=f32",
@@ -3164,6 +3373,7 @@
           "variant_id": "out_prod_q5_K_q5_K_4d_tiled_stage_w4",
           "kernel": "out_prod_q5_K",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q5_K",
             "dtype(b)=f32",
@@ -3191,6 +3401,7 @@
           "variant_id": "out_prod_q6_K_q6_K_4d_tiled_stage_w4",
           "kernel": "out_prod_q6_K",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q6_K",
             "dtype(b)=f32",
@@ -3218,6 +3429,7 @@
           "variant_id": "out_prod_q8_0_q8_0_4d_tiled_stage_w4",
           "kernel": "out_prod_q8_0",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=q8_0",
             "dtype(b)=f32",
@@ -3292,6 +3504,7 @@
           "variant_id": "rms_norm_f32_4d_shared_tree_shared_reduce",
           "kernel": "rms_norm",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -3330,6 +3543,7 @@
           "variant_id": "rms_norm_f32_4d_subgroup_tree",
           "kernel": "rms_norm",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -3364,6 +3578,7 @@
           "variant_id": "rms_norm_f32_4d_shared_tree_shared_reduce",
           "kernel": "rms_norm",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -3402,6 +3617,7 @@
           "variant_id": "rms_norm_f32_4d_subgroup_tree",
           "kernel": "rms_norm",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -3446,6 +3662,7 @@
           "variant_id": "rms_norm_back_f32_4d_shared_tree_shared_reduce",
           "kernel": "rms_norm_back",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(dz)=f32",
             "dtype(x)=f32",
@@ -3487,6 +3704,7 @@
           "variant_id": "rms_norm_back_f32_4d_subgroup_tree_flat_rows",
           "kernel": "rms_norm_back",
           "priority": 85,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(dz)=f32",
             "dtype(x)=f32",
@@ -3520,6 +3738,7 @@
           "variant_id": "rms_norm_back_f32_4d_subgroup_tree",
           "kernel": "rms_norm_back",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(dz)=f32",
             "dtype(x)=f32",
@@ -3554,6 +3773,7 @@
           "variant_id": "rms_norm_back_f32_4d_shared_tree_shared_reduce",
           "kernel": "rms_norm_back",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(dz)=f32",
             "dtype(x)=f32",
@@ -3593,6 +3813,7 @@
           "variant_id": "rms_norm_back_f32_4d_subgroup_tree",
           "kernel": "rms_norm_back",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(dz)=f32",
             "dtype(x)=f32",
@@ -3628,6 +3849,7 @@
           "variant_id": "rms_norm_back_f32_4d_shared_tree_shared_reduce",
           "kernel": "rms_norm_back",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(dz)=f32",
             "dtype(x)=f32",
@@ -3667,6 +3889,7 @@
           "variant_id": "rms_norm_back_f32_4d_subgroup_tree",
           "kernel": "rms_norm_back",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(dz)=f32",
             "dtype(x)=f32",
@@ -3718,6 +3941,7 @@
           "variant_id": "scale_f32_4d_serial_flat_linear",
           "kernel": "scale",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "rank(a)<=4"
@@ -3740,6 +3964,7 @@
           "variant_id": "scale_f32_4d_serial_w4",
           "kernel": "scale",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "rank(a)<=4"
@@ -3779,6 +4004,7 @@
           "variant_id": "scale_f32_4d_serial_w4",
           "kernel": "scale",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "rank(a)<=4"
@@ -3817,6 +4043,7 @@
           "variant_id": "scale_f32_4d_serial_w4",
           "kernel": "scale",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(a)=f32",
             "rank(a)<=4"
@@ -3876,6 +4103,7 @@
           "variant_id": "unary_abs_f32_4d_serial_flat_linear",
           "kernel": "unary_abs",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -3898,6 +4126,7 @@
           "variant_id": "unary_abs_f32_4d_serial",
           "kernel": "unary_abs",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -3942,6 +4171,7 @@
           "variant_id": "unary_abs_f32_4d_serial_narrow",
           "kernel": "unary_abs",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -3971,6 +4201,7 @@
           "variant_id": "unary_abs_f32_4d_serial_w4",
           "kernel": "unary_abs",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4014,6 +4245,7 @@
           "variant_id": "unary_abs_f32_4d_serial_narrow",
           "kernel": "unary_abs",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4043,6 +4275,7 @@
           "variant_id": "unary_abs_f32_4d_serial_w4",
           "kernel": "unary_abs",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4107,6 +4340,7 @@
           "variant_id": "unary_elu_f32_4d_serial_flat_linear",
           "kernel": "unary_elu",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4129,6 +4363,7 @@
           "variant_id": "unary_elu_f32_4d_serial",
           "kernel": "unary_elu",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4173,6 +4408,7 @@
           "variant_id": "unary_elu_f32_4d_serial_narrow",
           "kernel": "unary_elu",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4202,6 +4438,7 @@
           "variant_id": "unary_elu_f32_4d_serial_w4",
           "kernel": "unary_elu",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4245,6 +4482,7 @@
           "variant_id": "unary_elu_f32_4d_serial_narrow",
           "kernel": "unary_elu",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4274,6 +4512,7 @@
           "variant_id": "unary_elu_f32_4d_serial_w4",
           "kernel": "unary_elu",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4338,6 +4577,7 @@
           "variant_id": "unary_exp_f32_4d_serial_flat_linear",
           "kernel": "unary_exp",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4360,6 +4600,7 @@
           "variant_id": "unary_exp_f32_4d_serial",
           "kernel": "unary_exp",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4404,6 +4645,7 @@
           "variant_id": "unary_exp_f32_4d_serial_narrow",
           "kernel": "unary_exp",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4433,6 +4675,7 @@
           "variant_id": "unary_exp_f32_4d_serial_w4",
           "kernel": "unary_exp",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4476,6 +4719,7 @@
           "variant_id": "unary_exp_f32_4d_serial_narrow",
           "kernel": "unary_exp",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4505,6 +4749,7 @@
           "variant_id": "unary_exp_f32_4d_serial_w4",
           "kernel": "unary_exp",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4569,6 +4814,7 @@
           "variant_id": "unary_expm1_f32_4d_serial_flat_linear",
           "kernel": "unary_expm1",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4591,6 +4837,7 @@
           "variant_id": "unary_expm1_f32_4d_serial",
           "kernel": "unary_expm1",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4635,6 +4882,7 @@
           "variant_id": "unary_expm1_f32_4d_serial_narrow",
           "kernel": "unary_expm1",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4664,6 +4912,7 @@
           "variant_id": "unary_expm1_f32_4d_serial_w4",
           "kernel": "unary_expm1",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4707,6 +4956,7 @@
           "variant_id": "unary_expm1_f32_4d_serial_narrow",
           "kernel": "unary_expm1",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4736,6 +4986,7 @@
           "variant_id": "unary_expm1_f32_4d_serial_w4",
           "kernel": "unary_expm1",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4800,6 +5051,7 @@
           "variant_id": "unary_gelu_quick_f32_4d_serial_flat_linear",
           "kernel": "unary_gelu_quick",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4822,6 +5074,7 @@
           "variant_id": "unary_gelu_quick_f32_4d_serial",
           "kernel": "unary_gelu_quick",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4866,6 +5119,7 @@
           "variant_id": "unary_gelu_quick_f32_4d_serial_narrow",
           "kernel": "unary_gelu_quick",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4895,6 +5149,7 @@
           "variant_id": "unary_gelu_quick_f32_4d_serial_w4",
           "kernel": "unary_gelu_quick",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4938,6 +5193,7 @@
           "variant_id": "unary_gelu_quick_f32_4d_serial_narrow",
           "kernel": "unary_gelu_quick",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4967,6 +5223,7 @@
           "variant_id": "unary_gelu_quick_f32_4d_serial_w4",
           "kernel": "unary_gelu_quick",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5031,6 +5288,7 @@
           "variant_id": "unary_hardsigmoid_f32_4d_serial_flat_linear",
           "kernel": "unary_hardsigmoid",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5053,6 +5311,7 @@
           "variant_id": "unary_hardsigmoid_f32_4d_serial",
           "kernel": "unary_hardsigmoid",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5097,6 +5356,7 @@
           "variant_id": "unary_hardsigmoid_f32_4d_serial_narrow",
           "kernel": "unary_hardsigmoid",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5126,6 +5386,7 @@
           "variant_id": "unary_hardsigmoid_f32_4d_serial_w4",
           "kernel": "unary_hardsigmoid",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5169,6 +5430,7 @@
           "variant_id": "unary_hardsigmoid_f32_4d_serial_narrow",
           "kernel": "unary_hardsigmoid",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5198,6 +5460,7 @@
           "variant_id": "unary_hardsigmoid_f32_4d_serial_w4",
           "kernel": "unary_hardsigmoid",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5262,6 +5525,7 @@
           "variant_id": "unary_hardswish_f32_4d_serial_flat_linear",
           "kernel": "unary_hardswish",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5284,6 +5548,7 @@
           "variant_id": "unary_hardswish_f32_4d_serial",
           "kernel": "unary_hardswish",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5328,6 +5593,7 @@
           "variant_id": "unary_hardswish_f32_4d_serial_narrow",
           "kernel": "unary_hardswish",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5357,6 +5623,7 @@
           "variant_id": "unary_hardswish_f32_4d_serial_w4",
           "kernel": "unary_hardswish",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5400,6 +5667,7 @@
           "variant_id": "unary_hardswish_f32_4d_serial_narrow",
           "kernel": "unary_hardswish",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5429,6 +5697,7 @@
           "variant_id": "unary_hardswish_f32_4d_serial_w4",
           "kernel": "unary_hardswish",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5493,6 +5762,7 @@
           "variant_id": "unary_neg_f32_4d_serial_flat_linear",
           "kernel": "unary_neg",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5515,6 +5785,7 @@
           "variant_id": "unary_neg_f32_4d_serial",
           "kernel": "unary_neg",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5559,6 +5830,7 @@
           "variant_id": "unary_neg_f32_4d_serial_narrow",
           "kernel": "unary_neg",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5588,6 +5860,7 @@
           "variant_id": "unary_neg_f32_4d_serial_w4",
           "kernel": "unary_neg",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5631,6 +5904,7 @@
           "variant_id": "unary_neg_f32_4d_serial_narrow",
           "kernel": "unary_neg",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5660,6 +5934,7 @@
           "variant_id": "unary_neg_f32_4d_serial_w4",
           "kernel": "unary_neg",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5724,6 +5999,7 @@
           "variant_id": "unary_relu_f32_4d_serial_flat_linear",
           "kernel": "unary_relu",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5746,6 +6022,7 @@
           "variant_id": "unary_relu_f32_4d_serial",
           "kernel": "unary_relu",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5790,6 +6067,7 @@
           "variant_id": "unary_relu_f32_4d_serial_narrow",
           "kernel": "unary_relu",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5819,6 +6097,7 @@
           "variant_id": "unary_relu_f32_4d_serial_w4",
           "kernel": "unary_relu",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5862,6 +6141,7 @@
           "variant_id": "unary_relu_f32_4d_serial_narrow",
           "kernel": "unary_relu",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5891,6 +6171,7 @@
           "variant_id": "unary_relu_f32_4d_serial_w4",
           "kernel": "unary_relu",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5955,6 +6236,7 @@
           "variant_id": "unary_sgn_f32_4d_serial_flat_linear",
           "kernel": "unary_sgn",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5977,6 +6259,7 @@
           "variant_id": "unary_sgn_f32_4d_serial",
           "kernel": "unary_sgn",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6021,6 +6304,7 @@
           "variant_id": "unary_sgn_f32_4d_serial_narrow",
           "kernel": "unary_sgn",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6050,6 +6334,7 @@
           "variant_id": "unary_sgn_f32_4d_serial_w4",
           "kernel": "unary_sgn",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6093,6 +6378,7 @@
           "variant_id": "unary_sgn_f32_4d_serial_narrow",
           "kernel": "unary_sgn",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6122,6 +6408,7 @@
           "variant_id": "unary_sgn_f32_4d_serial_w4",
           "kernel": "unary_sgn",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6186,6 +6473,7 @@
           "variant_id": "unary_sigmoid_f32_4d_serial_flat_linear",
           "kernel": "unary_sigmoid",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6208,6 +6496,7 @@
           "variant_id": "unary_sigmoid_f32_4d_serial",
           "kernel": "unary_sigmoid",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6252,6 +6541,7 @@
           "variant_id": "unary_sigmoid_f32_4d_serial_narrow",
           "kernel": "unary_sigmoid",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6281,6 +6571,7 @@
           "variant_id": "unary_sigmoid_f32_4d_serial_w4",
           "kernel": "unary_sigmoid",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6324,6 +6615,7 @@
           "variant_id": "unary_sigmoid_f32_4d_serial_narrow",
           "kernel": "unary_sigmoid",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6353,6 +6645,7 @@
           "variant_id": "unary_sigmoid_f32_4d_serial_w4",
           "kernel": "unary_sigmoid",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6417,6 +6710,7 @@
           "variant_id": "unary_silu_f32_4d_serial_flat_linear",
           "kernel": "unary_silu",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6439,6 +6733,7 @@
           "variant_id": "unary_silu_f32_4d_serial",
           "kernel": "unary_silu",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6483,6 +6778,7 @@
           "variant_id": "unary_silu_f32_4d_serial_narrow",
           "kernel": "unary_silu",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6512,6 +6808,7 @@
           "variant_id": "unary_silu_f32_4d_serial_w4",
           "kernel": "unary_silu",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6555,6 +6852,7 @@
           "variant_id": "unary_silu_f32_4d_serial_narrow",
           "kernel": "unary_silu",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6584,6 +6882,7 @@
           "variant_id": "unary_silu_f32_4d_serial_w4",
           "kernel": "unary_silu",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6648,6 +6947,7 @@
           "variant_id": "unary_step_f32_4d_serial_flat_linear",
           "kernel": "unary_step",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6670,6 +6970,7 @@
           "variant_id": "unary_step_f32_4d_serial",
           "kernel": "unary_step",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6714,6 +7015,7 @@
           "variant_id": "unary_step_f32_4d_serial_narrow",
           "kernel": "unary_step",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6743,6 +7045,7 @@
           "variant_id": "unary_step_f32_4d_serial_w4",
           "kernel": "unary_step",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6786,6 +7089,7 @@
           "variant_id": "unary_step_f32_4d_serial_narrow",
           "kernel": "unary_step",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6815,6 +7119,7 @@
           "variant_id": "unary_step_f32_4d_serial_w4",
           "kernel": "unary_step",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6879,6 +7184,7 @@
           "variant_id": "unary_tanh_f32_4d_serial_flat_linear",
           "kernel": "unary_tanh",
           "priority": 90,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6901,6 +7207,7 @@
           "variant_id": "unary_tanh_f32_4d_serial",
           "kernel": "unary_tanh",
           "priority": 80,
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6945,6 +7252,7 @@
           "variant_id": "unary_tanh_f32_4d_serial_narrow",
           "kernel": "unary_tanh",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6974,6 +7282,7 @@
           "variant_id": "unary_tanh_f32_4d_serial_w4",
           "kernel": "unary_tanh",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -7017,6 +7326,7 @@
           "variant_id": "unary_tanh_f32_4d_serial_narrow",
           "kernel": "unary_tanh",
           "priority": 90,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -7046,6 +7356,7 @@
           "variant_id": "unary_tanh_f32_4d_serial_w4",
           "kernel": "unary_tanh",
           "priority": 80,
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -7094,8 +7405,7 @@
         "weight_formats": [
           "q8_0"
         ]
-      },
-      "selections": []
+      }
     },
     {
       "name": "qwen3-0.6b-q4_k_m",
@@ -7111,8 +7421,7 @@
           "q4_K",
           "q6_K"
         ]
-      },
-      "selections": []
+      }
     },
     {
       "name": "qwen3-1.7b-q8_0",
@@ -7127,8 +7436,7 @@
         "weight_formats": [
           "q8_0"
         ]
-      },
-      "selections": []
+      }
     },
     {
       "name": "qwen3-1.7b-q4_k_m",
@@ -7144,8 +7452,7 @@
           "q4_K",
           "q6_K"
         ]
-      },
-      "selections": []
+      }
     },
     {
       "name": "qwen3-4b-q8_0",
@@ -7160,8 +7467,7 @@
         "weight_formats": [
           "q8_0"
         ]
-      },
-      "selections": []
+      }
     },
     {
       "name": "qwen3-4b-q4_k_m",
@@ -7177,8 +7483,7 @@
           "q4_K",
           "q6_K"
         ]
-      },
-      "selections": []
+      }
     }
   ]
 }

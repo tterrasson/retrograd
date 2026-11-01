@@ -8,7 +8,7 @@
 // and builds hidden by default as a shared library.
 #include "ggml.h"
 
-#define RIR_REGISTRY_SCHEMA 19
+#define RIR_REGISTRY_SCHEMA 20
 #define RIR_MAX_BINDINGS 4
 #define RIR_MAX_PARAMS 2
 // Nine axes cover the four tensor dimensions plus four folded dimensions and
@@ -138,6 +138,13 @@ typedef struct rir_variant_desc {
     const char * artifact;
     uint8_t      backend;      // rir_backend
     uint8_t      priority;     // higher wins among eligible variants
+    // The variant's own policy. The pair's policy (rir_op_policy) is only a
+    // ceiling: the effective policy at dispatch is min(pair, this), so one
+    // variant of a PREFER_GENERATED pair can be held at OBSERVE_GENERATED -
+    // selected for measurement, never encoded - while another encodes.
+    // A row whose variant is absent from the override table carries the
+    // pair's policy.
+    uint8_t      policy;       // rir_policy
     // Shapes this variant claims. Zero rules = every shape (the fallback).
     uint8_t          n_shape_rules;
     rir_shape_rule   shape_rules[RIR_MAX_SHAPE_RULES];
