@@ -112,6 +112,11 @@ pub(crate) fn decide(args: Vec<String>) -> Result<()> {
         engine.load_lora(adapter)?;
     }
     let mut info = engine.decision_info()?;
+    // An adapter trained here carries the temperatures fitted on its weights.
+    if let Some(adapter) = &args.adapter {
+        info = info
+            .with_adapter_temperatures(&retrograd::trainer::adapter_decision_metadata(adapter)?)?;
+    }
     if let Some(max_head_tokens) = args.max_head_tokens {
         info = info.with_max_head_tokens(max_head_tokens)?;
     }

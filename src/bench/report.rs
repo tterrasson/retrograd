@@ -12,7 +12,9 @@ use retrograd_cli_ui::{
     styled_cell,
 };
 
-use super::{BenchResult, DistillBenchResult, Distribution, RewardBenchResult};
+use super::{
+    BenchResult, DecisionBenchResult, DistillBenchResult, Distribution, RewardBenchResult,
+};
 
 pub(super) fn print_sft_bench_report(base: &BenchResult, adapter: Option<&BenchResult>) {
     let color = std::io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
@@ -361,6 +363,156 @@ pub(super) fn print_reward_bench_report(
     if let Some(adapter) = adapter {
         print_reward_bench_verdict(base, adapter, color);
     }
+}
+
+/// The decision bench: the held-out questions measured against their answers,
+/// overall and per question type, plus the coverage of each confidence
+/// threshold, so the confidences a caller can threshold on are visible.
+pub(super) fn print_decision_bench_report(
+    base: &DecisionBenchResult,
+    adapter: Option<&DecisionBenchResult>,
+) {
+    let color = std::io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
+    let has_adapter = adapter.is_some();
+    let columns = if has_adapter { 5 } else { 2 };
+
+    let mut table = rounded_table();
+    let mut header = vec![header_cell(color, "metric"), header_cell(color, "base")];
+    if has_adapter {
+        header.push(header_cell(color, "adapter"));
+        header.push(header_cell(color, "Δ"));
+        header.push(header_cell(color, "Δ%"));
+    }
+    table.set_header(header);
+
+    macro_rules! decision_row {
+        ($label:expr, $base:expr, $adapter:expr, $prec:expr, $unit:expr, $better:expr) => {
+            metric_row(
+                &mut table,
+                color,
+                has_adapter,
+                $label,
+                $base,
+                $adapter,
+                $prec,
+                $unit,
+                false,
+                $better,
+                false,
+            )
+        };
+    }
+
+    group_row(&mut table, color, columns, "all questions");
+    let overall = |result: &DecisionBenchResult| result.metrics.overall.clone();
+    let base_overall = overall(base);
+    let adapter_overall = adapter.map(overall);
+    decision_row!(
+        "accuracy",
+        base_overall.accuracy * 100.0,
+        adapter_overall
+            .as_ref()
+            .map(|summary| summary.accuracy * 100.0),
+        2,
+        "%",
+        Better::Higher
+    );
+    decision_row!(
+        "NLL",
+        base_overall.nll,
+        adapter_overall.as_ref().map(|summary| summary.nll),
+        4,
+        "",
+        Better::Lower
+    );
+    decision_row!(
+        "Brier",
+        base_overall.brier,
+        adapter_overall.as_ref().map(|summary| summary.brier),
+        4,
+        "",
+        Better::Lower
+    );
+    decision_row!(
+        "ECE",
+        base_overall.ece,
+        adapter_overall.as_ref().map(|summary| summary.ece),
+        4,
+        "",
+        Better::Lower
+    );
+
+    for (kind, summary) in &base.metrics.per_type {
+        let other = adapter.and_then(|result| result.metrics.per_type.get(kind));
+        group_row(
+            &mut table,
+            color,
+            columns,
+            &format!("{kind} ({} questions)", summary.n),
+        );
+        decision_row!(
+            "accuracy",
+            summary.accuracy * 100.0,
+            other.map(|summary| summary.accuracy * 100.0),
+            2,
+            "%",
+            Better::Higher
+        );
+        decision_row!(
+            "NLL",
+            summary.nll,
+            other.map(|summary| summary.nll),
+            4,
+            "",
+            Better::Lower
+        );
+    }
+
+    // The share of questions a caller keeps when it thresholds the published
+    // confidence, and how often those are right.
+    group_row(&mut table, color, columns, "confidence ≥ threshold");
+    for (index, coverage) in base_overall.coverage.iter().enumerate() {
+        let other = adapter_overall
+            .as_ref()
+            .and_then(|summary| summary.coverage.get(index));
+        decision_row!(
+            &format!("≥ {:.2} kept", coverage.threshold),
+            coverage.coverage * 100.0,
+            other.map(|coverage| coverage.coverage * 100.0),
+            1,
+            "%",
+            Better::Higher
+        );
+        // NaN when nothing is kept: shown as 0 rather than a misleading row.
+        let accuracy = |value: f64| if value.is_nan() { 0.0 } else { value * 100.0 };
+        decision_row!(
+            &format!("≥ {:.2} accuracy", coverage.threshold),
+            accuracy(coverage.accuracy),
+            other.map(|coverage| accuracy(coverage.accuracy)),
+            2,
+            "%",
+            Better::Higher
+        );
+    }
+
+    group_row(&mut table, color, columns, "throughput");
+    decision_row!(
+        "questions/s",
+        base.questions_per_second(),
+        adapter.map(DecisionBenchResult::questions_per_second),
+        1,
+        "",
+        Better::Higher
+    );
+    decision_row!(
+        "input tokens/question",
+        base.input_tokens as f64 / base.metrics.overall.n.max(1) as f64,
+        adapter.map(|result| result.input_tokens as f64 / result.metrics.overall.n.max(1) as f64),
+        1,
+        "",
+        Better::Neutral
+    );
+    println!("{table}");
 }
 
 /// The three figures of a distillation bench, and what they each say.

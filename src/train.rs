@@ -173,6 +173,24 @@ fn print_done(outcome: &RunOutcome, config: &RunConfig) {
             agent.config.updates,
             agent.config.epochs,
         ),
+        // `train_loss` is the grouped cross-entropy of the last epoch, a mean
+        // over its questions; `eval_loss` the NLL of the held-out questions.
+        Algorithm::Decision(_) => {
+            let eval_loss = if metrics.eval_loss.is_finite() {
+                format!(" eval_nll={:.6}", metrics.eval_loss)
+            } else {
+                String::new()
+            };
+            println!(
+                "done epoch={}/{} algorithm=decision step={} train_loss={:.6}{eval_loss} tok/s={:.1} out={}",
+                metrics.epoch,
+                config.training.epochs,
+                metrics.global_step,
+                metrics.train_loss,
+                metrics.tokens_per_second,
+                config.output.path.display()
+            );
+        }
         // `train_loss` is the preference loss of the last epoch, not a
         // cross-entropy; `eval_loss` the same loss over the held-out pairs.
         Algorithm::Preference(preference) => {
@@ -566,6 +584,17 @@ impl RunObserver for TerminalObserver {
                 outcome,
             } => format!(
                 "eval epoch {epoch}: loss {loss:.6}  accuracy {accuracy:.4}  margin {margin:.4}  {}",
+                eval_status(outcome, 6),
+            ),
+            EvaluationReport::Decision {
+                epoch,
+                loss,
+                accuracy,
+                brier,
+                ece,
+                outcome,
+            } => format!(
+                "eval epoch {epoch}: nll {loss:.6}  accuracy {accuracy:.4}  brier {brier:.4}  ece {ece:.4}  {}",
                 eval_status(outcome, 6),
             ),
             EvaluationReport::Rollout {

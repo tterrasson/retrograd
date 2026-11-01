@@ -12,13 +12,21 @@ use std::time::{Duration, Instant};
 use indicatif::HumanDuration;
 use retrograd::config::{self, Algorithm};
 use retrograd::dataset::{self, DataFormat, PreparedDataset};
-use retrograd::{Device, Engine, Error, EvalMetrics, Result, TrainConfig, Trainer};
+use retrograd::decision::answer::Answer;
+use retrograd::decision::dataset::{self as decision_dataset, Example};
+use retrograd::decision::metrics::{Metrics, Outcome};
+use retrograd::decision::request::{Question, SystemOneRequest};
+use retrograd::trainer::{DecisionInfo, adapter_decision_metadata};
+use retrograd::{Device, Engine, EngineConfig, Error, EvalMetrics, Result, TrainConfig, Trainer};
 
 use retrograd_cli_ui::CliUi;
 
 use crate::args::{Args, parse_value};
 
-use report::{print_distill_bench_report, print_reward_bench_report, print_sft_bench_report};
+use report::{
+    print_decision_bench_report, print_distill_bench_report, print_reward_bench_report,
+    print_sft_bench_report,
+};
 
 pub(crate) const FLAGS: &[&str] = &[
     "--model",
@@ -111,6 +119,21 @@ impl RewardBenchResult {
     }
 }
 
+/// One decision bench pass: the served probabilities of every held-out
+/// question measured against its answer.
+#[derive(Clone, Debug)]
+struct DecisionBenchResult {
+    metrics: Metrics,
+    elapsed: Duration,
+    input_tokens: usize,
+}
+
+impl DecisionBenchResult {
+    fn questions_per_second(&self) -> f64 {
+        self.metrics.overall.n as f64 / self.elapsed.as_secs_f64()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Distribution {
     mean: f64,
@@ -192,6 +215,7 @@ pub(crate) fn bench_model(args: Vec<String>) -> Result<()> {
             Algorithm::Distill(_) => "teacher divergence",
             Algorithm::AgentGrpo(_) => "judge score",
             Algorithm::Preference(_) => "preference accuracy",
+            Algorithm::Decision(_) => "decision accuracy and calibration",
         }
     ));
     if args.format.is_some() && !matches!(&run_config.algorithm, Algorithm::Sft(_)) {
@@ -321,6 +345,55 @@ pub(crate) fn bench_model(args: Vec<String>) -> Result<()> {
                  rollouts against a live environment, so run `train` instead",
             ));
         }
+        // Served, not trained: the engine answers each question with the
+        // model's temperatures, or the adapter's when it carries its own, so
+        // the confidences measured are the ones a caller thresholds on.
+        Algorithm::Decision(decision) => {
+            let mut examples = decision_dataset::read_jsonl(&data_path, decision.data_format)?;
+            if let Some(limit) = args.limit {
+                examples.truncate(limit);
+            }
+            let mut engine = load_model(&ui, started, || {
+                Ok(Engine::new(
+                    &run_config.model,
+                    &EngineConfig {
+                        device: run_config.training.device,
+                        ..EngineConfig::default()
+                    },
+                )?)
+            })?;
+            if let Some(path) = &decision.template {
+                let source = std::fs::read_to_string(path).map_err(|error| {
+                    Error::config(format!(
+                        "decision.template {} cannot be read: {error}",
+                        path.display()
+                    ))
+                })?;
+                engine.set_decision_template(Some(&source))?;
+            }
+            let mut info = engine.decision_info()?;
+            if let Some(max_head_tokens) = decision.max_head_tokens {
+                info = info.with_max_head_tokens(max_head_tokens as usize)?;
+            }
+            ui.info(format!("questions: {}", examples.len()));
+            let base = run_decision_bench_pass(&mut engine, &info, &examples, "base", &ui)?;
+            let adapted = if let Some(adapter) = &args.adapter {
+                load_bench_adapter(&mut engine, adapter, &ui)?;
+                let info = info
+                    .clone()
+                    .with_adapter_temperatures(&adapter_decision_metadata(adapter)?)?;
+                Some(run_decision_bench_pass(
+                    &mut engine,
+                    &info,
+                    &examples,
+                    "adapter",
+                    &ui,
+                )?)
+            } else {
+                None
+            };
+            print_decision_bench_report(&base, adapted.as_ref());
+        }
         Algorithm::Preference(_) => {
             return Err(Error::invalid(
                 "bench does not support run.algorithm = 'preference' yet: set \
@@ -330,6 +403,77 @@ pub(crate) fn bench_model(args: Vec<String>) -> Result<()> {
         }
     };
     Ok(())
+}
+
+/// The probability the answer gives each option of `question`, in the
+/// question's order.
+fn answer_probabilities(answer: &Answer, question: &Question) -> Result<Vec<f64>> {
+    match answer {
+        Answer::Choice { probabilities, .. } | Answer::Score { probabilities, .. } => question
+            .options
+            .iter()
+            .map(|option| {
+                probabilities.get(&option.key).copied().ok_or_else(|| {
+                    Error::runtime(format!(
+                        "the answer has no probability for '{}'",
+                        option.key
+                    ))
+                })
+            })
+            .collect(),
+        Answer::Noul { noul } => Ok(question
+            .options
+            .iter()
+            .map(|option| {
+                if option.key == "true" {
+                    *noul
+                } else {
+                    1.0 - noul
+                }
+            })
+            .collect()),
+    }
+}
+
+/// Asks every question of `examples`, one request each, and measures the
+/// answers against the targets.
+fn run_decision_bench_pass(
+    engine: &mut Engine,
+    info: &DecisionInfo,
+    examples: &[Example],
+    label: &str,
+    ui: &CliUi,
+) -> Result<DecisionBenchResult> {
+    let started = Instant::now();
+    let progress = ui.progress_steps(examples.len() as u64, label);
+    let mut outcomes = Vec::with_capacity(examples.len());
+    let mut input_tokens = 0_usize;
+    for example in examples {
+        let request = SystemOneRequest::single(
+            example.state.clone(),
+            example.question_id.clone(),
+            example.question.clone(),
+        );
+        let decision = engine.decide(info, &request)?;
+        input_tokens += decision.input_tokens;
+        let answer = decision
+            .answers
+            .get(&example.question_id)
+            .ok_or_else(|| Error::runtime("the decision returned no answer"))?;
+        let probabilities = answer_probabilities(answer, &example.question)?;
+        outcomes.push(Outcome::new(
+            example.question.kind,
+            probabilities,
+            example.target.distribution(example.question.options.len()),
+        )?);
+        progress.inc(1);
+    }
+    progress.finish_and_clear();
+    Ok(DecisionBenchResult {
+        metrics: Metrics::of(&outcomes),
+        elapsed: started.elapsed(),
+        input_tokens,
+    })
 }
 
 /// Loads the model for a bench pass under the standard spinner, whichever
