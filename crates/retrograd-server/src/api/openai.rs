@@ -192,6 +192,27 @@ fn not_found(model: &str, handle: &RunHandle) -> OpenAiError {
 #[async_trait]
 impl ModelSource for RunModels {
     async fn list(&self) -> Result<Vec<ModelCard>, OpenAiError> {
+        let source = Self::new(self.state.clone());
+        tokio::task::spawn_blocking(move || source.list_cards())
+            .await
+            .map_err(|error| OpenAiError::internal(format!("could not list run models: {error}")))?
+    }
+
+    async fn resolve(&self, model: &str) -> Result<Target, OpenAiError> {
+        let source = Self::new(self.state.clone());
+        let model = model.to_owned();
+        tokio::task::spawn_blocking(move || source.resolve_target(&model))
+            .await
+            .map_err(|error| {
+                OpenAiError::internal(format!("could not resolve run weights: {error}"))
+            })?
+    }
+}
+
+impl RunModels {
+    // Checkpoint scans and legacy configuration parsing can touch many files.
+    // Keep them off the async workers that accept HTTP requests and poll SSE.
+    fn list_cards(&self) -> Result<Vec<ModelCard>, OpenAiError> {
         let mut cards = Vec::new();
         for handle in self.state.registry.handles() {
             let id = handle.id.to_string();
@@ -220,7 +241,7 @@ impl ModelSource for RunModels {
         Ok(cards)
     }
 
-    async fn resolve(&self, model: &str) -> Result<Target, OpenAiError> {
+    fn resolve_target(&self, model: &str) -> Result<Target, OpenAiError> {
         let (run, suffix) = parse_id(model).ok_or_else(|| {
             OpenAiError::model_not_found(
                 model,
