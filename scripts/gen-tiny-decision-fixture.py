@@ -60,7 +60,8 @@ MAX_HEAD_TOKENS = 64
 PAD, EOS, BOS, UNK, MASK = 0, 1, 2, 3, 4
 
 SYSTEMONE = (
-    "<bos>{{ type }} question: {{ instructions if instructions is string else instructions | tojson }}<eos>"
+    "<bos>{{ type }} question: "
+    "{{ instructions if instructions is string else instructions | tojson }}<eos>"
     "{% for o in options %}<mask> {% if o.description %}"
     "{{ o.description if o.description is string else o.description | tojson }}"
     "{% else %}{{ o.key }}{% endif %}{% endfor %}"
@@ -71,8 +72,13 @@ SYSTEMONE = (
 def vocabulary() -> tuple[list[str], list[int]]:
     """Five specials in the order of the real decision vocabularies, then bytes."""
     tokens = ["<pad>", "<eos>", "<bos>", "<unk>", "<mask>"]
-    types = [tiny.TOKEN_TYPE_CONTROL, tiny.TOKEN_TYPE_CONTROL, tiny.TOKEN_TYPE_CONTROL,
-             tiny.TOKEN_TYPE_UNKNOWN, tiny.TOKEN_TYPE_CONTROL]
+    types = [
+        tiny.TOKEN_TYPE_CONTROL,
+        tiny.TOKEN_TYPE_CONTROL,
+        tiny.TOKEN_TYPE_CONTROL,
+        tiny.TOKEN_TYPE_UNKNOWN,
+        tiny.TOKEN_TYPE_CONTROL,
+    ]
     for byte in range(256):
         tokens.append(f"<0x{byte:02X}>")
         types.append(tiny.TOKEN_TYPE_BYTE)
@@ -164,7 +170,11 @@ def metadata() -> list[tuple[str, int, bytes]]:
         (f"{a}.decision.max_head_tokens", tiny.T_UINT32, s(tiny.T_UINT32, MAX_HEAD_TOKENS)),
         ("tokenizer.ggml.model", tiny.T_STRING, e("llama")),
         ("tokenizer.ggml.tokens", tiny.T_ARRAY, tiny.string_array(tokens)),
-        ("tokenizer.ggml.scores", tiny.T_ARRAY, tiny.numeric_array(tiny.T_FLOAT32, [0.0] * len(tokens))),
+        (
+            "tokenizer.ggml.scores",
+            tiny.T_ARRAY,
+            tiny.numeric_array(tiny.T_FLOAT32, [0.0] * len(tokens)),
+        ),
         ("tokenizer.ggml.token_type", tiny.T_ARRAY, tiny.numeric_array(tiny.T_INT32, types)),
         ("tokenizer.ggml.bos_token_id", tiny.T_UINT32, s(tiny.T_UINT32, BOS)),
         ("tokenizer.ggml.eos_token_id", tiny.T_UINT32, s(tiny.T_UINT32, EOS)),
@@ -184,7 +194,9 @@ def metadata() -> list[tuple[str, int, bytes]]:
 def build() -> bytes:
     table = tensors()
     kvs = metadata()
-    header = bytearray(struct.pack("<IIQQ", tiny.GGUF_MAGIC, tiny.GGUF_VERSION, len(table), len(kvs)))
+    header = bytearray(
+        struct.pack("<IIQQ", tiny.GGUF_MAGIC, tiny.GGUF_VERSION, len(table), len(kvs))
+    )
     for key, value_type, payload in kvs:
         tiny.write_kv(header, key, value_type, payload)
     offset = 0

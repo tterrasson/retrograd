@@ -61,6 +61,7 @@ if [[ "${RETRO_PROFILE_TESTS:-0}" == "1" ]]; then
     --test engine_contracts \
     --test engine_runtime \
     --test decision_engine \
+    --test decision_training \
     --test infer_runtime \
     --test serve_runtime \
     --test rollout_scheduler \
@@ -90,6 +91,7 @@ timed_step run:capabilities-suite cargo test --no-default-features --features ag
   --test engine_contracts \
   --test engine_runtime \
   --test decision_engine \
+  --test decision_training \
   --test infer_runtime \
   --test serve_runtime \
   --test rollout_scheduler \

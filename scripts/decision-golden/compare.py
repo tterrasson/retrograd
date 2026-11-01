@@ -32,7 +32,9 @@ def answer_values(answers: dict) -> dict:
     return out
 
 
-def compare_answers(name: str, expected: dict, actual: dict, tolerance: float, errors: list) -> float:
+def compare_answers(
+    name: str, expected: dict, actual: dict, tolerance: float, errors: list
+) -> float:
     exp, act = answer_values(expected), answer_values(actual)
     if list(exp) != list(act):
         errors.append(f"{name}: questions or options differ: {list(exp)} != {list(act)}")
@@ -45,10 +47,13 @@ def compare_answers(name: str, expected: dict, actual: dict, tolerance: float, e
         diff = abs(p - act[key])
         worst = max(worst, diff)
         if diff > tolerance:
-            errors.append(f"{name}: {key[0]}.{key[1]}: {act[key]} vs golden {p} (|diff| {diff:.2e})")
+            errors.append(
+                f"{name}: {key[0]}.{key[1]}: {act[key]} vs golden {p} (|diff| {diff:.2e})"
+            )
     for qid, answer in expected.items():
         if answer.get("choice") != actual[qid].get("choice"):
-            errors.append(f"{name}: {qid}: choice {actual[qid].get('choice')} vs golden {answer.get('choice')}")
+            got, want = actual[qid].get("choice"), answer.get("choice")
+            errors.append(f"{name}: {qid}: choice {got} vs golden {want}")
     return worst
 
 
@@ -71,8 +76,19 @@ def golden(args: argparse.Namespace) -> list:
                 if qg[field] != qo[field]:
                     errors.append(f"{g['name']}: {qg['id']}: {field} differs")
         if g["response"]["usage"] != o["response"]["usage"]:
-            errors.append(f"{g['name']}: usage {o['response']['usage']} vs golden {g['response']['usage']}")
-        worst = max(worst, compare_answers(g["name"], g["response"]["answers"], o["response"]["answers"], args.tolerance, errors))
+            errors.append(
+                f"{g['name']}: usage {o['response']['usage']} vs golden {g['response']['usage']}"
+            )
+        worst = max(
+            worst,
+            compare_answers(
+                g["name"],
+                g["response"]["answers"],
+                o["response"]["answers"],
+                args.tolerance,
+                errors,
+            ),
+        )
     print(f"{args.other}: worst probability difference {worst:.2e}")
     return errors
 
@@ -95,17 +111,30 @@ def server(args: argparse.Namespace) -> list:
         with urllib.request.urlopen(req, timeout=120) as res:
             body = json.load(res)
         if body["usage"] != record["response"]["usage"]:
-            errors.append(f"{entry['name']}: usage {body['usage']} vs golden {record['response']['usage']}")
+            errors.append(
+                f"{entry['name']}: usage {body['usage']} vs golden {record['response']['usage']}"
+            )
         if list(body["answers"]) != list(record["response"]["answers"]):
             errors.append(f"{entry['name']}: question order differs")
             continue
-        worst = max(worst, compare_answers(entry["name"], record["response"]["answers"], body["answers"], args.tolerance, errors))
+        worst = max(
+            worst,
+            compare_answers(
+                entry["name"],
+                record["response"]["answers"],
+                body["answers"],
+                args.tolerance,
+                errors,
+            ),
+        )
     print(f"{args.golden} against {args.url}: worst probability difference {worst:.2e}")
     return errors
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = parser.add_subparsers(dest="mode", required=True)
     g = sub.add_parser("golden")
     g.add_argument("golden")
