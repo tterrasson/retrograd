@@ -206,6 +206,31 @@ fn out_prod_metal_matches_cpu() {
     }
 }
 
+/// ACC is how the backward of fused QKV views rejoins Q/K/V gradients.
+/// Its initial copy must cover the whole row, including elements outside the
+/// slice being added and rows wider than a Metal threadgroup (Julia: 1152).
+#[cfg(retro_metal)]
+#[test]
+fn acc_preserves_wide_rows_metal_matches_cpu() {
+    assert!(common::gpu_device_present(), "Metal device required");
+    // All extents are positive, products fit usize, and offsets <= 4096 are
+    // exactly representable as F32 in the probe's parameter slot.
+    for (case, width) in [192, 1024, 1152, 2305, 4096].into_iter().enumerate() {
+        for offset in [0, width / 3, width - 64] {
+            let ne_a = [width, 7, 2, 2];
+            let ne_b = [64, 6, 2, 2];
+            let a = pseudo_random((width * 7 * 2 * 2) as usize, 0xac01, 1.0);
+            let b = pseudo_random(64 * 6 * 2 * 2, 0xac02, 1.0);
+            let inputs = || ProbeInputs::pair(ne_a, &a, ne_b, &b);
+            let cpu = probe_op(ProbeOp::Acc, false, inputs(), [offset as f32, 0.0], a.len())
+                .expect("CPU ACC");
+            let gpu = probe_op(ProbeOp::Acc, true, inputs(), [offset as f32, 0.0], a.len())
+                .expect("Metal ACC");
+            assert_close(ProbeOp::Acc, case, &cpu, &gpu, 1.0e-6);
+        }
+    }
+}
+
 #[cfg(retro_metal)]
 #[test]
 fn out_prod_q8_0_metal_matches_cpu() {

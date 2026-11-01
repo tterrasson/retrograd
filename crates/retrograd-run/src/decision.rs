@@ -210,48 +210,6 @@ impl DecisionExport {
     }
 }
 
-/// The device a decision run trains on.
-///
-/// The grouped training graph of an encoder computes wrong gradients on the
-/// Metal backend today, silently: with differentiable flash attention the
-/// adapter of the head's feed-forward blocks is never updated, and without it
-/// the encoder's gradients are still off by up to a third against finite
-/// differences, where the CPU's agree. A run there trains a worse model and
-/// reports nothing. So `auto` trains on the CPU, and `gpu` is refused unless
-/// `RETRO_DECISION_ALLOW_GPU=1` asks for it - the switch that lets the backend
-/// be fixed against this run. Serving and `bench` are forward passes, which
-/// the GPU computes right, and are not affected.
-///
-/// Returns the configuration to run with when it differs from `config`.
-pub(crate) fn pin_training_device(
-    config: &RunConfig,
-    observer: &mut dyn RunObserver,
-) -> Result<Option<RunConfig>> {
-    if !matches!(config.algorithm, retrograd_config::Algorithm::Decision(_)) {
-        return Ok(None);
-    }
-    let allowed = std::env::var_os("RETRO_DECISION_ALLOW_GPU").is_some_and(|value| value == "1");
-    match config.training.device {
-        retrograd_core::Device::Cpu => Ok(None),
-        _ if allowed => Ok(None),
-        retrograd_core::Device::Gpu => Err(Error::config(
-            "a decision model does not train on the GPU yet: the Metal backend computes wrong \
-             gradients for its encoder graph (the CPU's match finite differences), and the run \
-             would train a worse model without saying so. Set [model].device = 'cpu'; serving \
-             and bench are not affected",
-        )),
-        retrograd_core::Device::Auto => {
-            observer.info(
-                "decision: training on the CPU - the GPU backend computes wrong gradients for an \
-                 encoder's graph today",
-            );
-            let mut pinned = config.clone();
-            pinned.training.device = retrograd_core::Device::Cpu;
-            Ok(Some(pinned))
-        }
-    }
-}
-
 /// Trains `decision`, then fits the temperatures when it calibrates.
 pub(crate) fn run_decision(
     trainer: &mut Trainer,

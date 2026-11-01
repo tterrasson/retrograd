@@ -768,6 +768,17 @@ static int probe_op_run_locked(
 
         ggml_tensor * out = nullptr;
         switch (op) {
+            case RETRO_PROBE_OP_ACC:
+                if (!std::isfinite(param0) || param0 < 0 || param0 != std::floor(param0) ||
+                        param0 >= static_cast<double>(ggml_nelements(a)) ||
+                        b->ne[0] > a->ne[0] - static_cast<int64_t>(param0) ||
+                        b->ne[1] > a->ne[1] || b->ne[2] > a->ne[2] || b->ne[3] > a->ne[3]) {
+                    set_error("ACC: invalid slice offset or shape");
+                    return -1;
+                }
+                out = ggml_acc(ctx.get(), a, b, a->nb[1], a->nb[2], a->nb[3],
+                        static_cast<size_t>(param0)*sizeof(float));
+                break;
             case RETRO_PROBE_OP_SILU_BACK:
                 out = ggml_silu_back(ctx.get(), a, b);
                 break;
@@ -847,6 +858,12 @@ static int probe_op_run_locked(
         if (!buffer) {
             set_error("probe backend buffer allocation failed");
             return -1;
+        }
+
+        // Make a partial ACC copy fail deterministically, instead of depending
+        // on whichever bytes a previous GPU allocation left in its output.
+        if (op == RETRO_PROBE_OP_ACC) {
+            ggml_backend_buffer_clear(buffer.get(), 0x7f);
         }
 
         if (quant_src0) {

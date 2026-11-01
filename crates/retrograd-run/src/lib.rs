@@ -111,8 +111,6 @@ pub fn execute_controlled(
 ) -> Result<RunOutcome> {
     let span = tracing::info_span!(target: "retrograd::run", "run");
     let _entered = span.enter();
-    let pinned = decision::pin_training_device(config, observer)?;
-    let config = pinned.as_ref().unwrap_or(config);
     let verbose = config.training.verbose;
     let started = Instant::now();
     let mut tracker = MemoryTracker::new();

@@ -135,9 +135,9 @@ fn grouped_steps_lower_the_held_out_loss() {
     .expect("prepare the questions");
     assert_eq!(prepared.examples(), 48);
     assert_eq!(prepared.eval_examples(), 12);
-    // Four questions a micro-batch, two micro-batches an update.
-    assert_eq!(prepared.steps_per_epoch(), 6);
-    assert_eq!(prepared.total_steps(), 6 * u64::from(epochs));
+    // The token budget fits three questions; two micro-batches make an update.
+    assert_eq!(prepared.steps_per_epoch(), 8);
+    assert_eq!(prepared.total_steps(), 8 * u64::from(epochs));
 
     let before = decision::evaluate(&mut trainer, &prepared).expect("evaluate the base");
     let mut updates = 0;

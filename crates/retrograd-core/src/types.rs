@@ -1584,6 +1584,9 @@ pub enum ProbeOp {
     CastStoreF16,
     /// The same cast into a BF16 store.
     CastStoreBf16,
+    /// Add `src1` into a slice of `src0`, preserving the rest of `src0`.
+    /// `params[0]` is the slice offset in F32 elements; strides follow `src0`.
+    Acc,
 }
 
 impl ProbeOp {
@@ -1621,6 +1624,7 @@ impl ProbeOp {
             ProbeOp::OptStepSgdBf16 => 30,
             ProbeOp::CastStoreF16 => 31,
             ProbeOp::CastStoreBf16 => 32,
+            ProbeOp::Acc => 33,
         }
     }
 }

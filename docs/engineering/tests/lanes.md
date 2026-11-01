@@ -230,6 +230,12 @@ selection to both FFI and root tests, including every RIR mode pass. A named
 list is passed as `--features <list>` with the root's defaults kept, as a user
 build would spell it, so the lane reuses that build's native variant.
 
+`metal_ops::acc_preserves_wide_rows_metal_matches_cpu` covers the out-of-place
+copy inside `ACC`, including untouched slice tails and rows wider than a Metal
+threadgroup. This is the model-free regression for the decision-training bug:
+incomplete copies of fused QKV gradients poisoned the gradient norm and made
+clipping freeze otherwise nonzero LoRA updates.
+
 `gated_delta_net_chunked` compares two *CPU* implementations of
 `GGML_OP_GATED_DELTA_NET_BACK` - the per-token reverse scan and a chunkwise
 form - against each other, on shapes and gate regimes no GPU test covers

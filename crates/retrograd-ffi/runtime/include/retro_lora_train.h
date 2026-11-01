@@ -192,6 +192,9 @@ typedef enum retro_probe_op {
     // the reference conversion of the same input, widened the same way.
     RETRO_PROBE_OP_CAST_STORE_F16 = 31,
     RETRO_PROBE_OP_CAST_STORE_BF16 = 32,
+    // Out-of-place ACC: add src1 to src0 at param0 F32 elements from its start,
+    // with the outer strides of src0, preserving all other elements of src0.
+    RETRO_PROBE_OP_ACC = 33,
 } retro_probe_op;
 
 // Which kernel implementation a probe asks for / reports.
