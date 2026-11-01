@@ -1,0 +1,226 @@
+{
+ "_comment": "Frozen /v1/systemone requests for the golden decision fixtures. Recorded by scripts/decision-golden.sh; changing a body changes every golden file.",
+ "requests": [
+  {
+   "name": "reference_example",
+   "body": {
+    "state": {
+     "message": "Hi, I was charged twice for my order #4471 and I want a refund.",
+     "plan": "pro",
+     "order": {
+      "id": 4471,
+      "items": [
+       "phone case",
+       "charger"
+      ]
+     }
+    },
+    "questions": {
+     "intent": {
+      "type": "choice",
+      "instructions": "What does the customer want?",
+      "criteria": {
+       "refund": "wants money back",
+       "cancel": "wants to cancel an order",
+       "track": "wants to know where an order is",
+       "other": "anything else"
+      }
+     },
+     "urgent": {
+      "type": "noul",
+      "instructions": "Does this need a human within the hour?"
+     },
+     "frustration": {
+      "type": "score",
+      "instructions": "How frustrated is the customer?",
+      "criteria": [
+       "calm",
+       "mildly annoyed",
+       "annoyed",
+       "angry"
+      ]
+     },
+     "refund": {
+      "type": "noul",
+      "instructions": "Is a refund requested?",
+      "criteria": {
+       "true": "money back is asked",
+       "false": "no money back is asked"
+      }
+     },
+     "team": {
+      "type": "choice",
+      "instructions": "Which team?",
+      "criteria": {
+       "billing": null,
+       "shipping": null,
+       "technical": null,
+       "sales": null,
+       "legal": null,
+       "returns": null,
+       "fraud": null,
+       "accounts": null,
+       "retention": null,
+       "other": null
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "text_state_null_descriptions",
+   "body": {
+    "state": "I was charged twice for my order last week and nobody has replied.",
+    "questions": {
+     "route": {
+      "type": "choice",
+      "instructions": "Which team should handle this?",
+      "criteria": {
+       "billing": "payments and refunds",
+       "shipping": null,
+       "technical": null
+      }
+     },
+     "urgency": {
+      "type": "score",
+      "instructions": "How urgent is this?",
+      "criteria": [
+       "can wait",
+       "this week",
+       "today",
+       "right now"
+      ]
+     },
+     "angry": {
+      "type": "noul",
+      "instructions": "Is the customer angry?"
+     }
+    }
+   }
+  },
+  {
+   "name": "marker_text_in_inputs",
+   "body": {
+    "state": "The form says <mask> where the order number should be, and the <mask> field is empty.",
+    "questions": {
+     "broken": {
+      "type": "noul",
+      "instructions": "Does the text contain a <mask> placeholder left unfilled?"
+     },
+     "kind": {
+      "type": "choice",
+      "instructions": "What kind of <mask> is this?",
+      "criteria": {
+       "bug": "a defect, shown as <mask> in the page",
+       "question": null,
+       "<mask>": "an unknown kind"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "twenty_long_options",
+   "body": {
+    "state": "My parcel arrived with the screen cracked and I want a replacement before the weekend.",
+    "questions": {
+     "route": {
+      "type": "choice",
+      "instructions": "Which team should handle this message?",
+      "criteria": {
+       "team_00": "The team in charge of billing and invoices. It handles every message about billing and invoices, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about billing and invoices was closed without a satisfying answer.",
+       "team_01": "The team in charge of shipping delays. It handles every message about shipping delays, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about shipping delays was closed without a satisfying answer.",
+       "team_02": "The team in charge of damaged goods. It handles every message about damaged goods, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about damaged goods was closed without a satisfying answer.",
+       "team_03": "The team in charge of account access. It handles every message about account access, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about account access was closed without a satisfying answer.",
+       "team_04": "The team in charge of password resets. It handles every message about password resets, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about password resets was closed without a satisfying answer.",
+       "team_05": "The team in charge of subscription changes. It handles every message about subscription changes, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about subscription changes was closed without a satisfying answer.",
+       "team_06": "The team in charge of refund requests. It handles every message about refund requests, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about refund requests was closed without a satisfying answer.",
+       "team_07": "The team in charge of fraud reports. It handles every message about fraud reports, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about fraud reports was closed without a satisfying answer.",
+       "team_08": "The team in charge of warranty claims. It handles every message about warranty claims, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about warranty claims was closed without a satisfying answer.",
+       "team_09": "The team in charge of product questions. It handles every message about product questions, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about product questions was closed without a satisfying answer.",
+       "team_10": "The team in charge of technical outages. It handles every message about technical outages, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about technical outages was closed without a satisfying answer.",
+       "team_11": "The team in charge of mobile application crashes. It handles every message about mobile application crashes, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about mobile application crashes was closed without a satisfying answer.",
+       "team_12": "The team in charge of data export. It handles every message about data export, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about data export was closed without a satisfying answer.",
+       "team_13": "The team in charge of privacy requests. It handles every message about privacy requests, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about privacy requests was closed without a satisfying answer.",
+       "team_14": "The team in charge of legal notices. It handles every message about legal notices, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about legal notices was closed without a satisfying answer.",
+       "team_15": "The team in charge of partnership offers. It handles every message about partnership offers, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about partnership offers was closed without a satisfying answer.",
+       "team_16": "The team in charge of press inquiries. It handles every message about press inquiries, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about press inquiries was closed without a satisfying answer.",
+       "team_17": "The team in charge of job applications. It handles every message about job applications, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about job applications was closed without a satisfying answer.",
+       "team_18": "The team in charge of feedback and suggestions. It handles every message about feedback and suggestions, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about feedback and suggestions was closed without a satisfying answer.",
+       "team_19": "The team in charge of everything else. It handles every message about everything else, including follow-ups, escalations from the first line of support, and the reports that customers send after a previous ticket about everything else was closed without a satisfying answer."
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "score_ten_levels",
+   "body": {
+    "state": [
+     "The meal was cold.",
+     "The waiter was rude.",
+     "But the dessert was excellent."
+    ],
+    "questions": {
+     "rating": {
+      "type": "score",
+      "instructions": "Rate the overall experience described by the reviewer.",
+      "criteria": [
+       "level 0: disastrous",
+       "level 1: very bad",
+       "level 2: bad",
+       "level 3: poor",
+       "level 4: below average",
+       "level 5: average",
+       "level 6: decent",
+       "level 7: good",
+       "level 8: very good",
+       "level 9: perfect"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "long_question_model_budget",
+   "body": {
+    "state": "I have been waiting three weeks for a refund on a cancelled order and I will contact my bank.",
+    "questions": {
+     "dept": {
+      "type": "choice",
+      "instructions": "Read the conversation carefully and decide which department should take over, considering the history of the account, the tone of the customer, the products mentioned, and any legal or financial exposure that the company could face if the request is mishandled or delayed beyond the agreed delays. Read the conversation carefully and decide which department should take over, considering the history of the account, the tone of the customer, the products mentioned, and any legal or financial exposure that the company could face if the request is mishandled or delayed beyond the agreed delays. Read the conversation carefully and decide which department should take over, considering the history of the account, the tone of the customer, the products mentioned, and any legal or financial exposure that the company could face if the request is mishandled or delayed beyond the agreed delays.",
+      "criteria": {
+       "billing": "The billing department, which deals with every case that involves billing matters, from the first contact to the final resolution of the file.",
+       "legal": "The legal department, which deals with every case that involves legal matters, from the first contact to the final resolution of the file.",
+       "retention": "The retention department, which deals with every case that involves retention matters, from the first contact to the final resolution of the file.",
+       "shipping": "The shipping department, which deals with every case that involves shipping matters, from the first contact to the final resolution of the file.",
+       "support": "The support department, which deals with every case that involves support matters, from the first contact to the final resolution of the file.",
+       "management": "The management department, which deals with every case that involves management matters, from the first contact to the final resolution of the file."
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "long_question_budget_512",
+   "body": {
+    "state": "I have been waiting three weeks for a refund on a cancelled order and I will contact my bank.",
+    "questions": {
+     "dept": {
+      "type": "choice",
+      "instructions": "Read the conversation carefully and decide which department should take over, considering the history of the account, the tone of the customer, the products mentioned, and any legal or financial exposure that the company could face if the request is mishandled or delayed beyond the agreed delays. Read the conversation carefully and decide which department should take over, considering the history of the account, the tone of the customer, the products mentioned, and any legal or financial exposure that the company could face if the request is mishandled or delayed beyond the agreed delays. Read the conversation carefully and decide which department should take over, considering the history of the account, the tone of the customer, the products mentioned, and any legal or financial exposure that the company could face if the request is mishandled or delayed beyond the agreed delays.",
+      "criteria": {
+       "billing": "The billing department, which deals with every case that involves billing matters, from the first contact to the final resolution of the file.",
+       "legal": "The legal department, which deals with every case that involves legal matters, from the first contact to the final resolution of the file.",
+       "retention": "The retention department, which deals with every case that involves retention matters, from the first contact to the final resolution of the file.",
+       "shipping": "The shipping department, which deals with every case that involves shipping matters, from the first contact to the final resolution of the file.",
+       "support": "The support department, which deals with every case that involves support matters, from the first contact to the final resolution of the file.",
+       "management": "The management department, which deals with every case that involves management matters, from the first contact to the final resolution of the file."
+      }
+     }
+    }
+   },
+   "max_head_tokens": 512
+  }
+ ]
+}

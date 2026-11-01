@@ -1,0 +1,17 @@
+# The small decision model: a slice of Laya published by ggml-org for testing
+# loaders and runtimes, Apache-2.0, 97 MB in Q8_0. Its answers mean nothing;
+# what it pins is the `laya` readout end to end - the `systemone` template, the
+# head budget (192), the marker layout and the three-column decision head - at
+# a size a CI runner can download.
+#
+# Not matched by the `tests/fixtures/*_FIXTURE.toml` glob on purpose: the CPU
+# lanes do not need it. Fetch it by name:
+#
+#   scripts/fetch-cpu-fixture.sh decision/TINYLAYA_FIXTURE
+#
+# The URL is pinned to a revision of the repository, not to `main`.
+filename = "decision/tinylaya-for-testing-Q8_0.gguf"
+url = "https://huggingface.co/ggml-org/tinylaya-for-testing-gguf/resolve/db8373bdf1621f95b7db9eb0444539e1facbec96/tinylaya-for-testing-Q8_0.gguf"
+size_bytes = 97200288
+sha256 = "a8b2b8f7fe6b7e10a884c55bf72362b0a8701e40dc3f332831d58246e5fa0b70"
+override_env = "RETRO_TINYLAYA_FIXTURE"
