@@ -2005,6 +2005,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "retrograd-decision"
+version = "0.1.0"
+dependencies = [
+ "indexmap",
+ "retrograd-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "retrograd-engine"
 version = "0.1.0"
 dependencies = [

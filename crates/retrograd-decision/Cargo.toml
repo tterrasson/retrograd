@@ -1,0 +1,23 @@
+[package]
+name = "retrograd-decision"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrograd - typed decision models: requests, layouts, answers, datasets, calibration"
+publish = false
+
+# Pure logic, no FFI and no model: everything a decision model does around the
+# forward pass. The template renderer and the tokenizer are handed in by the
+# caller, so the crate is testable on the golden fixtures alone.
+[dependencies]
+# `questions` is an ordered map: the request order is the answer order. The
+# same crate keeps the key order of the state (`json::Json`), which a
+# `serde_json` `preserve_order` feature would do for the whole build instead.
+indexmap = { version = "2", features = ["serde"] }
+retrograd-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -26,6 +26,7 @@ members = [
     "crates/retrograd-memory",
     "crates/retrograd-observe",
     "crates/retrograd-dataset",
+    "crates/retrograd-decision",
     "crates/retrograd-engine",
     "crates/retrograd-infer",
     "crates/retrograd-config",
@@ -88,6 +89,7 @@ retrograd-config = { path = "crates/retrograd-config" }
 retrograd-container = { path = "crates/retrograd-container" }
 retrograd-core = { path = "crates/retrograd-core" }
 retrograd-dataset = { path = "crates/retrograd-dataset" }
+retrograd-decision = { path = "crates/retrograd-decision" }
 retrograd-engine = { path = "crates/retrograd-engine" }
 retrograd-env = { path = "crates/retrograd-env", default-features = false }
 retrograd-ffi = { path = "crates/retrograd-ffi" }

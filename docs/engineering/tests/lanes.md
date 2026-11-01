@@ -112,7 +112,9 @@ regresses silently.
   parity test could see.
 
 - Public-contract tests with neither a model nor a device:
-  `retrograd-agent`'s `train_sequences`, `retrograd-engine`'s
+  `retrograd-agent`'s `train_sequences`, `retrograd-decision`'s `golden` (the
+  layout and the answers against `tests/fixtures/decision`, recorded from
+  llama-server; no model is read), `retrograd-engine`'s
   `chat_parser_roundtrip` (on chat-template fixtures), `retrograd-judge`'s
   `reward_batch` and `retrograd-training`'s `value_head`.
 
