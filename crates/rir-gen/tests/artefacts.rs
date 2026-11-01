@@ -74,6 +74,9 @@ fn regenerating_produces_no_diff() {
     let on_disk_dirs: BTreeSet<String> = std::fs::read_dir(&root)
         .unwrap_or_else(|e| panic!("{} unreadable: {e}", root.display()))
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        // `perf/` holds the ratio sessions the promotion lane writes, not
+        // generated output; the generator owns everything else under the root.
+        .filter(|name| name != "perf")
         .collect();
     assert_eq!(
         on_disk_dirs,

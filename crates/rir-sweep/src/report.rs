@@ -78,9 +78,9 @@ pub fn render(r: &SweepReport) -> String {
 
     let _ = writeln!(out);
     match &r.profile {
-        // A proposal for a profile is a choice for that model in that regime:
-        // what is committed is a selection in the profile table, beside any
-        // table change, and the promotion lane still decides it.
+        // A profile identifies the geometry measured in this regime. The
+        // proposal changes schedule claims; the promotion lane decides the
+        // per-variant policy, and the profile carries no dispatch selection.
         Some((profile, regime)) => {
             let _ = writeln!(out, "## proposal for {profile} ({})", regime.name());
         }

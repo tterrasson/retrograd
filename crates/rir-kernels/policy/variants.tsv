@@ -1,0 +1,26 @@
+# Per-variant policy overrides, read by rir-gen at generation time.
+#
+# variant_id	backend	policy	session	note
+#
+# A variant absent from this file carries its pair's policy. A row here is how
+# a single variant of a promoted pair is held at observe while another is
+# promoted: the effective policy at dispatch is min(pair, row).
+#
+# The MUL_MAT/metal rows below hold every decode GEMV variant at observe under
+# the pair's prefer_generated ceiling until the promotion lane attributes a
+# measured session to each variant.
+mul_mat_vec_q8_0_q8_0_2d_subgroup_tree	metal	observe_generated	benchmark-20261031T200650Z	decode GEMV fallback held at observe under the pair ceiling
+mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_cols4	metal	observe_generated	benchmark-20261031T200650Z	decode GEMV cols4 held at observe under the pair ceiling
+mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_cols8_rt4_seg4_nofs	metal	observe_generated	benchmark-20261031T200650Z	decode GEMV cols8_rt4_seg4_nofs held at observe under the pair ceiling
+mul_mat_vec_q8_0_q8_0_2d_matrix_tile_mma	metal	observe_generated	benchmark-20261031T200650Z	decode GEMV mma held at observe under the pair ceiling
+mul_mat_vec_q8_0_q8_0_2d_subgroup_tree_n1	metal	observe_generated	benchmark-20261031T200650Z	single-token GEMV pick held at observe under the pair ceiling
+mul_mat_vec_q4_K_q4_K_2d_subgroup_tree	metal	observe_generated	benchmark-20261031T200650Z	decode GEMV fallback held at observe under the pair ceiling
+mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_cols4	metal	observe_generated	benchmark-20261031T200650Z	decode GEMV cols4 held at observe under the pair ceiling
+mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_cols8_rt4_seg4_nofs	metal	observe_generated	benchmark-20261031T200650Z	decode GEMV cols8_rt4_seg4_nofs held at observe under the pair ceiling
+mul_mat_vec_q4_K_q4_K_2d_matrix_tile_mma	metal	observe_generated	benchmark-20261031T200650Z	decode GEMV mma held at observe under the pair ceiling
+mul_mat_vec_q4_K_q4_K_2d_subgroup_tree_n1	metal	observe_generated	benchmark-20261031T200650Z	single-token GEMV pick held at observe under the pair ceiling
+mul_mat_vec_q6_K_q6_K_2d_subgroup_tree	metal	observe_generated	benchmark-20261031T200650Z	decode GEMV fallback held at observe under the pair ceiling
+mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_cols4	metal	observe_generated	benchmark-20261031T200650Z	decode GEMV cols4 held at observe under the pair ceiling
+mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_cols8_rt4_seg4_nofs	metal	observe_generated	benchmark-20261031T200650Z	decode GEMV cols8_rt4_seg4_nofs held at observe under the pair ceiling
+mul_mat_vec_q6_K_q6_K_2d_matrix_tile_mma	metal	observe_generated	benchmark-20261031T200650Z	decode GEMV mma held at observe under the pair ceiling
+mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_n1	metal	observe_generated	benchmark-20261031T200650Z	single-token GEMV pick held at observe under the pair ceiling

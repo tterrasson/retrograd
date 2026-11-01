@@ -14,6 +14,7 @@ pub mod l2_norm_fwd;
 pub mod mat_mul_naive;
 pub mod mul_mat_vec;
 pub mod out_prod;
+pub mod policy;
 pub mod rms_norm;
 pub mod rms_norm_back;
 pub mod scan_plan;

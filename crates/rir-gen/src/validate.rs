@@ -5,6 +5,86 @@
 
 use crate::GenError;
 
+/// A row of the per-variant policy table (`rir-kernels/policy/variants.tsv`)
+/// that the registry it describes cannot honour.
+///
+/// These are typed generation errors, not runtime ones: an invalid override is
+/// refused before any artifact is written, like every other table rule.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PolicyError {
+    #[error("variants.tsv: {0}")]
+    Malformed(String),
+    #[error(
+        "variant policy row names '{variant_id}' on {backend}, which no production variant publishes"
+    )]
+    UnknownVariant { variant_id: String, backend: String },
+    #[error(
+        "variant '{variant_id}' on {backend} is {policy} but the pair's ceiling is {ceiling} - \
+         a variant above its pair is a promotion the pair does not allow"
+    )]
+    AboveCeiling {
+        variant_id: String,
+        backend: String,
+        policy: String,
+        ceiling: String,
+    },
+    #[error(
+        "variant policy on '{variant_id}' ({op}) but no shape-attribution adapter exists for \
+         {op} - a per-variant policy is only decidable on ops whose measured labels can be \
+         attributed to a variant"
+    )]
+    NoAttribution { variant_id: String, op: String },
+}
+
+/// Checks the per-variant policy table against the production variants it
+/// names: every row must name a published `(variant_id, backend)`, sit at or
+/// under its pair's policy ceiling, and belong to an op the promotion tool can
+/// attribute measured shapes to.
+///
+/// # Errors
+///
+/// `GenError::Policy` on the first violation.
+pub fn validate_variant_policies(
+    production: &[(&rir_lower::LoopKernel, &rir_emit::IntegrationSpec)],
+) -> Result<(), GenError> {
+    let rows = rir_kernels::policy::parse_variant_policies(rir_kernels::policy::VARIANTS_TSV)
+        .map_err(PolicyError::Malformed)?;
+    for row in rows {
+        let Some((_, spec)) = production.iter().find(|(k, _)| {
+            rir_emit::variant_id(k) == row.variant_id
+                && rir_emit::manifest::ggml_backend(k) == row.backend
+        }) else {
+            return Err(PolicyError::UnknownVariant {
+                variant_id: row.variant_id,
+                backend: row.backend.name().to_string(),
+            }
+            .into());
+        };
+        let ceiling = spec.policy_for(row.backend);
+        if row.policy > ceiling {
+            return Err(PolicyError::AboveCeiling {
+                variant_id: row.variant_id,
+                backend: row.backend.name().to_string(),
+                policy: row.policy.name().to_string(),
+                ceiling: ceiling.name().to_string(),
+            }
+            .into());
+        }
+        // A per-variant policy is a promotion decision, and a promotion is
+        // decided on measured shapes attributed to variants - which needs an
+        // adapter reading the lane's labels for that op.
+        let op = spec.ggml_op.unwrap_or("");
+        if !crate::promote::has_shape_adapter(op) {
+            return Err(PolicyError::NoAttribution {
+                variant_id: row.variant_id,
+                op: op.to_string(),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
 /// The CUDA pairs the registry admits past `native_only`, each with the policy
 /// it is admitted **up to** and the reason.
 ///

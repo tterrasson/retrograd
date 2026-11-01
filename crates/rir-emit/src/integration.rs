@@ -9,7 +9,9 @@
 //! The table itself is declared in `rir-kernels` (`rir_kernels::integrations`)
 //! next to the kernels; `rir-gen` zips both by kernel name and feeds this
 //! struct to the manifest emitter (`schema_version` 9) and to the C++ registry
-//! emitter (`RIR_REGISTRY_SCHEMA` 19).
+//! emitter (`RIR_REGISTRY_SCHEMA` 20). Per-variant policies are not a spec
+//! field: they live in `rir-kernels/policy/variants.tsv` and reach the
+//! registry rows through `VariantPolicies`.
 
 /// Where a binding's buffer comes from at dispatch time.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

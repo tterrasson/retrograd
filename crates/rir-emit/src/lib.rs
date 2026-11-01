@@ -32,7 +32,7 @@ pub use manifest::{
 };
 pub use metal::emit_metal;
 pub use quant::emit_ggml_header;
-pub use registry::{RegistryError, emit_params_header, emit_registry};
+pub use registry::{RegistryError, VariantPolicies, emit_params_header, emit_registry};
 pub use vulkan::emit_vulkan;
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]

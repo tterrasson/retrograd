@@ -39,14 +39,17 @@ pub enum GenError {
     /// that depend on lowering.
     #[error("registry: {0}")]
     Registry(#[from] rir_emit::RegistryError),
+    /// A row of the per-variant policy table the registry cannot honour.
+    #[error("variant policy: {0}")]
+    Policy(#[from] validate::PolicyError),
+    /// The `promote` subcommand could not read its inputs or apply its output.
+    #[error("promote: {0}")]
+    Promote(#[from] promote::PromoteError),
     /// A backend served by no emitter. Unreachable now that the last one
     /// closed, and kept because the type makes "every backend of the table has an
     /// emitter" a checked property rather than an assumption.
     #[error("no emitter for backend {0}")]
     NoEmitter(&'static str),
-    /// A model profile that contradicts the catalogue it is published in.
-    #[error("model profiles: {0}")]
-    Profile(#[from] rir_core::catalog::ProfileError),
 }
 
 /// Everything one registry entry produces: a subdirectory name under
@@ -114,13 +117,16 @@ pub const CUDA_LAUNCHER_LIST: &str = "rir_cuda_launchers.h";
 const MSL_HEADER_LINES: usize = 6;
 
 pub mod catalog;
+pub mod promote;
 pub mod validate;
 
 pub use catalog::{
     ProductionArtifact, cuda_launcher_list, emit_catalog, metal_aggregate, production_artifacts,
     vulkan_artifact_list,
 };
-pub use validate::{check_gpu_coverage, validate_registry, validate_tables};
+pub use validate::{
+    PolicyError, check_gpu_coverage, validate_registry, validate_tables, validate_variant_policies,
+};
 
 /// Generates every registered kernel for every schedule in the table, plus
 /// the C++ AOT registry under `registry/` - same data as the manifests, one
@@ -220,7 +226,13 @@ pub fn generate_all() -> Result<Vec<GeneratedKernel>, GenError> {
 
     let refs: Vec<(&rir_lower::LoopKernel, &rir_emit::IntegrationSpec)> =
         production.iter().map(|(k, s)| (k, s)).collect();
-    let (header, cpp) = rir_emit::emit_registry(&refs, &specs)?;
+    // The per-variant policy overrides, validated against the production rows
+    // before any emitter sees them: an unknown variant, a policy above the
+    // pair's ceiling, or an op with no attribution adapter is a generation
+    // error, not a registry row.
+    validate_variant_policies(&refs)?;
+    let variant_policies = rir_kernels::policy::variant_policies();
+    let (header, cpp) = rir_emit::emit_registry(&refs, &specs, &variant_policies)?;
     out.push(GeneratedKernel {
         name: REGISTRY_DIR.to_string(),
         files: vec![
@@ -235,7 +247,10 @@ pub fn generate_all() -> Result<Vec<GeneratedKernel>, GenError> {
 
     out.push(GeneratedKernel {
         name: CATALOG_DIR.to_string(),
-        files: vec![(CATALOG_FILE.to_string(), emit_catalog(&refs, &specs)?)],
+        files: vec![(
+            CATALOG_FILE.to_string(),
+            emit_catalog(&refs, &specs, &variant_policies)?,
+        )],
     });
 
     // The Metal aggregate: the fork includes this one
@@ -306,7 +321,10 @@ pub fn write_to(dir: &Path) -> io::Result<Vec<String>> {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let name = entry.file_name();
-            if keep.contains(&*name.to_string_lossy()) {
+            // `perf/` is not generated: it holds the ratio sessions the
+            // promotion lane writes and a promotion rests on, so the generator
+            // leaves it alone instead of deleting it as a stale directory.
+            if keep.contains(&*name.to_string_lossy()) || name == "perf" {
                 continue;
             }
             let path = entry.path();

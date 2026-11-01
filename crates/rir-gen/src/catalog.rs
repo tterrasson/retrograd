@@ -10,14 +10,16 @@ use crate::{GenError, MSL_HEADER_LINES};
 /// registry into a strict, versioned planner catalogue. No registry rule is
 /// reconstructed here: policies and domain declarations come directly from
 /// `IntegrationSpec`, while variant metadata is read from the manifest emitter
-/// fed by the same `LoopKernel`.
+/// fed by the same `LoopKernel`. Each variant's own policy comes from
+/// `variant_policies`, resolved exactly as the C++ rows resolve it.
 ///
 /// The model profiles are `rir_core::profiles::reference()`, published as
-/// they are and checked against the rows just built: a selection naming a
-/// variant this catalogue does not carry refuses the generation.
+/// plain shapes: a profile names a geometry a measurement grid derives from,
+/// never a dispatch choice.
 pub fn emit_catalog(
     variants: &[(&rir_lower::LoopKernel, &rir_emit::IntegrationSpec)],
     specs: &[rir_emit::IntegrationSpec],
+    variant_policies: &rir_emit::VariantPolicies,
 ) -> Result<String, GenError> {
     use std::collections::BTreeMap;
 
@@ -142,6 +144,10 @@ pub fn emit_catalog(
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(1) as u32
         });
+        let pair_policy = rows
+            .get(&key)
+            .expect("every production variant has a policy row")
+            .policy;
         rows.get_mut(&key)
             .expect("every production variant has a policy row")
             .variants
@@ -152,6 +158,11 @@ pub fn emit_catalog(
                     .to_string(),
                 kernel: kernel.name.clone(),
                 priority: manifest["priority"].as_u64().unwrap_or(0) as u8,
+                policy: variant_policies.get(
+                    manifest["variant_id"].as_str().unwrap_or_default(),
+                    backend,
+                    pair_policy,
+                ),
                 constraints: strings("constraints"),
                 eligible_when,
                 features: strings("features"),
@@ -196,7 +207,6 @@ pub fn emit_catalog(
         kernels,
         profiles,
     };
-    catalog.check_profiles()?;
     Ok(format!(
         "{}\n",
         serde_json::to_string_pretty(&catalog).expect("catalog JSON")

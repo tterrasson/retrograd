@@ -1,10 +1,9 @@
 //! The model profiles the catalogue publishes: plain data, no decision.
 //!
-//! A profile names an exact model shape on one backend. It is declared before
-//! anything is chosen for it, so that `rir-sweep --profile` can measure the
-//! kernels on that model's own shapes; a selection is added here, by hand,
-//! once a sweep and the promotion lane say a variant wins in a regime. Until
-//! then a profile changes nothing at dispatch.
+//! A profile names an exact model shape on one backend, so that
+//! `rir-sweep --profile` can measure the kernels on that model's own shapes.
+//! It selects nothing: the dispatch stays per-claim, and a profile is a
+//! geometry a measurement grid is derived from, never a runtime choice.
 //!
 //! The shapes are the reference models' published hyperparameters. The weight
 //! formats are the two quantizations a reference GGUF is usually taken in:
@@ -40,7 +39,6 @@ pub fn reference() -> Vec<ModelProfile> {
                     n_ff,
                     weight_formats: formats.iter().map(|f| f.to_string()).collect(),
                 },
-                selections: Vec::new(),
             });
         }
     }

@@ -28,7 +28,11 @@ pub use crate::claim::{Claim, ShapeRule as KernelShapeRule};
 ///
 /// One constant for the two ends, like the manifest's: the generator writes it
 /// and every consumer refuses anything else, so a bump is a single edit.
-pub const SCHEMA_VERSION: u32 = 2;
+///
+/// 3: a variant carries its own `policy` (the pair's policy is only a ceiling),
+/// and the model profiles no longer carry selections - a profile names a shape
+/// to measure, and the dispatch stays per-claim.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// The ggml backends the policy table can speak about.
 ///
@@ -124,101 +128,19 @@ pub struct KernelCatalog {
     pub fingerprint: String,
     #[serde(default)]
     pub kernels: Vec<KernelPolicy>,
-    /// Model profiles: which variant serves which op for one exact model
-    /// shape, per regime. A model no profile matches keeps the per-op rows
-    /// above unchanged - never a failure, at worst no gain.
+    /// Model profiles: the exact model shapes a measurement grid is derived
+    /// from. A profile carries no selection - the dispatch stays per-claim,
+    /// and a profile is a geometry a sweep measured, never a choice installed
+    /// at runtime.
     #[serde(default)]
     pub profiles: Vec<ModelProfile>,
 }
 
-impl KernelCatalog {
-    /// The profile published for exactly this model shape on this backend, or
-    /// `None`, in which case nothing changes for the model.
-    ///
-    /// The match is on the **whole** key: an architecture name alone, or a
-    /// shape that differs in one dimension or one weight format, matches
-    /// nothing. A profile is a geometry a sweep measured, and a neighbour of
-    /// that geometry was not measured.
-    pub fn profile(&self, shape: &ModelShape, backend: GgmlBackend) -> Option<&ModelProfile> {
-        let shape = shape.normalized();
-        self.profiles
-            .iter()
-            .find(|p| p.backend == backend && p.shape.normalized() == shape)
-    }
-
-    /// Every selection names a variant the catalogue publishes for that
-    /// `(op, op variant, backend)` row, no two profiles share a key, and no
-    /// profile selects twice for one op in one regime.
-    ///
-    /// A selection is a choice among published variants and nothing more: it
-    /// never adds one, and it never lifts the row's policy or the variant's
-    /// own contract - backend features, strides, alignment, batch bounds - which
-    /// the dispatch site still evaluates. A selection naming a variant that is
-    /// not there would be a profile asking for a kernel the build does not
-    /// carry.
-    pub fn check_profiles(&self) -> Result<(), ProfileError> {
-        let mut keys = std::collections::HashSet::new();
-        for p in &self.profiles {
-            if !keys.insert((p.backend, p.shape.normalized())) {
-                return Err(ProfileError::DuplicateKey {
-                    profile: p.name.clone(),
-                });
-            }
-            let mut chosen = std::collections::HashSet::new();
-            for s in &p.selections {
-                if !chosen.insert((&s.ggml_op, &s.op_variant, s.regime)) {
-                    return Err(ProfileError::DuplicateSelection {
-                        profile: p.name.clone(),
-                        ggml_op: s.ggml_op.clone(),
-                        regime: s.regime,
-                    });
-                }
-                let published = self.kernels.iter().any(|row| {
-                    row.backend == p.backend
-                        && row.ggml_op == s.ggml_op
-                        && row.op_variant == s.op_variant
-                        && row.variants.iter().any(|v| v.variant_id == s.variant_id)
-                });
-                if !published {
-                    return Err(ProfileError::UnknownVariant {
-                        profile: p.name.clone(),
-                        ggml_op: s.ggml_op.clone(),
-                        variant_id: s.variant_id.clone(),
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-/// A profile table that contradicts the catalogue it is published in.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum ProfileError {
-    #[error("profile '{profile}' shares its model shape and backend with another profile")]
-    DuplicateKey { profile: String },
-    #[error("profile '{profile}' selects twice for {ggml_op} in the {} regime", regime.name())]
-    DuplicateSelection {
-        profile: String,
-        ggml_op: String,
-        regime: Regime,
-    },
-    #[error(
-        "profile '{profile}' selects '{variant_id}' for {ggml_op}, which the catalogue does not publish on that backend"
-    )]
-    UnknownVariant {
-        profile: String,
-        ggml_op: String,
-        variant_id: String,
-    },
-}
-
-/// The two execution regimes a selection or a promotion is made for.
+/// The two execution regimes a measurement or a promotion is made for.
 ///
 /// One kernel can win while decoding - a handful of rows, launch-bound - and
 /// lose on a prefill of hundreds of rows, or the reverse, so a measurement
-/// says which regime it was taken in and a selection which regime it applies
-/// to.
+/// says which regime it was taken in and a promotion which regime it covers.
 #[derive(
     Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize,
 )]
@@ -302,7 +224,8 @@ impl ModelShape {
     }
 }
 
-/// One profile: a model shape on one backend, and the variants chosen for it.
+/// One profile: a model shape on one backend, published so a sweep can derive
+/// the measurement grid of that model's own kernels. It selects nothing.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelProfile {
@@ -310,21 +233,6 @@ pub struct ModelProfile {
     pub name: String,
     pub backend: GgmlBackend,
     pub shape: ModelShape,
-    /// Empty is legitimate and is the state every profile starts in: the shape
-    /// is declared, so a sweep can be run against it, and nothing is chosen
-    /// until a measurement says so.
-    #[serde(default)]
-    pub selections: Vec<ProfileSelection>,
-}
-
-/// One choice: for this op, in this regime, this published variant.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProfileSelection {
-    pub ggml_op: String,
-    pub op_variant: Option<String>,
-    pub regime: Regime,
-    pub variant_id: String,
 }
 
 /// One `(ggml op, op variant, backend)` row: the policy that applies to it, the
@@ -350,6 +258,11 @@ pub struct KernelVariantPolicy {
     pub variant_id: String,
     pub kernel: String,
     pub priority: u8,
+    /// The variant's own policy. The pair's policy is only a **ceiling**: the
+    /// effective policy at dispatch is `min(pair, variant)`, so a variant under
+    /// `observe_generated` is measured but never encodes, even on a promoted
+    /// pair. A variant absent from the override table carries the pair's.
+    pub policy: BackendPolicy,
     #[serde(default)]
     pub constraints: Vec<String>,
     #[serde(default)]
@@ -432,6 +345,7 @@ mod tests {
                     variant_id: "out_prod_w4".into(),
                     kernel: "out_prod".into(),
                     priority: 2,
+                    policy: BackendPolicy::ObserveGenerated,
                     eligible_when: Claim::any().on("row", ..=8),
                     workgroup: [32, 1, 1],
                     vector_width: 4,
@@ -450,131 +364,27 @@ mod tests {
             profiles: vec![ModelProfile {
                 name: "m".into(),
                 backend: GgmlBackend::Vulkan,
-                shape: shape(),
-                selections: vec![ProfileSelection {
-                    ggml_op: "GGML_OP_OUT_PROD".into(),
-                    op_variant: None,
-                    regime: Regime::Decode,
-                    variant_id: "out_prod_w4".into(),
-                }],
+                shape: ModelShape {
+                    architecture: "qwen3".into(),
+                    n_embd: 1024,
+                    n_head: 16,
+                    n_head_kv: 8,
+                    head_dim: 128,
+                    n_ff: 3072,
+                    weight_formats: vec!["q4_K".into(), "q6_K".into()],
+                },
             }],
         };
-        assert_eq!(catalog.check_profiles(), Ok(()));
         let json = serde_json::to_string(&catalog).unwrap();
         assert_eq!(
             serde_json::from_str::<KernelCatalog>(&json).unwrap(),
             catalog
         );
         // The four devices and the ladder are read back as themselves, not as
-        // strings a consumer re-parses.
+        // strings a consumer re-parses - the variant's policy included.
         assert!(json.contains("\"backend\":\"vulkan\""));
         assert!(json.contains("\"policy\":\"prefer_generated\""));
-        assert!(json.contains("\"regime\":\"decode\""));
-    }
-
-    fn shape() -> ModelShape {
-        ModelShape {
-            architecture: "qwen3".into(),
-            n_embd: 1024,
-            n_head: 16,
-            n_head_kv: 8,
-            head_dim: 128,
-            n_ff: 3072,
-            weight_formats: vec!["q4_K".into(), "q6_K".into()],
-        }
-    }
-
-    fn with_profile(selections: Vec<ProfileSelection>) -> KernelCatalog {
-        KernelCatalog {
-            schema_version: SCHEMA_VERSION,
-            fingerprint: String::new(),
-            kernels: vec![KernelPolicy {
-                ggml_op: "GGML_OP_RMS_NORM".into(),
-                backend: GgmlBackend::Metal,
-                variants: vec![KernelVariantPolicy {
-                    variant_id: "rms_norm_shared".into(),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-            profiles: vec![ModelProfile {
-                name: "qwen3-0.6b".into(),
-                backend: GgmlBackend::Metal,
-                shape: shape(),
-                selections,
-            }],
-        }
-    }
-
-    fn select(variant_id: &str, regime: Regime) -> ProfileSelection {
-        ProfileSelection {
-            ggml_op: "GGML_OP_RMS_NORM".into(),
-            op_variant: None,
-            regime,
-            variant_id: variant_id.into(),
-        }
-    }
-
-    /// The whole key or nothing: the architecture alone, one dimension off, a
-    /// format added or another backend each match no profile, so the model
-    /// keeps the per-op rows. The format set's order does not matter.
-    #[test]
-    fn a_profile_matches_only_its_whole_key() {
-        let catalog = with_profile(Vec::new());
-        assert!(catalog.profile(&shape(), GgmlBackend::Metal).is_some());
-
-        let mut reordered = shape();
-        reordered.weight_formats = vec!["q6_K".into(), "q4_K".into(), "q6_K".into()];
-        assert!(catalog.profile(&reordered, GgmlBackend::Metal).is_some());
-
-        assert!(catalog.profile(&shape(), GgmlBackend::Vulkan).is_none());
-        let only_architecture = ModelShape {
-            architecture: "qwen3".into(),
-            ..Default::default()
-        };
-        assert!(
-            catalog
-                .profile(&only_architecture, GgmlBackend::Metal)
-                .is_none()
-        );
-        let mut wider = shape();
-        wider.n_ff += 1;
-        assert!(catalog.profile(&wider, GgmlBackend::Metal).is_none());
-        let mut other_format = shape();
-        other_format.weight_formats.push("f16".into());
-        assert!(catalog.profile(&other_format, GgmlBackend::Metal).is_none());
-    }
-
-    #[test]
-    fn a_selection_names_a_published_variant_once_per_regime() {
-        assert_eq!(
-            with_profile(vec![
-                select("rms_norm_shared", Regime::Decode),
-                select("rms_norm_shared", Regime::Prefill),
-            ])
-            .check_profiles(),
-            Ok(())
-        );
-        assert!(matches!(
-            with_profile(vec![select("rms_norm_absent", Regime::Decode)]).check_profiles(),
-            Err(ProfileError::UnknownVariant { .. })
-        ));
-        assert!(matches!(
-            with_profile(vec![
-                select("rms_norm_shared", Regime::Decode),
-                select("rms_norm_shared", Regime::Decode),
-            ])
-            .check_profiles(),
-            Err(ProfileError::DuplicateSelection { .. })
-        ));
-        let mut twice = with_profile(Vec::new());
-        let mut copy = twice.profiles[0].clone();
-        copy.name = "copy".into();
-        twice.profiles.push(copy);
-        assert!(matches!(
-            twice.check_profiles(),
-            Err(ProfileError::DuplicateKey { .. })
-        ));
+        assert!(json.contains("\"policy\":\"observe_generated\""));
     }
 
     #[test]
@@ -600,14 +410,11 @@ mod tests {
         }
     }
 
-    /// The reference table publishes its profiles against no selection, so it
-    /// is consistent with any catalogue.
+    /// The reference table publishes its profiles as shapes only.
     #[test]
-    fn the_reference_profiles_are_a_consistent_table() {
-        let catalog = KernelCatalog {
-            profiles: crate::profiles::reference(),
-            ..Default::default()
-        };
-        assert_eq!(catalog.check_profiles(), Ok(()));
+    fn the_reference_profiles_carry_no_selection() {
+        for p in crate::profiles::reference() {
+            assert!(!p.name.is_empty());
+        }
     }
 }

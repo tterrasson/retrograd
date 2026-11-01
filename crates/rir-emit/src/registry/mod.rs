@@ -20,6 +20,39 @@ pub use header::emit_params_header;
 
 pub(crate) use header::{max_rank, registry_header};
 
+/// Per-variant policy overrides, resolved by the caller from the committed
+/// override table (`rir-kernels/policy/variants.tsv`): the policy a variant
+/// row publishes when the table names it, the pair's policy when it does not.
+///
+/// The pair's policy is only a ceiling: the effective policy at dispatch is
+/// `min(pair, row)`, which is what lets one variant of a promoted pair encode
+/// while its siblings stay observed.
+#[derive(Clone, Debug, Default)]
+pub struct VariantPolicies {
+    rows: Vec<(String, GgmlBackend, BackendPolicy)>,
+}
+
+impl VariantPolicies {
+    pub fn new(rows: Vec<(String, GgmlBackend, BackendPolicy)>) -> Self {
+        VariantPolicies { rows }
+    }
+
+    /// The policy one variant row publishes: its override if the table carries
+    /// one, else the pair's own policy.
+    pub fn get(
+        &self,
+        variant_id: &str,
+        backend: GgmlBackend,
+        pair: BackendPolicy,
+    ) -> BackendPolicy {
+        self.rows
+            .iter()
+            .find(|(v, b, _)| v == variant_id && *b == backend)
+            .map(|(_, _, p)| *p)
+            .unwrap_or(pair)
+    }
+}
+
 /// A registry rule that the declared tables do not satisfy.
 ///
 /// These properties are a typed error, propagated like lowering and emission
@@ -80,7 +113,8 @@ fn policy_enum(p: BackendPolicy) -> &'static str {
 /// Emits `(rir_registry.h, rir_registry.cpp)`.
 ///
 /// `variants` are the lowered production GPU kernels with their spec;
-/// `specs` is the full integration table (policy rows come from it).
+/// `specs` is the full integration table (policy rows come from it);
+/// `variant_policies` resolves the per-variant policy each row publishes.
 ///
 /// # Errors
 ///
@@ -91,6 +125,7 @@ fn policy_enum(p: BackendPolicy) -> &'static str {
 pub fn emit_registry(
     variants: &[(&LoopKernel, &IntegrationSpec)],
     specs: &[IntegrationSpec],
+    variant_policies: &VariantPolicies,
 ) -> Result<(String, String), RegistryError> {
     check_unique_identity(variants)?;
     check_pair_width(variants)?;
@@ -101,7 +136,7 @@ pub fn emit_registry(
 
     cpp.push_str("const rir_variant_desc rir_variants[] = {\n");
     for (k, spec) in variants {
-        cpp.push_str(&variant_row(k, spec)?);
+        cpp.push_str(&variant_row(k, spec, variant_policies)?);
     }
     cpp.push_str("};\n");
     cpp.push_str(&format!(
@@ -210,7 +245,11 @@ fn check_pair_width(variants: &[(&LoopKernel, &IntegrationSpec)]) -> Result<(), 
 /// One `rir_variant_desc` initializer. Every POD table it needs is built by the
 /// function below it, and every capacity is checked before its table is filled
 /// rather than while indexing it.
-fn variant_row(k: &LoopKernel, spec: &IntegrationSpec) -> Result<String, RegistryError> {
+fn variant_row(
+    k: &LoopKernel,
+    spec: &IntegrationSpec,
+    variant_policies: &VariantPolicies,
+) -> Result<String, RegistryError> {
     if !spec.production_on(ggml_backend(k)) {
         return Err(RegistryError::new(
             &k.name,
@@ -270,9 +309,14 @@ fn variant_row(k: &LoopKernel, spec: &IntegrationSpec) -> Result<String, Registr
     // publishing the block would ask every device for a subgroup none has.
     let subgroup = k.subgroup_width();
     let pc_bytes = 4 * shader_params_layout(k).len();
+    // The variant's own policy: the override the table carries for this
+    // (variant_id, backend), else the pair's. The pair's policy is only a
+    // ceiling - the dispatcher takes min(pair, row).
+    let backend = ggml_backend(k);
+    let policy = variant_policies.get(&variant_id(k), backend, spec.policy_for(backend));
     Ok(format!(
         "    {{\"{kernel}\", \"{op}\", {opvar}, \"{vid}\", \"{entry}\", {variant}, \"{artifact}\", {backend}, \
-         {priority},\n     {n_rules}, {{{rules}}},\n     {nb}, {np},\n     \
+         {priority}, {policy},\n     {n_rules}, {{{rules}}},\n     {nb}, {np},\n     \
          {{{bindings}}},\n     {{{params}}},\n     \
          {na}, {{{axes}}},\n     {{{dispatch}}},\n     {n_flat}, {{{flat}}},\n     \
          32, {vecw}, {lin}, {rank}, {subg}, {minsg}, {mtx}, {{{wg0}, {wg1}, {wg2}}}, {shb}, {pc}}},\n",
@@ -289,8 +333,9 @@ fn variant_row(k: &LoopKernel, spec: &IntegrationSpec) -> Result<String, Registr
         },
         artifact = crate::manifest::artifact_name(k),
         priority = k.schedule.priority(),
+        policy = policy_enum(policy),
         rules = rules.join(", "),
-        backend = backend_enum(ggml_backend(k)),
+        backend = backend_enum(backend),
         nb = k.args.len(),
         np = k.params.len(),
         bindings = bindings.join(", "),
