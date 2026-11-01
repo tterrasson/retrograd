@@ -17,7 +17,15 @@ fn pseudo_random(n: usize, mut state: u64, range: f32) -> Vec<f32> {
         .collect()
 }
 
-fn run(native_cpu: bool, kv_f32: bool, sinks: bool, window: Option<(usize, usize)>) -> Vec<f32> {
+/// `mask` is the probe's mask selector: 1 causal, `w >= 2` causal over the `w`
+/// latest keys, which masks the head of every row.
+fn run(
+    native_cpu: bool,
+    kv_f32: bool,
+    sinks: bool,
+    window: Option<(usize, usize)>,
+    mask: i64,
+) -> Vec<f32> {
     let (hsk, hsv, nq, nkv, nhead, nhead_kv, nbatch) =
         (32usize, 24usize, 5usize, 9usize, 4usize, 2usize, 2usize);
     let n_q = hsk * nq * nhead * nbatch;
@@ -34,7 +42,7 @@ fn run(native_cpu: bool, kv_f32: bool, sinks: bool, window: Option<(usize, usize
     }
 
     let dims = [hsk as i64, hsv as i64, nq as i64, nkv as i64];
-    let layout = [nhead as i64, nhead_kv as i64, nbatch as i64, 1];
+    let layout = [nhead as i64, nhead_kv as i64, nbatch as i64, mask];
     let (nwin, idxs) = if let Some((nwin, offset)) = window {
         let mut idxs = Vec::with_capacity(nwin * nbatch);
         for ib in 0..nbatch {
@@ -66,14 +74,22 @@ fn run(native_cpu: bool, kv_f32: bool, sinks: bool, window: Option<(usize, usize
 
 #[test]
 fn flash_attn_back_cpu_matches_the_analytic_streaming_oracle() {
-    for (kv_f32, sinks, window) in [
-        (false, false, None),
-        (true, false, None),
-        (false, true, None),
-        (false, false, Some((3, 4))),
+    for (kv_f32, sinks, window, mask) in [
+        (false, false, None, 1),
+        (true, false, None, 1),
+        (false, true, None, 1),
+        (false, false, Some((3, 4)), 1),
+        (true, false, None, 3),
+        (false, true, None, 3),
     ] {
-        let expected = run(false, kv_f32, sinks, window);
-        let actual = run(true, kv_f32, sinks, window);
+        let expected = run(false, kv_f32, sinks, window, mask);
+        let actual = run(true, kv_f32, sinks, window, mask);
+        assert!(
+            expected
+                .iter()
+                .chain(&actual)
+                .all(|value| value.is_finite())
+        );
         let max_diff = expected
             .iter()
             .zip(&actual)
@@ -81,15 +97,15 @@ fn flash_attn_back_cpu_matches_the_analytic_streaming_oracle() {
             .fold(0.0f32, f32::max);
         assert!(
             max_diff <= 2.0e-5,
-            "CPU FLASH_ATTN_BACK max diff {max_diff:e} for kv_f32={kv_f32}, sinks={sinks}, window={window:?}"
+            "CPU FLASH_ATTN_BACK max diff {max_diff:e} for kv_f32={kv_f32}, sinks={sinks}, window={window:?}, mask={mask}"
         );
     }
 }
 
 #[test]
 fn flash_attn_back_cpu_is_bit_deterministic() {
-    let first = run(true, false, false, Some((3, 4)));
-    let second = run(true, false, false, Some((3, 4)));
+    let first = run(true, false, false, Some((3, 4)), 1);
+    let second = run(true, false, false, Some((3, 4)), 1);
     assert_eq!(
         first.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
         second.iter().map(|v| v.to_bits()).collect::<Vec<_>>()

@@ -112,7 +112,11 @@ static int probe_op_run_locked(
             const int64_t nhead  = ne_src1[0];
             const int64_t nheadk = ne_src1[1];
             const int64_t nbatch = ne_src1[2];
+            // ne_src1[3]: 0 no mask, 1 causal, w >= 2 causal over the w latest
+            // keys only. The window masks the head of every row, so a kernel
+            // whose running maximum starts at -inf meets a masked key first.
             const bool causal    = ne_src1[3] != 0;
+            const int64_t swa    = ne_src1[3] >= 2 ? ne_src1[3] : 0;
             // Head-dim ceiling comes from ggml.h rather than a literal repeated
             // here: every backend cap (FA_BACK_MAX_D / VK_FA_BACK_MAX_D /
             // GGML_METAL_FA_BACK_MAX_D) static_asserts against the same
@@ -206,9 +210,13 @@ static int probe_op_run_locked(
             if (causal) {
                 for (int64_t ib = 0; ib < nbatch; ++ib) {
                     for (int64_t iq = 0; iq < nq; ++iq) {
-                        for (int64_t ik = n_past + iq + 1; ik < nkv; ++ik) {
-                            maskf[static_cast<size_t>((ib*nq + iq)*nkv + ik)] =
-                                    -std::numeric_limits<float>::infinity();
+                        for (int64_t ik = 0; ik < nkv; ++ik) {
+                            const bool future = ik > n_past + iq;
+                            const bool stale  = swa > 0 && ik <= n_past + iq - swa;
+                            if (future || stale) {
+                                maskf[static_cast<size_t>((ib*nq + iq)*nkv + ik)] =
+                                        -std::numeric_limits<float>::infinity();
+                            }
                         }
                     }
                 }
