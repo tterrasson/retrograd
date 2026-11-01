@@ -225,3 +225,171 @@ fn footprint(f: &crate::measure::Footprint) -> String {
     }
     s
 }
+
+/// The first line of every proposal file: what the binary checks before it
+/// overwrites a path, so that a proposal never lands on a source file.
+pub const PROPOSAL_HEADER: &str = "// rir-sweep proposal";
+
+/// The retained rows of `reports`, as a file to read and paste by hand: per
+/// sweep, the picks its space candidates earned with the verdict's claim, and
+/// for a candidate outside any space the table call it would be committed as.
+/// A control and a refusal are not retained; a sweep that retained nothing
+/// says so rather than writing an empty block.
+pub fn proposal_file(reports: &[SweepReport]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "{PROPOSAL_HEADER}");
+    let _ = writeln!(
+        out,
+        "// RIR against RIR: nothing here is decided. A pick's priority is a placeholder and its \
+         evidence is the session that measured it, to fill in; a retained row then goes through \
+         the promotion lane like any table change."
+    );
+    for r in reports {
+        let _ = writeln!(out);
+        let _ = write!(
+            out,
+            "// {} ({}) on {} - {}",
+            r.kernel,
+            r.family,
+            r.backend.name(),
+            r.device
+        );
+        if let Some((profile, regime)) = &r.profile {
+            let _ = write!(out, " - profile {profile}, {} regime", regime.name());
+        }
+        let _ = writeln!(out);
+        let mut retained = 0usize;
+        for a in &r.arbitrated {
+            if a.origin != crate::candidates::Origin::Proposed {
+                continue;
+            }
+            let line = match (&a.verdict, &a.pick) {
+                (Verdict::Claims { claim, .. }, Some((pick, defaults))) => {
+                    format!("{},", pick_source(pick, *defaults, claim))
+                }
+                (Verdict::Claims { claim, .. }, None) => {
+                    format!(
+                        "v.push({}.claiming(90, {}));",
+                        a.source,
+                        claim_source(claim)
+                    )
+                }
+                (Verdict::Replaces { .. }, Some((pick, defaults))) => format!(
+                    "// becomes the space's defaults: {}",
+                    geometry_source(pick.geometry, *defaults)
+                ),
+                (Verdict::Replaces { .. }, None) => format!("v.push({}.unnamed());", a.source),
+                (Verdict::Refused(_), _) => continue,
+            };
+            let gain = match &a.verdict {
+                Verdict::Claims { best_gain, .. } | Verdict::Replaces { best_gain } => *best_gain,
+                Verdict::Refused(_) => 0.0,
+            };
+            let _ = writeln!(out, "// {}: up to {:.0}%", a.tag, gain * 100.0);
+            let _ = writeln!(out, "{line}");
+            retained += 1;
+        }
+        if retained == 0 {
+            let _ = writeln!(out, "// nothing retained");
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use rir_lower::schedule::spaces;
+    use rir_lower::{Claim, GpuBackend, Pick};
+    use rir_runtime::any::Backend;
+
+    use super::{PROPOSAL_HEADER, proposal_file};
+    use crate::candidates::Origin;
+    use crate::measure::{Footprint, Mode};
+    use crate::run::{Arbitrated, SweepReport};
+    use crate::verdict::{Refusal, Verdict};
+
+    fn footprint() -> Footprint {
+        Footprint {
+            shared_bytes: 0,
+            lanes: 64,
+            shared_limit_bytes: None,
+            registers: None,
+            spill_bytes: None,
+        }
+    }
+
+    fn arbitrated(tag: &str, origin: Origin, pick: Option<Pick>, verdict: Verdict) -> Arbitrated {
+        let defaults = (spaces::mul_mat_vec::space().defaults)(GpuBackend::Metal);
+        Arbitrated {
+            tag: tag.to_string(),
+            source: "Schedule::gpu_subgroup(GpuBackend::Metal)".to_string(),
+            origin,
+            pick: pick.map(|p| (p, defaults)),
+            footprint: footprint(),
+            rows: Vec::new(),
+            verdict,
+        }
+    }
+
+    /// The file carries the retained picks with the verdict's claim, and
+    /// neither the controls nor the refusals.
+    #[test]
+    fn the_proposal_file_carries_the_retained_picks_only() {
+        let defaults = (spaces::mul_mat_vec::space().defaults)(GpuBackend::Metal);
+        let cols16 = Pick {
+            geometry: defaults.map_lanes(|l| l.lane_tile = 16),
+            claim: Claim::any(),
+            priority: 90,
+            evidence: "",
+            name: None,
+        };
+        let report = SweepReport {
+            mode: Mode::Stream,
+            kernel: "mul_mat_vec_q4_K".to_string(),
+            family: "mul_mat_vec",
+            profile: None,
+            contraction: None,
+            backend: Backend::Metal,
+            device: "test".to_string(),
+            base_tag: "table/fallback".to_string(),
+            base_footprint: footprint(),
+            shapes: Vec::new(),
+            base: Vec::new(),
+            arbitrated: vec![
+                arbitrated(
+                    "table/cols4",
+                    Origin::Table,
+                    None,
+                    Verdict::Replaces { best_gain: 0.5 },
+                ),
+                arbitrated(
+                    "cols16",
+                    Origin::Proposed,
+                    Some(cols16),
+                    Verdict::Claims {
+                        claim: Claim::any().on("plane", 9..=31),
+                        best_gain: 0.25,
+                        ties_claimed: Vec::new(),
+                    },
+                ),
+                arbitrated(
+                    "subgroup 32",
+                    Origin::Proposed,
+                    None,
+                    Verdict::Refused(Refusal::NotMeasured),
+                ),
+            ],
+            declined: Vec::new(),
+        };
+        let file = proposal_file(&[report]);
+        assert!(file.starts_with(PROPOSAL_HEADER));
+        assert!(file.contains("// cols16: up to 25%"));
+        assert!(file.contains(
+            "Pick { geometry: defaults.map_lanes(|l| l.lane_tile = 16), \
+             claim: Claim::any().on(\"plane\", 9..=31), priority: 90, evidence: \"\", name: None },"
+        ));
+        assert!(!file.contains("table/cols4"));
+        assert!(!file.contains("subgroup 32"));
+        assert!(!file.contains("nothing retained"));
+    }
+}

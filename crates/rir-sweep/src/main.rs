@@ -5,19 +5,28 @@
 //! cargo run --release -p rir-sweep -- --kernel unary_silu --backend vulkan --reps 9
 //! cargo run --release -p rir-sweep -- --kernel rms_norm --backend metal
 //! cargo run --release -p rir-sweep -- --kernel rms_norm --profile qwen3-0.6b-q8_0 --regime decode
+//! cargo run --release -p rir-sweep -- --kernel mul_mat_vec_q4_K --backend metal \
+//!     --candidate cols16 --candidate mma --write-proposal /tmp/gemv-q4_K.proposal
 //! cargo run --release -p rir-sweep -- --list
 //! ```
 //!
-//! It writes nothing. The last block it prints is a **proposal** - a
-//! constructor call and a shape rule, in the vocabulary of `schedules_for`,
+//! It writes no source. The last block it prints is a **proposal** - a pick
+//! or a constructor call with its shape rule, in the vocabulary of the table,
 //! which a human reads, argues with, and commits; and which then goes through
 //! `scripts/test-rir.sh` like any other table change, because a sweep compares
 //! RIR to RIR and promotion is decided against the native kernel.
+//! `--write-proposal PATH` gathers the retained rows of every sweep of the run
+//! into `PATH`, and refuses a path that holds anything but an earlier
+//! proposal.
+//!
+//! The GEMV's own grid is 54 shapes and its space a few hundred geometries:
+//! a full product is hours, and `--candidate` narrows it to the question at
+//! hand.
 
 use rir_core::catalog::Regime;
 use rir_runtime::any::{AnyGpu, Backend};
 use rir_sweep::candidates::{Subject, profile_shapes};
-use rir_sweep::{Options, SweepError, report, sweep};
+use rir_sweep::{Options, SweepError, SweepReport, report, sweep};
 
 fn main() -> std::process::ExitCode {
     match run() {
@@ -34,6 +43,7 @@ fn run() -> Result<(), SweepError> {
     let mut backend: Option<Backend> = None;
     let mut profile: Option<String> = None;
     let mut regime: Option<Regime> = None;
+    let mut proposal: Option<std::path::PathBuf> = None;
     let mut options = Options::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -79,6 +89,7 @@ fn run() -> Result<(), SweepError> {
                 });
             }
             "--candidate" => options.candidate_filters.push(value("--candidate")?),
+            "--write-proposal" => proposal = Some(value("--write-proposal")?.into()),
             "--latency" => options.mode = rir_sweep::measure::Mode::Latency,
             "--reps" => options.reps = parse(&value("--reps")?)?,
             "--iters" => options.iters = parse(&value("--iters")?)?,
@@ -100,7 +111,8 @@ fn run() -> Result<(), SweepError> {
                 return Err(SweepError::Unbindable {
                     kernel: other.to_string(),
                     why: "unknown argument; --kernel, --backend, --profile, --regime, --reps, \
-                          --iters, --warmup, --shape, --contraction, --candidate, --latency, --list"
+                          --iters, --warmup, --shape, --contraction, --candidate, --latency, \
+                          --write-proposal, --list"
                         .to_string(),
                 });
             }
@@ -173,6 +185,13 @@ fn run() -> Result<(), SweepError> {
         }
     };
 
+    // Refused before any measurement: a sweep is long, and finding out at
+    // its end that the path was a source file would throw it away.
+    if let Some(path) = &proposal {
+        check_proposal_target(path)?;
+    }
+
+    let mut reports: Vec<SweepReport> = Vec::new();
     let targets: Vec<Backend> = match backend {
         Some(b) => vec![b],
         None => Backend::available(),
@@ -189,7 +208,10 @@ fn run() -> Result<(), SweepError> {
         };
         for options in &runs {
             match sweep(&subject, target, &gpu, options) {
-                Ok(r) => print!("{}", report::render(&r)),
+                Ok(r) => {
+                    print!("{}", report::render(&r));
+                    reports.push(r);
+                }
                 Err(e) if e.is_unavailable() => {
                     eprintln!("{}: skipped - {e}", target.name());
                     break;
@@ -198,7 +220,26 @@ fn run() -> Result<(), SweepError> {
             }
         }
     }
+    if let Some(path) = &proposal {
+        std::fs::write(path, report::proposal_file(&reports))?;
+        eprintln!("rir-sweep: proposal written to {}", path.display());
+    }
     Ok(())
+}
+
+/// A proposal path is new, or holds an earlier proposal: anything else - the
+/// table, any source file - is refused.
+fn check_proposal_target(path: &std::path::Path) -> Result<(), SweepError> {
+    match std::fs::read_to_string(path) {
+        Ok(existing) if existing.starts_with(report::PROPOSAL_HEADER) => Ok(()),
+        Ok(_) => Err(SweepError::ProposalTarget {
+            path: path.to_path_buf(),
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(SweepError::ProposalTarget {
+            path: path.to_path_buf(),
+        }),
+    }
 }
 
 fn parse(v: &str) -> Result<u32, SweepError> {
@@ -233,7 +274,22 @@ fn shape(v: &str) -> Result<[usize; 4], SweepError> {
 
 #[cfg(test)]
 mod tests {
-    use super::shape;
+    use super::{check_proposal_target, shape};
+
+    #[test]
+    fn a_proposal_never_overwrites_a_source_file() {
+        let dir = std::env::temp_dir().join(format!("rir-sweep-proposal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fresh = dir.join("new.proposal");
+        assert!(check_proposal_target(&fresh).is_ok());
+        let earlier = dir.join("earlier.proposal");
+        std::fs::write(&earlier, rir_sweep::report::proposal_file(&[])).unwrap();
+        assert!(check_proposal_target(&earlier).is_ok());
+        let source = dir.join("table.rs");
+        std::fs::write(&source, "pub fn table() {}\n").unwrap();
+        assert!(check_proposal_target(&source).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn shape_rejects_zero_and_values_the_manifest_would_truncate() {

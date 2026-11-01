@@ -29,7 +29,10 @@
 //!   that cannot be written as one is a domain the dispatcher cannot evaluate.
 //!
 //! And what it produces is a **proposal**: a printed row in the vocabulary of
-//! `schedule::table`, to be read, argued with, and committed by hand. Promotion
+//! `schedule::table`, to be read, argued with, and committed by hand - and,
+//! with `--write-proposal`, the same retained rows gathered in a file of their
+//! own, which is never the table: a path that holds anything but an earlier
+//! proposal is refused. Promotion
 //! is still `scripts/test-rir.sh` (`docs/engineering/rir/PROMOTION.md`),
 //! which compares against the native kernel through ggml; this compares RIR to
 //! RIR and decides nothing on its own - the same boundary `device_timing`
@@ -79,6 +82,11 @@ pub enum SweepError {
     UnknownKernel(String),
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
+    /// The proposal path holds something that is not a proposal - a source
+    /// file, most likely the table itself. A proposal is pasted by hand,
+    /// never written over the code it proposes to change.
+    #[error("{}: not a proposal file, refusing to overwrite it", path.display())]
+    ProposalTarget { path: std::path::PathBuf },
 }
 
 impl SweepError {
