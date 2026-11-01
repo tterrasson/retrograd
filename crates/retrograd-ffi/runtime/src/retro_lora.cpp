@@ -299,11 +299,26 @@ bool trains_loss_head(const trainer_state & state) {
     return false;
 }
 
+bool grouped_loss_enabled(const trainer_state & state) {
+    // The rule llama_context::opt_init applies: a model without a next-token
+    // head is trained on its embeddings output, through the grouped loss.
+    return state.model && state.model->output == nullptr;
+}
+
 bool fused_loss_enabled(const trainer_state & state) {
     // Not a preference: the fused backward asserts on a projection that needs
     // a gradient, so training the head must take the dense path, and the dense
-    // backward already produces the head's gradient.
-    return state.train_config.chunked_cross_entropy && !trains_loss_head(state);
+    // backward already produces the head's gradient. A grouped loss has no
+    // vocabulary projection to fuse.
+    return state.train_config.chunked_cross_entropy && !trains_loss_head(state)
+        && !grouped_loss_enabled(state);
+}
+
+const char * loss_path_name(const trainer_state & state) {
+    if (grouped_loss_enabled(state)) {
+        return "grouped";
+    }
+    return fused_loss_enabled(state) ? "fused" : "dense";
 }
 
 bool opt_param_filter_trainable(const ggml_tensor * tensor, void * userdata) {

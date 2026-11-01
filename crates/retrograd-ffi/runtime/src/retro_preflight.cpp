@@ -238,7 +238,7 @@ std::string format_preflight_report(
     }
     // The option alone does not decide the loss graph; a run that trains the
     // head takes the dense path.
-    out << "  loss_path: " << (fused_loss_enabled(state) ? "fused" : "dense") << "\n";
+    out << "  loss_path: " << loss_path_name(state) << "\n";
     out << "  missing_gradient_rules: " << n_missing << "\n";
     if (!data.missing_grad.empty()) {
         append_issues(out, data.missing_grad, "    ");

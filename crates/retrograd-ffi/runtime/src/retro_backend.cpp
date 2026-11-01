@@ -1683,8 +1683,10 @@ std::string backend_report(const trainer_state & state) {
         << (state.train_config.chunked_cross_entropy ? "enabled" : "disabled") << "\n";
     // The loss graph this run builds, on its own line because a reader
     // comparing budget to run must see which of the two graphs was priced.
-    out << "  loss_path: " << (fused_loss_enabled(state) ? "fused" : "dense") << "\n";
-    if (state.train_config.chunked_cross_entropy && trains_loss_head(state)) {
+    out << "  loss_path: " << loss_path_name(state) << "\n";
+    if (grouped_loss_enabled(state)) {
+        // No vocabulary projection: chunked_cross_entropy has nothing to act on.
+    } else if (state.train_config.chunked_cross_entropy && trains_loss_head(state)) {
         out << "  loss_path_status: dense_fallback (this run trains the projection head, "
                "and the fused cross-entropy differentiates only its hidden-state input; "
                "the dense path produces the head's gradient, at the cost of materializing "
