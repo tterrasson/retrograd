@@ -340,6 +340,9 @@ impl RunHandle {
     /// run whatever order the observer's callbacks arrive in - which is what a
     /// replaying client relies on.
     pub fn emit(&self, payload: dto::RunEventPayload) {
+        // Serialize numbering, journaling and broadcasting as one publication.
+        // An atomic counter alone lets another producer publish seq N+1 first.
+        let mut ring = self.ring.write().recover();
         let event = Arc::new(dto::RunEvent {
             seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
             at: unix_millis(),
@@ -351,13 +354,10 @@ impl RunHandle {
         if let Some(journal) = &self.journal {
             journal.append(&event);
         }
-        {
-            let mut ring = self.ring.write().recover();
-            if ring.len() == EVENT_RING {
-                ring.pop_front();
-            }
-            ring.push_back(event.clone());
+        if ring.len() == EVENT_RING {
+            ring.pop_front();
         }
+        ring.push_back(event.clone());
         // Both sends fail only when nobody is subscribed, which is the normal
         // case for a run nobody is watching.
         let _ = self.live.send(event.clone());
@@ -976,6 +976,37 @@ mod tests {
     /// about the registry, and no worker is listening.
     fn control() -> ControlSender {
         super::super::control::channel().0
+    }
+
+    #[test]
+    fn concurrent_producers_publish_in_sequence_everywhere() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = RunRegistry::open(tmp.path());
+        let handle = registry.create(None, record(), None, control()).unwrap();
+        let mut live = handle.subscribe();
+        let mut all = registry.subscribe_all();
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    barrier.wait();
+                    for _ in 0..128 {
+                        handle.emit(dto::RunEventPayload::Log {
+                            message: "parallel".into(),
+                        });
+                    }
+                });
+            }
+        });
+        let expected: Vec<_> = (1..=1024).collect();
+        let replayed: Vec<_> = handle.replay(0).iter().map(|event| event.seq).collect();
+        assert_eq!(replayed, expected, "journal order");
+        let recent: Vec<_> = handle.replay(512).iter().map(|event| event.seq).collect();
+        assert_eq!(recent, expected[512..], "ring order");
+        for seq in expected {
+            assert_eq!(live.try_recv().unwrap().seq, seq, "live order");
+            assert_eq!(all.try_recv().unwrap().event.seq, seq, "aggregate order");
+        }
     }
 
     fn registry(label: &str) -> (tempfile::TempDir, RunRegistry) {
