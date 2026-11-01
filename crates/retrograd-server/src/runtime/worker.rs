@@ -260,6 +260,13 @@ impl RunObserver for JournalObserver {
                 accuracy,
                 outcome,
                 ..
+            }
+            | EvaluationReport::Decision {
+                epoch,
+                loss,
+                accuracy,
+                outcome,
+                ..
             } => dto::RunEventPayload::Evaluation {
                 iteration: *epoch as u64,
                 loss: Some(*loss),

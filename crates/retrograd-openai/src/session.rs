@@ -30,7 +30,7 @@
 //! an encoder that generates nothing: its scheduler is never initialized nor
 //! pumped, and the generation and embedding paths refuse it with a 501.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TryRecvError, TrySendError};
@@ -244,6 +244,9 @@ struct Core {
     /// The decision head of a decision model, with the spec's options
     /// applied; `None` for a model that generates.
     decision: Option<DecisionInfo>,
+    /// The decision head as each registered adapter serves it: the base's,
+    /// with the temperatures the adapter carries in place of the model's.
+    decision_adapters: HashMap<String, DecisionInfo>,
     /// Held, never read: dropping it is what gives the device back - after the
     /// scheduler above, so the weights are freed first.
     _lease: Lease,
@@ -286,14 +289,26 @@ impl Core {
     /// Registers the adapter at `path` on a decision model: as a named adapter
     /// only, applied around each decision. A decision model has no step rows,
     /// so the scheduler's per-row path is never tried.
-    fn register_decision(&mut self, path: &std::path::Path) -> Result<String, OpenAiError> {
+    ///
+    /// Returns the name and the head the adapter is served with: its own
+    /// temperatures, fitted on the adapted weights, when it carries them.
+    fn register_decision(
+        &mut self,
+        path: &std::path::Path,
+        base: &DecisionInfo,
+    ) -> Result<(String, DecisionInfo), OpenAiError> {
         let name = adapter_name(path);
         if !self.named_adapters.contains(&name) {
             self.scheduler.backend_mut().load_adapter(&name, path)?;
             self.adapters.insert(name.clone());
             self.named_adapters.insert(name.clone());
         }
-        Ok(name)
+        if !self.decision_adapters.contains_key(&name) {
+            let metadata = self.scheduler.backend().adapter_decision_metadata(path)?;
+            let info = base.clone().with_adapter_temperatures(&metadata)?;
+            self.decision_adapters.insert(name.clone(), info);
+        }
+        Ok((name.clone(), self.decision_adapters[&name].clone()))
     }
 
     /// Refuses a generation or an embedding on a decision model, with the
@@ -919,9 +934,12 @@ impl Worker {
             return Err(retrograd_decision::DecisionError::NotDecisionModel.into());
         };
         let request = SystemOneRequest::parse(body, &info.readout)?;
-        let adapter = match &spec.adapter {
-            Some(path) => Some(core.register_decision(path)?),
-            None => None,
+        let (adapter, info) = match &spec.adapter {
+            Some(path) => {
+                let (name, info) = core.register_decision(path, &info)?;
+                (Some(name), info)
+            }
+            None => (None, info),
         };
         let backend = core.scheduler.backend_mut();
         let previous = backend.active_adapter()?;
@@ -978,6 +996,7 @@ impl Worker {
             adapters: HashSet::new(),
             named_adapters: HashSet::new(),
             decision: serving.decision,
+            decision_adapters: HashMap::new(),
             _lease: lease,
         }))
     }

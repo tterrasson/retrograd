@@ -1062,6 +1062,16 @@ impl AppState {
             retrograd_config::Algorithm::Preference(value) => {
                 self.resolve_path(&value.data.to_string_lossy(), "/config/preference/data")?;
             }
+            retrograd_config::Algorithm::Decision(value) => {
+                self.resolve_path(&value.data.to_string_lossy(), "/config/decision/data")?;
+                if let Some(path) = &value.template {
+                    self.resolve_path(&path.to_string_lossy(), "/config/decision/template")?;
+                }
+                // A copy of the base model: an output like the run's own.
+                if let Some(path) = &value.export_base {
+                    self.resolve_output_path(path, "/config/decision/export_base")?;
+                }
+            }
             retrograd_config::Algorithm::Grpo(value) => {
                 self.resolve_path(&value.prompts.to_string_lossy(), "/config/grpo/prompts")?;
             }

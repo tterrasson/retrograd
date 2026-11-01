@@ -11,10 +11,11 @@ use super::*;
 pub(super) fn workload_kind_of(config: &RunConfig) -> WorkloadKind {
     match &config.algorithm {
         // Two sequences per example and no generation: the rows of an SFT run,
-        // with no rollout buffer to hold.
-        retrograd_config::Algorithm::Sft(_) | retrograd_config::Algorithm::Preference(_) => {
-            WorkloadKind::Sft
-        }
+        // with no rollout buffer to hold. A decision step packs questions into
+        // one micro-batch and generates nothing either.
+        retrograd_config::Algorithm::Sft(_)
+        | retrograd_config::Algorithm::Preference(_)
+        | retrograd_config::Algorithm::Decision(_) => WorkloadKind::Sft,
         retrograd_config::Algorithm::Ppo(ppo) => WorkloadKind::Rollout {
             rollouts_per_update: saturating_dim(ppo.rollout_batch_size),
         },
@@ -50,7 +51,9 @@ pub(super) fn workload_kind_of(config: &RunConfig) -> WorkloadKind {
 
 pub(super) fn completion_bound(config: &RunConfig) -> u32 {
     match &config.algorithm {
-        retrograd_config::Algorithm::Sft(_) | retrograd_config::Algorithm::Preference(_) => 0,
+        retrograd_config::Algorithm::Sft(_)
+        | retrograd_config::Algorithm::Preference(_)
+        | retrograd_config::Algorithm::Decision(_) => 0,
         retrograd_config::Algorithm::Ppo(ppo) => ppo.sampling.max_new_tokens,
         retrograd_config::Algorithm::Grpo(grpo) => grpo.sampling.max_new_tokens,
         // Offline distillation completes nothing; its bound is SFT's.
@@ -309,6 +312,18 @@ pub(super) fn step_counts(input: &ResolveInput<'_>, config: &RunConfig) -> (u64,
                 epochs * preference_steps_per_epoch(input.data, &config.training, preference),
             )
         }
+        // One update per `questions_per_batch * gradient_accumulation`
+        // questions: the bound, reached when every micro-batch fills its
+        // question slots before its tokens.
+        retrograd_config::Algorithm::Decision(decision) => {
+            let epochs = config.training.epochs as u64;
+            let per_update =
+                u64::from(decision.questions_per_batch) * u64::from(decision.gradient_accumulation);
+            (
+                epochs,
+                epochs * input.data.examples.max(1).div_ceil(per_update.max(1)),
+            )
+        }
     }
 }
 
@@ -472,7 +487,9 @@ pub(super) fn collect_warnings(
         | retrograd_config::Algorithm::AgentGrpo(_) => true,
         // An offline distillation run has no generation context to make fast.
         retrograd_config::Algorithm::Distill(distill) => distill.mode.is_rollout(),
-        retrograd_config::Algorithm::Sft(_) | retrograd_config::Algorithm::Preference(_) => false,
+        retrograd_config::Algorithm::Sft(_)
+        | retrograd_config::Algorithm::Preference(_)
+        | retrograd_config::Algorithm::Decision(_) => false,
     };
     if config.training.fast_generation_context && generates {
         // The one warning invariant 4 now leans on: it is emitted from the final

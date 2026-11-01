@@ -41,6 +41,15 @@ pub trait ServeBackend: DecodeBackend + PromptModel {
         info: &DecisionInfo,
         request: &SystemOneRequest,
     ) -> Result<Decision, OpenAiError>;
+    /// What the adapter file at `path` carries about the decision head it was
+    /// trained for (`adapter.decision.*`, the prefix removed); empty when it
+    /// carries nothing.
+    fn adapter_decision_metadata(
+        &self,
+        _path: &std::path::Path,
+    ) -> CoreResult<std::collections::BTreeMap<String, String>> {
+        Ok(std::collections::BTreeMap::new())
+    }
 }
 
 impl ServeBackend for Engine {
@@ -62,6 +71,13 @@ impl ServeBackend for Engine {
         request: &SystemOneRequest,
     ) -> Result<Decision, OpenAiError> {
         Ok(Engine::decide(self, info, request)?)
+    }
+
+    fn adapter_decision_metadata(
+        &self,
+        path: &std::path::Path,
+    ) -> CoreResult<std::collections::BTreeMap<String, String>> {
+        retrograd_engine::adapter_decision_metadata(path)
     }
 }
 
