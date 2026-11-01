@@ -18,8 +18,11 @@ mod step;
 
 pub use adapter::AdapterRowsInfo;
 pub use decide::{
-    DECISION_TEMPLATE, Decision, DecisionInfo, DecisionMetadata, TemplateSource, decision_metadata,
+    ADAPTER_DECISION_PREFIX, DECISION_TEMPLATE, Decision, DecisionInfo, DecisionMetadata,
+    DecisionPass, TemplateSource, adapter_decision_metadata, decision_metadata, read_gguf_metadata,
+    rewrite_gguf_metadata,
 };
+pub(crate) use decide::{DecisionHost, decision_info_from, decision_pass, readout_code};
 pub use embed::PoolingType;
 
 use std::ffi::CString;

@@ -399,6 +399,9 @@ pub struct Trainer {
     /// every layer.
     model_path: std::path::PathBuf,
     reasoning_budget: Option<u32>,
+    /// Whether the `systemone` template of a decision model was replaced
+    /// ([`Trainer::set_decision_template`]).
+    decision_template_overridden: bool,
 }
 
 impl Trainer {
@@ -489,6 +492,7 @@ impl Trainer {
 mod engine;
 mod generation;
 pub mod grammar;
+mod grouped;
 mod packed;
 mod probe;
 mod quant;
@@ -498,11 +502,13 @@ pub mod step;
 mod trainer;
 
 pub use engine::{
-    AdapterRowsInfo, DECISION_TEMPLATE, Decision, DecisionInfo, DecisionMetadata, Engine,
-    EngineError, PoolingType, TemplateSource, decision_metadata, engine_config_from_train_config,
-    generation_batch,
+    ADAPTER_DECISION_PREFIX, AdapterRowsInfo, DECISION_TEMPLATE, Decision, DecisionInfo,
+    DecisionMetadata, DecisionPass, Engine, EngineError, PoolingType, TemplateSource,
+    adapter_decision_metadata, decision_metadata, engine_config_from_train_config,
+    generation_batch, read_gguf_metadata, rewrite_gguf_metadata,
 };
 pub use grammar::{grammar_from_gbnf, grammar_from_json_schema, json_object_grammar};
+pub use grouped::{GroupedBatch, GroupedQuestion};
 pub use packed::PackedSequenceBatch;
 pub use probe::*;
 pub use quant::*;

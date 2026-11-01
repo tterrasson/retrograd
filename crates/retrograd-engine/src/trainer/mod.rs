@@ -22,6 +22,7 @@ impl Trainer {
             reference_path: None,
             model_path: model_path_ref.to_path_buf(),
             reasoning_budget: None,
+            decision_template_overridden: false,
         });
         test_timing("model_load", started);
         let trainer = result?;
@@ -289,6 +290,7 @@ impl retrograd_dataset::DatasetBackend for Trainer {
     }
 }
 
+mod decision;
 mod generate;
 mod introspect;
 #[path = "checkpoint.rs"]

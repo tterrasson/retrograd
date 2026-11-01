@@ -17,7 +17,7 @@ use indexmap::IndexMap;
 use retrograd_decision::answer::{self, Answer, Calibration};
 use retrograd_decision::layout::{self, Budget};
 use retrograd_decision::readout::{Readout, Vocabulary};
-use retrograd_decision::request::SystemOneRequest;
+use retrograd_decision::request::{Question, SystemOneRequest};
 use retrograd_decision::template::{self, PromptInput};
 use retrograd_decision::{DecisionError, Json, Token};
 use serde::Deserialize;
@@ -86,6 +86,71 @@ pub fn decision_metadata(
     Ok(DecisionMetadata::parse(&text)?)
 }
 
+/// The key prefix of what an adapter carries about the decision head it was
+/// trained for: `adapter.decision.temperature.<name>`, the temperatures fitted
+/// on the adapted weights. llama.cpp does not read them.
+pub const ADAPTER_DECISION_PREFIX: &str = "adapter.decision.";
+
+/// The metadata entries of a GGUF whose key starts with `prefix`, as the text
+/// llama.cpp prints for each value (an F32 with six decimals). Only the
+/// header is read.
+pub fn read_gguf_metadata(
+    path: impl AsRef<std::path::Path>,
+    prefix: &str,
+) -> retrograd_core::Result<BTreeMap<String, String>> {
+    let path = path_to_cstring(path.as_ref())?;
+    let prefix = CString::new(prefix).map_err(nul_error)?;
+    // SAFETY: both strings live through this synchronous call and the entry
+    // point follows the two-call string contract `read_string` expects.
+    let text = unsafe {
+        read_string(|buffer, n_buffer, out| {
+            ffi::retro_gguf_read_metadata(path.as_ptr(), prefix.as_ptr(), buffer, n_buffer, out)
+        })?
+    };
+    serde_json::from_str(&text).map_err(|error| {
+        retrograd_core::Error::runtime(format!("the runtime listed the metadata badly: {error}"))
+    })
+}
+
+/// The `adapter.decision.*` entries of an adapter GGUF, the prefix removed:
+/// empty for an adapter that carries none.
+pub fn adapter_decision_metadata(
+    path: impl AsRef<std::path::Path>,
+) -> retrograd_core::Result<BTreeMap<String, String>> {
+    Ok(read_gguf_metadata(path, ADAPTER_DECISION_PREFIX)?
+        .into_iter()
+        .filter_map(|(key, value)| {
+            key.strip_prefix(ADAPTER_DECISION_PREFIX)
+                .map(|key| (key.to_owned(), value))
+        })
+        .collect())
+}
+
+/// Writes a copy of the GGUF at `source` to `destination` with `entries` set,
+/// replaced or removed (`null`), its tensors copied byte for byte. A string
+/// is written as a string, an array of strings as a string array, a boolean as
+/// a boolean, a number with a fraction as F32 and an integer as the integer
+/// type the key already has (UINT32 for a new key). The copy is written beside
+/// `destination` and renamed into place, so `destination` may be `source`.
+pub fn rewrite_gguf_metadata(
+    source: impl AsRef<std::path::Path>,
+    destination: impl AsRef<std::path::Path>,
+    entries: &serde_json::Map<String, serde_json::Value>,
+) -> retrograd_core::Result<()> {
+    let source = path_to_cstring(source.as_ref())?;
+    let destination = path_to_cstring(destination.as_ref())?;
+    let entries =
+        CString::new(serde_json::Value::Object(entries.clone()).to_string()).map_err(nul_error)?;
+    // SAFETY: the three strings live through this synchronous call.
+    let code = unsafe {
+        ffi::retro_gguf_rewrite_metadata(source.as_ptr(), destination.as_ptr(), entries.as_ptr())
+    };
+    if code != 0 {
+        return Err(retrograd_core::Error::checkpoint(ffi::last_error()));
+    }
+    Ok(())
+}
+
 /// Where the `systemone` template of a decision comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TemplateSource {
@@ -139,6 +204,31 @@ impl DecisionInfo {
         Ok(self)
     }
 
+    /// Takes the temperatures of an adapter's metadata
+    /// ([`adapter_decision_metadata`]) in place of the model's: they were
+    /// fitted on the adapted weights, and the model's on others. An adapter
+    /// that carries none leaves the model's in place.
+    pub fn with_adapter_temperatures(
+        mut self,
+        adapter: &BTreeMap<String, String>,
+    ) -> std::result::Result<Self, EngineError> {
+        let temperatures: BTreeMap<String, String> = adapter
+            .iter()
+            .filter(|(key, _)| key.starts_with("temperature."))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        if temperatures.is_empty() {
+            return Ok(self);
+        }
+        self.calibration = self.calibration.with_temperatures_of(
+            temperatures
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        )?;
+        self.temperatures = temperatures;
+        Ok(self)
+    }
+
     /// Lets one forward pass evaluate up to `pack` questions (each its own
     /// sequence, within the engine's sequence slots), for throughput. The
     /// default, one, is what makes an answer independent of the other
@@ -160,19 +250,37 @@ pub struct Decision {
     pub input_tokens: usize,
 }
 
-/// The engine's vocabulary as the readouts query it. A failed tokenization
+/// What a decision needs from whatever holds the model: the engine that
+/// serves it, or the trainer that trains it. Both render the same template,
+/// tokenize with the same flags and read the same metadata, which is what
+/// makes a trained question the question the server answers.
+pub(crate) trait DecisionHost {
+    /// The model's `systemone` template (or its override) over `context`.
+    fn render_decision(&self, context: &Json) -> std::result::Result<String, EngineError>;
+    /// `text` tokenized without added special tokens; `parse_special` reads
+    /// the text of a special token as that token.
+    fn tokenize_decision(
+        &self,
+        text: &str,
+        parse_special: bool,
+    ) -> std::result::Result<Vec<Token>, EngineError>;
+    /// The text of one token, a special one rendered as its text.
+    fn token_text(&self, token: Token) -> std::result::Result<String, EngineError>;
+}
+
+/// The host's vocabulary as the readouts query it. A failed tokenization
 /// reads as no token at all, which every readout refuses as a label that is
 /// not a single token.
-struct EngineVocabulary<'a> {
-    engine: &'a Engine,
+struct HostVocabulary<'a, H: ?Sized> {
+    host: &'a H,
     mask: Option<Token>,
     sep: Option<Token>,
 }
 
-impl Vocabulary for EngineVocabulary<'_> {
+impl<H: DecisionHost + ?Sized> Vocabulary for HostVocabulary<'_, H> {
     fn tokenize(&self, text: &str, parse_special: bool) -> Vec<Token> {
-        self.engine
-            .tokenize_with(text, false, parse_special)
+        self.host
+            .tokenize_decision(text, parse_special)
             .unwrap_or_default()
     }
 
@@ -185,7 +293,182 @@ impl Vocabulary for EngineVocabulary<'_> {
     }
 
     fn token_text(&self, token: Token) -> String {
-        self.engine.token_piece(token, true).unwrap_or_default()
+        self.host.token_text(token).unwrap_or_default()
+    }
+}
+
+/// The decision head `metadata` describes on `host`, with the checks
+/// llama-server makes when it loads one: a readout for the type, a
+/// `systemone` template (the model's, unless `overridden`), positive
+/// temperatures and, for a marker readout, a positive head budget.
+pub(crate) fn decision_info_from<H: DecisionHost + ?Sized>(
+    host: &H,
+    metadata: &DecisionMetadata,
+    overridden: bool,
+) -> std::result::Result<DecisionInfo, EngineError> {
+    let vocabulary = HostVocabulary {
+        host,
+        mask: metadata.mask_token,
+        sep: metadata.sep_token,
+    };
+    let readout = Readout::from_decision_type(metadata.decision_type.as_deref(), &vocabulary)?;
+    let decision_type = metadata.decision_type.clone().unwrap_or_default();
+    let template = if overridden {
+        TemplateSource::Override
+    } else if metadata
+        .templates
+        .iter()
+        .any(|name| name == DECISION_TEMPLATE)
+    {
+        TemplateSource::Model
+    } else {
+        return Err(DecisionError::InvalidModel(format!(
+            "decision model has no \"{DECISION_TEMPLATE}\" template"
+        ))
+        .into());
+    };
+    let calibration = Calibration::from_metadata(
+        metadata
+            .metadata
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str())),
+    )?;
+    let temperatures = metadata
+        .metadata
+        .iter()
+        .filter(|(key, _)| key.starts_with("temperature."))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let (budget, model_max_head_tokens) = match readout {
+        Readout::MarkerColumn { .. } => {
+            let max_head_tokens = metadata.max_head_tokens();
+            (Some(Budget::new(max_head_tokens)?), Some(max_head_tokens))
+        }
+        _ => (None, None),
+    };
+    let n_options_max = readout.n_options_max();
+    Ok(DecisionInfo {
+        decision_type,
+        readout,
+        calibration,
+        temperatures,
+        budget,
+        model_max_head_tokens,
+        template,
+        n_options_max,
+        pack: 1,
+    })
+}
+
+/// One forward pass of a decision: the tokens of one variant of one question
+/// as the model reads them, and where its scores are read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecisionPass {
+    pub tokens: Vec<Token>,
+    /// Positions of the option markers, or the label token ids of a label
+    /// readout.
+    pub reads: Vec<i32>,
+    /// The column of the question type in the embeddings output.
+    pub column: i32,
+    /// The position of the query of a pointer readout, -1 otherwise.
+    pub pointer: i32,
+}
+
+impl DecisionPass {
+    pub(crate) fn as_ffi(&self) -> ffi::RetroDecisionPrompt {
+        ffi::RetroDecisionPrompt {
+            tokens: self.tokens.as_ptr(),
+            n_tokens: self.tokens.len(),
+            reads: self.reads.as_ptr(),
+            n_reads: self.reads.len(),
+            column: self.column,
+            pointer: self.pointer,
+        }
+    }
+}
+
+/// Renders, tokenizes and lays out one variant of one question: what the
+/// server evaluates for it, and what a training step trains on.
+pub(crate) fn decision_pass<H: DecisionHost + ?Sized>(
+    host: &H,
+    info: &DecisionInfo,
+    state: &Json,
+    question_id: &str,
+    question: &Question,
+    variant: usize,
+) -> std::result::Result<DecisionPass, EngineError> {
+    let readout = &info.readout;
+    // Read by a marker readout only, which always carries its own.
+    let budget = match info.budget {
+        Some(budget) => budget,
+        None => Budget::new(usize::MAX)?,
+    };
+    let renderer = |context: &Json| host.render_decision(context);
+    let input = PromptInput {
+        state,
+        question_id,
+        question,
+        variant,
+        n_images: 0,
+        media_marker: "",
+    };
+    let prompt = template::render(readout, &input, &renderer)?;
+    let rendered = host.tokenize_decision(&prompt, true)?;
+    let laid_out = layout::arrange(readout, &rendered, question, &budget)?;
+    let reads = match readout {
+        Readout::LabelLogits { .. } => readout
+            .label_tokens(question)
+            .ok_or_else(|| {
+                DecisionError::Evaluation(
+                    "the question has more outputs than the model has labels".into(),
+                )
+            })?
+            .to_vec(),
+        Readout::MarkerColumn { .. } | Readout::Pointer { .. } => laid_out
+            .markers
+            .iter()
+            .map(|&position| position_i32(position))
+            .collect::<std::result::Result<_, _>>()?,
+    };
+    let pointer = match laid_out.pointer {
+        Some(position) => position_i32(position)?,
+        None => -1,
+    };
+    // Narrowing: the column of a question type is 0, 1 or 2.
+    let column = i32::try_from(question.kind.column())
+        .map_err(|_| EngineError::Overflow("decision column".into()))?;
+    Ok(DecisionPass {
+        tokens: laid_out.tokens,
+        reads,
+        column,
+        pointer,
+    })
+}
+
+/// The runtime code of a readout.
+pub(crate) fn readout_code(readout: &Readout) -> i32 {
+    match readout {
+        Readout::MarkerColumn { .. } => ffi::RETRO_DECIDE_MARKER_COLUMN,
+        Readout::LabelLogits { .. } => ffi::RETRO_DECIDE_LABEL_LOGITS,
+        Readout::Pointer { .. } => ffi::RETRO_DECIDE_POINTER,
+    }
+}
+
+impl DecisionHost for Engine {
+    fn render_decision(&self, context: &Json) -> std::result::Result<String, EngineError> {
+        self.render_named_template(DECISION_TEMPLATE, context)
+    }
+
+    fn tokenize_decision(
+        &self,
+        text: &str,
+        parse_special: bool,
+    ) -> std::result::Result<Vec<Token>, EngineError> {
+        self.tokenize_with(text, false, parse_special)
+    }
+
+    fn token_text(&self, token: Token) -> std::result::Result<String, EngineError> {
+        self.token_piece(token, true)
     }
 }
 
@@ -210,58 +493,7 @@ impl Engine {
     /// cannot use - the checks llama-server makes when it loads one.
     pub fn decision_info(&self) -> std::result::Result<DecisionInfo, EngineError> {
         let metadata = self.decision_metadata()?;
-        let vocabulary = EngineVocabulary {
-            engine: self,
-            mask: metadata.mask_token,
-            sep: metadata.sep_token,
-        };
-        let readout = Readout::from_decision_type(metadata.decision_type.as_deref(), &vocabulary)?;
-        let decision_type = metadata.decision_type.clone().unwrap_or_default();
-        let template = if self.decision_template_overridden {
-            TemplateSource::Override
-        } else if metadata
-            .templates
-            .iter()
-            .any(|name| name == DECISION_TEMPLATE)
-        {
-            TemplateSource::Model
-        } else {
-            return Err(DecisionError::InvalidModel(format!(
-                "decision model has no \"{DECISION_TEMPLATE}\" template"
-            ))
-            .into());
-        };
-        let calibration = Calibration::from_metadata(
-            metadata
-                .metadata
-                .iter()
-                .map(|(key, value)| (key.as_str(), value.as_str())),
-        )?;
-        let temperatures = metadata
-            .metadata
-            .iter()
-            .filter(|(key, _)| key.starts_with("temperature."))
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect();
-        let (budget, model_max_head_tokens) = match readout {
-            Readout::MarkerColumn { .. } => {
-                let max_head_tokens = metadata.max_head_tokens();
-                (Some(Budget::new(max_head_tokens)?), Some(max_head_tokens))
-            }
-            _ => (None, None),
-        };
-        let n_options_max = readout.n_options_max();
-        Ok(DecisionInfo {
-            decision_type,
-            readout,
-            calibration,
-            temperatures,
-            budget,
-            model_max_head_tokens,
-            template,
-            n_options_max,
-            pack: 1,
-        })
+        decision_info_from(self, &metadata, self.decision_template_overridden)
     }
 
     /// Renders `source` in place of the model's `systemone` template from now
@@ -404,93 +636,29 @@ impl Engine {
             return Err(DecisionError::ImagesUnsupported.into());
         }
         let readout = &info.readout;
-        // Read by a marker readout only, which always carries its own.
-        let budget = match info.budget {
-            Some(budget) => budget,
-            None => Budget::new(usize::MAX)?,
-        };
-        let renderer = |context: &Json| self.render_named_template(DECISION_TEMPLATE, context);
-
-        struct Pass {
-            tokens: Vec<Token>,
-            reads: Vec<i32>,
-            column: i32,
-            pointer: i32,
-        }
         let mut passes = Vec::new();
         let mut input_tokens = 0_usize;
         for (id, question) in &request.questions {
             for variant in 0..readout.n_variants(question) {
-                let input = PromptInput {
-                    state: &request.state,
-                    question_id: id,
-                    question,
-                    variant,
-                    n_images: 0,
-                    media_marker: "",
-                };
-                let prompt = template::render(readout, &input, &renderer)?;
-                let rendered = self.tokenize_with(&prompt, false, true)?;
-                let laid_out = layout::arrange(readout, &rendered, question, &budget)?;
-                let reads = match readout {
-                    Readout::LabelLogits { .. } => readout
-                        .label_tokens(question)
-                        .ok_or_else(|| {
-                            DecisionError::Evaluation(
-                                "the question has more outputs than the model has labels".into(),
-                            )
-                        })?
-                        .to_vec(),
-                    Readout::MarkerColumn { .. } | Readout::Pointer { .. } => laid_out
-                        .markers
-                        .iter()
-                        .map(|&position| position_i32(position))
-                        .collect::<std::result::Result<_, _>>()?,
-                };
-                let pointer = match laid_out.pointer {
-                    Some(position) => position_i32(position)?,
-                    None => -1,
-                };
-                // Narrowing: the column of a question type is 0, 1 or 2.
-                let column = i32::try_from(question.kind.column())
-                    .map_err(|_| EngineError::Overflow("decision column".into()))?;
+                let pass = decision_pass(self, info, &request.state, id, question, variant)?;
                 input_tokens = input_tokens
-                    .checked_add(laid_out.tokens.len())
+                    .checked_add(pass.tokens.len())
                     .ok_or_else(|| EngineError::Overflow("decision input tokens".into()))?;
-                passes.push(Pass {
-                    tokens: laid_out.tokens,
-                    reads,
-                    column,
-                    pointer,
-                });
+                passes.push(pass);
             }
         }
 
-        let prompts: Vec<ffi::RetroDecisionPrompt> = passes
-            .iter()
-            .map(|pass| ffi::RetroDecisionPrompt {
-                tokens: pass.tokens.as_ptr(),
-                n_tokens: pass.tokens.len(),
-                reads: pass.reads.as_ptr(),
-                n_reads: pass.reads.len(),
-                column: pass.column,
-                pointer: pass.pointer,
-            })
-            .collect();
+        let prompts: Vec<ffi::RetroDecisionPrompt> =
+            passes.iter().map(DecisionPass::as_ffi).collect();
         let n_scores = passes.iter().map(|pass| pass.reads.len()).sum::<usize>();
         let mut scores = vec![0.0_f32; n_scores];
-        let readout_code = match readout {
-            Readout::MarkerColumn { .. } => ffi::RETRO_DECIDE_MARKER_COLUMN,
-            Readout::LabelLogits { .. } => ffi::RETRO_DECIDE_LABEL_LOGITS,
-            Readout::Pointer { .. } => ffi::RETRO_DECIDE_POINTER,
-        };
         // SAFETY: the `Engine` invariant holds; every prompt points into
         // `passes`, which outlives this synchronous call, and `scores` holds
         // the `n_reads` of every prompt.
         let code = unsafe {
             ffi::retro_engine_decide(
                 self.raw.as_ptr(),
-                readout_code,
+                readout_code(readout),
                 prompts.as_ptr(),
                 prompts.len(),
                 info.pack,
