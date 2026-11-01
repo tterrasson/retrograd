@@ -2,7 +2,16 @@
 
 pub mod mul_mat_vec;
 
-use super::{Family, GpuBackend, Pick};
+use super::{Family, GpuBackend, Pick, Space};
+
+/// The geometry space of `family`, when it has one: the sweep draws its
+/// candidates from it and the table its picks.
+pub fn space(family: Family) -> Option<Space> {
+    match family {
+        Family::MulMatVec => Some(mul_mat_vec::space()),
+        _ => None,
+    }
+}
 
 /// The production lane picks of `family` on `gpu`. A family without a space
 /// carries its rows inline in the table.

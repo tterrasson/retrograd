@@ -174,6 +174,17 @@ pub fn extents_with_contraction(
         .collect()
 }
 
+/// The decode token counts of the GEMV grid: every step a decode
+/// measurement takes, plus two, the smallest the native side serves with its
+/// multi-column vector kernel.
+pub const GEMV_TOKENS: [usize; 6] = [1, 2, 4, 8, 16, 32];
+
+/// The reduction depths (`k`, the `col` axis) of the GEMV grid.
+pub const GEMV_DEPTHS: [usize; 3] = [1024, 4096, 14336];
+
+/// The output row counts (`m`, the `row` axis) of the GEMV grid.
+pub const GEMV_ROWS: [usize; 3] = [1024, 4096, 14336];
+
 /// The shapes a family is arbitrated on, `[col, row, plane, batch]`.
 ///
 /// These are not "representative shapes" in the abstract: each of them appears
@@ -209,18 +220,22 @@ pub fn shapes(family: Family) -> Vec<[usize; 4]> {
             [20000, 40, 1, 1],
         ],
         Family::MatMulNaive => vec![[512, 512, 1, 1], [64, 64, 16, 1]],
-        // `[K, N, tokens, 1]`: the Qwen3 0.6B projections at one and eight
-        // tokens - the FFN up/gate and down and the attention output - every K a
-        // whole number of 256-element super-blocks.
-        Family::MulMatVec => vec![
-            [1024, 3072, 1, 1],
-            [3072, 1024, 1, 1],
-            [2048, 1024, 1, 1],
-            [1024, 3072, 4, 1],
-            [1024, 3072, 8, 1],
-            [1024, 3072, 16, 1],
-            [1024, 3072, 32, 1],
-        ],
+        // `[K, M, tokens, 1]`: the decode steps against three depths and three
+        // row counts - the Qwen3 0.6B width, the 8B-class width and the
+        // 8B-class FFN - so that a rule can be cut along the token count, the
+        // depth or the row count, and a claim proposed for one of them is
+        // seen on the others.
+        Family::MulMatVec => {
+            let mut grid = Vec::new();
+            for n in GEMV_TOKENS {
+                for k in GEMV_DEPTHS {
+                    for m in GEMV_ROWS {
+                        grid.push([k, m, n, 1]);
+                    }
+                }
+            }
+            grid
+        }
         // Synthetic coverage; --shape and --contraction reproduce census shapes.
         Family::OutProd => vec![
             [8, 3, 2, 3],
@@ -317,6 +332,33 @@ pub fn candidates(subject: &Subject, gpu: GpuBackend) -> Vec<Candidate> {
         })
         .collect();
 
+    // A family with a geometry space draws its candidates from the space the
+    // table picks from: `expand` is the cartesian product of the space's
+    // dimensions, filtered by the lowering itself - never a copy of its
+    // refusal rules. The control is the defaults, which the table's fallback
+    // row already carries. The label is the derived variant name, and the
+    // proposal is the pick the geometry would be committed as.
+    if let Some(space) = spaces::space(family) {
+        let defaults = (space.defaults)(gpu);
+        for g in space.expand(gpu, &subject.kernel) {
+            if g == defaults {
+                continue;
+            }
+            let tag = g
+                .variant_name(defaults)
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "defaults".to_string());
+            let pick = Pick {
+                geometry: g,
+                claim: Claim::any(),
+                priority: 90,
+                evidence: "",
+                name: None,
+            };
+            v.push(Candidate::from_space(tag, g.schedule(gpu), pick, defaults));
+        }
+    }
+
     match family {
         // The address, the width and the workgroup, which is the
         // product a hand sweep covers: a flattened dispatch against the grid, a
@@ -357,34 +399,6 @@ pub fn candidates(subject: &Subject, gpu: GpuBackend) -> Vec<Candidate> {
         // measurement already saw it lose - a sweep that dropped the geometry a table already refused
         // could not reproduce the refusal.
         Family::RowReduce | Family::RmsNorm | Family::MulMatVec => {
-            // The GEMV's candidates come from the schedule space the table
-            // picks from: `expand` is the cartesian product of the space's
-            // dimensions, filtered by the lowering itself - never a copy of
-            // its refusal rules. The control is the defaults, which the
-            // table's fallback row already carries. The label is the derived
-            // variant name, and the proposal is the pick the geometry would
-            // be committed as.
-            if family == Family::MulMatVec {
-                let space = spaces::mul_mat_vec::space();
-                let defaults = (space.defaults)(gpu);
-                for g in space.expand(gpu, &subject.kernel) {
-                    if g == defaults {
-                        continue;
-                    }
-                    let tag = g
-                        .variant_name(defaults)
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|| "defaults".to_string());
-                    let pick = Pick {
-                        geometry: g,
-                        claim: Claim::any(),
-                        priority: 90,
-                        evidence: "",
-                        name: None,
-                    };
-                    v.push(Candidate::from_space(tag, g.schedule(gpu), pick, defaults));
-                }
-            }
             v.push(Candidate::new(
                 "subgroup 32",
                 format!("Schedule::gpu_subgroup({gpu_name})"),
