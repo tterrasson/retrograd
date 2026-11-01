@@ -112,6 +112,7 @@ fn main() {
         "retro_fused_ce.cpp",
         "retro_decision_probe.cpp",
         "retro_decision.cpp",
+        "retro_gguf_metadata.cpp",
         "retro_lora_train.cpp",
         "retro_checkpoint.cpp",
         "retro_trainable.cpp",

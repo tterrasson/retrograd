@@ -2831,6 +2831,83 @@ int retro_engine_decide(
     float * out_scores,
     size_t n_scores_max);
 
+// The decision entry points of the engine, on a trainer's model and context:
+// what a training run renders, tokenizes (retro_trainer_tokenize_fragment is
+// `add_special = false, parse_special = true`) and evaluates is what the
+// engine serves. The training context of a model read per token is created
+// without pooling for that reason.
+int retro_trainer_decision_info(retro_trainer * trainer, char * buffer, size_t n_buffer, size_t * out_n_bytes);
+int retro_trainer_render_named_template(
+    retro_trainer * trainer,
+    const char * name,
+    const char * context_json,
+    char * buffer,
+    size_t n_buffer,
+    size_t * out_n_bytes);
+int retro_trainer_set_named_template(retro_trainer * trainer, const char * name, const char * source);
+// retro_engine_decide under the trainer's current weights, adapter included.
+int retro_trainer_decide(
+    retro_trainer * trainer,
+    int32_t readout,
+    const retro_decision_prompt * prompts,
+    size_t n_prompts,
+    size_t n_pack_max,
+    float * out_scores,
+    size_t n_scores_max);
+
+// One physical step of the grouped softmax cross-entropy: a batch of
+// questions, each its own sequence, and the groups of scores the loss reads
+// from the embeddings output. The target fields mean what they mean in
+// llama_grouped_target: option j of group g is column columns[g] of the output
+// of batch token rows[g*n_opt_max + j], -1 pads, targets sum to 1 per group.
+// `outputs` marks exactly the tokens a group reads. The whole batch is one
+// micro-batch (n_tokens <= training.micro_batch). An optimizer update closes
+// every `accumulation_steps` calls, a period that may only change at an update
+// boundary.
+typedef struct retro_grouped_batch {
+    const int32_t * tokens;    // [n_tokens]
+    const int32_t * positions; // [n_tokens], per sequence
+    const int32_t * seq_ids;   // [n_tokens], below the context's n_seq_max
+    const int8_t  * outputs;   // [n_tokens]
+    size_t          n_tokens;
+    uint32_t        n_groups;
+    uint32_t        n_opt_max;
+    const int32_t * rows;      // [n_groups*n_opt_max]
+    const int32_t * columns;   // [n_groups]
+    const float   * targets;   // [n_groups*n_opt_max]
+    float           inv_temperature;
+    uint32_t        accumulation_steps;
+} retro_grouped_batch;
+
+// Trains one grouped step. `scheduler_total_steps` pins the learning-rate
+// horizon (0 extends it by this step). out_metrics->train_loss is the mean
+// loss of the step's groups, global_step the optimizer updates so far.
+// RETRO_DECIDE_INVALID_INPUT for a batch the step refuses (the step is then
+// abandoned at its update boundary), -1 for a runtime failure.
+int retro_trainer_train_grouped(
+    retro_trainer * trainer,
+    const retro_grouped_batch * batch,
+    uint64_t scheduler_total_steps,
+    retro_train_metrics * out_metrics);
+
+// Copies the GGUF at src_path to dst_path with metadata entries set, replaced
+// or removed, and the tensors copied byte for byte. `entries_json` is a JSON
+// object, by key: a string is written as a string, an array of strings as a
+// string array, a boolean as a boolean, a number with a fraction as F32, an
+// integer as the integer type the key already has (UINT32 for a new key), and
+// null removes the key. The copy is written to a sibling of dst_path and
+// renamed into place, so dst_path may be src_path.
+int retro_gguf_rewrite_metadata(const char * src_path, const char * dst_path, const char * entries_json);
+// The metadata entries of a GGUF whose key starts with `prefix`, as a JSON
+// object {key: text}, the text as llama.cpp prints a value (an F32 with six
+// decimals). Only the header is read. The render_string_out two-call contract.
+int retro_gguf_read_metadata(
+    const char * path,
+    const char * prefix,
+    char * buffer,
+    size_t n_buffer,
+    size_t * out_n_bytes);
+
 const char * retro_last_error(void);
 
 #ifdef __cplusplus

@@ -1013,6 +1013,11 @@ int train_packed_sequences_impl(
         retro_train_metrics * out_metrics,
         retro_train_progress_callback progress_callback,
         void * progress_user_data);
+int train_grouped_impl(
+        retro_trainer * trainer,
+        const retro_grouped_batch * batch,
+        uint64_t scheduler_total_steps,
+        retro_train_metrics * out_metrics);
 
 int generation_adapter_snapshot_impl(
         retro_trainer * trainer, int32_t replace, float scale, int32_t * out_id);

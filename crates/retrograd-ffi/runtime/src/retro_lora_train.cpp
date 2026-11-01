@@ -1416,6 +1416,16 @@ extern "C" int retro_trainer_train_packed_sequences(
     return status;
 }
 
+extern "C" int retro_trainer_train_grouped(
+        retro_trainer * trainer,
+        const retro_grouped_batch * batch,
+        uint64_t scheduler_total_steps,
+        retro_train_metrics * out_metrics) {
+    const int status = retro::train_grouped_impl(trainer, batch, scheduler_total_steps, out_metrics);
+    forget_generation_kv(trainer);
+    return status;
+}
+
 extern "C" int retro_trainer_optimizer_timing(
         retro_trainer * trainer,
         retro_optimizer_timing * out_timing) {

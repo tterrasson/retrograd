@@ -1093,6 +1093,147 @@ int train_packed_sequences_impl(
     });
 }
 
+int train_grouped_impl(
+        retro_trainer * trainer,
+        const retro_grouped_batch * data,
+        uint64_t scheduler_total_steps,
+        retro_train_metrics * out_metrics) {
+    return boundary([&]() -> int {
+        trainer_state * state = checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        if (!grouped_loss_enabled(*state)) {
+            set_error("this model has a next-token head and trains on its logits, "
+                      "not through a grouped loss on its embeddings output");
+            return -1;
+        }
+        if (!state->has_lora && !trains_base_weights(*state)) {
+            set_error("create or load a LoRA adapter before training");
+            return -1;
+        }
+        if (!data || !out_metrics) {
+            set_error("grouped batch and out_metrics are required");
+            return -1;
+        }
+        if (!data->tokens || !data->positions || !data->seq_ids || !data->outputs
+                || !data->rows || !data->columns || !data->targets
+                || data->n_tokens == 0 || data->n_groups == 0 || data->n_opt_max == 0
+                || data->accumulation_steps == 0) {
+            set_error("a grouped batch needs tokens, positions, sequences, outputs, groups and targets");
+            return RETRO_DECIDE_INVALID_INPUT;
+        }
+        if (data->n_tokens > state->effective_ubatch) {
+            set_error("a grouped batch of " + std::to_string(data->n_tokens)
+                    + " tokens does not fit one micro-batch of "
+                    + std::to_string(state->effective_ubatch));
+            return RETRO_DECIDE_INVALID_INPUT;
+        }
+        const uint32_t n_seq_max = llama_n_seq_max(state->ctx.get());
+        for (size_t i = 0; i < data->n_tokens; ++i) {
+            if (data->seq_ids[i] < 0 || static_cast<uint32_t>(data->seq_ids[i]) >= n_seq_max
+                    || data->positions[i] < 0) {
+                set_error("a grouped batch token has a sequence outside the context's "
+                        + std::to_string(n_seq_max) + " slots or a negative position");
+                return RETRO_DECIDE_INVALID_INPUT;
+            }
+        }
+        const size_t n_entries = static_cast<size_t>(data->n_groups) * data->n_opt_max;
+        for (size_t i = 0; i < n_entries; ++i) {
+            if (!std::isfinite(data->targets[i]) || data->targets[i] < 0.0f) {
+                set_error("grouped targets must be finite and not negative");
+                return RETRO_DECIDE_INVALID_INPUT;
+            }
+        }
+
+        const uint64_t total_steps = scheduler_total_steps != 0
+                ? scheduler_total_steps
+                : checked_sum(state->scheduler_step, 1);
+        check_native_horizon(total_steps);
+        state->scheduler_total_steps = total_steps;
+        if (state->train_config.warmup_steps > state->scheduler_total_steps) {
+            set_error("warmup_steps exceeds the total number of optimizer steps");
+            return -1;
+        }
+        if (!state->opt_initialized) {
+            state->last_learning_rate = state->train_config.learning_rate;
+        }
+        if (!ensure_optimizer_initialized(*state)) {
+            return -1;
+        }
+        if (!state->weighted_train_result_cache) {
+            state->weighted_train_result_cache.reset(ggml_opt_result_init());
+        }
+        if (!state->weighted_train_result_cache) {
+            set_error("failed to allocate training metrics result");
+            return -1;
+        }
+        ggml_opt_result * result = state->weighted_train_result_cache.get();
+        ggml_opt_result_reset(result);
+
+        struct batch_owner {
+            llama_batch batch;
+            explicit batch_owner(int32_t n) : batch(llama_batch_init(n, 0, 1)) {}
+            ~batch_owner() { llama_batch_free(batch); }
+        };
+        // Narrowing: n_tokens is bounded by the micro-batch above, a uint32_t.
+        const int32_t n_tokens = static_cast<int32_t>(data->n_tokens);
+        batch_owner owned(n_tokens);
+        llama_batch & batch = owned.batch;
+        batch.n_tokens = n_tokens;
+        for (int32_t i = 0; i < n_tokens; ++i) {
+            batch.token[i]     = data->tokens[i];
+            batch.pos[i]       = data->positions[i];
+            batch.n_seq_id[i]  = 1;
+            batch.seq_id[i][0] = data->seq_ids[i];
+            batch.logits[i]    = data->outputs[i] ? 1 : 0;
+        }
+        llama_grouped_target target {};
+        target.n_groups           = data->n_groups;
+        target.n_opt_max          = data->n_opt_max;
+        target.rows               = data->rows;
+        target.columns            = data->columns;
+        target.targets            = data->targets;
+        target.inv_temperature    = data->inv_temperature;
+        target.accumulation_steps = data->accumulation_steps;
+
+        // No progress callback: one call is one physical step, and the caller
+        // reports it. The scope still restores the scheduler slot and retires
+        // a trainer whose backend failed mid-step.
+        step_progress step_events { state, 1, state->scheduler_step, nullptr, nullptr };
+        progress_scope callback_scope(step_events);
+        state->duty_cycle.begin_window();
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool stepped = llama_opt_step_grouped(state->ctx.get(), batch, &target, result);
+        const double seconds = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - t0).count();
+        if (state->duty_cycle.enabled()) {
+            state->duty_cycle.account_window();
+            state->duty_cycle.idle_if_needed();
+        }
+        if (!stepped) {
+            set_error("the grouped training step refused its batch or targets (the reason is in "
+                      "the runtime log)");
+            return RETRO_DECIDE_INVALID_INPUT;
+        }
+
+        double loss = NAN;
+        double unc = 0.0;
+        ggml_opt_result_loss(result, &loss, &unc);
+        *out_metrics = retro_train_metrics {};
+        out_metrics->epoch = 1;
+        out_metrics->epoch_complete = true;
+        out_metrics->global_step = state->scheduler_step;
+        out_metrics->train_loss = static_cast<float>(loss);
+        out_metrics->eval_loss = NAN;
+        out_metrics->tokens_per_second = seconds > 0.0
+                ? static_cast<float>(static_cast<double>(data->n_tokens) / seconds)
+                : 0.0f;
+        out_metrics->learning_rate = state->last_learning_rate;
+        return 0;
+    });
+}
+
 int train_tokens_impl(
         retro_trainer * trainer,
         const int32_t * tokens,

@@ -720,6 +720,31 @@ pub struct RetroDecisionPrompt {
     pub pointer: i32,
 }
 
+/// Mirror of `retro_grouped_batch`: one physical step of the grouped softmax
+/// cross-entropy, questions as sequences and the groups of scores the loss
+/// reads from the embeddings output.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RetroGroupedBatch {
+    pub tokens: *const i32,
+    /// Per sequence.
+    pub positions: *const i32,
+    pub seq_ids: *const i32,
+    /// 1 exactly where a group reads the token.
+    pub outputs: *const i8,
+    pub n_tokens: usize,
+    pub n_groups: u32,
+    pub n_opt_max: u32,
+    /// `[n_groups * n_opt_max]`, batch token index or -1.
+    pub rows: *const i32,
+    /// `[n_groups]`.
+    pub columns: *const i32,
+    /// `[n_groups * n_opt_max]`, each group summing to 1.
+    pub targets: *const f32,
+    pub inv_temperature: f32,
+    pub accumulation_steps: u32,
+}
+
 /// Mirror of `retro_sampling_params_v2`: extended sampling parameters for v2
 /// step rows. See the published header for the field contracts and the pinned
 /// transformation order.
@@ -2254,6 +2279,66 @@ unsafe extern "C" {
         n_scores_max: usize,
     ) -> c_int;
 
+    /// `retro_engine_decision_info` for a trainer's model.
+    pub fn retro_trainer_decision_info(
+        trainer: *mut RetroTrainer,
+        buffer: *mut c_char,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
+    pub fn retro_trainer_render_named_template(
+        trainer: *mut RetroTrainer,
+        name: *const c_char,
+        context_json: *const c_char,
+        buffer: *mut c_char,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
+    pub fn retro_trainer_set_named_template(
+        trainer: *mut RetroTrainer,
+        name: *const c_char,
+        source: *const c_char,
+    ) -> c_int;
+
+    /// `retro_engine_decide` under the trainer's current weights.
+    pub fn retro_trainer_decide(
+        trainer: *mut RetroTrainer,
+        readout: i32,
+        prompts: *const RetroDecisionPrompt,
+        n_prompts: usize,
+        n_pack_max: usize,
+        out_scores: *mut f32,
+        n_scores_max: usize,
+    ) -> c_int;
+
+    /// One physical step of the grouped softmax cross-entropy.
+    pub fn retro_trainer_train_grouped(
+        trainer: *mut RetroTrainer,
+        batch: *const RetroGroupedBatch,
+        scheduler_total_steps: u64,
+        out_metrics: *mut RetroTrainMetrics,
+    ) -> c_int;
+
+    /// Copies a GGUF with metadata entries set, replaced or removed (a JSON
+    /// object by key, null removing), its tensors byte for byte.
+    pub fn retro_gguf_rewrite_metadata(
+        src_path: *const c_char,
+        dst_path: *const c_char,
+        entries_json: *const c_char,
+    ) -> c_int;
+
+    /// The metadata entries of a GGUF under a key prefix, as a JSON object of
+    /// the texts llama.cpp prints.
+    pub fn retro_gguf_read_metadata(
+        path: *const c_char,
+        prefix: *const c_char,
+        buffer: *mut c_char,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
     pub fn retro_last_error() -> *const c_char;
 }
 
@@ -2889,6 +2974,20 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroDecisionPrompt, column), 32);
         assert_eq!(offset_of!(RetroDecisionPrompt, pointer), 36);
         assert_eq!(size_of::<RetroDecisionPrompt>(), 40);
+
+        assert_eq!(offset_of!(RetroGroupedBatch, tokens), 0);
+        assert_eq!(offset_of!(RetroGroupedBatch, positions), 8);
+        assert_eq!(offset_of!(RetroGroupedBatch, seq_ids), 16);
+        assert_eq!(offset_of!(RetroGroupedBatch, outputs), 24);
+        assert_eq!(offset_of!(RetroGroupedBatch, n_tokens), 32);
+        assert_eq!(offset_of!(RetroGroupedBatch, n_groups), 40);
+        assert_eq!(offset_of!(RetroGroupedBatch, n_opt_max), 44);
+        assert_eq!(offset_of!(RetroGroupedBatch, rows), 48);
+        assert_eq!(offset_of!(RetroGroupedBatch, columns), 56);
+        assert_eq!(offset_of!(RetroGroupedBatch, targets), 64);
+        assert_eq!(offset_of!(RetroGroupedBatch, inv_temperature), 72);
+        assert_eq!(offset_of!(RetroGroupedBatch, accumulation_steps), 76);
+        assert_eq!(size_of::<RetroGroupedBatch>(), 80);
     }
 
     #[test]

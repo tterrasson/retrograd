@@ -462,6 +462,90 @@ extern "C" int retro_read_decision_info(const char * model_path, char * buffer, 
     });
 }
 
+extern "C" int retro_trainer_decision_info(retro_trainer * trainer, char * buffer, size_t n_buffer, size_t * out_n_bytes) {
+    return boundary([&]() -> int {
+        trainer_state * state = checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        if (!out_n_bytes) {
+            set_error("out_n_bytes is required");
+            return -1;
+        }
+        return copy_string_out(describe_decision_model(state->model.get()), buffer, n_buffer, out_n_bytes);
+    });
+}
+
+extern "C" int retro_trainer_render_named_template(
+        retro_trainer * trainer,
+        const char * name,
+        const char * context_json,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes) {
+    return boundary([&]() -> int {
+        trainer_state * state = checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        if (!out_n_bytes) {
+            set_error("out_n_bytes is required");
+            return -1;
+        }
+        return render_named_template(state->chat, name, context_json, buffer, n_buffer, out_n_bytes);
+    });
+}
+
+extern "C" int retro_trainer_set_named_template(retro_trainer * trainer, const char * name, const char * source) {
+    return boundary([&]() -> int {
+        trainer_state * state = checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        return set_named_template(state->chat, name, source);
+    });
+}
+
+extern "C" int retro_trainer_decide(
+        retro_trainer * trainer,
+        int32_t readout,
+        const retro_decision_prompt * prompts,
+        size_t n_prompts,
+        size_t n_pack_max,
+        float * out_scores,
+        size_t n_scores_max) {
+    return boundary([&]() -> int {
+        trainer_state * state = checked(trainer);
+        if (!state) {
+            return -1;
+        }
+        if (state->training_failed) {
+            set_error("a previous training step failed on the backend; create a new trainer");
+            return -1;
+        }
+        // The training context reads its loss from the embeddings output
+        // whatever this flag says, and evaluates nothing else: the flag is
+        // restored so a later forward pass finds the context as it was built.
+        llama_context * ctx = state->ctx.get();
+        struct decide_guard {
+            llama_context * ctx;
+            ~decide_guard() {
+                if (llama_memory_t memory = llama_get_memory(ctx)) {
+                    llama_memory_clear(memory, true);
+                }
+                llama_set_embeddings(ctx, false);
+            }
+        } cleanup { ctx };
+        if (llama_memory_t memory = llama_get_memory(ctx)) {
+            llama_memory_clear(memory, true);
+        }
+        // The optimizer context is single-sequence unless the run widened it,
+        // and its cells are not partitioned.
+        return decide_prompts(state->model.get(), ctx, readout, prompts, n_prompts,
+                              n_pack_max, /*share_prefix =*/ true, out_scores, n_scores_max);
+    });
+}
+
 extern "C" int retro_template_render_context(
         const char * template_src,
         const char * context_json,

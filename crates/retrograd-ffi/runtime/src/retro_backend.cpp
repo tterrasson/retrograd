@@ -974,6 +974,14 @@ bool load_model_and_context(trainer_state & state) {
     ctx_params.n_threads = static_cast<int32_t>(n_threads);
     ctx_params.n_threads_batch = static_cast<int32_t>(n_threads);
     state.effective_threads = n_threads;
+    // A decision head read per token is evaluated without pooling, as the
+    // engine and llama-server create its context: the grouped loss reads the
+    // per-token embeddings output either way, and an evaluation on this
+    // context (retro_trainer_decide) needs them unpooled.
+    enum llama_pooling_type decision_pooling = LLAMA_POOLING_TYPE_UNSPECIFIED;
+    if (decision_context_pooling(model.get(), &decision_pooling)) {
+        ctx_params.pooling_type = decision_pooling;
+    }
     // Differentiable Flash Attention is enabled per device capability, not per
     // backend name: the active device must report both the forward and backward
     // flash-attention ops for this model's head geometry. AUTO retains the
