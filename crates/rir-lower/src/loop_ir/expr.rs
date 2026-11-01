@@ -20,6 +20,7 @@ pub enum LExpr {
     Sqrt(VarId),
     Exp(VarId),
     Tanh(VarId),
+    Erf(VarId),
     Cmp {
         op: CmpOp,
         lhs: VarId,

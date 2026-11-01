@@ -319,18 +319,20 @@ echo "    are measured here, yesterday's measurement does not compare to this on
 #
 # It is `ggml_op_desc()` and not `ggml_op_name()`, and the two differ for
 # exactly one op: `GGML_OP_UNARY` describes itself by its *member*
-# (`ggml_unary_op_name`), because it is a family of twenty-two functions behind
+# (`ggml_unary_op_name`), because it is a family of twenty-three functions behind
 # one op. Passing "UNARY" selects zero cases and
 # `test-backend-ops` reports a green `0/0` - the one failure this lane already
 # refuses by name.
 #
-# The list is the fourteen members RIR writes. The eight it does not are
+# The list is the sixteen members RIR writes. The seven it does not are
 # deliberately absent: their nodes are refused with `op_variant`, which the
 # registry declares, and running them here would only measure the native kernel
-# against itself.
+# against itself. `ERF` has no native GPU kernel at all: its native run is a
+# `not supported` and its timing pass has no native column, so the RIR matrix
+# - the generated kernel against the CPU's `erff` - is the whole verdict.
 matrix_op_filter() {
     case "$1" in
-        UNARY) echo "ABS,SGN,NEG,STEP,TANH,ELU,RELU,SIGMOID,GELU_QUICK,SILU,HARDSWISH,HARDSIGMOID,EXP,EXPM1" ;;
+        UNARY) echo "ABS,SGN,NEG,STEP,TANH,ELU,RELU,SIGMOID,GELU_QUICK,SILU,HARDSWISH,HARDSIGMOID,EXP,EXPM1,GELU_ERF,ERF" ;;
         *)     echo "$1";;
     esac
 }

@@ -186,6 +186,10 @@ impl KernelBuilder {
         self.push(Op::Tanh(v))
     }
 
+    pub fn erf(&mut self, v: ValueId) -> ValueId {
+        self.push(Op::Erf(v))
+    }
+
     pub fn cmp(&mut self, op: CmpOp, lhs: ValueId, rhs: ValueId) -> ValueId {
         self.push(Op::Cmp { op, lhs, rhs })
     }

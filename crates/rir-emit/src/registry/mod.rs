@@ -89,8 +89,9 @@ pub const MAX_SHAPE_RULES: usize = 2;
 /// per-pair candidate list with it and aborts at startup past it. Every
 /// dtype-specific kernel of an op counts, with all its variants.
 ///
-/// 48 because `GGML_OP_UNARY` on CUDA carries three lowerings over fourteen
-/// members, forty-two rows for one pair.
+/// 48 because `GGML_OP_UNARY` on CUDA carries two lowerings over sixteen
+/// members, thirty-two rows for one pair, and a third lowering of a few of them
+/// must still fit.
 pub(crate) const MAX_PAIR_VARIANTS: usize = 48;
 
 fn backend_enum(b: GgmlBackend) -> &'static str {

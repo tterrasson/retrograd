@@ -41,6 +41,28 @@ inline uint rir_fastmod(uint n, uint mp, uint sh, uint d) { return n - rir_fastd
 #endif
 "#;
 
+/// `erf`, printed only when the kernel evaluates one: MSL has none.
+///
+/// Abramowitz & Stegun 7.1.26, term for term what the native GELU_ERF kernel
+/// (`erf_approx`, `ggml-metal/kernels/common.h`) computes, down to the order of
+/// the operations - a member of the unary family that differs from the native
+/// kernel only by a rewritten polynomial is a difference nobody asked for. The
+/// absolute error against `erff` is at most 1.5e-7. A template, because the
+/// printer spells the same call on a scalar and on a vector register; the guard
+/// is for the reason `FASTDIV_PRELUDE` carries one.
+const ERF_PRELUDE: &str = r#"// erf: Abramowitz & Stegun 7.1.26, |error| <= 1.5e-7.
+#ifndef RIR_ERF
+#define RIR_ERF
+template <typename T> inline T rir_erf(T x) {
+    T sign_x = sign(x);
+    x = fabs(x);
+    T t = 1.0f / (1.0f + 0.3275911f * x);
+    T y = 1.0f - (((((1.061405429f * t - 1.453152027f) * t) + 1.421413741f) * t - 0.284496736f) * t + 0.254829592f) * t * exp(-x * x);
+    return sign_x * y;
+}
+#endif
+"#;
+
 pub fn emit_metal(k: &LoopKernel) -> Result<String, EmitError> {
     let mut p = MetalPrinter::new(k);
 
@@ -93,6 +115,9 @@ pub fn emit_metal(k: &LoopKernel) -> Result<String, EmitError> {
     // functions no line of the kernel calls.
     if !k.flat_axes().is_empty() && !k.linear_addr() {
         p.out.push_str(FASTDIV_PRELUDE);
+    }
+    if k.uses_erf() {
+        p.out.push_str(ERF_PRELUDE);
     }
     p.line(&format!("kernel void {}(", crate::manifest::entrypoint(k)));
     p.indent = 1;

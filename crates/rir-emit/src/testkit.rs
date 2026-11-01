@@ -607,12 +607,13 @@ pub fn arithmetic() -> Probe {
                 terms: vec![nb(VarId(3), 0), AddrTerm::Const(8)],
             },
         ),
+        (VarKind::F32, LExpr::Erf(VarId(0))),
     ];
     // The four registers the expressions read, then one destination each.
-    const NAMES: [&str; 37] = [
+    const NAMES: [&str; 38] = [
         "a", "b", "i", "j", "p", "e0", "e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8", "e9", "e10",
         "e11", "e12", "e13", "e14", "e15", "e16", "e17", "e18", "e19", "e20", "e21", "e22", "e23",
-        "e24", "e25", "e26", "e27", "e28", "e29", "e30", "e31",
+        "e24", "e25", "e26", "e27", "e28", "e29", "e30", "e31", "e32",
     ];
     assert_eq!(NAMES.len(), 5 + exprs.len(), "one name per register");
     let mut vars: Vec<(&'static str, VarKind)> = vec![

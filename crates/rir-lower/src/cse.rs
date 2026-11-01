@@ -120,6 +120,7 @@ fn key_of(e: &LExpr) -> Key {
         LExpr::ICmpC { op: c, var, c: n } => Key::Op(28, vec![cmp_tag(*c), var.0, *n]),
         LExpr::Combine { op: o, lhs, rhs } => Key::Op(29, vec![reduce_tag(*o), lhs.0, rhs.0]),
         LExpr::AxisExtentIdx(a) => op(30, vec![a.0]),
+        LExpr::Erf(a) => op(31, vec![a.0]),
         LExpr::AddrSum { arg, terms } => Key::Addr(*arg, terms.clone()),
     }
 }
@@ -418,6 +419,7 @@ fn expr_uses(e: &mut LExpr, f: &mut impl FnMut(&mut VarId)) {
         | LExpr::Sqrt(a)
         | LExpr::Exp(a)
         | LExpr::Tanh(a)
+        | LExpr::Erf(a)
         | LExpr::IDivC(a, _)
         | LExpr::IModC(a, _)
         | LExpr::IMulC(a, _)

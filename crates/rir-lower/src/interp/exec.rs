@@ -280,6 +280,7 @@ fn exec_compute(
                 LExpr::Sqrt(a) => rf(a).sqrt(),
                 LExpr::Exp(a) => rf(a).exp(),
                 LExpr::Tanh(a) => rf(a).tanh(),
+                LExpr::Erf(a) => super::erff::erf(rf(a)),
                 LExpr::Cmp { op, lhs, rhs } => {
                     let (a, b) = (rf(lhs), rf(rhs));
                     let c = match op {

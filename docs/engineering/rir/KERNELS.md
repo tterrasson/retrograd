@@ -36,7 +36,7 @@ fails the lane.
 | `out_prod` | 1 | `d[i,j,p,b] = Σ_k a[i,k,…]·b[j,k,…]` | contraction over the full ggml rank, staged in shared memory (`TiledStage`) |
 | `out_prod_<format>` | 12 | same, with a quantized `src0` | the quantized loader under a *staged* tile, one kernel per format |
 | `sum_rows_<format>` | 12 | `y[row] = Σ_col dequant(x[col,row])` | fused quantized loader + row reduction, row-level store hoisting; on GLSL, 8/16-bit storage |
-| `unary_<member>` | 14 | `y[i] = f(x[i])` | one shape, one vectorized lowering, one member per ggml unary op |
+| `unary_<member>` | 16 | `y[i] = f(x[i])` | one shape, one vectorized lowering, one member per ggml unary op |
 | `add`, `add_f16`, `mul`, `mul_f16`, `add_repeat`, `add_repeat_f16`, `mul_repeat`, `mul_repeat_f16`, `scale` | 9 | `dst = a ⊕ b`, `dst = a·s + b` | the elementwise band: vec4 lowering with a scalar fallback, F16 members, and index arithmetic for `ggml_can_repeat` |
 
 <!-- rir-gen:families:end -->

@@ -189,6 +189,13 @@ pub fn emit_cpu(k: &LoopKernel) -> Result<String, EmitError> {
         p.out.push_str(F32_TO_F16_HELPER);
         p.line("");
     }
+    // Rust has no `erf`: the oracle's own function is printed ahead of the
+    // kernel, so the generated CPU kernel computes exactly what the interpreter
+    // does.
+    if k.uses_erf() {
+        p.out.push_str(rir_lower::interp::erff::SOURCE);
+        p.line("");
+    }
     // Constant tables, derived from the loop nest and printed as floats - the
     // same values every backend prints, so the oracle and the shader index the
     // same numbers.

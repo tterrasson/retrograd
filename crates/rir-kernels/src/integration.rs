@@ -352,17 +352,17 @@ pub(super) fn unary(name: String, member: unary::Unary) -> IntegrationSpec {
         assumed_domain: vec![
             DomainAssumption {
                 restriction: DType,
-                why: "both native kernels accept F16 for this family; all fourteen \
-                      written members are typed F32. Closing it would cost fourteen more \
+                why: "both native kernels accept F16 for this family; all sixteen \
+                      written members are typed F32. Closing it would cost sixteen more \
                       kernels for a dtype produced by neither census on a UNARY",
             },
             DomainAssumption {
                 restriction: OpVariant,
-                why: "the eight members RIR does not declare: softplus and gelu_erf need \
-                      log and erf, floor/ceil/round/trunc need directed rounding, xielu \
-                      carries its own scalars in op_params - and gelu, written and \
-                      exact, is removed by measurement: on Metal native itself yields \
-                      NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold",
+                why: "the seven members RIR does not declare: softplus needs log, \
+                      floor/ceil/round/trunc need directed rounding, xielu carries its \
+                      own scalars in op_params - and gelu, written and exact, is \
+                      removed by measurement: on Metal native itself yields NMSE of \
+                      1.00-1.14e-7 against a 1.0e-7 threshold",
             },
         ],
         retired_native: vec![],

@@ -6,7 +6,7 @@
 //! compare with a tolerance. The cost of that repetition is not the lines - it
 //! is that a kernel nobody wrote a test for has **no** device coverage at all,
 //! and nothing says which ones those are. This file derives it for, among
-//! others, RMS norm, the fourteen unary members, the five F16 band members and
+//! others, RMS norm, the sixteen unary members, the five F16 band members and
 //! the twelve quantized `out_prod` variants.
 //!
 //! What is derived, and from what:

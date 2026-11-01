@@ -42,6 +42,10 @@
     X(unary_exp_flat_linear) \
     X(unary_expm1) \
     X(unary_expm1_flat_linear) \
+    X(unary_gelu_erf) \
+    X(unary_gelu_erf_flat_linear) \
+    X(unary_erf) \
+    X(unary_erf_flat_linear) \
     X(add) \
     X(add_vec4) \
     X(add_flat_linear) \

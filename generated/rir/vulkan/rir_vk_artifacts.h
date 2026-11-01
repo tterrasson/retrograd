@@ -68,6 +68,10 @@
     X(unary_exp_narrow) \
     X(unary_expm1) \
     X(unary_expm1_narrow) \
+    X(unary_gelu_erf) \
+    X(unary_gelu_erf_narrow) \
+    X(unary_erf) \
+    X(unary_erf_narrow) \
     X(add) \
     X(add_vec4) \
     X(mul) \

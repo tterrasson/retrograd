@@ -476,3 +476,60 @@ fn a_parameter_is_read_by_position() {
     run(&lk, &mut args, &[1e-6, 0.25]).unwrap();
     assert_eq!(out, vec![0.25, 0.25]);
 }
+
+/// `erf` in `f64`, independent of the code under test: the Maclaurin series
+/// where it converges without cancelling (|x| < 2.5), and the continued
+/// fraction of `erfc` beyond, where `1 - erfc` has no cancellation problem.
+fn erf_reference(x: f64) -> f64 {
+    let a = x.abs();
+    let value = if a < 2.5 {
+        let (mut term, mut sum, mut n) = (a, a, 0.0f64);
+        while term.abs() > 1e-18 {
+            n += 1.0;
+            term *= -a * a / n;
+            sum += term / (2.0 * n + 1.0);
+        }
+        sum * std::f64::consts::FRAC_2_SQRT_PI
+    } else {
+        // erfc(a) = exp(-a²)/√π · 1/(a + ½/(a + 1/(a + 3/2/(a + …)))), from the tail.
+        let mut f = a;
+        for k in (1..=80).rev() {
+            f = a + (f64::from(k) / 2.0) / f;
+        }
+        1.0 - (-a * a).exp() / (std::f64::consts::PI.sqrt() * f)
+    };
+    value.copysign(x)
+}
+
+/// The oracle's `erff` against the `f64` reference, over both signs and across
+/// each region `erff` switches formula at (0.84375, 1.25, 1/0.35, 6). Four ulps
+/// of slack: the point is that a wrong coefficient shows, and one does by
+/// orders of magnitude, not that `erff` is correctly rounded.
+#[test]
+fn the_oracle_erf_is_accurate_to_a_few_ulps_across_every_region() {
+    use crate::interp::erff::erf;
+
+    let mut worst = 0.0f64;
+    for i in -12000..=12000 {
+        let x = i as f32 * 0.0005;
+        let want = erf_reference(f64::from(x));
+        let got = f64::from(erf(x));
+        let w32 = want.abs() as f32;
+        let ulp = f64::from(f32::from_bits(w32.to_bits() + 1) - w32);
+        let err = (got - want).abs() / ulp.max(1e-45);
+        worst = worst.max(err);
+        assert!(
+            err <= 4.0,
+            "erf({x}) = {got}, reference {want}: {err:.1} ulps"
+        );
+    }
+    assert!(
+        worst > 0.0,
+        "a series that agrees bit for bit is not independent"
+    );
+    assert_eq!(erf(f32::INFINITY), 1.0);
+    assert_eq!(erf(f32::NEG_INFINITY), -1.0);
+    assert!(erf(f32::NAN).is_nan());
+    assert_eq!(erf(10.0), 1.0);
+    assert_eq!(erf(-10.0), -1.0);
+}

@@ -70,6 +70,7 @@ pub enum UnaryFn {
     Sqrt,
     Exp,
     Tanh,
+    Erf,
 }
 
 /// How a backend compares two vectors, when it has a form for it at all.
@@ -375,7 +376,7 @@ impl Dialect for Cuda {
         }
     }
 
-    /// `sqrtf`/`expf`/`tanhf` and not their double counterparts: an implicit
+    /// `sqrtf`/`expf`/`tanhf`/`erff` and not their double counterparts: an implicit
     /// widening here would be a different function from the one the native
     /// kernel calls, on top of what `-use_fast_math` already substitutes.
     fn unary_fn(f: UnaryFn, width: Option<u32>) -> &'static str {
@@ -386,6 +387,8 @@ impl Dialect for Cuda {
             (UnaryFn::Exp, Some(_)) => "rir_vexp",
             (UnaryFn::Tanh, None) => "tanhf",
             (UnaryFn::Tanh, Some(_)) => "rir_vtanh",
+            (UnaryFn::Erf, None) => "erff",
+            (UnaryFn::Erf, Some(_)) => "rir_verf",
         }
     }
 
@@ -545,6 +548,8 @@ impl Dialect for Metal {
             UnaryFn::Sqrt => "sqrt",
             UnaryFn::Exp => "exp",
             UnaryFn::Tanh => "precise::tanh",
+            // Defined by the prelude `emit_metal` prints: MSL has no `erf`.
+            UnaryFn::Erf => "rir_erf",
         }
     }
 
@@ -683,6 +688,8 @@ impl Dialect for Vulkan {
             UnaryFn::Sqrt => "sqrt",
             UnaryFn::Exp => "exp",
             UnaryFn::Tanh => "tanh",
+            // Defined by the prelude `emit_vulkan` prints: GLSL has no `erf`.
+            UnaryFn::Erf => "rir_erf",
         }
     }
 

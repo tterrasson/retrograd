@@ -16,6 +16,7 @@ use rir_core::{Access, Extent};
 
 use crate::loop_ir::*;
 
+pub mod erff;
 pub mod exec;
 pub mod f16;
 pub mod views;

@@ -17,13 +17,16 @@
 //! `DomainRestriction::OpVariant`, a new rejection-taxonomy value, and its
 //! published rejection.
 //!
-//! **What RIR writes, and what it leaves.** Fourteen of twenty-two members. The
-//! remaining eight are not deferred for lack of time, and the last is not even
+//! **What RIR writes, and what it leaves.** Sixteen of twenty-three members. The
+//! remaining seven are not deferred for lack of time, and the last is not even
 //! a vocabulary issue:
 //!
-//! - `SOFTPLUS` needs `log`, `GELU_ERF` needs `erf` - two new scalar Loop IR
-//!   operations **and** an arm in each of three emitters, for two members absent
-//!   from both censuses;
+//! - `SOFTPLUS` needs `log`: one new scalar Loop IR operation **and** an arm in
+//!   each of three emitters, for a member absent from both censuses. `ERF` and
+//!   `GELU_ERF` were in that position until the backward of `GELU_ERF` needed
+//!   `ERF` on a GPU: `erf` is now a scalar operation, spelled `erff` on CUDA
+//!   and as Abramowitz & Stegun 7.1.26 - what the native `GELU_ERF` kernels
+//!   already compute - where the shading language has none;
 //! - `FLOOR`, `CEIL`, `ROUND`, and `TRUNC` need directed rounding, the same cost
 //!   for the same absence of traffic;
 //! - `XIELU` carries its own scalars in `op_params`, requiring one parameter row
@@ -39,6 +42,14 @@
 //!   is explicit: when native Metal passes this threshold reliably, or when
 //!   `test-backend-ops` revises the `GELU` tolerance, restore the table row,
 //!   the kernel itself will not need rewriting.
+//!
+//! `ERF` has **no native GPU kernel**: it is the fork's own op, written for the
+//! backward pass, with a CPU kernel only. There is nothing to retire and
+//! nothing to time against, so the member is judged on correctness alone: the
+//! promotion lane's RIR matrix compares the generated kernel with the CPU's
+//! `erff`, and its timing pass has no native column for it. A
+//! `native_exception` would say nothing here - it is a statement about a whole
+//! pair, and the `UNARY` pair publishes a domain instead.
 //!
 //! Each is rejected *with its reason*, and each
 //! reopens on an explicit trigger.
@@ -69,12 +80,14 @@ pub enum Unary {
     Hardsigmoid,
     Exp,
     Expm1,
+    GeluErf,
+    Erf,
 }
 
 /// Canonical table in `ggml_unary_op` order - the same order as
 /// `GGML_UNARY_OP_NAME`, so cross-reading both tables is reading, not
 /// reconstruction.
-pub fn variants() -> [Unary; 14] {
+pub fn variants() -> [Unary; 16] {
     [
         Unary::Abs,
         Unary::Sgn,
@@ -90,6 +103,8 @@ pub fn variants() -> [Unary; 14] {
         Unary::Hardsigmoid,
         Unary::Exp,
         Unary::Expm1,
+        Unary::GeluErf,
+        Unary::Erf,
     ]
 }
 
@@ -111,6 +126,8 @@ impl Unary {
             Unary::Hardsigmoid => "hardsigmoid",
             Unary::Exp => "exp",
             Unary::Expm1 => "expm1",
+            Unary::GeluErf => "gelu_erf",
+            Unary::Erf => "erf",
         }
     }
 
@@ -138,6 +155,8 @@ impl Unary {
             Unary::Hardsigmoid => "GGML_UNARY_OP_HARDSIGMOID",
             Unary::Exp => "GGML_UNARY_OP_EXP",
             Unary::Expm1 => "GGML_UNARY_OP_EXPM1",
+            Unary::GeluErf => "GGML_UNARY_OP_GELU_ERF",
+            Unary::Erf => "GGML_UNARY_OP_ERF",
         }
     }
 }
@@ -145,30 +164,23 @@ impl Unary {
 /// `ggml_gelu_quick_f32` (`ggml/src/ggml-cpu/vec.h`).
 const GELU_QUICK_COEF: f32 = -1.702;
 
-pub fn build(member: Unary) -> Result<ValidatedKernel, ValidateError> {
-    let mut k = KernelBuilder::new(&member.kernel_name());
+/// `SQRT_2_INV` (`ggml/src/ggml-cpu/vec.h`): `GELU_ERF` is
+/// `0.5·x·(1 + erf(x·SQRT_2_INV))`.
+const SQRT_2_INV: f32 = std::f32::consts::FRAC_1_SQRT_2;
 
-    let x = k.input("x", TensorType::f32(4));
-    let dst = k.output("dst", TensorType::f32(4));
-
-    // Same axis distribution as the elementwise strip: `col` first because it
-    // is contiguous, thus determines coalescing and is the only axis that can
-    // carry a vectorized read.
-    let col = k.axis("col", Extent::Dim { arg: x, dim: 0 });
-    let row = k.axis("row", Extent::Dim { arg: x, dim: 1 });
-    let plane = k.axis("plane", Extent::Dim { arg: x, dim: 2 });
-    let batch = k.axis("batch", Extent::Dim { arg: x, dim: 3 });
-    let idx = [col, row, plane, batch];
-
-    let v = k.read(x, &idx);
-
+/// The value a member computes from the element `v`, written on `k`.
+///
+/// Separate from the axes and the access so the same expression can sit in a
+/// kernel of another rank - the transposition `derive_backward` supports is
+/// rank two at most.
+fn member_value(k: &mut KernelBuilder, member: Unary, v: ValueId) -> ValueId {
     // Each arm copies `ggml/src/ggml-cpu/unary-ops.cpp` term for term,
     // **including associativity**: `A·x·x` groups left and `A·(x·x)` is not the
     // same F32. This separates NMSE below the threshold from NMSE above it, as
     // the member removed from the table demonstrates.
     let zero = k.const_f32(0.0);
     let one = k.const_f32(1.0);
-    let value: ValueId = match member {
+    match member {
         Unary::Abs => {
             let neg = k.sub(zero, v);
             let c = k.cmp(CmpOp::Gt, v, zero);
@@ -240,7 +252,39 @@ pub fn build(member: Unary) -> Result<ValidatedKernel, ValidateError> {
             let e = k.exp(v);
             k.sub(e, one)
         }
-    };
+        Unary::GeluErf => {
+            // `0.5f*xi*(1.0f + erff(xi*SQRT_2_INV))`: the product groups left,
+            // `(0.5·x)·(1 + erf)`.
+            let c = k.const_f32(SQRT_2_INV);
+            let half = k.const_f32(0.5);
+            let hx = k.mul(half, v);
+            let cx = k.mul(v, c);
+            let e = k.erf(cx);
+            let d = k.add(one, e);
+            k.mul(hx, d)
+        }
+        Unary::Erf => k.erf(v),
+    }
+}
+
+pub fn build(member: Unary) -> Result<ValidatedKernel, ValidateError> {
+    let mut k = KernelBuilder::new(&member.kernel_name());
+
+    let x = k.input("x", TensorType::f32(4));
+    let dst = k.output("dst", TensorType::f32(4));
+
+    // Same axis distribution as the elementwise strip: `col` first because it
+    // is contiguous, thus determines coalescing and is the only axis that can
+    // carry a vectorized read.
+    let col = k.axis("col", Extent::Dim { arg: x, dim: 0 });
+    let row = k.axis("row", Extent::Dim { arg: x, dim: 1 });
+    let plane = k.axis("plane", Extent::Dim { arg: x, dim: 2 });
+    let batch = k.axis("batch", Extent::Dim { arg: x, dim: 3 });
+    let idx = [col, row, plane, batch];
+
+    let v = k.read(x, &idx);
+
+    let value = member_value(&mut k, member, v);
 
     k.write(dst, &idx, value);
 
@@ -305,7 +349,28 @@ mod tests {
             Unary::Hardsigmoid => 1.0f32.min(0.0f32.max((x + 3.0) / 6.0)),
             Unary::Exp => x.exp(),
             Unary::Expm1 => x.exp() - 1.0,
+            Unary::GeluErf => 0.5 * x * (1.0 + erf(x * SQRT_2_INV)),
+            Unary::Erf => erf(x),
         }
+    }
+
+    /// `erf` for the reference. The kernel's own function is `erff`, judged in
+    /// `rir-lower` against a series; this one is the series itself in `f64`
+    /// (the Maclaurin expansion, whose cancellation costs about four digits at
+    /// `|x| = 3` and leaves twelve), so the reference of the **members** is as
+    /// independent of the kernel as the other references are.
+    fn erf(x: f32) -> f32 {
+        let x = f64::from(x);
+        let mut term = x;
+        let mut sum = x;
+        let mut n = 0.0f64;
+        while term.abs() > 1e-17 {
+            n += 1.0;
+            term *= -x * x / n;
+            sum += term / (2.0 * n + 1.0);
+        }
+        // Rounded to the F32 the kernel produces: the narrowing is the point.
+        (sum * std::f64::consts::FRAC_2_SQRT_PI) as f32
     }
 
     fn fill(seed: &mut u64, buf: &mut [f32], scale: f32) {
@@ -335,7 +400,7 @@ mod tests {
 
         let mut seed = 0x51c0_2026u64 ^ ((n_col as u64) << 32) ^ (n_row as u64);
         let mut x = vec![0f32; len(gap)];
-        // A narrow range: these are values where all fourteen members are
+        // A narrow range: these are values where all sixteen members are
         // finite, thus the only ones where elementwise comparison is meaningful
         // for all. `test-backend-ops` extremes (±150) saturate `exp` on both
         // sides of the comparison.
@@ -460,6 +525,13 @@ mod tests {
         ));
     }
 
+    mod generated_gelu_erf {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../generated/rir/unary_gelu_erf/cpu.rs"
+        ));
+    }
+
     /// The **generated** CPU, not the interpreter, on a strided shape.
     #[test]
     fn parity_of_the_generated_cpu_against_the_reference() {
@@ -487,6 +559,87 @@ mod tests {
                     (got[i] - e).abs() <= 1e-6f32.max(1e-5 * e.abs()),
                     "generated silu [{r},{c}]: {} vs {e}",
                     got[i]
+                );
+            }
+        }
+    }
+
+    /// The generated CPU kernel carries its own `erff`, printed from the same
+    /// text the oracle compiles: this is the test that the printed copy builds
+    /// and computes `GELU_ERF` where it is not small, not flat and not odd -
+    /// both signs, and the region around `|x/√2| = 0.84375` where `erff`
+    /// changes formula.
+    #[test]
+    fn parity_of_the_generated_cpu_erf_against_the_reference() {
+        let x: Vec<f32> = (-300..=300).map(|i| i as f32 * 0.02).collect();
+        let n = x.len();
+        let mut got = vec![0f32; n];
+        let nb = [4usize, 4 * n, 4 * n, 4 * n];
+        generated_gelu_erf::unary_gelu_erf(
+            n,
+            1,
+            1,
+            1,
+            generated_gelu_erf::TensorRef { data: &x, nb },
+            generated_gelu_erf::TensorRefMut { data: &mut got, nb },
+        );
+        for (i, &v) in x.iter().enumerate() {
+            let e = reference(Unary::GeluErf, v);
+            assert!(
+                (got[i] - e).abs() <= 2e-7f32.max(1e-6 * e.abs()),
+                "generated gelu_erf at {v}: {} vs {e}",
+                got[i]
+            );
+        }
+    }
+
+    /// The derivative the transposition writes for `erf` and for the
+    /// composition `GELU_ERF` builds on it, against the closed forms
+    /// `2/√π · exp(−x²)` and `Φ(x) + x·φ(x)`. This is the contract the fork's
+    /// backward pass is written from, and a wrong sign or a missing factor in
+    /// the `Erf` rule would pass every forward test.
+    #[test]
+    fn the_derived_gradient_of_erf_and_gelu_erf_matches_their_closed_forms() {
+        for member in [Unary::Erf, Unary::GeluErf] {
+            let mut k = KernelBuilder::new("unary_probe");
+            let x_arg = k.input("x", TensorType::f32_2d());
+            let y_arg = k.output("y", TensorType::f32_2d());
+            let col = k.axis("col", Extent::Dim { arg: x_arg, dim: 0 });
+            let row = k.axis("row", Extent::Dim { arg: x_arg, dim: 1 });
+            let v = k.read(x_arg, &[col, row]);
+            let value = member_value(&mut k, member, v);
+            k.write(y_arg, &[col, row], value);
+            let fwd = k.finish().unwrap();
+            let grad = rir_core::derive_backward(&fwd).expect("autodiff unary");
+            let lk = rir_lower::lower(&grad, Schedule::cpu_serial()).unwrap();
+
+            let n = 41usize;
+            let x: Vec<f32> = (0..n).map(|i| -3.0 + 0.15 * i as f32).collect();
+            let dy: Vec<f32> = (0..n).map(|i| 0.5 + 0.1 * i as f32).collect();
+            let mut dx = vec![0f32; n];
+            let mut args = [
+                BoundArg::In(TensorView::contiguous_2d(&x, n, 1)),
+                BoundArg::In(TensorView::contiguous_2d(&dy, n, 1)),
+                BoundArg::Out(TensorViewMut::contiguous_2d(&mut dx, n, 1)),
+            ];
+            run(&lk, &mut args, &[]).unwrap();
+
+            for i in 0..n {
+                let v = f64::from(x[i]);
+                let gauss = (-v * v).exp();
+                let slope = match member {
+                    Unary::Erf => std::f64::consts::FRAC_2_SQRT_PI * gauss,
+                    _ => {
+                        let cdf = 0.5 * (1.0 + f64::from(erf(x[i] * SQRT_2_INV)));
+                        let pdf = (-0.5 * v * v).exp() / (2.0 * std::f64::consts::PI).sqrt();
+                        cdf + v * pdf
+                    }
+                };
+                let e = f64::from(dy[i]) * slope;
+                assert!(
+                    (f64::from(dx[i]) - e).abs() <= 1e-5 + 1e-5 * e.abs(),
+                    "{member:?} at {v}: {} vs {e}",
+                    dx[i]
                 );
             }
         }

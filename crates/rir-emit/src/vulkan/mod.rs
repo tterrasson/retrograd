@@ -63,6 +63,28 @@ uint rir_fastdiv(uint n, uint mp, uint sh) {
 uint rir_fastmod(uint n, uint mp, uint sh, uint d) { return n - rir_fastdiv(n, mp, sh) * d; }
 "#;
 
+/// `erf`, printed only when the kernel evaluates one: GLSL has none.
+///
+/// Abramowitz & Stegun 7.1.26, the polynomial the native GELU_ERF and GEGLU_ERF
+/// shaders carry, in the same order of operations; absolute error against
+/// `erff` at most 1.5e-7. GLSL has neither templates nor overloading over
+/// `genType` for user functions, so the body is a macro instantiated at each
+/// width a register can have.
+const ERF_PRELUDE: &str = r#"// erf: Abramowitz & Stegun 7.1.26, |error| <= 1.5e-7.
+#define RIR_ERF_DEF(T) T rir_erf(T x) { \
+    T sign_x = sign(x); \
+    x = abs(x); \
+    T t = 1.0 / (1.0 + 0.3275911 * x); \
+    T y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * exp(-x * x); \
+    return sign_x * y; \
+}
+RIR_ERF_DEF(float)
+RIR_ERF_DEF(vec2)
+RIR_ERF_DEF(vec3)
+RIR_ERF_DEF(vec4)
+#undef RIR_ERF_DEF
+"#;
+
 /// The Vulkan printer: the shared skeleton, with GLSL's lexicon
 /// (`crate::printer`, `crate::dialect`).
 type VkPrinter<'k> = crate::printer::Printer<'k, crate::dialect::Vulkan>;
@@ -151,6 +173,9 @@ pub fn emit_vulkan(k: &LoopKernel) -> Result<String, EmitError> {
     // functions no line of the kernel calls.
     if !k.flat_axes().is_empty() && !k.linear_addr() {
         p.out.push_str(FASTDIV_PRELUDE);
+    }
+    if k.uses_erf() {
+        p.out.push_str(ERF_PRELUDE);
     }
 
     p.line("void main() {");

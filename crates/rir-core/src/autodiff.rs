@@ -135,6 +135,12 @@ impl Ad {
         self.tag(v, d)
     }
 
+    fn erf(&mut self, a: ValueId) -> ValueId {
+        let d = self.d(a);
+        let v = self.b.erf(a);
+        self.tag(v, d)
+    }
+
     fn cmp(&mut self, op: CmpOp, a: ValueId, bx: ValueId) -> ValueId {
         let d = self.d(a) || self.d(bx);
         let v = self.b.cmp(op, a, bx);
@@ -283,6 +289,10 @@ fn import(
         Op::Tanh(a) => {
             let a = import(ad, k, pvals, map, a)?;
             ad.tanh(a)
+        }
+        Op::Erf(a) => {
+            let a = import(ad, k, pvals, map, a)?;
+            ad.erf(a)
         }
         Op::Cmp { op, lhs, rhs } => {
             let (l, r) = (
@@ -489,6 +499,19 @@ pub fn derive_backward(k: &Kernel) -> Result<crate::ValidatedKernel, AutodiffErr
                 let one = ad.cst(1.0);
                 let d = ad.sub(one, tt);
                 let ga = ad.mul(g, d);
+                contribs.entry(a).or_default().push(ga);
+            }
+            // d erf(a) = g · 2/√π · exp(−a²). The derivative is a different
+            // function of `a` than the forward value, so the input is
+            // imported and the Gaussian recomputed.
+            Op::Erf(a) => {
+                let ia = import(&mut ad, k, &pvals, &mut fwd_map, a)?;
+                let aa = ad.mul(ia, ia);
+                let naa = ad.neg(aa);
+                let e = ad.exp(naa);
+                let c = ad.cst(std::f32::consts::FRAC_2_SQRT_PI);
+                let gc = ad.mul(g, c);
+                let ga = ad.mul(gc, e);
                 contribs.entry(a).or_default().push(ga);
             }
             Op::Select { cond, t, f } => {

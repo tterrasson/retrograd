@@ -75,7 +75,9 @@ pub(crate) fn expr_is_vec(
     let float_vec = |v: &VarId| is_vec[v.0 as usize] == Some(VecShape::F32);
     let f = |b: bool| if b { Some(VecShape::F32) } else { None };
     Ok(match expr {
-        LExpr::Copy(x) | LExpr::Sqrt(x) | LExpr::Exp(x) | LExpr::Tanh(x) => f(vec_of(x)),
+        LExpr::Copy(x) | LExpr::Sqrt(x) | LExpr::Exp(x) | LExpr::Tanh(x) | LExpr::Erf(x) => {
+            f(vec_of(x))
+        }
         LExpr::Add(x, y) | LExpr::Sub(x, y) | LExpr::Mul(x, y) | LExpr::Div(x, y) => {
             f(vec_of(x) || vec_of(y))
         }

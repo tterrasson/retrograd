@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "fingerprint": "sha256:7166f4796df0c8e30d978537ba15ed0e409c3e3bb6ba2eb7075450c95a2212e3",
+  "fingerprint": "sha256:14ddcd5093381f19bbdf52e5b7b2aa4620f24debc716230030d51e6f66cff0ca",
   "kernels": [
     {
       "ggml_op": "GGML_OP_ADD",
@@ -4082,12 +4082,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_abs",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_abs",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -4150,12 +4150,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_abs",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_abs",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -4224,12 +4224,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_abs",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_abs",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -4298,12 +4298,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_abs",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_abs",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -4319,12 +4319,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_elu",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_elu",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -4387,12 +4387,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_elu",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_elu",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -4461,12 +4461,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_elu",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_elu",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -4535,12 +4535,249 @@
         {
           "reject": "dtype",
           "kernel": "unary_elu",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_elu",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_ERF",
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_erf",
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_erf",
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_ERF",
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "unary_erf_f32_4d_serial_flat_linear",
+          "kernel": "unary_erf",
+          "priority": 90,
+          "policy": "observe_generated",
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_erf_f32_4d_serial",
+          "kernel": "unary_erf",
+          "priority": 80,
+          "policy": "observe_generated",
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_erf",
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_erf",
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_ERF",
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_erf_f32_4d_serial_narrow",
+          "kernel": "unary_erf",
+          "priority": 90,
+          "policy": "prefer_generated",
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_erf_f32_4d_serial_w4",
+          "kernel": "unary_erf",
+          "priority": 80,
+          "policy": "prefer_generated",
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_erf",
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_erf",
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_ERF",
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_erf_f32_4d_serial_narrow",
+          "kernel": "unary_erf",
+          "priority": 90,
+          "policy": "prefer_generated",
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_erf_f32_4d_serial_w4",
+          "kernel": "unary_erf",
+          "priority": 80,
+          "policy": "prefer_generated",
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_erf",
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_erf",
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -4556,12 +4793,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_exp",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_exp",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -4624,12 +4861,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_exp",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_exp",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -4698,12 +4935,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_exp",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_exp",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -4772,12 +5009,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_exp",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_exp",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -4793,12 +5030,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_expm1",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_expm1",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -4861,12 +5098,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_expm1",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_expm1",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -4935,12 +5172,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_expm1",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_expm1",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5009,12 +5246,249 @@
         {
           "reject": "dtype",
           "kernel": "unary_expm1",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_expm1",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_GELU_ERF",
+      "backend": "cpu",
+      "policy": "native_only",
+      "variants": [],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_gelu_erf",
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_gelu_erf",
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_GELU_ERF",
+      "backend": "cuda",
+      "policy": "observe_generated",
+      "variants": [
+        {
+          "variant_id": "unary_gelu_erf_f32_4d_serial_flat_linear",
+          "kernel": "unary_gelu_erf",
+          "priority": 90,
+          "policy": "observe_generated",
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_gelu_erf_f32_4d_serial",
+          "kernel": "unary_gelu_erf",
+          "priority": 80,
+          "policy": "observe_generated",
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "cuda>=5.0",
+            "block_threads>=256"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 1,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_gelu_erf",
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_gelu_erf",
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_GELU_ERF",
+      "backend": "metal",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_gelu_erf_f32_4d_serial_narrow",
+          "kernel": "unary_gelu_erf",
+          "priority": 90,
+          "policy": "prefer_generated",
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_gelu_erf_f32_4d_serial_w4",
+          "kernel": "unary_gelu_erf",
+          "priority": 80,
+          "policy": "prefer_generated",
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "metal>=2.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_gelu_erf",
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_gelu_erf",
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+        }
+      ],
+      "native_retired": false,
+      "native_exception": null
+    },
+    {
+      "ggml_op": "GGML_OP_UNARY",
+      "op_variant": "GGML_UNARY_OP_GELU_ERF",
+      "backend": "vulkan",
+      "policy": "prefer_generated",
+      "variants": [
+        {
+          "variant_id": "unary_gelu_erf_f32_4d_serial_narrow",
+          "kernel": "unary_gelu_erf",
+          "priority": 90,
+          "policy": "prefer_generated",
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [
+            {
+              "axes": [
+                "col"
+              ],
+              "min": 0,
+              "max": 256
+            }
+          ],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            32,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        },
+        {
+          "variant_id": "unary_gelu_erf_f32_4d_serial_w4",
+          "kernel": "unary_gelu_erf",
+          "priority": 80,
+          "policy": "prefer_generated",
+          "constraints": [
+            "dtype(x)=f32",
+            "rank(x)<=4"
+          ],
+          "eligible_when": [],
+          "features": [
+            "vulkan>=1.0"
+          ],
+          "workgroup": [
+            256,
+            1,
+            1
+          ],
+          "vector_width": 4,
+          "reduction": "serial",
+          "scan": "serial"
+        }
+      ],
+      "declared_domain": [
+        {
+          "reject": "dtype",
+          "kernel": "unary_gelu_erf",
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
+        },
+        {
+          "reject": "op_variant",
+          "kernel": "unary_gelu_erf",
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5030,12 +5504,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_gelu_quick",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_gelu_quick",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5098,12 +5572,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_gelu_quick",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_gelu_quick",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5172,12 +5646,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_gelu_quick",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_gelu_quick",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5246,12 +5720,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_gelu_quick",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_gelu_quick",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5267,12 +5741,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_hardsigmoid",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_hardsigmoid",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5335,12 +5809,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_hardsigmoid",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_hardsigmoid",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5409,12 +5883,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_hardsigmoid",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_hardsigmoid",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5483,12 +5957,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_hardsigmoid",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_hardsigmoid",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5504,12 +5978,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_hardswish",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_hardswish",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5572,12 +6046,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_hardswish",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_hardswish",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5646,12 +6120,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_hardswish",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_hardswish",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5720,12 +6194,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_hardswish",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_hardswish",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5741,12 +6215,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_neg",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_neg",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5809,12 +6283,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_neg",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_neg",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5883,12 +6357,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_neg",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_neg",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5957,12 +6431,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_neg",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_neg",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -5978,12 +6452,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_relu",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_relu",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -6046,12 +6520,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_relu",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_relu",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -6120,12 +6594,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_relu",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_relu",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -6194,12 +6668,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_relu",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_relu",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -6215,12 +6689,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_sgn",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_sgn",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -6283,12 +6757,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_sgn",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_sgn",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -6357,12 +6831,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_sgn",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_sgn",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -6431,12 +6905,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_sgn",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_sgn",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -6452,12 +6926,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_sigmoid",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_sigmoid",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -6520,12 +6994,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_sigmoid",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_sigmoid",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -6594,12 +7068,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_sigmoid",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_sigmoid",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -6668,12 +7142,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_sigmoid",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_sigmoid",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -6689,12 +7163,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_silu",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_silu",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -6757,12 +7231,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_silu",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_silu",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -6831,12 +7305,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_silu",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_silu",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -6905,12 +7379,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_silu",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_silu",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -6926,12 +7400,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_step",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_step",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -6994,12 +7468,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_step",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_step",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -7068,12 +7542,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_step",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_step",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -7142,12 +7616,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_step",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_step",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -7163,12 +7637,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_tanh",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_tanh",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -7231,12 +7705,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_tanh",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_tanh",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -7305,12 +7779,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_tanh",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_tanh",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,
@@ -7379,12 +7853,12 @@
         {
           "reject": "dtype",
           "kernel": "unary_tanh",
-          "why": "both native kernels accept F16 for this family; all fourteen written members are typed F32. Closing it would cost fourteen more kernels for a dtype produced by neither census on a UNARY"
+          "why": "both native kernels accept F16 for this family; all sixteen written members are typed F32. Closing it would cost sixteen more kernels for a dtype produced by neither census on a UNARY"
         },
         {
           "reject": "op_variant",
           "kernel": "unary_tanh",
-          "why": "the eight members RIR does not declare: softplus and gelu_erf need log and erf, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
+          "why": "the seven members RIR does not declare: softplus needs log, floor/ceil/round/trunc need directed rounding, xielu carries its own scalars in op_params - and gelu, written and exact, is removed by measurement: on Metal native itself yields NMSE of 1.00-1.14e-7 against a 1.0e-7 threshold"
         }
       ],
       "native_retired": false,

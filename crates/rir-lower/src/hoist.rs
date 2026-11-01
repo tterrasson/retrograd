@@ -290,6 +290,7 @@ fn uses_of(e: &LExpr, out: &mut Vec<VarId>) {
         | LExpr::Sqrt(a)
         | LExpr::Exp(a)
         | LExpr::Tanh(a)
+        | LExpr::Erf(a)
         | LExpr::IDivC(a, _)
         | LExpr::IModC(a, _)
         | LExpr::IMulC(a, _)

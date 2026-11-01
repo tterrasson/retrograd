@@ -242,6 +242,10 @@ impl<'k> Lowerer<'k> {
                 let a = self.lower_value(a)?;
                 self.emit("t", VarKind::F32, LExpr::Tanh(a))
             }
+            Op::Erf(a) => {
+                let a = self.lower_value(a)?;
+                self.emit("t", VarKind::F32, LExpr::Erf(a))
+            }
             Op::Cmp { op, lhs, rhs } => {
                 let (lhs, rhs) = (self.lower_value(lhs)?, self.lower_value(rhs)?);
                 self.emit("b", VarKind::Bool, LExpr::Cmp { op, lhs, rhs })

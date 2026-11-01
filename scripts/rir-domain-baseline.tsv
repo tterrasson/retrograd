@@ -24,5 +24,5 @@ SCALE/cuda	4	4
 SCALE/metal	4	4
 SCALE/vulkan	4	4
 UNARY/cuda	42	84
-UNARY/metal	84	168
-UNARY/vulkan	84	168
+UNARY/metal	96	186
+UNARY/vulkan	96	186

@@ -134,6 +134,7 @@ const float e28 = float(i);
 const float e29 = rir_probe_rir_lut_iq4nl[i];
 const float e30 = max(a, b);
 const uint e31 = j * pc.x_nb0 + 8u;
+const float e32 = rir_erf(a);
 "#,
     /// Cooperative staging: one tile loaded once by the whole workgroup.
     Staging as staging_print_as => r#"

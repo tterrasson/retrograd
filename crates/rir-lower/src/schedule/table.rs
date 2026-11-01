@@ -20,7 +20,7 @@ pub enum Family {
     /// The same problem shape with one variant more, arbitrated by row count:
     /// `rms_norm` and `rms_norm_back`.
     RmsNorm,
-    /// The `UNARY` family: fourteen members, one vectorized lowering plus a
+    /// The `UNARY` family: sixteen members, one vectorized lowering plus a
     /// narrow-workgroup twin.
     Unary,
     /// The elementwise band's non-repeating members (`add`, `mul` and their F16

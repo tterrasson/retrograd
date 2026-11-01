@@ -25,6 +25,7 @@ impl CpuPrinter<'_> {
             LExpr::Sqrt(a) => format!("{}.sqrt()", v(a)),
             LExpr::Exp(a) => format!("{}.exp()", v(a)),
             LExpr::Tanh(a) => format!("{}.tanh()", v(a)),
+            LExpr::Erf(a) => format!("erff({})", v(a)),
             LExpr::Cmp { op, lhs, rhs } => {
                 let sym = match op {
                     CmpOp::Gt => ">",

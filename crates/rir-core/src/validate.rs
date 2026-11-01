@@ -411,7 +411,7 @@ pub fn validate(k: &Kernel) -> Result<(), ValidateError> {
                 expect(&kinds, value, *b, Kind::F32)?;
                 Kind::F32
             }
-            Op::Sqrt(a) | Op::Exp(a) | Op::Tanh(a) => {
+            Op::Sqrt(a) | Op::Exp(a) | Op::Tanh(a) | Op::Erf(a) => {
                 check_operand(*a)?;
                 expect(&kinds, value, *a, Kind::F32)?;
                 Kind::F32

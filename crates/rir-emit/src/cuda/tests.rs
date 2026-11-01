@@ -182,6 +182,7 @@ const float e28 = float(i);
 const float e29 = rir_probe_rir_lut_iq4nl[i];
 const float e30 = fmaxf(a, b);
 const uint32_t e31 = j * p.x_nb0 + 8u;
+const float e32 = erff(a);
 "#,
     /// Cooperative staging: one tile loaded once by the whole block. The two
     /// barriers are printed by the statement, exactly as on the two other backends

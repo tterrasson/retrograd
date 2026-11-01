@@ -35,6 +35,7 @@ impl<'k, D: Dialect> Printer<'k, D> {
             LExpr::Sqrt(a) => map(a, UnaryFn::Sqrt),
             LExpr::Exp(a) => map(a, UnaryFn::Exp),
             LExpr::Tanh(a) => map(a, UnaryFn::Tanh),
+            LExpr::Erf(a) => map(a, UnaryFn::Erf),
             LExpr::Cmp { op, lhs, rhs } => self.cmp(*op, *lhs, *rhs),
             // `select(f, t, c)` is `c ? t: f` - the componentwise `?:` none of
             // the three languages has as an operator on a vector. The three

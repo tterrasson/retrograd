@@ -699,6 +699,92 @@ typedef struct rir_unary_expm1_flat_linear_params {
 } rir_unary_expm1_flat_linear_params;
 static_assert(sizeof(rir_unary_expm1_flat_linear_params) == 52, "registry: push_constant_bytes");
 
+typedef struct rir_unary_gelu_erf_params {
+    uint32_t n_col;
+    uint32_t n_row;
+    uint32_t n_plane;
+    uint32_t n_batch;
+    uint32_t x_nb0;
+    uint32_t x_nb1;
+    uint32_t x_nb2;
+    uint32_t x_nb3;
+    uint32_t dst_nb0;
+    uint32_t dst_nb1;
+    uint32_t dst_nb2;
+    uint32_t dst_nb3;
+    uint32_t rir_flat_total;
+    uint32_t rir_flat0_div;
+    uint32_t rir_flat0_mp;
+    uint32_t rir_flat0_sh;
+    uint32_t rir_flat1_div;
+    uint32_t rir_flat1_mp;
+    uint32_t rir_flat1_sh;
+    uint32_t rir_flat2_div;
+    uint32_t rir_flat2_mp;
+    uint32_t rir_flat2_sh;
+} rir_unary_gelu_erf_params;
+static_assert(sizeof(rir_unary_gelu_erf_params) == 88, "registry: push_constant_bytes");
+
+typedef struct rir_unary_gelu_erf_flat_linear_params {
+    uint32_t n_col;
+    uint32_t n_row;
+    uint32_t n_plane;
+    uint32_t n_batch;
+    uint32_t x_nb0;
+    uint32_t x_nb1;
+    uint32_t x_nb2;
+    uint32_t x_nb3;
+    uint32_t dst_nb0;
+    uint32_t dst_nb1;
+    uint32_t dst_nb2;
+    uint32_t dst_nb3;
+    uint32_t rir_flat_total;
+} rir_unary_gelu_erf_flat_linear_params;
+static_assert(sizeof(rir_unary_gelu_erf_flat_linear_params) == 52, "registry: push_constant_bytes");
+
+typedef struct rir_unary_erf_params {
+    uint32_t n_col;
+    uint32_t n_row;
+    uint32_t n_plane;
+    uint32_t n_batch;
+    uint32_t x_nb0;
+    uint32_t x_nb1;
+    uint32_t x_nb2;
+    uint32_t x_nb3;
+    uint32_t dst_nb0;
+    uint32_t dst_nb1;
+    uint32_t dst_nb2;
+    uint32_t dst_nb3;
+    uint32_t rir_flat_total;
+    uint32_t rir_flat0_div;
+    uint32_t rir_flat0_mp;
+    uint32_t rir_flat0_sh;
+    uint32_t rir_flat1_div;
+    uint32_t rir_flat1_mp;
+    uint32_t rir_flat1_sh;
+    uint32_t rir_flat2_div;
+    uint32_t rir_flat2_mp;
+    uint32_t rir_flat2_sh;
+} rir_unary_erf_params;
+static_assert(sizeof(rir_unary_erf_params) == 88, "registry: push_constant_bytes");
+
+typedef struct rir_unary_erf_flat_linear_params {
+    uint32_t n_col;
+    uint32_t n_row;
+    uint32_t n_plane;
+    uint32_t n_batch;
+    uint32_t x_nb0;
+    uint32_t x_nb1;
+    uint32_t x_nb2;
+    uint32_t x_nb3;
+    uint32_t dst_nb0;
+    uint32_t dst_nb1;
+    uint32_t dst_nb2;
+    uint32_t dst_nb3;
+    uint32_t rir_flat_total;
+} rir_unary_erf_flat_linear_params;
+static_assert(sizeof(rir_unary_erf_flat_linear_params) == 52, "registry: push_constant_bytes");
+
 typedef struct rir_add_params {
     uint32_t n_col;
     uint32_t n_row;

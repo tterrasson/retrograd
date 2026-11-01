@@ -444,6 +444,20 @@ impl LoopKernel {
         self.any_stmt(&|s| matches!(s, Stmt::ParallelSubgroup { .. }))
     }
 
+    /// Whether the body evaluates `erf`, which no GPU shading language has and
+    /// which an emitter therefore has to define ahead of the kernel.
+    pub fn uses_erf(&self) -> bool {
+        self.any_stmt(&|s| {
+            matches!(
+                s,
+                Stmt::Compute(Inst {
+                    expr: LExpr::Erf(_),
+                    ..
+                })
+            )
+        })
+    }
+
     /// Whether the body computes on matrix fragments: the subgroup matrix
     /// product is a device capability of its own, published apart from the
     /// lane collectives.

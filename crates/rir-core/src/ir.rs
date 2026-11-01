@@ -177,6 +177,14 @@ pub enum Op {
     /// whose only difference from the native kernel is a rewritten identity is
     /// a difference nobody asked for.
     Tanh(ValueId),
+    /// Gauss error function.
+    ///
+    /// An operation for the reason `Tanh` is one: ggml's CPU kernels call
+    /// `erff`, and the parity that matters is against that function, not
+    /// against a composition of other operations. CUDA has `erff` natively;
+    /// MSL and GLSL have no `erf`, so those two emitters spell a polynomial
+    /// approximation whose error is part of the emitter's contract.
+    Erf(ValueId),
     Cmp {
         op: CmpOp,
         lhs: ValueId,
@@ -275,7 +283,7 @@ pub fn depends_on_axis(k: &Kernel, v: ValueId, axis: AxisId) -> bool {
         Op::Add(a, b) | Op::Sub(a, b) | Op::Mul(a, b) | Op::Div(a, b) => {
             depends_on_axis(k, *a, axis) || depends_on_axis(k, *b, axis)
         }
-        Op::Sqrt(a) | Op::Exp(a) | Op::Tanh(a) => depends_on_axis(k, *a, axis),
+        Op::Sqrt(a) | Op::Exp(a) | Op::Tanh(a) | Op::Erf(a) => depends_on_axis(k, *a, axis),
         Op::Cmp { lhs, rhs, .. } => {
             depends_on_axis(k, *lhs, axis) || depends_on_axis(k, *rhs, axis)
         }

@@ -108,6 +108,7 @@ RIR_VF_CMP(rir_vne, !=)
 RIR_VF_MAP(rir_vsqrt, sqrtf)
 RIR_VF_MAP(rir_vexp, expf)
 RIR_VF_MAP(rir_vtanh, tanhf)
+RIR_VF_MAP(rir_verf, erff)
 #undef RIR_VF_MAP
 
 template <int N> __device__ __forceinline__ rir_vf<N> rir_vmax(rir_vf<N> a, rir_vf<N> b) {

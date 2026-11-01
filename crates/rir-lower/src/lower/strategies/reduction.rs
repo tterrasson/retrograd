@@ -32,7 +32,7 @@ pub(crate) fn reaches(k: &Kernel, from: ValueId, target: ValueId) -> bool {
         Op::Dequant { value, .. } => reaches(k, *value, target),
         Op::RepeatIndex { index, .. } => reaches(k, *index, target),
         Op::Add(a, b) | Op::Sub(a, b) | Op::Mul(a, b) | Op::Div(a, b) => any(&[*a, *b]),
-        Op::Sqrt(a) | Op::Exp(a) | Op::Tanh(a) => reaches(k, *a, target),
+        Op::Sqrt(a) | Op::Exp(a) | Op::Tanh(a) | Op::Erf(a) => reaches(k, *a, target),
         Op::Cmp { lhs, rhs, .. } => any(&[*lhs, *rhs]),
         Op::Select { cond, t, f } => any(&[*cond, *t, *f]),
         Op::Write { .. } => unreachable!("Write is not a value"),
@@ -1163,7 +1163,7 @@ pub(crate) fn collect_result_deps(k: &Kernel, v: ValueId, out: &mut Vec<ValueId>
             collect_result_deps(k, *a, out);
             collect_result_deps(k, *b, out);
         }
-        Op::Sqrt(a) | Op::Exp(a) | Op::Tanh(a) => collect_result_deps(k, *a, out),
+        Op::Sqrt(a) | Op::Exp(a) | Op::Tanh(a) | Op::Erf(a) => collect_result_deps(k, *a, out),
         Op::Cmp { lhs, rhs, .. } => {
             collect_result_deps(k, *lhs, out);
             collect_result_deps(k, *rhs, out);
