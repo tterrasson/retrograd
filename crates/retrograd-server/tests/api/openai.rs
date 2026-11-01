@@ -294,6 +294,39 @@ async fn failures_on_these_routes_are_openai_envelopes() {
 }
 
 #[tokio::test]
+async fn the_configured_body_limit_can_exceed_axums_default() {
+    let fixture = Fixture::new("openai-large-body");
+    let (_, _, mut state) = serving(&fixture, FakeEngine::succeeding());
+    let mut config = (*state.config).clone();
+    config.serving.max_body_bytes = Some(3 * 1024 * 1024);
+    state.config = Arc::new(config);
+    let router = build_router(state);
+    let id = finished(&fixture, &router).await;
+    // A small prompt with legal JSON whitespace avoids involving context size.
+    let mut body = chat(&id).to_string();
+    body.push_str(&" ".repeat(2 * 1024 * 1024));
+    let (status, answer) = send(
+        &router,
+        Request::post("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let (status, answer) = send(
+        &router,
+        Request::post("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(" ".repeat(3 * 1024 * 1024 + 1)))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{answer}");
+    assert!(answer["error"].is_object(), "{answer}");
+}
+
+#[tokio::test]
 async fn a_disabled_endpoint_answers_404_in_the_envelope() {
     let fixture = Fixture::new("openai-disabled");
     let mut state = state_of(&fixture, FakeEngine::succeeding(), false);

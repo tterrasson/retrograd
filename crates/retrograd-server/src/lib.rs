@@ -114,6 +114,9 @@ pub fn build_router(state: AppState) -> Router {
         enabled: config.serving.enabled(),
         store: state.responses_store.clone(),
     })
+    .layer(axum::extract::DefaultBodyLimit::max(
+        config.serving.max_body_bytes(),
+    ))
     .layer(RequestBodyLimitLayer::new(config.serving.max_body_bytes()));
 
     let v1 = Router::new()
@@ -168,6 +171,9 @@ pub fn build_router(state: AppState) -> Router {
             config.command_timeout().max(config.request_timeout()),
         ))
         .layer(RequestBodyLimitLayer::new(config.max_body_bytes()))
+        .layer(axum::extract::DefaultBodyLimit::max(
+            config.max_body_bytes(),
+        ))
         .with_state(state.clone())
         .merge(streams)
         .merge(datasets)
