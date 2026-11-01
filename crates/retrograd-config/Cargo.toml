@@ -16,6 +16,7 @@ publish = false
 retrograd-agent-core.workspace = true
 retrograd-core.workspace = true
 retrograd-dataset.workspace = true
+retrograd-decision.workspace = true
 retrograd-spec.workspace = true
 serde.workspace = true
 serde_json.workspace = true

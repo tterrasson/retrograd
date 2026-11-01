@@ -255,6 +255,21 @@ fn exhaustive_preference() -> PreferenceToml {
     }
 }
 
+/// Every key of `[decision]`.
+fn exhaustive_decision() -> DecisionToml {
+    DecisionToml {
+        data: PathBuf::from("data/questions.jsonl"),
+        data_format: Some("julia".to_string()),
+        template: Some(PathBuf::from("systemone.jinja")),
+        max_head_tokens: Some(384),
+        option_shuffle: Some(false),
+        shuffle: Some(false),
+        calibrate: Some(true),
+        questions_per_batch: Some(5),
+        export_base: Some(PathBuf::from("out/base.gguf")),
+    }
+}
+
 /// Dr. GRPO refuses anything but strictly on-policy sampling, so the two
 /// fields that could vary are covered by the PPO document instead.
 fn exhaustive_sampling() -> SamplingToml {
@@ -369,6 +384,7 @@ fn exhaustive_document() -> ConfigDocument {
         ppo: None,
         distill: None,
         preference: None,
+        decision: None,
         grpo: Some(GrpoToml {
             prompts: PathBuf::from("data/prompts.txt"),
             reward_command: vec!["score".to_string(), "--grpo".to_string()],
@@ -1377,6 +1393,39 @@ fn the_other_algorithm_sections_reach_the_run_config() {
         }
     );
     assert_eq!(preference.reference, None);
+    let mut document = lora_normalized(exhaustive_document());
+    document.run.algorithm = "decision".to_string();
+    document.observe = None;
+    document.grpo = None;
+    document.training.generation_concurrency = None;
+    document.reference = None;
+    document.training.ctx = Some(1024);
+    document.training.micro_batch = Some(512);
+    document.training.gradient_accumulation = Some(4);
+    document.decision = Some(exhaustive_decision());
+    let config = build(document, root).expect("the decision document builds");
+    let Algorithm::Decision(decision) = &config.algorithm else {
+        panic!("run.algorithm = 'decision' builds a decision run");
+    };
+    assert_eq!(decision.data, root.join("data/questions.jsonl"));
+    assert_eq!(
+        decision.data_format,
+        retrograd_decision::dataset::DataFormat::Julia
+    );
+    assert_eq!(decision.template, Some(root.join("systemone.jinja")));
+    assert_eq!(decision.max_head_tokens, Some(384));
+    assert!(!decision.option_shuffle);
+    assert!(!decision.shuffle);
+    assert!(decision.calibrate);
+    assert_eq!(decision.questions_per_batch, 5);
+    assert_eq!(decision.gradient_accumulation, 4);
+    assert_eq!(decision.seed, 7);
+    assert_eq!(decision.export_base, Some(root.join("out/base.gguf")));
+    // One runtime batch per micro-batch, one sequence per question; the
+    // accumulation is the grouped step's.
+    assert_eq!(config.training.n_batch, 512);
+    assert_eq!(config.training.n_seq_max, 5);
+    assert!(!config.training.fast_generation_context);
 }
 
 /// The other side of the same coin: what a document that says nothing gets.

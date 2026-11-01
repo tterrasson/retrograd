@@ -13,6 +13,7 @@ use retrograd_core::{
 };
 
 use crate::agent::AgentToml;
+use crate::decision::DecisionToml;
 use crate::distill::DistillToml;
 use crate::grpo::GrpoToml;
 use crate::ppo::PpoToml;
@@ -75,6 +76,8 @@ pub struct ConfigDocument {
     pub agent: Option<AgentToml>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preference: Option<PreferenceToml>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionToml>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observe: Option<ObserveToml>,
     /// `[reference]`: the frozen model a KL penalty is scored against. Its own

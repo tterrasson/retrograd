@@ -3,8 +3,8 @@
 //! One document, one schema, whichever frontend reads it. `[model]`, `[lora]`,
 //! `[training]`, `[metrics]`, `[evaluation]` and `[checkpoint]` are shared;
 //! `[run].algorithm` selects which of `[sft]`, `[ppo]`, `[grpo]`, `[distill]`,
-//! `[agent]` or `[preference]` is the run's own section, and exactly that one
-//! may be present.
+//! `[agent]`, `[preference]` or `[decision]` is the run's own section, and
+//! exactly that one may be present.
 
 //!
 //! One module per section of the document, each holding that section's schema,
@@ -16,6 +16,7 @@
 mod agent;
 mod build;
 mod common;
+mod decision;
 mod distill;
 mod document;
 mod grpo;
@@ -38,6 +39,7 @@ use retrograd_core::{Error, LoraConfig, Result, TargetSet, TrainConfig};
 
 pub use agent::{AgentRunConfig, AgentToml, CollectApiConfig, ScenarioGenerationConfig};
 pub use build::{build, build_with, load, load_with, parse_toml};
+pub use decision::{DEFAULT_QUESTIONS_PER_BATCH, DecisionConfig, DecisionToml};
 pub use distill::{
     DEFAULT_DISTILL_CLIP_RANGE_HIGH, DEFAULT_DISTILL_CLIP_RANGE_LOW, DEFAULT_DISTILL_EPOCHS,
     DEFAULT_DISTILL_WEIGHT_CLIP, DistillConfig, DistillMode, DistillToml, OfflineDistillConfig,
@@ -59,7 +61,15 @@ pub use preference::{
 pub use reference::ReferenceConfig;
 pub use sft::{SftConfig, SftToml};
 /// Every `run.algorithm` a document may name.
-pub const ALGORITHMS: &[&str] = &["sft", "ppo", "grpo", "distill", "agent_grpo", "preference"];
+pub const ALGORITHMS: &[&str] = &[
+    "sft",
+    "ppo",
+    "grpo",
+    "distill",
+    "agent_grpo",
+    "preference",
+    "decision",
+];
 
 /// The sections that belong to some algorithms only, and which. A document
 /// whose `run.algorithm` is not listed for a section it carries is refused.
@@ -70,6 +80,7 @@ pub const SECTION_ALGORITHMS: &[(&str, &[&str])] = &[
     ("distill", &["distill"]),
     ("agent", &["agent_grpo"]),
     ("preference", &["preference"]),
+    ("decision", &["decision"]),
     // Only the rollout algorithms generate something to export.
     ("observe", &["ppo", "grpo", "agent_grpo"]),
 ];
@@ -137,6 +148,9 @@ pub enum Algorithm {
     /// example (a chosen and a rejected response to one prompt) and nothing
     /// generated.
     Preference(PreferenceConfig),
+    /// Typed questions to a decision model: the options of each question
+    /// scored in one forward pass, trained through a softmax over them.
+    Decision(DecisionConfig),
 }
 
 #[derive(Clone, Debug)]
@@ -284,7 +298,7 @@ pub const DEFAULT_SEED: u32 = 42;
 /// feed-forward projection, the set that actually trains well. `targets =
 /// ['auto']` is still how you defer to the runtime's per-architecture choice.
 pub const DEFAULT_TARGETS: [&str; 7] = ["q", "k", "v", "o", "ffn_up", "ffn_down", "ffn_gate"];
-/// Expands LoRA target aliases (`q`, `v`, `ffn_up`,...) into tensor patterns.
+/// Expands LoRA target aliases (`q`, `v`, `qkv`, `ffn_up`,...) into tensor patterns.
 /// Shared by the TOML config and the `preflight` CLI command.
 pub fn parse_targets(values: &[String]) -> Result<TargetSet> {
     if values.is_empty()
@@ -305,6 +319,9 @@ pub fn parse_targets(values: &[String]) -> Result<TargetSet> {
             "q" => "blk.*.attn_q.weight",
             "k" => "blk.*.attn_k.weight",
             "v" => "blk.*.attn_v.weight",
+            // The fused projection of the architectures that have one
+            // (ModernBERT): `q`, `k` and `v` match nothing there.
+            "qkv" => "blk.*.attn_qkv.weight",
             "o" => "blk.*.attn_output.weight",
             "ffn_up" => "blk.*.ffn_up.weight",
             "ffn_down" => "blk.*.ffn_down.weight",

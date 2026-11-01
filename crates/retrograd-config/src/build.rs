@@ -18,6 +18,7 @@ use crate::common::{
     parse_scheduler, parse_string_enum, require_non_negative_f32, require_non_negative_f64,
     require_nonzero, require_positive_f32, required, resolve,
 };
+use crate::decision::build_decision;
 use crate::distill::build_distill;
 use crate::document::{
     CheckpointToml, ConfigDocument, EvaluationToml, LoraToml, ModelOverride, ObserveToml,
@@ -114,6 +115,7 @@ pub fn build_with(
 
     let algorithm_name = file.run.algorithm.to_ascii_lowercase();
     only_the_selected_section(&file, &algorithm_name)?;
+    let has_evaluation = file.evaluation.is_some();
     let ConfigDocument {
         sft,
         ppo,
@@ -121,6 +123,7 @@ pub fn build_with(
         distill,
         agent: agent_section,
         preference,
+        decision,
         evaluation,
         checkpoint,
         observe,
@@ -175,6 +178,20 @@ pub fn build_with(
                 root,
                 reference_toml.is_some(),
                 lora.as_ref().map_or(DEFAULT_SEED, |config| config.seed),
+            )?)
+        }
+        "decision" => {
+            let value = required(
+                decision,
+                "[decision] is required when run.algorithm = 'decision'",
+            )?;
+            Algorithm::Decision(build_decision(
+                value,
+                root,
+                &mut training,
+                training_toml.gradient_accumulation,
+                lora.as_ref().map_or(DEFAULT_SEED, |config| config.seed),
+                has_evaluation,
             )?)
         }
         _ => {
@@ -641,6 +658,7 @@ fn only_the_selected_section(file: &ConfigDocument, algorithm_name: &str) -> Res
         ("distill", file.distill.is_some()),
         ("agent", file.agent.is_some()),
         ("preference", file.preference.is_some()),
+        ("decision", file.decision.is_some()),
     ] {
         let selected = crate::SECTION_ALGORITHMS
             .iter()
@@ -668,6 +686,9 @@ fn derive_optimizer_window(
         Algorithm::Ppo(_) | Algorithm::Grpo(_) | Algorithm::AgentGrpo(_) => true,
         Algorithm::Distill(distill) => distill.mode.is_rollout(),
         Algorithm::Sft(_) | Algorithm::Preference(_) => false,
+        // `[decision]` pinned its own window: one runtime batch per
+        // micro-batch, the accumulation counted by the grouped step.
+        Algorithm::Decision(_) => return Ok(()),
     };
     // A preference step holds whole pairs, so it spans the window a rollout
     // step does, without being one.
@@ -907,7 +928,7 @@ fn check_across_sections(
 /// generated the rollout, not from an anchor - and are deliberately not listed.
 fn fixed_reference_consumer(algorithm: &Algorithm) -> Option<&'static str> {
     match algorithm {
-        Algorithm::Sft(_) | Algorithm::Ppo(_) => None,
+        Algorithm::Sft(_) | Algorithm::Ppo(_) | Algorithm::Decision(_) => None,
         Algorithm::Grpo(grpo) => {
             // The schedule as well as the value: a run configured to warm up to
             // a penalty has a reference from the first update, whatever the
@@ -935,7 +956,10 @@ fn build_observe(value: ObserveToml, algorithm: &Algorithm, root: &Path) -> Resu
     // Only the rollout algorithms produce something to look at.
     match algorithm {
         Algorithm::Ppo(_) | Algorithm::Grpo(_) | Algorithm::AgentGrpo(_) => {}
-        Algorithm::Sft(_) | Algorithm::Distill(_) | Algorithm::Preference(_) => {
+        Algorithm::Sft(_)
+        | Algorithm::Distill(_)
+        | Algorithm::Preference(_)
+        | Algorithm::Decision(_) => {
             return Err(Error::config(
                 "[observe] exports rollouts and is only supported for ppo, grpo and agent_grpo",
             ));
