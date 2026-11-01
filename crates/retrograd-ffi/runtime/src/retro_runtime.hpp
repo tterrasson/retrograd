@@ -207,6 +207,11 @@ struct chat_model_state {
     // Lexed/parsed once per owner (the model's chat template never changes for
     // its lifetime) and reused across every format_chat call.
     chat_template_state_ptr chat_template_cache;
+    // The named templates of the model (`tokenizer.chat_template.<name>`),
+    // parsed on first use, and the sources set in place of one of them. An
+    // entry made from an override is replaced only by another override or by
+    // clearing it.
+    std::map<std::string, chat_template_state_ptr> named_templates;
     // Extra variables handed to the chat template on every render, as a JSON
     // object, empty for none. Parser derivation reads the same ones (see
     // resolve_derivation_variables).
@@ -637,6 +642,69 @@ int render_chat_template_source(
         char * buffer,
         size_t n_buffer,
         size_t * out_n_bytes);
+
+// Renders the template of the model named `name` (`tokenizer.chat_template.<name>`)
+// over `context_json`, a JSON object whose entries are the template's only
+// globals: no messages, no bos/eos token, no generation prompt. This is how
+// llama-server renders the `systemone` template of a decision model. Object
+// keys keep the order of `context_json`. Follows the render_string_out
+// two-call contract.
+int render_named_template(
+        chat_model_state & chat,
+        const char * name,
+        const char * context_json,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes);
+
+// Sets the source rendered under `name` in place of the model's own, or, with
+// a null source, goes back to the model's. The source is parsed here, so a
+// template that does not parse is refused before any render.
+int set_named_template(chat_model_state & chat, const char * name, const char * source);
+
+// render_named_template over a template given as source, without a model.
+int render_template_source_context(
+        const char * template_src,
+        const char * context_json,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes);
+
+// The names of the model's named templates, in key order, and whether it
+// has a default one (`tokenizer.chat_template`).
+std::vector<std::string> model_template_names(const llama_model * model, bool * out_has_default);
+
+// Opens a GGUF mapped, host-only and without a context: its metadata, its
+// vocabulary and its tensor list, for the price of a page table.
+model_ptr load_model_metadata_only(const char * model_path);
+
+// What a model declares about its decision head, as a JSON object; see
+// retro_read_decision_info in retro_lora_train.h for the fields.
+std::string describe_decision_model(const llama_model * model);
+
+// Whether the GGUF at `model_path` declares `<arch>.decision.type`, read from
+// its header alone, before any load. False for a file that cannot be read.
+bool gguf_is_decision_model(const char * model_path);
+
+// The pooling a context must be created with for a decision model whose
+// `<arch>.decision.type` makes it read the embeddings output, or false when the
+// model has no such type or reads its logits.
+bool decision_context_pooling(const llama_model * model, enum llama_pooling_type * out_pooling);
+
+// Evaluates decision prompts on `ctx` and writes their scores; see
+// retro_engine_decide in retro_lora_train.h for the contract. The caller owns
+// the context configuration: the embeddings flag the readout needs is set here
+// and left set, and the sequence memory is left dirty.
+int decide_prompts(
+        llama_model * model,
+        llama_context * ctx,
+        int32_t readout,
+        const retro_decision_prompt * prompts,
+        size_t n_prompts,
+        size_t n_pack_max,
+        bool share_prefix,
+        float * out_scores,
+        size_t n_scores_max);
 
 // Whether the model's own chat template renders a tool catalog, probed once by
 // rendering with a sentinel tool and looking for it in the output. Templates

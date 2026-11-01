@@ -1494,6 +1494,18 @@ void gen_core::clear_generation_memory() {
     }
 }
 
+// Generation decodes into sequence memory and samples from logits; a context
+// without memory is an encoder, which evaluates a prompt and generates
+// nothing. Refused up front, before anything is decoded.
+bool gen_core::require_sequence_memory() const {
+    if (llama_get_memory(ctx)) {
+        return true;
+    }
+    set_error("the model has no sequence memory (an encoder, such as a decision model): "
+              "it does not generate text");
+    return false;
+}
+
 bool gen_core::validate_tokens(const int32_t * tokens, size_t n_tokens) const {
     const int32_t n_vocab = llama_vocab_n_tokens(vocab());
     for (size_t i = 0; i < n_tokens; ++i) {
@@ -1692,6 +1704,9 @@ int gen_core::generate_batch(
         size_t * out_n_tokens,
         uint8_t * out_forced,
         const reasoning_budget_plan * plan) {
+    if (!require_sequence_memory()) {
+        return -1;
+    }
     if (!prompt_tokens || n_prompt == 0) {
         set_error("prompt tokens are required");
         return -1;
@@ -1869,6 +1884,9 @@ int gen_core::generate_continuous_batch(
         size_t * out_n_tokens,
         uint8_t * out_forced,
         const reasoning_budget_plan * plan) {
+    if (!require_sequence_memory()) {
+        return -1;
+    }
     if (!sequences || n_sequences == 0 || !out_tokens || !out_n_tokens || n_out_max == 0) {
         set_error("continuous generation inputs and output buffers are required");
         return -1;
@@ -2039,6 +2057,9 @@ int gen_core::generate_continuous_batch_v2(
         size_t * out_n_tokens,
         uint8_t * out_forced,
         const reasoning_budget_plan * plan) {
+    if (!require_sequence_memory()) {
+        return -1;
+    }
     if (!sequences || n_sequences == 0 || !out_tokens || !out_n_tokens || n_out_max == 0) {
         set_error("continuous v2 generation inputs and output buffers are required");
         return -1;
@@ -2263,6 +2284,9 @@ int gen_core::step(
         step_request_table & requests,
         const reasoning_budget_plan * plan,
         llama_batch_ext * ext_batch) {
+    if (!require_sequence_memory()) {
+        return -1;
+    }
     if (!rows || n_rows == 0 || !out_rows) {
         set_error("step rows and output rows are required");
         return -3;
@@ -2319,6 +2343,9 @@ int gen_core::step_v2(
         step_request_table & requests,
         const reasoning_budget_plan * plan,
         llama_batch_ext * ext_batch) {
+    if (!require_sequence_memory()) {
+        return -1;
+    }
     if (!rows || n_rows == 0 || !out_rows) {
         set_error("step rows and output rows are required");
         return -3;

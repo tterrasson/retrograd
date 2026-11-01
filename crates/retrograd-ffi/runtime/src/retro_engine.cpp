@@ -56,6 +56,10 @@ struct engine_state {
     std::string weight_storage = "mapped";
     int32_t effective_kv_dtype = RETRO_KV_DTYPE_F32;
     ggml_rir_counters rir_baseline {};
+    // Whether the context outputs embeddings outside a call that sets them for
+    // itself: a decision model that reads its embeddings output is created
+    // in that mode, like llama-server creates it.
+    bool embeddings_default = false;
     // Bumped by forget_engine_kv(): every event that invalidates resident KV
     // (adapter load/enable, explicit forget) moves the weights generation, so
     // a prefix cache keyed on it can drop stale entries.
@@ -186,7 +190,13 @@ bool load_engine_model_and_context(engine_state & state) {
     // trainer forces owned buffers only for a base-weight training policy.
     model_params.load_mode = use_gpu ? LLAMA_LOAD_MODE_NONE : LLAMA_LOAD_MODE_MMAP;
     state.weight_storage = model_params.load_mode == LLAMA_LOAD_MODE_MMAP ? "mapped" : "owned";
-    model_params.use_extra_bufts = false;
+    // The host weights keep their file layout, as the trainer's do, so the
+    // engine's generation is the trainer's to the bit. A decision model is
+    // the exception: it generates nothing, and llama-server reads its Q8_0
+    // weights repacked into the CPU's extra buffer types, which changes the
+    // arithmetic of every matrix product. Serving it with the same kernels is
+    // what serving it with the same numbers takes.
+    model_params.use_extra_bufts = !use_gpu && gguf_is_decision_model(state.model_path.c_str());
     model_params.n_gpu_layers = state.n_gpu_layers;
     // Same reason as the trainer's CPU path: an explicit empty device list
     // keeps the scheduler CPU-only, which is what device=cpu asked for anyway.
@@ -238,6 +248,16 @@ bool load_engine_model_and_context(engine_state & state) {
     ctx_params.no_perf = true;
     ctx_params.offload_kqv = use_gpu;
     ctx_params.op_offload = use_gpu;
+    // A decision model that reads its embeddings output gets the context
+    // llama-server gives it: embeddings on, its pooling, an output per batch
+    // row (each option of a question is read at its own position).
+    enum llama_pooling_type decision_pooling = LLAMA_POOLING_TYPE_UNSPECIFIED;
+    if (decision_context_pooling(model.get(), &decision_pooling)) {
+        ctx_params.embeddings = true;
+        ctx_params.pooling_type = decision_pooling;
+        ctx_params.n_outputs_max = ctx_params.n_batch;
+        state.embeddings_default = true;
+    }
 
     context_ptr ctx(llama_init_from_model(model.get(), ctx_params));
     if (!ctx) {
@@ -285,6 +305,7 @@ int tokenize_into(
         engine_state & state,
         const char * text,
         bool add_special,
+        bool parse_special,
         int32_t * tokens,
         size_t n_tokens_max,
         size_t * out_n_tokens) {
@@ -315,7 +336,7 @@ int tokenize_into(
             token_buf,
             cap,
             add_special,
-            true);
+            parse_special);
 
     if (result == INT32_MIN) {
         set_error("tokenization overflow");
@@ -516,7 +537,7 @@ extern "C" int retro_engine_tokenize_text(
         if (!state) {
             return -1;
         }
-        return tokenize_into(*state, text, /*add_special =*/ true, tokens, n_tokens_max, out_n_tokens);
+        return tokenize_into(*state, text, /*add_special =*/ true, /*parse_special =*/ true, tokens, n_tokens_max, out_n_tokens);
     });
 }
 
@@ -531,7 +552,7 @@ extern "C" int retro_engine_tokenize_fragment(
         if (!state) {
             return -1;
         }
-        return tokenize_into(*state, text, /*add_special =*/ false, tokens, n_tokens_max, out_n_tokens);
+        return tokenize_into(*state, text, /*add_special =*/ false, /*parse_special =*/ true, tokens, n_tokens_max, out_n_tokens);
     });
 }
 
@@ -1343,7 +1364,7 @@ extern "C" int retro_engine_embed(
             engine_state & state;
             ~embedding_guard() {
                 forget_engine_kv(state);
-                llama_set_embeddings(state.ctx.get(), false);
+                llama_set_embeddings(state.ctx.get(), state.embeddings_default);
             }
         } cleanup { *state };
         llama_set_embeddings(ctx, true);
@@ -1376,6 +1397,137 @@ extern "C" int retro_engine_embed(
             }
         }
         return status;
+    });
+}
+
+extern "C" int retro_engine_decision_info(retro_engine * engine, char * buffer, size_t n_buffer, size_t * out_n_bytes) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        if (!out_n_bytes) {
+            set_error("out_n_bytes is required");
+            return -1;
+        }
+        return copy_string_out(describe_decision_model(state->model.get()), buffer, n_buffer, out_n_bytes);
+    });
+}
+
+extern "C" int retro_engine_render_named_template(
+        retro_engine * engine,
+        const char * name,
+        const char * context_json,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        if (!out_n_bytes) {
+            set_error("out_n_bytes is required");
+            return -1;
+        }
+        return render_named_template(state->chat, name, context_json, buffer, n_buffer, out_n_bytes);
+    });
+}
+
+extern "C" int retro_engine_set_named_template(retro_engine * engine, const char * name, const char * source) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        return set_named_template(state->chat, name, source);
+    });
+}
+
+extern "C" int retro_engine_tokenize(
+        retro_engine * engine,
+        const char * text,
+        bool add_special,
+        bool parse_special,
+        int32_t * tokens,
+        size_t n_tokens_max,
+        size_t * out_n_tokens) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        return tokenize_into(*state, text, add_special, parse_special, tokens, n_tokens_max, out_n_tokens);
+    });
+}
+
+extern "C" int retro_engine_token_piece(
+        retro_engine * engine,
+        int32_t token,
+        bool special,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        if (!out_n_bytes) {
+            set_error("out_n_bytes is required");
+            return -1;
+        }
+        const llama_vocab * vocab = llama_model_get_vocab(state->model.get());
+        if (token < 0 || token >= llama_vocab_n_tokens(vocab)) {
+            set_error("token is outside the vocabulary");
+            return -1;
+        }
+        return render_string_out(
+                buffer, n_buffer, out_n_bytes, "failed to render the token",
+                [&](char * destination, int32_t capacity) -> int32_t {
+                    // llama_token_to_piece writes nothing and returns minus
+                    // the size when the buffer is short.
+                    char probe[1];
+                    const int32_t n = llama_token_to_piece(
+                            vocab, token, destination ? destination : probe,
+                            destination ? capacity : 0, 0, special);
+                    return n < 0 ? -n : n;
+                });
+    });
+}
+
+extern "C" int retro_engine_decide(
+        retro_engine * engine,
+        int32_t readout,
+        const retro_decision_prompt * prompts,
+        size_t n_prompts,
+        size_t n_pack_max,
+        float * out_scores,
+        size_t n_scores_max) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        // Same discipline as an embedding: the active adapter applies, the KV
+        // (and with it the prefix cache) is cleared before and after, and the
+        // context's embeddings configuration is restored on every exit path.
+        if (!apply_active_adapter(*state)) {
+            return -1;
+        }
+        struct decide_guard {
+            engine_state & state;
+            ~decide_guard() {
+                forget_engine_kv(state);
+                llama_set_embeddings(state.ctx.get(), state.embeddings_default);
+            }
+        } cleanup { *state };
+        forget_engine_kv(*state);
+        // A prefix is shared by copying it between sequences, which a
+        // partitioned pool supports only for whole sequences.
+        const bool share_prefix = state->config.kv_unified != 0;
+        return decide_prompts(state->model.get(), state->ctx.get(), readout, prompts, n_prompts,
+                              n_pack_max, share_prefix, out_scores, n_scores_max);
     });
 }
 

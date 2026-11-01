@@ -40,6 +40,7 @@ add_library(retro_lora_train STATIC
     src/retro_probe.cpp
     src/retro_fused_ce.cpp
     src/retro_decision_probe.cpp
+    src/retro_decision.cpp
     src/retro_lora_train.cpp
     src/retro_checkpoint.cpp
     src/retro_trainable.cpp

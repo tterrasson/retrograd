@@ -395,6 +395,145 @@ int render_chat_template_source(
     return copy_rendered_out(rendered, buffer, n_buffer, out_n_bytes);
 }
 
+namespace {
+
+// The context is the whole input of the template: nothing is added to it, so a
+// template renders the same here and in llama-server.
+bool apply_context(const chat_template_state & tmpl, const char * context_json, std::string & rendered) {
+    if (!context_json) {
+        set_error("template context is required");
+        return false;
+    }
+    json context;
+    try {
+        context = json::parse(context_json);
+    } catch (const std::exception & err) {
+        set_error(std::string("failed to parse the template context: ") + err.what());
+        return false;
+    }
+    if (!context.is_object()) {
+        set_error("the template context must be a JSON object");
+        return false;
+    }
+    try {
+        jinja::context ctx(tmpl.src);
+        jinja::global_from_json(ctx, context, /*mark_input=*/false);
+        jinja::runtime runtime(ctx);
+        const jinja::value results = runtime.execute(tmpl.prog);
+        rendered = jinja::runtime::gather_string_parts(results)->as_string().str();
+        return true;
+    } catch (const std::exception & err) {
+        set_error(std::string("failed to apply the template: ") + err.what());
+        return false;
+    }
+}
+
+chat_template_state * ensure_named_template(chat_model_state & chat, const std::string & name) {
+    const auto found = chat.named_templates.find(name);
+    if (found != chat.named_templates.end()) {
+        return found->second.get();
+    }
+    const char * tmpl = chat.model ? llama_model_chat_template(chat.model, name.c_str()) : nullptr;
+    if (!tmpl || tmpl[0] == '\0') {
+        set_error("model has no \"" + name + "\" template (tokenizer.chat_template." + name + ")");
+        return nullptr;
+    }
+    auto owned = parse_chat_template(tmpl);
+    if (!owned) {
+        return nullptr;
+    }
+    chat_template_state * parsed = owned.get();
+    chat.named_templates[name] = chat_template_state_ptr(owned.release());
+    return parsed;
+}
+
+bool valid_template_name(const char * name) {
+    if (is_blank(name)) {
+        set_error("template name is required");
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+int render_named_template(
+        chat_model_state & chat,
+        const char * name,
+        const char * context_json,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes) {
+    if (!valid_template_name(name)) {
+        return -1;
+    }
+    const chat_template_state * tmpl = ensure_named_template(chat, name);
+    std::string rendered;
+    if (!tmpl || !apply_context(*tmpl, context_json, rendered)) {
+        return -1;
+    }
+    return copy_rendered_out(rendered, buffer, n_buffer, out_n_bytes);
+}
+
+int set_named_template(chat_model_state & chat, const char * name, const char * source) {
+    if (!valid_template_name(name)) {
+        return -1;
+    }
+    if (!source) {
+        chat.named_templates.erase(name);
+        return 0;
+    }
+    auto owned = parse_chat_template(source);
+    if (!owned) {
+        return -1;
+    }
+    chat.named_templates[name] = chat_template_state_ptr(owned.release());
+    return 0;
+}
+
+int render_template_source_context(
+        const char * template_src,
+        const char * context_json,
+        char * buffer,
+        size_t n_buffer,
+        size_t * out_n_bytes) {
+    if (!template_src) {
+        set_error("template source is required");
+        return -1;
+    }
+    const auto tmpl = parse_chat_template(template_src);
+    std::string rendered;
+    if (!tmpl || !apply_context(*tmpl, context_json, rendered)) {
+        return -1;
+    }
+    return copy_rendered_out(rendered, buffer, n_buffer, out_n_bytes);
+}
+
+std::vector<std::string> model_template_names(const llama_model * model, bool * out_has_default) {
+    static const std::string prefix = "tokenizer.chat_template.";
+    std::vector<std::string> names;
+    bool has_default = false;
+    const int32_t n_meta = llama_model_meta_count(model);
+    for (int32_t i = 0; i < n_meta; ++i) {
+        const int32_t n = llama_model_meta_key_by_index(model, i, nullptr, 0);
+        if (n < 0) {
+            continue;
+        }
+        std::string key(static_cast<size_t>(n) + 1, '\0');
+        llama_model_meta_key_by_index(model, i, key.data(), key.size());
+        key.resize(static_cast<size_t>(n));
+        if (key == "tokenizer.chat_template") {
+            has_default = true;
+        } else if (key.size() > prefix.size() && key.compare(0, prefix.size(), prefix) == 0) {
+            names.push_back(key.substr(prefix.size()));
+        }
+    }
+    if (out_has_default) {
+        *out_has_default = has_default;
+    }
+    return names;
+}
+
 int chat_template_supports_tools(chat_model_state & chat, bool * out_supports) {
     chat_template_state * tmpl = ensure_chat_template(chat);
     if (!tmpl) {

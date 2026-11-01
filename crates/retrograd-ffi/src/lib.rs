@@ -692,6 +692,34 @@ pub const RETRO_EMBED_NO_POOLING: c_int = -3;
 /// exceeds the embedding context or micro-batch capacity.
 pub const RETRO_EMBED_INVALID_INPUT: c_int = -4;
 
+/// Mirror of the `RETRO_DECIDE_*` readouts of `retro_engine_decide`:
+/// `embeddings[column]` at each read position.
+pub const RETRO_DECIDE_MARKER_COLUMN: i32 = 0;
+/// The logits of each read token id, at the last position.
+pub const RETRO_DECIDE_LABEL_LOGITS: i32 = 1;
+/// `q.k / sqrt(n/2)`: `q` the first half of the embeddings at `pointer`, `k`
+/// the second half at each read position.
+pub const RETRO_DECIDE_POINTER: i32 = 2;
+/// Mirror of `RETRO_DECIDE_INVALID_INPUT`: a prompt the context cannot
+/// evaluate, or a read out of range.
+pub const RETRO_DECIDE_INVALID_INPUT: c_int = -4;
+
+/// Mirror of `retro_decision_prompt`: the tokens of one question as the model
+/// reads them, and where its scores are read.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RetroDecisionPrompt {
+    pub tokens: *const i32,
+    pub n_tokens: usize,
+    /// Positions, or label token ids for `RETRO_DECIDE_LABEL_LOGITS`.
+    pub reads: *const i32,
+    pub n_reads: usize,
+    /// `RETRO_DECIDE_MARKER_COLUMN` only.
+    pub column: i32,
+    /// `RETRO_DECIDE_POINTER` only: the position of the query.
+    pub pointer: i32,
+}
+
 /// Mirror of `retro_sampling_params_v2`: extended sampling parameters for v2
 /// step rows. See the published header for the field contracts and the pinned
 /// transformation order.
@@ -2152,6 +2180,80 @@ unsafe extern "C" {
         out_n_embd: *mut usize,
     ) -> c_int;
 
+    /// What a model declares about its decision head, as a JSON object; see
+    /// the C header for the fields. Opens the model mapped, with no context.
+    pub fn retro_read_decision_info(
+        model_path: *const c_char,
+        buffer: *mut c_char,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
+    pub fn retro_engine_decision_info(
+        engine: *mut RetroEngine,
+        buffer: *mut c_char,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
+    /// Renders `tokenizer.chat_template.<name>` over a JSON object that is the
+    /// template's whole input.
+    pub fn retro_engine_render_named_template(
+        engine: *mut RetroEngine,
+        name: *const c_char,
+        context_json: *const c_char,
+        buffer: *mut c_char,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
+    /// Renders `source` in place of the model's template `name`; a null source
+    /// goes back to the model's.
+    pub fn retro_engine_set_named_template(
+        engine: *mut RetroEngine,
+        name: *const c_char,
+        source: *const c_char,
+    ) -> c_int;
+
+    pub fn retro_template_render_context(
+        template_src: *const c_char,
+        context_json: *const c_char,
+        buffer: *mut c_char,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
+    pub fn retro_engine_tokenize(
+        engine: *mut RetroEngine,
+        text: *const c_char,
+        add_special: bool,
+        parse_special: bool,
+        tokens: *mut i32,
+        n_tokens_max: usize,
+        out_n_tokens: *mut usize,
+    ) -> c_int;
+
+    pub fn retro_engine_token_piece(
+        engine: *mut RetroEngine,
+        token: i32,
+        special: bool,
+        buffer: *mut c_char,
+        n_buffer: usize,
+        out_n_bytes: *mut usize,
+    ) -> c_int;
+
+    /// Evaluates decision prompts, `n_reads` scores per prompt in order, at
+    /// most `n_pack_max` (0 counts as 1) per decode.
+    pub fn retro_engine_decide(
+        engine: *mut RetroEngine,
+        readout: i32,
+        prompts: *const RetroDecisionPrompt,
+        n_prompts: usize,
+        n_pack_max: usize,
+        out_scores: *mut f32,
+        n_scores_max: usize,
+    ) -> c_int;
+
     pub fn retro_last_error() -> *const c_char;
 }
 
@@ -2779,6 +2881,93 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroOptimizerState, gefen_beta1), 88);
         assert_eq!(offset_of!(RetroOptimizerState, gefen_block_size), 100);
         assert_eq!(size_of::<RetroOptimizerState>(), 104);
+
+        assert_eq!(offset_of!(RetroDecisionPrompt, tokens), 0);
+        assert_eq!(offset_of!(RetroDecisionPrompt, n_tokens), 8);
+        assert_eq!(offset_of!(RetroDecisionPrompt, reads), 16);
+        assert_eq!(offset_of!(RetroDecisionPrompt, n_reads), 24);
+        assert_eq!(offset_of!(RetroDecisionPrompt, column), 32);
+        assert_eq!(offset_of!(RetroDecisionPrompt, pointer), 36);
+        assert_eq!(size_of::<RetroDecisionPrompt>(), 40);
+    }
+
+    #[test]
+    fn decision_entry_points_refuse_a_null_engine() {
+        let mut needed = 0_usize;
+        // SAFETY: a null engine is refused before any pointer is read.
+        let code =
+            unsafe { retro_engine_decision_info(ptr::null_mut(), ptr::null_mut(), 0, &mut needed) };
+        assert_eq!((code, last_error().as_str()), (-1, "engine is required"));
+        let mut score = 0.0_f32;
+        // SAFETY: as above.
+        let code = unsafe {
+            retro_engine_decide(
+                ptr::null_mut(),
+                RETRO_DECIDE_MARKER_COLUMN,
+                ptr::null(),
+                0,
+                1,
+                &mut score,
+                1,
+            )
+        };
+        assert_eq!((code, last_error().as_str()), (-1, "engine is required"));
+    }
+
+    /// A named template is rendered over its context alone, keys in the
+    /// order given: no messages, no bos/eos token.
+    #[test]
+    fn a_template_renders_over_its_context_alone() {
+        let source = CString::new(
+            "{{ id }}|{% for key, value in state.items() %}{{ key }}={{ value }};{% endfor %}\
+             |{{ bos_token is defined }}",
+        )
+        .unwrap();
+        let context = CString::new(r#"{"id": "q", "state": {"z": 1, "a": 2}}"#).unwrap();
+        let mut needed = 0_usize;
+        // SAFETY: both strings outlive the synchronous calls; the second call
+        // gets a buffer of the size the first one reported plus the NUL.
+        let code = unsafe {
+            retro_template_render_context(
+                source.as_ptr(),
+                context.as_ptr(),
+                ptr::null_mut(),
+                0,
+                &mut needed,
+            )
+        };
+        assert_eq!(code, 0, "{}", last_error());
+        let mut buffer = vec![0_u8; needed + 1];
+        let code = unsafe {
+            retro_template_render_context(
+                source.as_ptr(),
+                context.as_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut needed,
+            )
+        };
+        assert_eq!(code, 0, "{}", last_error());
+        assert_eq!(
+            std::str::from_utf8(&buffer[..needed]).unwrap(),
+            "q|z=1;a=2;|False"
+        );
+
+        let not_object = CString::new("[1]").unwrap();
+        // SAFETY: as above.
+        let code = unsafe {
+            retro_template_render_context(
+                source.as_ptr(),
+                not_object.as_ptr(),
+                ptr::null_mut(),
+                0,
+                &mut needed,
+            )
+        };
+        assert_eq!(
+            (code, last_error().as_str()),
+            (-1, "the template context must be a JSON object")
+        );
     }
 
     #[test]

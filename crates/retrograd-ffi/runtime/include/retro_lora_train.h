@@ -2727,6 +2727,110 @@ int retro_engine_embed(
     size_t n_embd_max,
     size_t * out_n_embd);
 
+// Decision models: a model whose `<arch>.decision.type` names a readout answers
+// typed questions in one forward pass, by reading scores where the readout
+// says, and generates nothing.
+//
+// What a model declares about its decision head, as a JSON object (the
+// render_string_out two-call contract):
+//   architecture   `general.architecture`
+//   decision_type  `<arch>.decision.type`, null when the model has none
+//   metadata       every `<arch>.decision.*` entry, the prefix removed, as the
+//                  text llama.cpp prints it (`temperature.choice`: "1.636903")
+//   templates      the names of `tokenizer.chat_template.<name>`
+//   has_default_template  whether `tokenizer.chat_template` exists
+//   mask_token, sep_token  the vocabulary's ids, null when absent
+//   n_embd_out     the width of the embeddings output
+// The model is opened mapped and host-only, with no context.
+int retro_read_decision_info(const char * model_path, char * buffer, size_t n_buffer, size_t * out_n_bytes);
+// The same object for the engine's model.
+int retro_engine_decision_info(retro_engine * engine, char * buffer, size_t n_buffer, size_t * out_n_bytes);
+
+// Renders the model's template `tokenizer.chat_template.<name>` over
+// `context_json`, a JSON object that is the template's whole input (no
+// messages, no bos/eos token): how llama-server renders `systemone`. Object keys
+// keep their order. The render_string_out two-call contract.
+int retro_engine_render_named_template(
+    retro_engine * engine,
+    const char * name,
+    const char * context_json,
+    char * buffer,
+    size_t n_buffer,
+    size_t * out_n_bytes);
+// Renders `source` in place of the model's template `name` from now on; a null
+// source goes back to the model's. Refused when the source does not parse.
+int retro_engine_set_named_template(retro_engine * engine, const char * name, const char * source);
+// retro_engine_render_named_template over a template given as source, with no
+// model.
+int retro_template_render_context(
+    const char * template_src,
+    const char * context_json,
+    char * buffer,
+    size_t n_buffer,
+    size_t * out_n_bytes);
+
+// Tokenization with both flags explicit (the retro_engine_tokenize_text
+// contract otherwise): `add_special` adds the model's BOS/EOS, `parse_special`
+// reads the text of a special token as that token.
+int retro_engine_tokenize(
+    retro_engine * engine,
+    const char * text,
+    bool add_special,
+    bool parse_special,
+    int32_t * tokens,
+    size_t n_tokens_max,
+    size_t * out_n_tokens);
+// The text of one token, as llama_token_to_piece writes it; `special` renders
+// a special token as its text instead of nothing. The render_string_out
+// two-call contract.
+int retro_engine_token_piece(
+    retro_engine * engine,
+    int32_t token,
+    bool special,
+    char * buffer,
+    size_t n_buffer,
+    size_t * out_n_bytes);
+
+// Where retro_engine_decide reads the scores of a prompt.
+#define RETRO_DECIDE_MARKER_COLUMN 0 // embeddings[column] at each position of `reads`
+#define RETRO_DECIDE_LABEL_LOGITS 1  // logits of each token id of `reads`, at the last position
+#define RETRO_DECIDE_POINTER 2       // q.k / sqrt(n/2), q the first half of the embeddings at
+                                     // `pointer`, k the second half at each position of `reads`
+#define RETRO_DECIDE_INVALID_INPUT (-4)
+
+// One prompt of a decision: the tokens of one question as the model reads them.
+typedef struct retro_decision_prompt {
+    const int32_t * tokens;
+    size_t n_tokens;
+    const int32_t * reads; // positions, or label token ids for LABEL_LOGITS
+    size_t n_reads;
+    int32_t column;        // MARKER_COLUMN only
+    int32_t pointer;       // POINTER only: the position of the query
+} retro_decision_prompt;
+
+// Evaluates the prompts and writes their scores to out_scores, n_reads per
+// prompt, in order. Each prompt is its own sequence, and a decode holds at most
+// n_pack_max of them (0 counts as 1), bounded by the context's sequence slots
+// and cells. One per decode is what makes a score independent of the other
+// prompts of the call: several in one decode change the shapes of the matrix
+// products and with them the kernels' arithmetic. A context without sequence
+// memory (an encoder) needs each decode in one micro-batch, with attention kept
+// within each sequence; in a context with memory, prompts of one decode that
+// start alike decode their common prefix once. Only the read positions are
+// output (an encoder outputs every position). The call is stateless: the KV (and with it the prefix
+// cache) is cleared before and after, the active adapter applies, and the
+// context's embeddings configuration is restored on every exit path.
+// RETRO_DECIDE_INVALID_INPUT for a prompt the context cannot evaluate or a read
+// out of range; -1 for a runtime failure.
+int retro_engine_decide(
+    retro_engine * engine,
+    int32_t readout,
+    const retro_decision_prompt * prompts,
+    size_t n_prompts,
+    size_t n_pack_max,
+    float * out_scores,
+    size_t n_scores_max);
+
 const char * retro_last_error(void);
 
 #ifdef __cplusplus

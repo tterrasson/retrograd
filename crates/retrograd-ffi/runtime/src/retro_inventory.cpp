@@ -16,8 +16,6 @@
 
 namespace retro {
 
-namespace {
-
 model_ptr load_model_metadata_only(const char * model_path) {
     llama_model_params model_params = llama_model_default_params();
     model_params.load_mode = LLAMA_LOAD_MODE_MMAP;
@@ -29,6 +27,8 @@ model_ptr load_model_metadata_only(const char * model_path) {
     model_params.devices = no_devices;
     return model_ptr(llama_model_load_from_file(model_path, model_params));
 }
+
+namespace {
 
 // The storage identity two aliases agree on. A mapped model's tensors point
 // into the mapping, so the data address *is* the allocation identity; a tensor

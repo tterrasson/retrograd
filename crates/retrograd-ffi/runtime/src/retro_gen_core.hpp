@@ -191,6 +191,8 @@ struct gen_core {
     void clear_generation_memory();
 
     bool validate_tokens(const int32_t * tokens, size_t n_tokens) const;
+    // False, with the error set, for a context without sequence memory.
+    bool require_sequence_memory() const;
     bool validate_sampling(const retro_sampling_params & sampling) const;
     bool validate_sampling_v2(const retro_sampling_params_v2 & sampling) const;
 
