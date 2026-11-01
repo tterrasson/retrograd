@@ -978,6 +978,10 @@ extern "C" int retro_probe_token_logprob(
             logits, n_vocab, token, vectorized, out_logprob);
 }
 
+extern "C" int retro_probe_grouped_gradient(retro_grouped_gradient_probe * probe) {
+    return retro::grouped_gradient_probe_impl(probe);
+}
+
 extern "C" int retro_probe_duty_cycle(
         float fraction,
         const retro_duty_cycle_event * events,

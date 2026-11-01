@@ -783,3 +783,120 @@ fn gefen_variant_id(variant: GefenVariant) -> i32 {
         GefenVariant::QuantizedM => ffi::RETRO_GEFEN_QUANTIZED_M,
     }
 }
+
+/// A batch of questions and the groups of scores the grouped softmax
+/// cross-entropy reads from it, as `llama_grouped_target` lays them out: group
+/// `g` reads column `columns[g]` of the outputs of the batch tokens
+/// `rows[g*n_opt_max..(g+1)*n_opt_max]`, `-1` padding a shorter group.
+pub struct GroupedGradientCase<'a> {
+    pub tokens: &'a [i32],
+    pub positions: &'a [i32],
+    pub seq_ids: &'a [i32],
+    pub outputs: &'a [bool],
+    pub n_opt_max: u32,
+    pub rows: &'a [i32],
+    pub columns: &'a [i32],
+    pub targets: &'a [f32],
+    pub inv_temperature: f32,
+    /// `None` lets the runtime choose, as a run does.
+    pub flash_attn: Option<bool>,
+}
+
+/// The analytic and numeric gradients of one tensor at the listed elements.
+#[derive(Clone, Debug)]
+pub struct GroupedGradient {
+    /// Ops of the training graph without a gradient rule; when non-zero,
+    /// nothing below was computed.
+    pub n_missing_backward: i32,
+    /// The loss of the training step, from the grouped loss graph.
+    pub loss_step: f64,
+    /// The same loss recomputed from the decoded embeddings in F64.
+    pub loss_decode: f64,
+    pub analytic: Vec<f32>,
+    pub numeric: Vec<f64>,
+}
+
+/// Differentiates the grouped softmax cross-entropy of `case` with respect to
+/// the F32 tensor `param` of `model`, at `elements`, both through one training
+/// step and by four-point central differences of step `step`.
+pub fn grouped_gradient_probe(
+    model: &Path,
+    device: Device,
+    param: &str,
+    case: &GroupedGradientCase<'_>,
+    elements: &[i64],
+    step: f32,
+) -> Result<GroupedGradient> {
+    let n_tokens = case.tokens.len();
+    if case.positions.len() != n_tokens
+        || case.seq_ids.len() != n_tokens
+        || case.outputs.len() != n_tokens
+    {
+        return Err(Error::invalid(
+            "tokens, positions, seq_ids and outputs must have one entry per token",
+        ));
+    }
+    if case.n_opt_max == 0 || case.columns.is_empty() {
+        return Err(Error::invalid(
+            "a grouped case needs at least one group of one option",
+        ));
+    }
+    let n_groups = case.columns.len();
+    let n_entries = n_groups
+        .checked_mul(case.n_opt_max as usize)
+        .ok_or_else(|| Error::invalid("too many grouped entries"))?;
+    if case.rows.len() != n_entries || case.targets.len() != n_entries {
+        return Err(Error::invalid(format!(
+            "rows and targets must have n_groups*n_opt_max = {n_entries} entries"
+        )));
+    }
+    let model_path = path_to_cstring(model)?;
+    let param_name = CString::new(param).map_err(nul_error)?;
+    let outputs: Vec<i8> = case.outputs.iter().map(|&o| i8::from(o)).collect();
+    let mut analytic = vec![0.0_f32; elements.len()];
+    let mut numeric = vec![0.0_f64; elements.len()];
+
+    let mut probe = ffi::RetroGroupedGradientProbe {
+        struct_size: std::mem::size_of::<ffi::RetroGroupedGradientProbe>() as u32,
+        model_path: model_path.as_ptr(),
+        use_gpu: i32::from(device != Device::Cpu),
+        flash_attn: match case.flash_attn {
+            None => -1,
+            Some(false) => 0,
+            Some(true) => 1,
+        },
+        param_name: param_name.as_ptr(),
+        tokens: case.tokens.as_ptr(),
+        positions: case.positions.as_ptr(),
+        seq_ids: case.seq_ids.as_ptr(),
+        outputs: outputs.as_ptr(),
+        n_tokens: i32::try_from(n_tokens).map_err(|_| Error::invalid("too many tokens"))?,
+        n_groups: u32::try_from(n_groups).map_err(|_| Error::invalid("too many groups"))?,
+        n_opt_max: case.n_opt_max,
+        rows: case.rows.as_ptr(),
+        columns: case.columns.as_ptr(),
+        targets: case.targets.as_ptr(),
+        inv_temperature: case.inv_temperature,
+        elements: elements.as_ptr(),
+        n_elements: i32::try_from(elements.len())
+            .map_err(|_| Error::invalid("too many elements"))?,
+        step,
+        n_missing_backward: 0,
+        loss_step: 0.0,
+        loss_decode: 0.0,
+        grad_analytic: analytic.as_mut_ptr(),
+        grad_numeric: numeric.as_mut_ptr(),
+    };
+    // SAFETY: the module contract validates input shapes and keeps every input/output allocation live.
+    let status = unsafe { ffi::retro_probe_grouped_gradient(&mut probe) };
+    if status != 0 {
+        return Err(runtime_error());
+    }
+    Ok(GroupedGradient {
+        n_missing_backward: probe.n_missing_backward,
+        loss_step: probe.loss_step,
+        loss_decode: probe.loss_decode,
+        analytic,
+        numeric,
+    })
+}

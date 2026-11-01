@@ -120,6 +120,38 @@ impl Default for RetroKernelRunInfo {
     }
 }
 
+/// Mirrors `retro_grouped_gradient_probe` in `retro_lora_train.h`: the gradient
+/// of the grouped softmax cross-entropy of one F32 tensor against finite
+/// differences. Set `struct_size` before the call.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RetroGroupedGradientProbe {
+    pub struct_size: u32,
+    pub model_path: *const c_char,
+    pub use_gpu: i32,
+    pub flash_attn: i32,
+    pub param_name: *const c_char,
+    pub tokens: *const i32,
+    pub positions: *const i32,
+    pub seq_ids: *const i32,
+    pub outputs: *const i8,
+    pub n_tokens: i32,
+    pub n_groups: u32,
+    pub n_opt_max: u32,
+    pub rows: *const i32,
+    pub columns: *const i32,
+    pub targets: *const c_float,
+    pub inv_temperature: c_float,
+    pub elements: *const i64,
+    pub n_elements: i32,
+    pub step: c_float,
+    pub n_missing_backward: i32,
+    pub loss_step: c_double,
+    pub loss_decode: c_double,
+    pub grad_analytic: *mut c_float,
+    pub grad_numeric: *mut c_double,
+}
+
 /// The two fixed-block Gefen ops driven directly, with no model and no
 /// training graph. Every pointer is host memory in the caller's layout; the
 /// probe uploads it, runs `n_steps` full updates on the selected device and
@@ -1267,6 +1299,11 @@ unsafe extern "C" {
     /// when the selected device declines either phase: they are admitted
     /// together, so a partial answer is never returned.
     pub fn retro_probe_gefen_run(probe: *mut RetroGefenProbe) -> c_int;
+
+    /// The grouped softmax cross-entropy gradient of one F32 tensor of a model
+    /// file, analytic against finite differences; see
+    /// `RetroGroupedGradientProbe`.
+    pub fn retro_probe_grouped_gradient(probe: *mut RetroGroupedGradientProbe) -> c_int;
 
     /// Whether the device declares both Gefen phases for this variant and block
     /// size. The predicate is the backend's own, so it is the answer a run's

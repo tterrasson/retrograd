@@ -45,6 +45,9 @@ pub const TINY_BF16_CONTROL_FIXTURE: &str = "tests/fixtures/retrograd-tiny-qwen2
 /// score that differs differs because of quantization.
 pub const TINY_Q8_FIXTURE: &str = "tests/fixtures/retrograd-tiny-qwen2-q8_0.gguf";
 
+/// The generated decision model: a ModernBERT encoder with a `laya` head, F32.
+pub const TINY_DECISION_FIXTURE: &str = "tests/fixtures/retrograd-tiny-decision-f32.gguf";
+
 /// Repository-relative default location for the Vulkan integration model.
 /// Nothing ships at this path - `RETRO_VULKAN_TEST_MODEL` is how a developer
 /// points at wherever they keep it, and the `_if_available` accessors skip
@@ -95,6 +98,29 @@ pub fn tiny_model_path_if_available() -> Option<PathBuf> {
     } else if std::env::var_os("RETRO_REQUIRE_CPU_FIXTURE").is_some() {
         panic!(
             "tiny CPU fixture missing at {}; run scripts/fetch-cpu-fixture.sh",
+            path.display()
+        );
+    } else {
+        None
+    }
+}
+
+/// Resolves the tiny decision fixture, honouring an explicit test override.
+pub fn tiny_decision_model_path() -> PathBuf {
+    std::env::var("RETRO_TINY_DECISION_FIXTURE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(TINY_DECISION_FIXTURE))
+}
+
+/// Returns the tiny decision fixture when available. It is generated, not
+/// downloaded, so `RETRO_REQUIRE_CPU_FIXTURE=1` covers it too.
+pub fn tiny_decision_model_path_if_available() -> Option<PathBuf> {
+    let path = tiny_decision_model_path();
+    if path.exists() {
+        Some(path)
+    } else if std::env::var_os("RETRO_REQUIRE_CPU_FIXTURE").is_some() {
+        panic!(
+            "tiny decision fixture missing at {}; run scripts/fetch-cpu-fixture.sh",
             path.display()
         );
     } else {

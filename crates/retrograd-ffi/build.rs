@@ -110,6 +110,7 @@ fn main() {
         "retro_engine.cpp",
         "retro_probe.cpp",
         "retro_fused_ce.cpp",
+        "retro_decision_probe.cpp",
         "retro_lora_train.cpp",
         "retro_checkpoint.cpp",
         "retro_trainable.cpp",

@@ -1116,6 +1116,8 @@ int duty_cycle_probe_impl(
         size_t n_events,
         retro_duty_cycle_probe * out_probe);
 
+int grouped_gradient_probe_impl(retro_grouped_gradient_probe * probe);
+
 int probe_token_logprob_impl(
         const float * logits,
         size_t n_vocab,

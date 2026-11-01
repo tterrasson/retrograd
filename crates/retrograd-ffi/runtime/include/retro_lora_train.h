@@ -500,6 +500,49 @@ int retro_fused_sparse_ce_probe(
     float * out_grad_h_full,
     float * out_grad_h_fused);
 
+// The gradient of the grouped softmax cross-entropy - the loss of a model whose
+// answer is read from its embeddings output - against finite differences, for
+// one F32 tensor of a model file. The analytic side is one
+// llama_opt_step_grouped with a zero learning rate, read back from the
+// optimizer's gradient accumulator; the numeric side recomputes the same loss
+// from llama_decode embeddings in double, with a four-point central difference
+// of step `step` on each listed element. `loss_step` and `loss_decode` are the
+// two losses at the unperturbed weights. `n_missing_backward` is what
+// llama_opt_preflight reports for the model; when it is not zero nothing else
+// is computed. The target fields mean what they mean in llama_grouped_target.
+typedef struct retro_grouped_gradient_probe {
+    uint32_t struct_size;
+    const char * model_path;
+    int32_t      use_gpu;
+    int32_t      flash_attn;   // llama_flash_attn_type: -1 auto, 0 off, 1 on
+    const char * param_name;   // the tensor differentiated, stored F32
+
+    const int32_t * tokens;    // [n_tokens]
+    const int32_t * positions; // [n_tokens], per sequence
+    const int32_t * seq_ids;   // [n_tokens], one sequence per question
+    const int8_t  * outputs;   // [n_tokens], 1 where a group reads the token
+    int32_t         n_tokens;
+
+    uint32_t        n_groups;
+    uint32_t        n_opt_max;
+    const int32_t * rows;      // [n_groups*n_opt_max], batch token index or -1
+    const int32_t * columns;   // [n_groups]
+    const float   * targets;   // [n_groups*n_opt_max]
+    float           inv_temperature;
+
+    const int64_t * elements;  // [n_elements], flat indices into the tensor
+    int32_t         n_elements;
+    float           step;
+
+    int32_t  n_missing_backward; // out
+    double   loss_step;          // out
+    double   loss_decode;        // out
+    float  * grad_analytic;      // [n_elements], out
+    double * grad_numeric;       // [n_elements], out
+} retro_grouped_gradient_probe;
+
+int retro_probe_grouped_gradient(retro_grouped_gradient_probe * probe);
+
 // Compares the production vectorized token log-softmax (`vectorized=true`)
 // with its scalar reference without loading a model. This is a numerical
 // correctness probe; `out_logprob` receives one temperature-1 logprob.
