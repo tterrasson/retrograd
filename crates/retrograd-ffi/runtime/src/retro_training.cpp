@@ -520,6 +520,8 @@ bool ensure_opt_context(trainer_state & state) {
         /*checkpoint_every_n_layers =*/ state.train_config.checkpoint_every_n_layers,
         /*checkpoint_type =*/ checkpoint_ggml_type(state.train_config.checkpoint_dtype),
         /*optimizer_layout =*/ configured_optimizer_layout(state),
+        // Explicit for a model that also has a next-token head.
+        /*grouped_loss    =*/ grouped_loss_enabled(state),
     };
     llama_opt_init(state.ctx.get(), state.model.get(), params);
     // Recorded before the checks below, not after: llama_opt_init asserts that
@@ -1117,7 +1119,7 @@ int train_grouped_impl(
             return -1;
         }
         if (!data->tokens || !data->positions || !data->seq_ids || !data->outputs
-                || !data->rows || !data->columns || !data->targets
+                || !data->rows || (!data->columns && !data->pointer_rows) || !data->targets
                 || data->n_tokens == 0 || data->n_groups == 0 || data->n_opt_max == 0
                 || data->accumulation_steps == 0) {
             set_error("a grouped batch needs tokens, positions, sequences, outputs, groups and targets");
@@ -1196,6 +1198,7 @@ int train_grouped_impl(
         target.targets            = data->targets;
         target.inv_temperature    = data->inv_temperature;
         target.accumulation_steps = data->accumulation_steps;
+        target.pointer_rows       = data->pointer_rows;
 
         // No progress callback: one call is one physical step, and the caller
         // reports it. The scope still restores the scheduler slot and retires

@@ -10,6 +10,10 @@ pub struct GroupedQuestion<'a> {
     pub reads: &'a [i32],
     /// The column of the question type in the embeddings output.
     pub column: i32,
+    /// The position of the query of a pointer head, whose score for an
+    /// option is a product of two halves of the output rows; -1 for a head
+    /// read at a column.
+    pub pointer: i32,
     pub targets: &'a [f32],
 }
 
@@ -35,6 +39,9 @@ pub struct GroupedBatch {
     pub inv_temperature: f32,
     /// Physical steps per optimizer update, for the update this step belongs to.
     pub accumulation_steps: u32,
+    /// The batch row of each group's query for a pointer head, empty for a
+    /// column head.
+    pub pointer_rows: Vec<i32>,
 }
 
 impl GroupedBatch {
@@ -76,7 +83,17 @@ impl GroupedBatch {
             targets: vec![0.0; n_groups * n_opt_max],
             inv_temperature,
             accumulation_steps,
+            pointer_rows: Vec::new(),
         };
+        let pointer = questions[0].pointer >= 0;
+        if questions
+            .iter()
+            .any(|question| (question.pointer >= 0) != pointer)
+        {
+            return Err(Error::invalid(
+                "a grouped batch mixes pointer and column questions",
+            ));
+        }
         for (group, question) in questions.iter().enumerate() {
             let n_tokens = question.tokens.len();
             if question.reads.len() < 2 || question.reads.len() != question.targets.len() {
@@ -120,6 +137,22 @@ impl GroupedBatch {
                     to_i32(offset + position, "grouped batch row")?;
                 batch.targets[group * n_opt_max + option] = question.targets[option];
             }
+            if pointer {
+                let position = usize::try_from(question.pointer)
+                    .ok()
+                    .filter(|&position| position < n_tokens && outputs[position] == 0)
+                    .ok_or_else(|| {
+                        Error::invalid(format!(
+                            "grouped question {group} has its query at position {} outside its \
+                             {n_tokens} tokens or on an option",
+                            question.pointer
+                        ))
+                    })?;
+                outputs[position] = 1;
+                batch
+                    .pointer_rows
+                    .push(to_i32(offset + position, "grouped batch row")?);
+            }
             let sequence = to_i32(group, "grouped batch sequence")?;
             for (position, &token) in question.tokens.iter().enumerate() {
                 batch.tokens.push(token);
@@ -160,12 +193,14 @@ mod tests {
                     tokens: &[10, 11, 12, 13],
                     reads: &[1, 3],
                     column: 0,
+                    pointer: -1,
                     targets: &[1.0, 0.0],
                 },
                 GroupedQuestion {
                     tokens: &[20, 21, 22],
                     reads: &[0, 1, 2],
                     column: 2,
+                    pointer: -1,
                     targets: &[0.25, 0.25, 0.5],
                 },
             ],
@@ -181,6 +216,27 @@ mod tests {
         assert_eq!(batch.rows, [1, 3, -1, 4, 5, 6]);
         assert_eq!(batch.targets, [1.0, 0.0, 0.0, 0.25, 0.25, 0.5]);
         assert_eq!(batch.columns, [0, 2]);
+        assert!(batch.pointer_rows.is_empty());
+    }
+
+    #[test]
+    fn a_pointer_query_is_an_output_row_of_its_own() {
+        let question = |pointer| GroupedQuestion {
+            tokens: &[10, 11, 12, 13],
+            reads: &[1, 2],
+            column: 0,
+            pointer,
+            targets: &[0.0, 1.0],
+        };
+        let batch = GroupedBatch::pack(&[question(3), question(3)], 1.0, 1).unwrap();
+        assert_eq!(batch.outputs, [0, 1, 1, 1, 0, 1, 1, 1]);
+        assert_eq!(batch.rows, [1, 2, 5, 6]);
+        assert_eq!(batch.pointer_rows, [3, 7]);
+        // the query cannot be an option, nor outside the question, and a batch
+        // is all pointer or all column
+        assert!(GroupedBatch::pack(&[question(2)], 1.0, 1).is_err());
+        assert!(GroupedBatch::pack(&[question(4)], 1.0, 1).is_err());
+        assert!(GroupedBatch::pack(&[question(3), question(-1)], 1.0, 1).is_err());
     }
 
     #[test]
@@ -191,6 +247,7 @@ mod tests {
                     tokens: &[1, 2, 3],
                     reads,
                     column: 0,
+                    pointer: -1,
                     targets,
                 }],
                 1.0,

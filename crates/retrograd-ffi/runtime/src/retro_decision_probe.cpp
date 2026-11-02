@@ -50,6 +50,10 @@ void preflight_ignore(int32_t, ggml_backend_dev_t, const ggml_tensor *, void *) 
 // same masked, tempered softmax cross-entropy the training graph builds,
 // averaged over the groups.
 bool decode_loss(llama_context * ctx, const llama_batch & batch, const retro_grouped_gradient_probe & p, double & loss) {
+    // a causal model keeps the previous decode in its memory
+    if (llama_memory_t memory = llama_get_memory(ctx)) {
+        llama_memory_clear(memory, true);
+    }
     if (llama_decode(ctx, batch) != 0) {
         set_error("llama_decode failed");
         return false;
@@ -68,6 +72,23 @@ bool decode_loss(llama_context * ctx, const llama_batch & batch, const retro_gro
             if (!embd) {
                 set_error("no embeddings at a read token");
                 return false;
+            }
+            if (p.pointer_rows) {
+                // q.k / sqrt(d), q the first half of the query's row, k the
+                // second half of the option's
+                const float * query = llama_get_embeddings_ith(ctx, p.pointer_rows[g]);
+                if (!query) {
+                    set_error("no embeddings at a query token");
+                    return false;
+                }
+                const int32_t d = llama_model_n_embd_out(llama_get_model(ctx)) / 2;
+                double dot = 0.0;
+                for (int32_t i = 0; i < d; ++i) {
+                    dot += (double) query[i] * (double) embd[d + i];
+                }
+                scores.push_back(dot / std::sqrt((double) d) * (double) p.inv_temperature);
+                targets.push_back(p.targets[k]);
+                continue;
             }
             scores.push_back((double) embd[p.columns[g]] * (double) p.inv_temperature);
             targets.push_back(p.targets[k]);
@@ -100,7 +121,7 @@ int grouped_gradient_probe_impl(retro_grouped_gradient_probe * probe) {
         retro_grouped_gradient_probe & p = *probe;
         if (!p.model_path || !p.param_name || !p.tokens || !p.positions || !p.seq_ids || !p.outputs ||
                 p.n_tokens <= 0 || p.n_elements < 0 || !std::isfinite(p.step) ||
-                p.flash_attn < -1 || p.flash_attn > 1 || !p.rows || !p.columns || !p.targets || p.n_groups == 0 || p.n_opt_max == 0 ||
+                p.flash_attn < -1 || p.flash_attn > 1 || !p.rows || (!p.columns && !p.pointer_rows) || !p.targets || p.n_groups == 0 || p.n_opt_max == 0 ||
                 (p.n_elements > 0 && (!p.elements || !p.grad_analytic || !p.grad_numeric)) || !(p.step > 0.0f)) {
             set_error("retro_grouped_gradient_probe: missing or invalid field");
             return -1;
@@ -208,6 +229,7 @@ int grouped_gradient_probe_impl(retro_grouped_gradient_probe * probe) {
         target.targets            = p.targets;
         target.inv_temperature    = p.inv_temperature;
         target.accumulation_steps = 1;
+        target.pointer_rows       = p.pointer_rows;
 
         result_owner result;
         if (!llama_opt_step_grouped(ctx.get(), batch, &target, result.result)) {

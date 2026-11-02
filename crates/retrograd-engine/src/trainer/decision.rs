@@ -213,11 +213,18 @@ impl Trainer {
             targets: batch.targets.as_ptr(),
             inv_temperature: batch.inv_temperature,
             accumulation_steps: batch.accumulation_steps,
+            pointer_rows: if batch.pointer_rows.is_empty() {
+                std::ptr::null()
+            } else {
+                batch.pointer_rows.as_ptr()
+            },
         };
         if batch.positions.len() != batch.tokens.len()
             || batch.seq_ids.len() != batch.tokens.len()
             || batch.outputs.len() != batch.tokens.len()
             || batch.columns.len() != batch.n_groups as usize
+            || (!batch.pointer_rows.is_empty()
+                && batch.pointer_rows.len() != batch.n_groups as usize)
             || batch.rows.len() != batch.targets.len()
             || batch.rows.len() != batch.n_groups as usize * batch.n_opt_max as usize
         {

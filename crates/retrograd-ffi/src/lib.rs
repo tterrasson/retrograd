@@ -142,6 +142,8 @@ pub struct RetroGroupedGradientProbe {
     pub columns: *const i32,
     pub targets: *const c_float,
     pub inv_temperature: c_float,
+    /// `[n_groups]` or null: a pointer loss, `columns` unused.
+    pub pointer_rows: *const i32,
     pub elements: *const i64,
     pub n_elements: i32,
     pub step: c_float,
@@ -743,6 +745,9 @@ pub struct RetroGroupedBatch {
     pub targets: *const f32,
     pub inv_temperature: f32,
     pub accumulation_steps: u32,
+    /// `[n_groups]` or null: the query token of each group of a pointer
+    /// head; `columns` is then unused.
+    pub pointer_rows: *const i32,
 }
 
 /// Mirror of `retro_sampling_params_v2`: extended sampling parameters for v2
@@ -2996,7 +3001,8 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroGroupedBatch, targets), 64);
         assert_eq!(offset_of!(RetroGroupedBatch, inv_temperature), 72);
         assert_eq!(offset_of!(RetroGroupedBatch, accumulation_steps), 76);
-        assert_eq!(size_of::<RetroGroupedBatch>(), 80);
+        assert_eq!(offset_of!(RetroGroupedBatch, pointer_rows), 80);
+        assert_eq!(size_of::<RetroGroupedBatch>(), 88);
     }
 
     #[test]

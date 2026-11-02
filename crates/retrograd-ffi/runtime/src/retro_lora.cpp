@@ -301,8 +301,15 @@ bool trains_loss_head(const trainer_state & state) {
 
 bool grouped_loss_enabled(const trainer_state & state) {
     // The rule llama_context::opt_init applies: a model without a next-token
-    // head is trained on its embeddings output, through the grouped loss.
-    return state.model && state.model->output == nullptr;
+    // head is trained on its embeddings output, through the grouped loss. A
+    // decision model read from its embeddings output (a pointer head next to a
+    // tied language-model head) is too: its answer is not in the logits.
+    if (!state.model) {
+        return false;
+    }
+    enum llama_pooling_type pooling = LLAMA_POOLING_TYPE_UNSPECIFIED;
+    return state.model->output == nullptr
+        || (decision_context_pooling(state.model.get(), &pooling) && pooling == LLAMA_POOLING_TYPE_NONE);
 }
 
 bool fused_loss_enabled(const trainer_state & state) {

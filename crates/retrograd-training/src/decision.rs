@@ -596,6 +596,7 @@ fn update(
                     tokens: &question.pass.tokens,
                     reads: &question.pass.reads,
                     column: question.pass.column,
+                    pointer: question.pass.pointer,
                     targets: &question.targets,
                 })
                 .collect();

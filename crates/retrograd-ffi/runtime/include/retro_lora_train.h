@@ -532,6 +532,7 @@ typedef struct retro_grouped_gradient_probe {
     const int32_t * columns;   // [n_groups]
     const float   * targets;   // [n_groups*n_opt_max]
     float           inv_temperature;
+    const int32_t * pointer_rows; // [n_groups] or NULL: a pointer loss, columns unused
 
     const int64_t * elements;  // [n_elements], flat indices into the tensor
     int32_t         n_elements;
@@ -2867,7 +2868,8 @@ int retro_trainer_decide(
 // questions, each its own sequence, and the groups of scores the loss reads
 // from the embeddings output. The target fields mean what they mean in
 // llama_grouped_target: option j of group g is column columns[g] of the output
-// of batch token rows[g*n_opt_max + j], -1 pads, targets sum to 1 per group.
+// of batch token rows[g*n_opt_max + j] (or its pointer product with the query
+// token pointer_rows[g]), -1 pads, targets sum to 1 per group.
 // `outputs` marks exactly the tokens a group reads. The whole batch is one
 // micro-batch (n_tokens <= training.micro_batch). An optimizer update closes
 // every `accumulation_steps` calls, a period that may only change at an update
@@ -2885,6 +2887,11 @@ typedef struct retro_grouped_batch {
     const float   * targets;   // [n_groups*n_opt_max]
     float           inv_temperature;
     uint32_t        accumulation_steps;
+    // [n_groups] or NULL. Set for a pointer head: the score of option j of
+    // group g is q.k / sqrt(n_embd_out/2), q the first half of the output of
+    // token pointer_rows[g], k the second half of the output of its option's
+    // token; `columns` is then unused and may be NULL.
+    const int32_t * pointer_rows;
 } retro_grouped_batch;
 
 // Trains one grouped step. `scheduler_total_steps` pins the learning-rate

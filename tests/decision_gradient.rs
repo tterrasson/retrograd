@@ -147,6 +147,7 @@ fn case(b: &Batch, flash_attn: bool) -> GroupedGradientCase<'_> {
         columns: &b.columns,
         targets: &b.targets,
         inv_temperature: 0.8,
+        pointer_rows: &[],
         flash_attn: Some(flash_attn),
     }
 }

@@ -798,6 +798,9 @@ pub struct GroupedGradientCase<'a> {
     pub columns: &'a [i32],
     pub targets: &'a [f32],
     pub inv_temperature: f32,
+    /// The query token of each group of a pointer head; empty for a head read
+    /// at `columns`.
+    pub pointer_rows: &'a [i32],
     /// `None` lets the runtime choose, as a run does.
     pub flash_attn: Option<bool>,
 }
@@ -836,12 +839,21 @@ pub fn grouped_gradient_probe(
             "tokens, positions, seq_ids and outputs must have one entry per token",
         ));
     }
-    if case.n_opt_max == 0 || case.columns.is_empty() {
+    let n_groups = if case.pointer_rows.is_empty() {
+        case.columns.len()
+    } else {
+        case.pointer_rows.len()
+    };
+    if case.n_opt_max == 0 || n_groups == 0 {
         return Err(Error::invalid(
             "a grouped case needs at least one group of one option",
         ));
     }
-    let n_groups = case.columns.len();
+    if !case.pointer_rows.is_empty() && !case.columns.is_empty() && case.columns.len() != n_groups {
+        return Err(Error::invalid(
+            "a pointer case has one query per group and needs no column",
+        ));
+    }
     let n_entries = n_groups
         .checked_mul(case.n_opt_max as usize)
         .ok_or_else(|| Error::invalid("too many grouped entries"))?;
@@ -874,9 +886,18 @@ pub fn grouped_gradient_probe(
         n_groups: u32::try_from(n_groups).map_err(|_| Error::invalid("too many groups"))?,
         n_opt_max: case.n_opt_max,
         rows: case.rows.as_ptr(),
-        columns: case.columns.as_ptr(),
+        columns: if case.columns.is_empty() {
+            std::ptr::null()
+        } else {
+            case.columns.as_ptr()
+        },
         targets: case.targets.as_ptr(),
         inv_temperature: case.inv_temperature,
+        pointer_rows: if case.pointer_rows.is_empty() {
+            std::ptr::null()
+        } else {
+            case.pointer_rows.as_ptr()
+        },
         elements: elements.as_ptr(),
         n_elements: i32::try_from(elements.len())
             .map_err(|_| Error::invalid("too many elements"))?,
