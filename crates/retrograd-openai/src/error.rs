@@ -267,13 +267,13 @@ impl From<retrograd_engine::EngineError> for OpenAiError {
 
 /// A model that cannot answer a decision at all - no decision head, a head of
 /// a type this server does not implement, images it has no place for - is a
-/// 501, as llama-server answers it. The rest goes through the applicative
-/// façade: a bad request body is the caller's (400), a broken model file or
-/// template is the server's (500).
+/// 501, as llama-server answers it. Request validation keeps the protocol's
+/// own message (400); other errors go through the applicative façade.
 impl From<retrograd_decision::DecisionError> for OpenAiError {
     fn from(error: retrograd_decision::DecisionError) -> Self {
         use retrograd_decision::DecisionError;
         match error {
+            DecisionError::InvalidRequest(message) => Self::invalid(message),
             DecisionError::NotDecisionModel
             | DecisionError::ImagesUnsupported
             | DecisionError::UnknownType { .. } => Self::not_supported(error.to_string()),
