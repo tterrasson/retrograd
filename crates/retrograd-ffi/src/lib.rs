@@ -1147,6 +1147,15 @@ unsafe extern "C" {
         out_n_tokens: *mut usize,
     ) -> c_int;
 
+    pub fn retro_trainer_tokenize_with(
+        trainer: *mut RetroTrainer,
+        text: *const c_char,
+        add_special: bool,
+        parse_special: bool,
+        tokens: *mut i32,
+        n_tokens_max: usize,
+        out_n_tokens: *mut usize,
+    ) -> i32;
     pub fn retro_trainer_tokenize_fragment(
         trainer: *mut RetroTrainer,
         text: *const c_char,

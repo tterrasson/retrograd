@@ -355,7 +355,8 @@ int tokenize_into(
         bool add_special,
         int32_t * tokens,
         size_t n_tokens_max,
-        size_t * out_n_tokens) {
+        size_t * out_n_tokens,
+        bool parse_special = true) {
     return retro::boundary([&]() -> int {
         retro::trainer_state * state = retro::checked(trainer);
         if (!state) {
@@ -392,7 +393,7 @@ int tokenize_into(
                 token_buf,
                 cap,
                 add_special,
-                true);
+                parse_special);
 
         if (result == INT32_MIN) {
             retro::set_error("tokenization overflow");
@@ -426,6 +427,12 @@ extern "C" int retro_trainer_tokenize_fragment(
         size_t n_tokens_max,
         size_t * out_n_tokens) {
     return tokenize_into(trainer, text, /*add_special=*/false, tokens, n_tokens_max, out_n_tokens);
+}
+
+extern "C" int retro_trainer_tokenize_with(
+        retro_trainer * trainer, const char * text, bool add_special, bool parse_special,
+        int32_t * tokens, size_t n_tokens_max, size_t * out_n_tokens) {
+    return tokenize_into(trainer, text, add_special, tokens, n_tokens_max, out_n_tokens, parse_special);
 }
 
 extern "C" int retro_trainer_eos_token(retro_trainer * trainer, int32_t * out_token) {

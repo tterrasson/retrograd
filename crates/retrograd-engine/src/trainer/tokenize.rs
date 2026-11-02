@@ -75,6 +75,46 @@ impl Trainer {
         self.tokenize(text, true)
     }
 
+    /// Tokenizes with explicit BOS and special-token policies, as the engine does.
+    pub fn tokenize_with(
+        &self,
+        text: &str,
+        add_special: bool,
+        parse_special: bool,
+    ) -> Result<Vec<i32>> {
+        if text.is_empty() {
+            return Ok(Vec::new());
+        }
+        let text = CString::new(text).map_err(nul_error)?;
+        let mut needed = 0;
+        // SAFETY: the trainer and text live through both synchronous calls;
+        // the second call receives an output buffer of the probed capacity.
+        unsafe {
+            self.check(ffi::retro_trainer_tokenize_with(
+                self.raw.as_ptr(),
+                text.as_ptr(),
+                add_special,
+                parse_special,
+                std::ptr::null_mut(),
+                0,
+                &mut needed,
+            ))?;
+            ffi_out_vec(needed, |out| {
+                let mut written = 0;
+                self.check(ffi::retro_trainer_tokenize_with(
+                    self.raw.as_ptr(),
+                    text.as_ptr(),
+                    add_special,
+                    parse_special,
+                    out,
+                    needed,
+                    &mut written,
+                ))?;
+                Ok(written)
+            })
+        }
+    }
+
     fn tokenize(&self, text: &str, fragment: bool) -> Result<Vec<i32>> {
         let tokenize = if fragment {
             ffi::retro_trainer_tokenize_fragment

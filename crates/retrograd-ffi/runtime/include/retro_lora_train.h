@@ -1555,6 +1555,11 @@ int retro_trainer_tokenize_text(
 // out of these - the framing a chat template puts around the turns the policy
 // sampled - because re-tokenizing a sampled turn does not in general give back
 // the tokens that were sampled.
+// Tokenize with explicit special-token policy, including literal decision labels.
+int retro_trainer_tokenize_with(
+    retro_trainer * trainer, const char * text, bool add_special, bool parse_special,
+    int32_t * tokens, size_t n_tokens_max, size_t * out_n_tokens);
+
 int retro_trainer_tokenize_fragment(
     retro_trainer * trainer,
     const char * text,
