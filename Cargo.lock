@@ -1869,6 +1869,7 @@ dependencies = [
  "retrograd-ffi",
  "retrograd-infer",
  "retrograd-judge",
+ "retrograd-llm-client",
  "retrograd-memory",
  "retrograd-metrics",
  "retrograd-openai",

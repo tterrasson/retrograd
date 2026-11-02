@@ -132,6 +132,20 @@ those of the [`[decision]` section](../running/#configuration-of-retrograd-infer
 An adapter trained by retrograd is served with the temperatures it carries.
 `retrograd chat` on a decision model points here.
 
+A plain causal GGUF uses the generic letter prompt with thinking disabled.
+
+```text
+retrograd decide label --teacher MODEL.gguf|URL --data QUESTIONS.jsonl --out LABELLED.jsonl
+                       [--adapter A.gguf] [--device D] [--template-variables JSON]
+                       [--teacher-model NAME] [--api-key-env ENV]
+```
+
+Writes native decision JSONL with soft `probabilities`, usable across model
+families. Inputs are service requests or native single questions without
+answers. A local teacher uses its served distribution; an HTTP teacher
+requires `--teacher-model` and must return a valid probability object.
+Existing outputs are refused. See [Teacher labels](../training/decision#teacher-labels).
+
 ## `preflight`
 
 ```text

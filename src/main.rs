@@ -85,6 +85,9 @@ Commands:
   decide --model decision.gguf --request request.json|- [--adapter adapter.gguf]
          [--device auto|cpu|gpu] [--template systemone.jinja]
          [--max-head-tokens N] [--pack N]
+  decide label --teacher MODEL.gguf|URL --data questions.jsonl --out labelled.jsonl
+         [--teacher-model NAME] [--api-key-env ENV] [--adapter adapter.gguf]
+         [--device auto|cpu|gpu] [--template-variables JSON]
   distill-teacher <config.toml> [--data corpus.jsonl] [--out corpus.topk]
         [--k N] [--model base.gguf] [--device auto|cpu|gpu] [--ctx N]
   judge eval <config.toml> --fixtures fixtures.jsonl
@@ -114,6 +117,7 @@ mod help_tests {
             chat::FLAGS,
             inspect::FLAGS,
             decide::FLAGS,
+            decide::label::FLAGS,
             distill_teacher::FLAGS,
             preflight::FLAGS,
             #[cfg(feature = "agent")]

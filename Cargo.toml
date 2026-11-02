@@ -203,6 +203,7 @@ retrograd-run.workspace = true
 retrograd-training.workspace = true
 retrograd-tools.workspace = true
 retrograd-scenario-gen.workspace = true
+retrograd-llm-client = { workspace = true, optional = true }
 serde_json.workspace = true
 # Only `profile` needs this directly: driving an `agent_grpo` run at the
 # `AgenticRun` level, to keep the same `timing/*` breakdown a synchronous GRPO
@@ -260,7 +261,7 @@ cuda = ["retrograd-ffi/cuda"]
 # `env-filter`'s regex engine and `indicatif`'s terminal stack among them.
 # That is what `python/native` asks for: it links the library, never a
 # binary, and has no terminal to draw on.
-cli = ["dep:comfy-table", "dep:indicatif", "dep:tracing-subscriber", "dep:retrograd-cli-ui"]
+cli = ["dep:comfy-table", "dep:indicatif", "dep:tracing-subscriber", "dep:retrograd-cli-ui", "dep:retrograd-llm-client", "dep:tokio"]
 agent = ["retrograd-run/agent", "dep:retrograd-agent", "dep:tokio"]
 serve = ["agent", "cli", "dep:retrograd-openai", "dep:retrograd-serve", "tokio/net", "tokio/signal"]
 mcp = ["agent", "retrograd-run/mcp", "retrograd-tools/mcp", "retrograd-agent/mcp"]

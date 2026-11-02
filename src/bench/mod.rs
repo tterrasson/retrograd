@@ -362,16 +362,36 @@ pub(crate) fn bench_model(args: Vec<String>) -> Result<()> {
                     },
                 )?)
             })?;
-            if let Some(path) = &decision.template {
-                let source = std::fs::read_to_string(path).map_err(|error| {
-                    Error::config(format!(
-                        "decision.template {} cannot be read: {error}",
-                        path.display()
-                    ))
-                })?;
-                engine.set_decision_template(Some(&source))?;
+            engine.set_chat_template_variables(
+                &serde_json::Value::Object(decision.template_variables.clone()).to_string(),
+            )?;
+            let source = decision
+                .template
+                .as_ref()
+                .map(|path| {
+                    std::fs::read_to_string(path).map_err(|error| {
+                        Error::config(format!(
+                            "decision.template {} cannot be read: {error}",
+                            path.display()
+                        ))
+                    })
+                })
+                .transpose()?;
+            let mut info = if engine.decision_metadata()?.decision_type.is_none() {
+                engine.configure_causal_decision()?.0
+            } else {
+                if let Some(source) = &source {
+                    engine.set_decision_template(Some(source))?;
+                }
+                engine.decision_info()?
+            };
+            if let Some(source) = &source {
+                engine.set_decision_template(Some(source))?;
             }
-            let mut info = engine.decision_info()?;
+            examples = examples
+                .into_iter()
+                .map(|example| example.for_readout(&info.readout))
+                .collect();
             if let Some(max_head_tokens) = decision.max_head_tokens {
                 info = info.with_max_head_tokens(max_head_tokens as usize)?;
             }

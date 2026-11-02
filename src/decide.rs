@@ -8,10 +8,11 @@ use std::path::PathBuf;
 
 use retrograd::decision::Json;
 use retrograd::decision::request::SystemOneRequest;
-use retrograd::trainer::decision_metadata;
 use retrograd::{Device, Engine, EngineConfig, Error, Result};
 
 use crate::args::Args;
+
+pub(crate) mod label;
 
 pub(crate) const FLAGS: &[&str] = &[
     "--model",
@@ -76,6 +77,9 @@ fn parse_decide_args(args: &[String]) -> Result<DecideArgs> {
 }
 
 pub(crate) fn decide(args: Vec<String>) -> Result<()> {
+    if args.first().is_some_and(|arg| arg == "label") {
+        return label::label(&args[1..]);
+    }
     let args = parse_decide_args(&args)?;
     let body = match &args.request {
         Some(path) => std::fs::read(path)
@@ -86,15 +90,6 @@ pub(crate) fn decide(args: Vec<String>) -> Result<()> {
             body
         }
     };
-    // The header first: a model that generates is pointed to the command that
-    // serves it before its weights are loaded.
-    if decision_metadata(&args.model)?.decision_type.is_none() {
-        return Err(Error::invalid(format!(
-            "{} is not a decision model (it declares no `<arch>.decision.type`); \
-             use `retrograd chat` or `retrograd serve` for a model that generates",
-            args.model.display()
-        )));
-    }
     let n_seq_max = EngineConfig::default().n_seq_max;
     let mut engine = Engine::new(
         &args.model,
@@ -103,15 +98,29 @@ pub(crate) fn decide(args: Vec<String>) -> Result<()> {
             ..EngineConfig::default()
         },
     )?;
-    if let Some(path) = &args.template {
-        let source = std::fs::read_to_string(path)
-            .map_err(|error| Error::invalid(format!("cannot read {}: {error}", path.display())))?;
-        engine.set_decision_template(Some(&source))?;
+    let source = args
+        .template
+        .as_ref()
+        .map(|path| {
+            std::fs::read_to_string(path)
+                .map_err(|error| Error::invalid(format!("cannot read {}: {error}", path.display())))
+        })
+        .transpose()?;
+    let mut info = if engine.decision_metadata()?.decision_type.is_none() {
+        engine.set_chat_template_variables(r#"{"enable_thinking":false}"#)?;
+        engine.configure_causal_decision()?.0
+    } else {
+        if let Some(source) = &source {
+            engine.set_decision_template(Some(source))?;
+        }
+        engine.decision_info()?
+    };
+    if let Some(source) = &source {
+        engine.set_decision_template(Some(source))?;
     }
     if let Some(adapter) = &args.adapter {
         engine.load_lora(adapter)?;
     }
-    let mut info = engine.decision_info()?;
     // An adapter trained here carries the temperatures fitted on its weights.
     if let Some(adapter) = &args.adapter {
         info = info
