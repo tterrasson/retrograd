@@ -20,7 +20,7 @@ pub use adapter::AdapterRowsInfo;
 pub use decide::{
     ADAPTER_DECISION_PREFIX, DECISION_TEMPLATE, Decision, DecisionInfo, DecisionMetadata,
     DecisionPass, TemplateSource, adapter_decision_metadata, decision_metadata, read_gguf_metadata,
-    rewrite_gguf_metadata,
+    render_decision_template_source, rewrite_gguf_metadata,
 };
 pub(crate) use decide::{DecisionHost, decision_info_from, decision_pass, readout_code};
 pub use embed::PoolingType;

@@ -505,7 +505,7 @@ pub use engine::{
     ADAPTER_DECISION_PREFIX, AdapterRowsInfo, DECISION_TEMPLATE, Decision, DecisionInfo,
     DecisionMetadata, DecisionPass, Engine, EngineError, PoolingType, TemplateSource,
     adapter_decision_metadata, decision_metadata, engine_config_from_train_config,
-    generation_batch, read_gguf_metadata, rewrite_gguf_metadata,
+    generation_batch, read_gguf_metadata, render_decision_template_source, rewrite_gguf_metadata,
 };
 pub use grammar::{grammar_from_gbnf, grammar_from_json_schema, json_object_grammar};
 pub use grouped::{GroupedBatch, GroupedQuestion};

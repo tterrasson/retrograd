@@ -80,6 +80,31 @@ pub struct Example {
     pub target: Target,
 }
 
+impl Example {
+    /// Aligns a dataset's canonical false/true order with the model's readout.
+    /// Target mass follows the option key, including a hard boolean target.
+    pub fn for_readout(mut self, readout: &crate::readout::Readout) -> Self {
+        if self.question.kind == QuestionKind::Noul
+            && readout.noul_true_first()
+            && self
+                .question
+                .options
+                .first()
+                .is_some_and(|o| o.key == "false")
+        {
+            self.question.options.swap(0, 1);
+            self.target = match self.target {
+                Target::Hard(index) => Target::Hard(1 - index),
+                Target::Soft(mut probabilities) => {
+                    probabilities.swap(0, 1);
+                    Target::Soft(probabilities)
+                }
+            };
+        }
+        self
+    }
+}
+
 /// Reads a training file.
 pub fn read_jsonl(path: &Path, format: DataFormat) -> Result<Vec<Example>, DecisionError> {
     let text = std::fs::read_to_string(path)?;

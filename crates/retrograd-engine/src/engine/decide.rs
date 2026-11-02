@@ -151,6 +151,28 @@ pub fn rewrite_gguf_metadata(
     Ok(())
 }
 
+/// Renders a standalone decision template over its complete context, without
+/// loading a model. Uses the same Jinja engine as the model-backed renderer.
+pub fn render_decision_template_source(
+    source: &str,
+    context: &Json,
+) -> std::result::Result<String, EngineError> {
+    let source = CString::new(source).map_err(nul_error)?;
+    let context = CString::new(context.to_string()).map_err(nul_error)?;
+    // SAFETY: both strings live through this synchronous two-call string read.
+    Ok(unsafe {
+        read_string(|buffer, n_buffer, out| {
+            ffi::retro_template_render_context(
+                source.as_ptr(),
+                context.as_ptr(),
+                buffer,
+                n_buffer,
+                out,
+            )
+        })?
+    })
+}
+
 /// Where the `systemone` template of a decision comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TemplateSource {
@@ -473,6 +495,27 @@ impl DecisionHost for Engine {
 }
 
 impl Engine {
+    /// Installs a generic letter-logit readout on a causal model. The returned
+    /// standalone template is the exact source to embed in an exported GGUF.
+    /// Chat-template variables must be set before calling this method.
+    pub fn configure_causal_decision(
+        &mut self,
+    ) -> std::result::Result<(DecisionInfo, String), EngineError> {
+        let mut metadata = self.decision_metadata()?;
+        if metadata.decision_type.is_some() {
+            return Err(EngineError::invalid(
+                "the model already declares a decision readout",
+            ));
+        }
+        let source = retrograd_decision::causal::standalone(|content| {
+            self.format_chat(&[("user", content)], true)
+        })?;
+        self.set_decision_template(Some(&source))?;
+        metadata.decision_type = Some("openjev".into());
+        let info = decision_info_from(self, &metadata, true)?;
+        Ok((info, source))
+    }
+
     /// What the loaded model declares about its decision head.
     pub fn decision_metadata(&self) -> std::result::Result<DecisionMetadata, EngineError> {
         // SAFETY: the `Engine` invariant holds and the entry point follows the

@@ -43,20 +43,7 @@ impl DecisionHost for Trainer {
         text: &str,
         parse_special: bool,
     ) -> std::result::Result<Vec<Token>, EngineError> {
-        // The trainer tokenizes fragments with special tokens parsed, which is
-        // what a rendered prompt and a marker readout need. The labels of a
-        // label readout are tokenized without, and the trainer does not train
-        // one.
-        if !parse_special {
-            return Err(EngineError::invalid(
-                "the trainer reads special tokens in every fragment; a label readout is not \
-                 trainable here",
-            ));
-        }
-        if text.is_empty() {
-            return Ok(Vec::new());
-        }
-        Ok(self.tokenize_fragment(text)?)
+        Ok(self.tokenize_with(text, false, parse_special)?)
     }
 
     fn token_text(&self, token: Token) -> std::result::Result<String, EngineError> {
@@ -65,6 +52,25 @@ impl DecisionHost for Trainer {
 }
 
 impl Trainer {
+    /// Installs a generic letter-logit readout on a causal model. The returned
+    /// standalone template is the exact source to embed in an exported GGUF.
+    /// Chat-template variables must be set before calling this method.
+    pub fn configure_causal_decision(&mut self) -> Result<(DecisionInfo, String)> {
+        let mut metadata = self.decision_metadata()?;
+        if metadata.decision_type.is_some() {
+            return Err(Error::invalid(
+                "the model already declares a decision readout",
+            ));
+        }
+        let source = retrograd_decision::causal::standalone(|content| {
+            self.format_chat(&[("user", content)], true)
+        })?;
+        self.set_decision_template(Some(&source))?;
+        metadata.decision_type = Some("openjev".into());
+        let info = decision_info_from(self, &metadata, true)?;
+        Ok((info, source))
+    }
+
     /// What the loaded model declares about its decision head.
     pub fn decision_metadata(&self) -> Result<DecisionMetadata> {
         // SAFETY: the `Trainer` invariant holds and the entry point follows

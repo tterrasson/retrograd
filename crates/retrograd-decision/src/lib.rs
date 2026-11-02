@@ -38,6 +38,7 @@ macro_rules! json {
 
 pub mod answer;
 pub mod calibrate;
+pub mod causal;
 pub mod dataset;
 mod error;
 pub mod json;
