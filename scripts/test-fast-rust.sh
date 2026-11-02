@@ -48,6 +48,13 @@ assert_cpu_graph() {
     return 1
   fi
 }
+# The llama.cpp fork series against the lockfile: one `retro(<family>)` commit
+# per declared family, fixups only of an existing family. A family name that
+# exists nowhere is otherwise invisible until the next upstream sync. Only the
+# series is checked here, not the pin nor the working tree, so a fork change in
+# progress does not fail the lane; a git walk over a few dozen commits.
+timed_step fork-series "$repo_root/scripts/check-llama-cpp-integration.sh" --series-only
+
 assert_cpu_graph "${workspace_cpu[@]}"
 assert_cpu_graph "${root_cpu[@]}"
 assert_cpu_graph "${python_cpu[@]}"

@@ -67,6 +67,14 @@ cargo test -p retrograd --no-default-features --features agent,cli,serve --lib -
 cargo test -p retrograd-python --no-default-features --lib --bins
 ```
 
+First, `scripts/check-llama-cpp-integration.sh --series-only` checks the
+llama.cpp fork series against `crates/retrograd-ffi/runtime/llama.cpp.lock`:
+one `retro(<family>)` commit per declared family, `fixup!` commits only of an
+existing family. It reads git history only (deepening a shallow CI checkout to
+the upstream base) and ignores the pin and the working tree, so a fork change
+in progress does not fail the lane, but a commit named after an undeclared
+family does.
+
 Before compilation, each selection's resolved graph (including dev-dependencies)
 is checked with `cargo tree`: FFI must be present and none of `platform-gpu`,
 `metal`, `vulkan`, `cuda` may be enabled. Workspace defaults remain on for the

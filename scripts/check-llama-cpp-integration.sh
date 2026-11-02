@@ -16,6 +16,14 @@ set -euo pipefail
 # free to delete. That check belongs to a rebase, so scripts/update-llama-cpp.sh
 # runs it there; it is off by default because it greps the whole tree twice per
 # family.
+#
+# With --series-only it checks the lockfile and the commit series of whatever
+# the fork checkout is at, and nothing about the pin, the origin or the working
+# tree: the cheap half that a fast lane runs on every commit, and that
+# scripts/push-llama-cpp-fork.sh runs before publishing a series the pin does
+# not name yet. A shallow checkout (CI clones submodules at depth 1) is
+# deepened until the upstream base is reachable, since the series is what lies
+# between the two.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
@@ -25,9 +33,11 @@ SOURCE_DIR="${LLAMA_CPP_DIR:-${ROOT_DIR}/${SUBMODULE_PATH}}"
 LOCKFILE="${LLAMA_CPP_LOCKFILE:-${ROOT_DIR}/crates/retrograd-ffi/runtime/llama.cpp.lock}"
 
 RUN_PROBES=0
+SERIES_ONLY=0
 for arg in "$@"; do
   case "${arg}" in
     --upstream-status) RUN_PROBES=1 ;;
+    --series-only) SERIES_ONLY=1 ;;
     *) echo "unknown argument: ${arg}" >&2; exit 2;;
   esac
 done
@@ -130,28 +140,59 @@ upstream_commit="$(lock_value upstream_commit)"
   exit 1
 }
 
-fork_url="$(git -C "${ROOT_DIR}" config -f .gitmodules "submodule.${SUBMODULE_NAME}.url")"
-actual="$(git -C "${SOURCE_DIR}" rev-parse HEAD)"
-origin="$(git -C "${SOURCE_DIR}" remote get-url origin)"
-pinned="$(git -C "${ROOT_DIR}" ls-files -s -- "${SUBMODULE_PATH}" | awk '$1 == "160000" { print $2 }')"
+# A shallow checkout has the pinned commit but not the series under it. The
+# series is a few dozen commits, so deepening in steps reaches the upstream base
+# without fetching the history of llama.cpp.
+deepen_to_upstream() {
+  local step
+  [[ "$(git -C "${SOURCE_DIR}" rev-parse --is-shallow-repository)" == "true" ]] || return 0
+  for step in 64 128 256 512 1024; do
+    if git -C "${SOURCE_DIR}" merge-base --is-ancestor "${upstream_commit}" HEAD 2>/dev/null; then
+      return 0
+    fi
+    git -C "${SOURCE_DIR}" fetch --quiet --deepen="${step}" origin "$(git -C "${SOURCE_DIR}" rev-parse HEAD)" ||
+      git -C "${SOURCE_DIR}" fetch --quiet --deepen="${step}" origin || return 0
+  done
+}
 
-[[ -n "${pinned}" ]] || {
-  echo "no submodule gitlink for ${SUBMODULE_PATH} in the index" >&2
-  exit 1
+# The same repository reached over SSH or HTTPS: a push-capable checkout
+# (git@host:owner/repo) is the fork as much as the read-only URL .gitmodules
+# records.
+repo_identity() {
+  printf '%s' "$1" | sed -E -e 's#^(ssh://)?git@([^:/]+)[:/]#https://\2/#' -e 's#\.git/?$##' -e 's#/$##'
 }
-[[ "${actual}" == "${pinned}" ]] || {
-  echo "llama.cpp is at ${actual}, expected pinned submodule commit ${pinned}" >&2
-  echo "commit the submodule bump in retrograd, or run scripts/setup-llama-cpp.sh --pin" >&2
-  exit 1
+
+actual="$(git -C "${SOURCE_DIR}" rev-parse HEAD)"
+
+check_checkout() {
+  local fork_url origin pinned
+  fork_url="$(git -C "${ROOT_DIR}" config -f .gitmodules "submodule.${SUBMODULE_NAME}.url")"
+  origin="$(git -C "${SOURCE_DIR}" remote get-url origin)"
+  pinned="$(git -C "${ROOT_DIR}" ls-files -s -- "${SUBMODULE_PATH}" | awk '$1 == "160000" { print $2 }')"
+
+  [[ -n "${pinned}" ]] || {
+    echo "no submodule gitlink for ${SUBMODULE_PATH} in the index" >&2
+    exit 1
+  }
+  [[ "${actual}" == "${pinned}" ]] || {
+    echo "llama.cpp is at ${actual}, expected pinned submodule commit ${pinned}" >&2
+    echo "commit the submodule bump in retrograd, or run scripts/setup-llama-cpp.sh --pin" >&2
+    exit 1
+  }
+  [[ "$(repo_identity "${origin}")" == "$(repo_identity "${fork_url}")" ]] || {
+    echo "llama.cpp origin is ${origin}, expected ${fork_url}" >&2
+    exit 1
+  }
+  [[ -z "$(git -C "${SOURCE_DIR}" status --porcelain --untracked-files=no)" ]] || {
+    echo "llama.cpp submodule has local modifications" >&2
+    exit 1
+  }
 }
-[[ "${origin}" == "${fork_url}" ]] || {
-  echo "llama.cpp origin is ${origin}, expected ${fork_url}" >&2
-  exit 1
-}
-[[ -z "$(git -C "${SOURCE_DIR}" status --porcelain --untracked-files=no)" ]] || {
-  echo "llama.cpp submodule has local modifications" >&2
-  exit 1
-}
+
+if [[ "${SERIES_ONLY}" == "0" ]]; then
+  check_checkout
+fi
+deepen_to_upstream
 git -C "${SOURCE_DIR}" merge-base --is-ancestor "${upstream_commit}" HEAD || {
   echo "fork commit does not descend from declared upstream commit ${upstream_commit}" >&2
   exit 1
@@ -213,4 +254,8 @@ check_series || {
   exit 1
 }
 
-echo "llama.cpp fork submodule is clean and pinned: ${actual} (upstream ${upstream_commit})"
+if [[ "${SERIES_ONLY}" == "1" ]]; then
+  echo "llama.cpp fork series names its families: ${actual} (upstream ${upstream_commit})"
+else
+  echo "llama.cpp fork submodule is clean and pinned: ${actual} (upstream ${upstream_commit})"
+fi

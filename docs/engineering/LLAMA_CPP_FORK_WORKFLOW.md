@@ -59,7 +59,10 @@ scripts/push-llama-cpp-fork.sh
 ```
 
 The script pushes `retrograd/main` to the fork (fast-forward only), then
-commits and pushes the submodule bump and the lockfile in retrograd.
+commits and pushes the submodule bump and the lockfile in retrograd. Before
+pushing, it runs `scripts/check-llama-cpp-integration.sh --series-only`: a
+commit whose family is not declared in the lockfile (or a fixup of a family
+that has no commit) is refused there, not discovered at the next sync.
 `--dry-run` shows what would be done, `--yes` skips confirmation.
 
 To commit the bump by hand instead of via the script:
@@ -106,10 +109,20 @@ scripts/push-llama-cpp-fork.sh --force-with-lease
 ## Checking / repairing state
 
 ```sh
-scripts/check-llama-cpp-integration.sh    # pin, cleanliness, origin, upstream ancestry
+scripts/check-llama-cpp-integration.sh    # pin, cleanliness, origin, upstream ancestry, series
+scripts/check-llama-cpp-integration.sh --series-only  # lockfile and series only
 git submodule status                      # + before the SHA = uncommitted pointer
 scripts/setup-llama-cpp.sh --pin          # revert to the pinned commit (refuses if modified)
 ```
+
+The full check wants the checkout clean and at the pinned commit. The
+`--series-only` mode checks only the lockfile entries and the commit series
+(one `retro(<family>)` commit per declared family, fixups of existing
+families), whatever the pin and the working tree: it is the half that
+`scripts/test-fast-rust.sh` runs on every commit and that the push script runs
+before publishing. A shallow checkout (CI clones submodules at depth 1) is
+deepened until the upstream base is reachable. The origin may be the fork's
+HTTPS URL or its SSH form (`git@github.com:owner/repo.git`).
 
 Common cases:
 

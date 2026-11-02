@@ -62,6 +62,13 @@ git -C "${SOURCE_DIR}" merge-base --is-ancestor "${upstream_commit}" "${head_com
   exit 1
 }
 
+# The series being published must name its families: the pin check of the full
+# script would fail here by construction, since the bump comes after the push.
+"${SCRIPT_DIR}/check-llama-cpp-integration.sh" --series-only || {
+  echo "refusing to publish a fork series that does not match ${LOCKFILE#"${ROOT_DIR}/"}" >&2
+  exit 1
+}
+
 git -C "${SOURCE_DIR}" fetch origin "refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>/dev/null || true
 
 fork_push_needed=true
