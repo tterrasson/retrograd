@@ -139,6 +139,9 @@ pub fn parse_ratios(text: &str) -> Result<Vec<RatioRow>, PromoteError> {
 #[derive(Clone, Debug)]
 pub struct VariantRow {
     pub op: String,
+    /// The member a family op claims (`GGML_UNARY_OP_RELU` on `UNARY`), or
+    /// `None` for an op that is not a family.
+    pub op_variant: Option<String>,
     pub backend: GgmlBackend,
     pub variant_id: String,
     pub priority: u8,
@@ -182,6 +185,7 @@ pub fn production_variants() -> Result<Vec<VariantRow>, GenError> {
             let pair_policy = spec.policy_for(backend);
             out.push(VariantRow {
                 op: spec.ggml_op.unwrap_or_default().to_string(),
+                op_variant: spec.ggml_op_variant.map(str::to_string),
                 backend,
                 policy: overrides.get(&variant_id, backend, pair_policy),
                 variant_id,
@@ -199,17 +203,37 @@ pub fn production_variants() -> Result<Vec<VariantRow>, GenError> {
 /// Whether `op` has a shape adapter below: a per-variant policy on an op
 /// without one could never be decided from measurements.
 pub fn has_shape_adapter(op: &str) -> bool {
-    matches!(op, "GGML_OP_MUL_MAT")
+    matches!(op, "GGML_OP_MUL_MAT" | "GGML_OP_UNARY")
 }
 
-/// Reads one `test-backend-ops` perf label into the `(src0 dtype, axis
-/// extents)` the selection rule evaluates. One adapter per op, because the
-/// label's parameter names are the op's own.
+/// What a perf label says about the node it timed, in the terms the selection
+/// rule evaluates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LabelShape {
+    /// The `src0` dtype spelling, e.g. `q8_0` or `f32`.
+    pub dtype: String,
+    /// The member of a family op, spelled as the registry claims it
+    /// (`GGML_UNARY_OP_RELU`); `None` for an op that is not a family.
+    pub op_variant: Option<String>,
+    /// The kernel's axis extents.
+    pub extents: BTreeMap<String, u64>,
+}
+
+/// Reads one `test-backend-ops` perf label into the [`LabelShape`] the
+/// selection rule evaluates. One adapter per op, because the label's parameter
+/// names are the op's own.
 ///
 /// `MUL_MAT` spells its case as `m` (output rows), `n` (step columns) and `k`
 /// (contraction); the GEMV kernel's axes are `row = m`, `plane = n`,
 /// `col = k`.
-pub fn label_shape(op: &str, label: &str) -> Option<(String, BTreeMap<String, u64>)> {
+///
+/// `UNARY` is described by its member (`ggml_op_desc`), so the label is
+/// `RELU(type=f32,ne_a=[4096,16,1,1],v=0)`: the member is the claim, and
+/// `ne_a` gives the four axes `col`, `row`, `plane`, `batch` in ggml order. A
+/// view (`v=1`) is refused: which variant serves it depends on a layout claim
+/// (the flattened linear address wants contiguous bindings) that a shape replay
+/// cannot see.
+pub fn label_shape(op: &str, label: &str) -> Option<LabelShape> {
     match op {
         "GGML_OP_MUL_MAT" => {
             let inner = label.strip_prefix("MUL_MAT(")?.strip_suffix(')')?;
@@ -242,29 +266,101 @@ pub fn label_shape(op: &str, label: &str) -> Option<(String, BTreeMap<String, u6
             {
                 return None;
             }
-            Some((dtype?, extents))
+            Some(LabelShape {
+                dtype: dtype?,
+                op_variant: None,
+                extents,
+            })
+        }
+        "GGML_OP_UNARY" => {
+            let (member, rest) = label.split_once('(')?;
+            let inner = rest.strip_suffix(')')?;
+            if member.is_empty()
+                || !member
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+            {
+                return None;
+            }
+            let (mut dtype, mut ne, mut contiguous) = (None, None, false);
+            for (key, value) in label_params(inner) {
+                match key {
+                    "type" => dtype = Some(value.to_string()),
+                    "ne_a" => ne = Some(bracketed_extents(value)?),
+                    "v" => contiguous = value == "0",
+                    _ => {}
+                }
+            }
+            let ne: [u64; 4] = ne?;
+            if !contiguous || ne.contains(&0) {
+                return None;
+            }
+            let extents = ["col", "row", "plane", "batch"]
+                .into_iter()
+                .zip(ne)
+                .map(|(axis, extent)| (axis.to_string(), extent))
+                .collect();
+            Some(LabelShape {
+                dtype: dtype?,
+                op_variant: Some(format!("GGML_UNARY_OP_{member}")),
+                extents,
+            })
         }
         _ => None,
     }
 }
 
+/// The `key=value` parameters of a perf label, split at the commas that are not
+/// inside a `[...]` list.
+fn label_params(inner: &str) -> Vec<(&str, &str)> {
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0usize, 0usize);
+    for (i, c) in inner.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.extend(inner[start..i].split_once('='));
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.extend(inner[start..].split_once('='));
+    out
+}
+
+/// `[a,b,c,d]`, the four extents a label prints for a ggml tensor.
+fn bracketed_extents(value: &str) -> Option<[u64; 4]> {
+    let inner = value.strip_prefix('[')?.strip_suffix(']')?;
+    let parsed: Vec<u64> = inner
+        .split(',')
+        .map(|v| v.trim().parse().ok())
+        .collect::<Option<_>>()?;
+    parsed.try_into().ok()
+}
+
 /// The variant a measured shape was served by: same rule as the dispatcher -
-/// `src0` dtype claim, every shape rule holds, highest priority, registry
-/// order on a tie. Observation rows are elevated for measurement, while
-/// native-only rows remain excluded.
+/// member claim, `src0` dtype claim, every shape rule holds, highest priority,
+/// registry order on a tie. Observation rows are elevated for measurement,
+/// while native-only rows remain excluded.
 pub fn select_for_shape<'a>(
     variants: &'a [VariantRow],
     op: &str,
     backend: GgmlBackend,
-    dtype: &str,
-    extents: &BTreeMap<String, u64>,
+    shape: &LabelShape,
 ) -> Option<&'a VariantRow> {
     variants
         .iter()
-        .filter(|v| v.op == op && v.backend == backend && v.src0_dtype == dtype)
+        .filter(|v| {
+            v.op == op
+                && v.backend == backend
+                && v.op_variant == shape.op_variant
+                && v.src0_dtype == shape.dtype
+        })
         // TEST_PREFER raises observe, but cannot enable a native-only row.
         .filter(|v| v.policy.min(v.pair_policy) != BackendPolicy::NativeOnly)
-        .filter(|v| v.claim.holds(|axis| extents.get(axis).copied()))
+        .filter(|v| v.claim.holds(|axis| shape.extents.get(axis).copied()))
         .max_by_key(|v| (v.priority, std::cmp::Reverse(v.order)))
 }
 
@@ -318,10 +414,10 @@ pub fn attribute(
         if !has_shape_adapter(&op) {
             continue;
         }
-        let Some((dtype, extents)) = label_shape(&op, &row.label) else {
+        let Some(shape) = label_shape(&op, &row.label) else {
             return Err(PromoteError::UnparsableLabel(row.label.clone(), op));
         };
-        let Some(variant) = select_for_shape(variants, &op, backend, &dtype, &extents) else {
+        let Some(variant) = select_for_shape(variants, &op, backend, &shape) else {
             continue;
         };
         let key = format!("{}/{}", variant.variant_id, variant.backend.name());
@@ -669,8 +765,13 @@ mod tests {
 
     #[test]
     fn the_mul_mat_adapter_reads_the_lane_labels() {
-        let (dtype, extents) = label_shape("GGML_OP_MUL_MAT", N1_Q8_0).unwrap();
+        let LabelShape {
+            dtype,
+            op_variant,
+            extents,
+        } = label_shape("GGML_OP_MUL_MAT", N1_Q8_0).unwrap();
         assert_eq!(dtype, "q8_0");
+        assert_eq!(op_variant, None);
         assert_eq!(
             extents,
             BTreeMap::from([
@@ -679,15 +780,15 @@ mod tests {
                 ("col".to_string(), 1024),
             ])
         );
-        let (dtype, extents) = label_shape("GGML_OP_MUL_MAT", N8_Q4_K).unwrap();
-        assert_eq!(dtype, "q4_K");
-        assert_eq!(extents.get("plane"), Some(&8));
-        assert_eq!(extents.get("col"), Some(&14336));
-        let (dtype, extents) = label_shape("GGML_OP_MUL_MAT", N32_Q6_K).unwrap();
-        assert_eq!(dtype, "q6_K");
-        assert_eq!(extents.get("plane"), Some(&32));
+        let shape = label_shape("GGML_OP_MUL_MAT", N8_Q4_K).unwrap();
+        assert_eq!(shape.dtype, "q4_K");
+        assert_eq!(shape.extents.get("plane"), Some(&8));
+        assert_eq!(shape.extents.get("col"), Some(&14336));
+        let shape = label_shape("GGML_OP_MUL_MAT", N32_Q6_K).unwrap();
+        assert_eq!(shape.dtype, "q6_K");
+        assert_eq!(shape.extents.get("plane"), Some(&32));
         // `k_v` and `m_v` must not be read as `k`/`m`.
-        assert!(!extents.contains_key("k_v"));
+        assert!(!shape.extents.contains_key("k_v"));
         assert!(label_shape("GGML_OP_CUMSUM", "CUMSUM(...)").is_none());
         assert!(!has_shape_adapter("GGML_OP_CUMSUM"));
         assert!(label_shape("GGML_OP_MUL_MAT", "MUL_MAT(type_a=q8_0,type_b=f32,n=1)").is_none());
@@ -709,14 +810,13 @@ mod tests {
             extents.insert("row".to_string(), 4096);
             extents.insert("plane".to_string(), plane);
             extents.insert("col".to_string(), 14336);
-            select_for_shape(
-                &variants,
-                "GGML_OP_MUL_MAT",
-                GgmlBackend::Metal,
-                dtype,
-                &extents,
-            )
-            .map(|v| v.variant_id.clone())
+            let shape = LabelShape {
+                dtype: dtype.to_string(),
+                op_variant: None,
+                extents,
+            };
+            select_for_shape(&variants, "GGML_OP_MUL_MAT", GgmlBackend::Metal, &shape)
+                .map(|v| v.variant_id.clone())
         };
         // plane = 1: only the n1 pick claims it.
         assert_eq!(
@@ -729,6 +829,64 @@ mod tests {
         assert!(metal("q6_K", 32).unwrap().ends_with("_mma"));
         // A dtype no metal row claims selects nothing.
         assert!(metal("f32", 8).is_none());
+    }
+
+    /// The lane's `UNARY` labels name the member, not the op: the adapter must
+    /// turn the member into the claim the registry rows carry, read `ne_a`
+    /// despite the commas inside its brackets, and refuse a view.
+    #[test]
+    fn the_unary_adapter_reads_the_member_and_its_four_axes() {
+        let shape =
+            label_shape("GGML_OP_UNARY", "GELU_ERF(type=f32,ne_a=[128,16,16,1],v=0)").unwrap();
+        assert_eq!(shape.dtype, "f32");
+        assert_eq!(shape.op_variant.as_deref(), Some("GGML_UNARY_OP_GELU_ERF"));
+        assert_eq!(
+            shape.extents,
+            BTreeMap::from([
+                ("col".to_string(), 128),
+                ("row".to_string(), 16),
+                ("plane".to_string(), 16),
+                ("batch".to_string(), 1),
+            ])
+        );
+        for refused in [
+            "RELU(type=f32,ne_a=[128,16,16,1],v=1)",
+            "RELU(type=f32,ne_a=[128,16,16],v=0)",
+            "RELU(type=f32,ne_a=[0,16,16,1],v=0)",
+            "RELU(type=f32,v=0)",
+            "relu(type=f32,ne_a=[128,16,16,1],v=0)",
+        ] {
+            assert!(label_shape("GGML_OP_UNARY", refused).is_none(), "{refused}");
+        }
+    }
+
+    /// Each member's shapes go to that member's variants only - the claim that
+    /// lets `variants.tsv` hold one member of the family - and the shape rule
+    /// still arbitrates between a member's lowerings.
+    #[test]
+    fn unary_attribution_selects_the_measured_member_and_lowering() {
+        let variants = production_variants().unwrap();
+        let pick = |backend: GgmlBackend, label: &str| {
+            let shape = label_shape("GGML_OP_UNARY", label).unwrap();
+            select_for_shape(&variants, "GGML_OP_UNARY", backend, &shape)
+                .map(|v| v.variant_id.clone())
+                .unwrap()
+        };
+        let wide = "TANH(type=f32,ne_a=[4096,16,1,1],v=0)";
+        let short = "TANH(type=f32,ne_a=[128,16,16,1],v=0)";
+        for backend in [GgmlBackend::Metal, GgmlBackend::Vulkan] {
+            assert!(pick(backend, wide).starts_with("unary_tanh_"));
+            assert!(!pick(backend, wide).ends_with("_narrow"));
+            // `col <= 256` is the narrow twin's claim.
+            assert!(pick(backend, short).ends_with("_narrow"));
+            assert!(pick(backend, short).starts_with("unary_tanh_"));
+        }
+        // On CUDA the linear-address lowering claims every contiguous shape.
+        let gelu_erf = pick(
+            GgmlBackend::Cuda,
+            "GELU_ERF(type=f32,ne_a=[1024,16,1,1],v=0)",
+        );
+        assert_eq!(gelu_erf, "unary_gelu_erf_f32_4d_serial_flat_linear");
     }
 
     #[test]
