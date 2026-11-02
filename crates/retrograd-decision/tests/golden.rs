@@ -6,11 +6,12 @@
 
 use std::path::{Path, PathBuf};
 
+use retrograd_decision::DecisionError;
 use retrograd_decision::answer::{Calibration, format_answer};
 use retrograd_decision::json::Object;
 use retrograd_decision::layout::{self, Budget};
-use retrograd_decision::readout::Readout;
-use retrograd_decision::request::SystemOneRequest;
+use retrograd_decision::readout::{DecisionType, Head, HeadKind, PromptScope, Readout};
+use retrograd_decision::request::{Question, SystemOneRequest};
 use retrograd_decision::template::{self, PromptInput};
 use retrograd_decision::{Json, Token};
 
@@ -71,7 +72,13 @@ const MODELS: [Model; 3] = [
     },
 ];
 
-const BACKENDS: [&str; 2] = ["cpu", "mtl"];
+/// The recordings: the CPU of each architecture, and Metal. A file that is
+/// not there is skipped; the logic replayed here does not depend on the
+/// backend.
+const BACKENDS: [&str; 3] = ["cpu-aarch64", "cpu-x86_64", "mtl"];
+
+/// The CPU recording every model of `MODELS` has.
+const CPU: &str = "cpu-aarch64";
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/decision")
@@ -83,21 +90,30 @@ fn load(file: &str) -> Json {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-fn golden(model: &Model, backend: &str) -> Json {
-    load(&format!("golden-{}.{backend}.json", model.name))
+fn golden(model: &Model, backend: &str) -> Option<Json> {
+    let file = format!("golden-{}.{backend}.json", model.name);
+    fixtures().join(&file).exists().then(|| load(&file))
 }
 
 fn readout(model: &Model) -> Readout {
-    Readout::MarkerColumn {
-        marker: model.marker,
-        sep: model.sep,
-        marker_text: model.marker_text.to_owned(),
-    }
+    Readout::new(
+        DecisionType::named("laya").expect("laya"),
+        Head::MarkerColumn {
+            marker: model.marker,
+            sep: model.sep,
+            marker_text: model.marker_text.to_owned(),
+        },
+    )
 }
 
 /// The body of the request named `name` in the frozen set.
 fn body(name: &str) -> Json {
-    load("requests.json")["requests"]
+    body_in("requests.json", name)
+}
+
+/// The body of the request named `name` in a request file.
+fn body_in(file: &str, name: &str) -> Json {
+    load(file)["requests"]
         .as_array()
         .expect("requests")
         .iter()
@@ -142,7 +158,9 @@ fn layout_reproduces_the_golden_tokens_and_markers() {
     for model in &MODELS {
         let readout = readout(model);
         for backend in BACKENDS {
-            let file = golden(model, backend);
+            let Some(file) = golden(model, backend) else {
+                continue;
+            };
             let mut cut = 0;
             for entry in array(&file["requests"]) {
                 let name = entry["name"].as_str().expect("name");
@@ -226,7 +244,7 @@ fn layout_reproduces_the_golden_tokens_and_markers() {
 fn the_head_budget_changes_the_layout_of_a_long_question() {
     for model in &MODELS {
         let readout = readout(model);
-        let file = golden(model, "cpu");
+        let file = golden(model, CPU).expect("recording");
         let find = |name: &str| {
             array(&file["requests"])
                 .iter()
@@ -249,7 +267,7 @@ fn the_head_budget_changes_the_layout_of_a_long_question() {
         let rendered = tokens(&at_model["rendered_tokens"]);
         let model_budget = Budget::new(
             usize::try_from(
-                golden(model, "cpu")["model"]["max_head_tokens"]
+                golden(model, CPU).expect("recording")["model"]["max_head_tokens"]
                     .as_u64()
                     .expect("budget"),
             )
@@ -294,7 +312,9 @@ fn answers_reproduce_the_golden_json_from_the_golden_scores() {
         let calibration =
             Calibration::from_metadata(model.temperatures.iter().copied()).expect("calibration");
         for backend in BACKENDS {
-            let file = golden(model, backend);
+            let Some(file) = golden(model, backend) else {
+                continue;
+            };
             for entry in array(&file["requests"]) {
                 let name = entry["name"].as_str().expect("name");
                 let request = SystemOneRequest::parse(&body(name), &readout).expect("request");
@@ -426,7 +446,7 @@ fn context_renders_the_golden_prompts() {
         } else {
             render_laya
         };
-        let file = golden(model, "cpu");
+        let file = golden(model, CPU).expect("recording");
         for entry in array(&file["requests"]) {
             let name = entry["name"].as_str().expect("name");
             let request = SystemOneRequest::parse(&body(name), &readout).expect("request");
@@ -434,8 +454,10 @@ fn context_renders_the_golden_prompts() {
                 let id = recorded["id"].as_str().expect("id");
                 let input = PromptInput {
                     state: &request.state,
+                    questions: Some(&request.questions),
                     question_id: id,
                     question: &request.questions[id],
+                    labels: &[],
                     variant: 0,
                     n_images: 0,
                     media_marker: "<__media__>",
@@ -446,6 +468,228 @@ fn context_renders_the_golden_prompts() {
                     recorded["prompt"].as_str().expect("prompt"),
                     "{} {name} {id}",
                     model.name
+                );
+            }
+        }
+    }
+}
+
+/// The generated tiny model of each readout family and its request file.
+const FAMILIES: [(&str, &str); 11] = [
+    ("openjev", "requests-labels.json"),
+    ("lev", "requests-labels.json"),
+    ("nimble", "requests-labels.json"),
+    ("vllm-d3", "requests-labels.json"),
+    ("lfm2-d1", "requests-labels.json"),
+    ("lfm3-d1", "requests-labels.json"),
+    ("h2o-lightning", "requests-h2o.json"),
+    ("vllm-decision2", "requests-joint.json"),
+    ("clef", "requests-joint.json"),
+    ("kev", "requests-kev.json"),
+    ("lfm2-d1-omni", "requests-d1omni.json"),
+];
+
+fn strings(value: &Json) -> Vec<String> {
+    array(value)
+        .iter()
+        .map(|text| text.as_str().expect("text").to_owned())
+        .collect()
+}
+
+fn token(value: &Json) -> Token {
+    Token::try_from(value.as_i64().expect("token")).expect("token id")
+}
+
+/// The readout the recording describes, built as the engine builds it from the
+/// model.
+fn recorded_readout(file: &Json) -> Readout {
+    let model = &file["model"];
+    let recorded = &model["readout"];
+    let kind = DecisionType::named(model["decision_type"].as_str().expect("type")).expect("known");
+    let head = match kind.head {
+        HeadKind::Marker => Head::MarkerColumn {
+            marker: token(&recorded["marker"]),
+            sep: token(&recorded["sep"]),
+            marker_text: recorded["marker_text"].as_str().expect("text").to_owned(),
+        },
+        HeadKind::D1Omni => Head::D1Omni {
+            marker: token(&recorded["marker"]),
+        },
+        HeadKind::Letters | HeadKind::Codes | HeadKind::MetadataLabels => Head::LabelLogits {
+            labels: tokens(&recorded["labels"]),
+            label_texts: strings(&recorded["label_texts"]),
+        },
+        HeadKind::LabelGroups(_) => Head::LabelGroups,
+        HeadKind::Pointer => Head::Pointer {
+            marker: token(&recorded["marker"]),
+        },
+        HeadKind::Joint => Head::Joint,
+        HeadKind::Pooled => Head::Pooled {
+            n_classes: usize::try_from(recorded["n_options_max"].as_u64().expect("n")).expect("n"),
+        },
+    };
+    let mut readout = Readout::new(kind, head);
+    readout.quoted = strings(&recorded["quoted_spellings"]);
+    assert_eq!(
+        Some(readout.n_options_max() as u64),
+        recorded["n_options_max"].as_u64(),
+        "{}: options",
+        kind.name
+    );
+    readout
+}
+
+/// The temperatures and score biases of the recording, as metadata entries.
+fn recorded_calibration(file: &Json) -> Calibration {
+    let recorded = &file["model"]["readout"];
+    let mut entries = Vec::new();
+    for (name, value) in recorded["temperatures"].as_object().expect("temperatures") {
+        // Exact: the server's temperatures are `f32`s printed as doubles.
+        let value = value.as_f64().expect("temperature") as f32;
+        entries.push((format!("temperature.{name}"), value.to_string()));
+    }
+    for (n_levels, bias) in recorded["score_bias"].as_object().expect("score biases") {
+        for (level, value) in array(bias).iter().enumerate() {
+            let value = value.as_f64().expect("bias") as f32;
+            entries.push((format!("score_bias.{n_levels}.{level}"), value.to_string()));
+        }
+    }
+    Calibration::from_metadata(
+        entries
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str())),
+    )
+    .expect("calibration")
+}
+
+/// The family recordings present, whatever the backend.
+fn family_recordings() -> Vec<(&'static str, &'static str, Json)> {
+    let mut out = Vec::new();
+    for (kind, requests) in FAMILIES {
+        for backend in BACKENDS {
+            let file = format!("golden-tiny-{kind}.{backend}.json");
+            if fixtures().join(&file).exists() {
+                out.push((kind, requests, load(&file)));
+            }
+        }
+    }
+    out
+}
+
+/// Every readout family: the request is parsed (or refused) as the server did,
+/// the layout gives the recorded tokens from the recorded tokenization, and
+/// the answers are the recorded ones from the recorded scores.
+#[test]
+fn every_family_reproduces_its_layouts_and_answers() {
+    let recordings = family_recordings();
+    assert!(
+        recordings.len() >= FAMILIES.len(),
+        "a family has no recording: {} files",
+        recordings.len()
+    );
+    for (kind, requests, file) in recordings {
+        let readout = recorded_readout(&file);
+        let calibration = recorded_calibration(&file);
+        let budget = Budget::new(usize::MAX).expect("budget");
+        for entry in array(&file["requests"]) {
+            let name = entry["name"].as_str().expect("name");
+            let context = format!("{kind} {name}");
+            let parsed = SystemOneRequest::parse(&body_in(requests, name), &readout);
+            let request = match (parsed, entry["error"].as_str()) {
+                (Err(DecisionError::InvalidRequest(got)), Some(want)) => {
+                    assert_eq!(got, want, "{context}");
+                    continue;
+                }
+                (Ok(request), _) => request,
+                (Err(error), _) => panic!("{context}: {error}"),
+            };
+            let refused = entry["error"].as_str();
+            let all: Vec<&Question> = request.questions.values().collect();
+            let mut scores: Vec<(Option<String>, Vec<f32>)> = Vec::new();
+            for trace in array(&entry["questions"]) {
+                let id = trace["id"].as_str().map(str::to_owned);
+                let questions: Vec<&Question> = match &id {
+                    Some(id) => vec![&request.questions[id.as_str()]],
+                    None => all.clone(),
+                };
+                let laid_out = if trace.get("pieces").is_some() {
+                    // The pieces as the reference tokenized them.
+                    let pieces: Vec<(String, Vec<Token>)> = array(&trace["pieces"])
+                        .iter()
+                        .map(|piece| {
+                            (
+                                piece["text"].as_str().expect("text").to_owned(),
+                                tokens(&piece["tokens"]),
+                            )
+                        })
+                        .collect();
+                    let tokenize = |text: &str| -> Result<Vec<Token>, DecisionError> {
+                        Ok(pieces
+                            .iter()
+                            .find(|(piece, _)| piece == text)
+                            .map(|(_, tokens)| tokens.clone())
+                            .unwrap_or_else(|| panic!("{context}: no piece {text:?}")))
+                    };
+                    let prompt = trace["prompt"].as_str().expect("prompt");
+                    layout::arrange_prompt(&readout, prompt, &questions, &budget, tokenize)
+                } else {
+                    let rendered = tokens(&trace["rendered_tokens"]);
+                    layout::arrange(&readout, &rendered, questions[0], &budget)
+                };
+                let laid_out = match (laid_out, refused) {
+                    (Err(DecisionError::InvalidRequest(got)), Some(want)) => {
+                        assert_eq!(got, want, "{context}");
+                        continue;
+                    }
+                    (Ok(laid_out), None) => laid_out,
+                    (other, _) => panic!("{context}: {other:?}"),
+                };
+                assert_eq!(
+                    laid_out.tokens,
+                    tokens(&trace["tokens"]),
+                    "{context}: tokens"
+                );
+                assert_eq!(
+                    laid_out.markers,
+                    positions(&trace["markers"]),
+                    "{context}: markers"
+                );
+                assert_eq!(laid_out.order, tokens(&trace["order"]), "{context}: order");
+                assert_eq!(
+                    laid_out.pointer.map(|p| p as i64),
+                    trace["pointer"].as_i64().filter(|p| *p >= 0),
+                    "{context}: pointer"
+                );
+                let recorded: Vec<f32> = array(&trace["scores"]).iter().map(score).collect();
+                scores.push((id, recorded));
+            }
+
+            // The scores of each question: its variants in order, or its
+            // options among the scores of the joint prompt.
+            let joint = readout.kind.prompt == PromptScope::Joint;
+            let mut offset = 0;
+            for (id, question) in &request.questions {
+                let variants: Vec<Vec<f32>> = if joint {
+                    let n = question.options.len();
+                    let slice = scores[0].1[offset..offset + n].to_vec();
+                    offset += n;
+                    vec![slice]
+                } else {
+                    scores
+                        .iter()
+                        .filter(|(pass, _)| pass.as_deref() == Some(id.as_str()))
+                        .map(|(_, scores)| scores.clone())
+                        .collect()
+                };
+                let answer = format_answer(&readout, &calibration, question, &variants, false)
+                    .unwrap_or_else(|error| panic!("{context} {id}: {error}"));
+                let actual: Json =
+                    serde_json::from_str(&serde_json::to_string(&answer).expect("json"))
+                        .expect("json");
+                assert_same(
+                    &actual,
+                    &entry["response"]["answers"][id.as_str()],
+                    &format!("{context} {id}"),
                 );
             }
         }

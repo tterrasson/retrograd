@@ -204,7 +204,29 @@ of its decision server works unchanged:
   llama-server's on the same backend and build. Packing several questions in a
   pass (`pack`) is faster, and makes each answer depend on the other questions
   of its request.
-- Images are refused with a 501: the engine has no multimodal projector.
+- Every `<arch>.decision.type` of llama.cpp's decision server is recognised,
+  with its own checks of the body and its own messages:
+
+  | Type | Where the scores are read | What it changes |
+  | --- | --- | --- |
+  | `laya` | the embeddings output at the mask token of each option, in the column of the question type | the question and the options are cut to `max_head_tokens` |
+  | `lfm2-d1-omni` | the same column, at the mask token | the prompt is cut piece by piece to its budgets; a null `state`; `noul` descriptions also read under `no`/`yes` |
+  | `openjev` | the logits of one letter per option (`A`..`Z`, `a`..`z`), at the last token | `noul` lists `true` first |
+  | `lev` | the logits of a code per option (`A`..`Z`, `AA`..`ZZ`) | keys sorted; a `choice` is read in two orders; `noul` is the expected rating of a 9-label scale |
+  | `nimble` | same codes | the prompt lists every question of the request |
+  | `pplx-decider`, `granite-switch` | same codes | `granite-switch` lists `true` first |
+  | `vllm-d3` | same codes | a null `state` or `instructions`; non-text legend entries as canonical JSON; entropy confidence |
+  | `lfm2-d1`, `lfm3-d1`, `lfm3-d1-omni` | the largest logit of a group of label tokens per option, the labels chosen per question | a null `state`; `lfm3` breaks special token texts in the input, its confidence is the answer's probability and its score the median level |
+  | `h2o-lightning` | the logits of the labels of `<arch>.decision.labels` | texts rendered as its Python reference does; the `type` defaults to `choice`, the `instructions` to empty |
+  | `kev` | `q·k` of the hidden states of the last token and of each option's end token | inputs flattened to text |
+  | `clef` | a joint head, one score per option, every question in one prompt | `choice` options sorted by key; `noul` lists `true` first |
+  | `vllm-decision2` | the same head, one prompt per question | text, an object or an array only; at least two options; entropy confidence |
+  | `openbmb-minicpm-ocr-jev` | one score per class, the pooled output | a fixed question about two images: always answered 501 here |
+
+- Images, audio, video and spoken instructions are refused with a 501: the
+  engine has no multimodal projector. A request that a model refuses before it
+  looks at its media (a missing state, the second image of
+  `openbmb-minicpm-ocr-jev`) is answered with llama-server's 400.
 - A decision model refuses `/v1/chat/completions`, `/v1/completions`,
   `/v1/responses` and `/v1/embeddings` with a 501. A model that is not a
   decision model refuses `/v1/systemone` the same way.

@@ -9,7 +9,12 @@ temperatures on held-out questions, and writes them into what it exports.
 Models whose `<arch>.decision.type` is `laya` train here (Julia, Laya, and
 other ModernBERT decision heads): they read the score of an option at a
 marker token of the embeddings output. Causal LLMs and `openjev` models train
-on letter logits. `lev` and `kev` are served only.
+on letter logits, `lev` models on their code labels, `kev` models on the
+pointer product of their hidden states. The other types llama.cpp knows
+(`nimble`, `pplx-decider`, `granite-switch`, `vllm-d3`, the d1 models,
+`h2o-lightning`, `clef`, `vllm-decision2`, `openbmb-minicpm-ocr-jev`) are
+served only: a run refuses them before it reads the data, with a
+configuration error that names the type.
 
 ## Configuration
 
@@ -95,6 +100,40 @@ frozen into it. No nested chat rendering is required by llama-server.
 Templates that alter or repeat user content cannot be flattened and are
 refused. An adapter export from a plain causal base requires `export_base`;
 serve that copy with the adapter in either Retrograd or llama.cpp.
+
+## Pointer and code-label heads (`kev`, `lev`)
+
+A `kev` model reads its answer from a `[q|k]` projection of its hidden
+states (`cls.output`): the score of an option is the product of the first
+half of the output at the last prompt token with the second half of the
+output at the token that closes the option, over `sqrt(n_embd_out / 2)`. A
+run trains the softmax cross-entropy of those products, the grouped loss of
+the marker heads with a query token per question. The model keeps its
+language-model head; the run trains through the projection, never the
+logits. A recurrent or hybrid trunk takes one question per micro-batch.
+
+```toml
+[model]
+path = "Kev-4B-Q4_K_M.gguf"
+
+[lora]
+rank = 8
+alpha = 16
+targets = ["ffn_up", "ffn_down"]
+
+[decision]
+data = "train.jsonl"
+questions_per_batch = 1
+```
+
+A `lev` model trains on its code labels like a causal letter readout, with
+two differences that follow what it serves. A `choice` is rendered twice,
+the second time with the options reversed, and both renderings train, each
+with its targets in its own order. A `noul` is read on a scale of 9 ratings
+whose expectation is the answer: it trains the two ends of the scale, the
+probability of `false` on the lowest rating and of `true` on the highest.
+Evaluation and calibration treat each rendering as one question; the served
+answer averages the two orders of a choice.
 
 ## Teacher labels
 

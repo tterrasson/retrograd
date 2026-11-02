@@ -12,8 +12,9 @@ use indexmap::IndexMap;
 use serde::Serialize;
 
 use crate::DecisionError;
-use crate::readout::{N_OPTIONS_MAX, Readout};
+use crate::readout::{Confidence, N_OPTIONS_MAX, Readout, ScoreReading};
 use crate::request::{Question, QuestionKind};
+use crate::template::sort_keys;
 
 /// The answer of one question, serialized as llama-server writes it:
 /// `{"type": "choice", "choice": …, "probabilities": {…}, "confidence": …}`.
@@ -179,6 +180,30 @@ pub(crate) fn confidence_choice(probs: &[f64]) -> f64 {
     ((p_max - uniform) / (1.0 - uniform)).max(0.0)
 }
 
+/// One minus the entropy of `probs` over the entropy of a uniform
+/// distribution, within `[0, 1]`.
+pub(crate) fn confidence_entropy(probs: &[f64]) -> f64 {
+    if probs.len() < 2 {
+        return 1.0;
+    }
+    let entropy = probs
+        .iter()
+        .filter(|p| **p > 0.0)
+        .fold(0.0, |entropy, p| entropy - p * p.ln());
+    (1.0 - entropy / index_f64(probs.len()).ln()).clamp(0.0, 1.0)
+}
+
+/// The confidence of a `choice` or `score` answer, as the type of `readout`
+/// computes it.
+fn confidence(readout: &Readout, kind: QuestionKind, probs: &[f64]) -> f64 {
+    match readout.kind.confidence {
+        Confidence::Entropy => confidence_entropy(probs),
+        Confidence::MaxProbability => probs[argmax(probs)],
+        Confidence::Published if kind == QuestionKind::Score => confidence_score(probs),
+        Confidence::Published => confidence_choice(probs),
+    }
+}
+
 /// One minus the mean distance to the mode, relative to the one of a uniform
 /// distribution around its center.
 pub(crate) fn confidence_score(probs: &[f64]) -> f64 {
@@ -220,7 +245,11 @@ pub fn format_answer(
         ));
     }
 
-    let mut temperature = calibration.temperature(readout, question.kind, question.options.len());
+    let mut temperature = if has_media && readout.kind.media_uncalibrated {
+        1.0
+    } else {
+        calibration.temperature(readout, question.kind, question.options.len())
+    };
     if has_media && let Some(&image) = calibration.temperatures.get("image") {
         temperature = image;
     }
@@ -271,13 +300,7 @@ pub fn format_answer(
 
     match question.kind {
         QuestionKind::Noul => {
-            if matches!(
-                readout,
-                Readout::LabelLogits {
-                    noul_scale: Some(_),
-                    ..
-                }
-            ) {
+            if readout.kind.noul_scale.is_some() {
                 let expected: f64 = probs
                     .iter()
                     .enumerate()
@@ -296,7 +319,7 @@ pub fn format_answer(
             Ok(Answer::Noul { noul })
         }
         QuestionKind::Choice => {
-            let confidence = confidence_choice(&probs);
+            let confidence = confidence(readout, question.kind, &probs);
             let choice = question.options[argmax(&probs)].key.clone();
             Ok(Answer::Choice {
                 choice,
@@ -305,24 +328,49 @@ pub fn format_answer(
             })
         }
         QuestionKind::Score => {
-            let score: f64 = probs
-                .iter()
-                .enumerate()
-                .map(|(i, p)| index_f64(i) * p)
-                .sum();
+            let score = match readout.kind.score {
+                ScoreReading::Expectation => probs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| index_f64(i) * p)
+                    .sum(),
+                ScoreReading::Median => index_f64(median(&probs)),
+            };
             let legend = question
                 .options
                 .iter()
-                .map(|option| (option.key.clone(), option.description.clone()))
-                .collect();
+                .map(|option| {
+                    let description = &option.description;
+                    let entry = if readout.kind.canonical_legend && !description.is_string() {
+                        Json::from(sort_keys(description, 0)?.dump())
+                    } else {
+                        description.clone()
+                    };
+                    Ok((option.key.clone(), entry))
+                })
+                .collect::<Result<_, DecisionError>>()?;
             Ok(Answer::Score {
                 score,
                 legend,
-                confidence: confidence_score(&probs),
+                confidence: confidence(readout, question.kind, &probs),
                 probabilities: probabilities(question, &probs),
             })
         }
     }
+}
+
+/// The first level whose cumulative probability reaches one half.
+fn median(probs: &[f64]) -> usize {
+    let mut mass = 0.0;
+    let mut level = probs.len().saturating_sub(1);
+    for (i, p) in probs.iter().enumerate() {
+        if mass >= 0.5 {
+            break;
+        }
+        mass += p;
+        level = i;
+    }
+    level
 }
 
 fn probabilities(question: &Question, probs: &[f64]) -> IndexMap<String, f64> {
@@ -337,25 +385,14 @@ fn probabilities(question: &Question, probs: &[f64]) -> IndexMap<String, f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::readout::LabelFamily;
     use crate::request::QuestionOption;
 
     fn laya() -> Readout {
-        Readout::MarkerColumn {
-            marker: 4,
-            sep: 1,
-            marker_text: "<mask>".into(),
-        }
+        crate::readout::tests::laya()
     }
 
     fn lev() -> Readout {
-        Readout::LabelLogits {
-            labels: (0..26).collect(),
-            label_texts: ('A'..='Z').map(String::from).collect(),
-            n_variants: 2,
-            noul_scale: Some(9),
-            family: LabelFamily::Codes,
-        }
+        crate::readout::tests::lev()
     }
 
     fn question(kind: QuestionKind, keys: &[&str]) -> Question {

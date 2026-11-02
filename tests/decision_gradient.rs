@@ -223,3 +223,107 @@ fn grouped_loss_gradient_matches_finite_differences() {
 fn grouped_loss_gradient_matches_finite_differences_with_flash_attention() {
     check(true);
 }
+
+/// The generated pointer model (`kev`): a qwen35 trunk, a gated delta net then
+/// gated attention, and a `[q|k]` projection of 32 outputs. Written into the
+/// test target directory by the fixture generator.
+fn tiny_pointer_model() -> Option<std::path::PathBuf> {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("decision-fixtures");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join("retrograd-tiny-decision-kev-f32.gguf");
+    if !path.exists() {
+        let generator = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("scripts/gen-tiny-decision-fixture.py");
+        let status = std::process::Command::new("python3")
+            .arg(generator)
+            .args(["--type", "kev"])
+            .arg(&path)
+            .status()
+            .ok()?;
+        if !status.success() {
+            return None;
+        }
+    }
+    Some(path)
+}
+
+/// The pointer loss: the score of an option is the product of the first half
+/// of the output at the question's last token with the second half of the
+/// output at the option's end token, over `sqrt(n_embd_out / 2)`. One question,
+/// since a recurrent trunk takes one sequence per step; two groups read it, a
+/// one-hot choice and a soft score, the second padded.
+#[test]
+fn pointer_loss_gradient_matches_finite_differences() {
+    let Some(model) = tiny_pointer_model() else {
+        eprintln!("skipping: the pointer fixture could not be generated (python3)");
+        return;
+    };
+    let tokens: Vec<i32> = (0..20).map(|i| 7 + (i * 13) % 300).collect();
+    let n = tokens.len();
+    let query = (n - 1) as i32;
+    let mut outputs = vec![false; n];
+    for &position in &[4_usize, 8, 12, n - 1] {
+        outputs[position] = true;
+    }
+    let rows = [4, 8, 12, 4, 8, -1];
+    let targets = [0.0, 1.0, 0.0, 0.6, 0.4, 0.0];
+    let case = GroupedGradientCase {
+        tokens: &tokens,
+        positions: &(0..n as i32).collect::<Vec<_>>(),
+        seq_ids: &vec![0; n],
+        outputs: &outputs,
+        n_opt_max: 3,
+        rows: &rows,
+        columns: &[],
+        targets: &targets,
+        inv_temperature: 0.8,
+        pointer_rows: &[query, query],
+        // As a run builds it. Without flash attention, the backward of this
+        // trunk's attention has an op the CPU backend lacks.
+        flash_attn: None,
+    };
+    const POINTER_TENSORS: &[(&str, &[i64])] = &[
+        // both halves of the projection: the query and the option keys
+        (
+            "cls.output.weight",
+            &[0, 64 * 3 + 5, 64 * 17 + 9, 64 * 31 + 63],
+        ),
+        ("cls.output.bias", &[1, 15, 16, 30]),
+        ("output_norm.weight", &[0, 33]),
+        ("blk.1.attn_output.weight", &[5, 64 * 40 + 1]),
+        ("blk.1.ffn_down.weight", &[0, 128 * 31 + 7]),
+    ];
+    let mut failures = Vec::new();
+    for &(name, elements) in POINTER_TENSORS {
+        let g = grouped_gradient_probe(&model, Device::Cpu, name, &case, elements, 1.0e-2)
+            .unwrap_or_else(|err| panic!("{name}: {err}"));
+        assert_eq!(
+            g.n_missing_backward, 0,
+            "{name}: ops without a gradient rule"
+        );
+        assert!(
+            (g.loss_step - g.loss_decode).abs() <= 1.0e-5 * g.loss_decode.abs().max(1.0),
+            "{name}: the pointer loss graph gives {} and the decoded embeddings {}",
+            g.loss_step,
+            g.loss_decode
+        );
+        for (i, &element) in elements.iter().enumerate() {
+            let analytic = f64::from(g.analytic[i]);
+            let numeric = g.numeric[i];
+            let tolerance = 3.0e-5 + 3.0e-2 * numeric.abs();
+            if !analytic.is_finite()
+                || !numeric.is_finite()
+                || (analytic - numeric).abs() > tolerance
+            {
+                failures.push(format!(
+                    "{name}[{element}]: analytic {analytic:e}, numeric {numeric:e}"
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "gradient mismatches:\n{}",
+        failures.join("\n")
+    );
+}

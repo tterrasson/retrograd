@@ -19,7 +19,7 @@ use indexmap::IndexMap;
 use retrograd_core::{Result as CoreResult, SamplingParams};
 use retrograd_decision::answer::{self, Calibration};
 use retrograd_decision::layout::Budget;
-use retrograd_decision::readout::Readout;
+use retrograd_decision::readout::{DecisionType, Head, Readout};
 use retrograd_decision::request::SystemOneRequest;
 use retrograd_engine::{Decision, DecisionInfo, EngineMemory, StepOutput, StepRow, TemplateSource};
 use retrograd_infer::{
@@ -401,11 +401,14 @@ pub struct FakeLoader {
 /// The head of the fake decision model: a marker readout with a 256-token
 /// budget, no temperatures, one question per pass.
 pub fn fake_decision_info() -> DecisionInfo {
-    let readout = Readout::MarkerColumn {
-        marker: 0,
-        sep: 1,
-        marker_text: "<mask>".into(),
-    };
+    let readout = Readout::new(
+        DecisionType::named("laya").expect("laya is a decision type"),
+        Head::MarkerColumn {
+            marker: 0,
+            sep: 1,
+            marker_text: "<mask>".into(),
+        },
+    );
     DecisionInfo {
         decision_type: "laya".into(),
         n_options_max: readout.n_options_max(),

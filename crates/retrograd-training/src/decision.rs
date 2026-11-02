@@ -4,8 +4,15 @@
 //! out by its readout and tokenized exactly as the server does it, so the
 //! tokens trained on are the tokens served. Each question has its own
 //! sequence. Marker heads train grouped softmax cross-entropy over their
-//! option scores; causal heads train a masked letter completion against hard
-//! or sparse soft targets. Several micro-batches accumulate into one update.
+//! option scores, pointer heads the same softmax over their query-option
+//! products; label heads train a masked label completion against hard or
+//! sparse soft targets. Several micro-batches accumulate into one update.
+//!
+//! A readout that renders a question several times (the options in another
+//! order) trains on every rendering, each its own question with its targets in
+//! its order; one that reads a `noul` question on a rating scale trains the
+//! two ends of the scale, `false` at the lowest rating and `true` at the
+//! highest, whose expectation is the served answer.
 //!
 //! The whole run is laid out before its first step - the order of the
 //! questions, the order of the options of every `choice` question, the
@@ -13,8 +20,9 @@
 //! horizon is the exact number of updates and an epoch boundary is enough to
 //! resume.
 //!
-//! Marker readouts train with grouped cross-entropy. Causal letter readouts
-//! train the final prompt position with masked sparse next-token targets.
+//! Marker and pointer readouts train with grouped cross-entropy. Label
+//! readouts train the final prompt position with masked sparse next-token
+//! targets.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -27,7 +35,7 @@ use retrograd_decision::answer::softmax;
 use retrograd_decision::calibrate::{self, Sample};
 use retrograd_decision::dataset::{self, Example};
 use retrograd_decision::metrics::{Metrics, Outcome};
-use retrograd_decision::readout::Readout;
+use retrograd_decision::readout::{Head, Readout};
 use retrograd_decision::request::{Question, QuestionKind};
 use retrograd_engine::{
     DecisionInfo, DecisionPass, GroupedBatch, GroupedQuestion, PackedSequenceBatch, Trainer,
@@ -128,7 +136,7 @@ impl PreparedDecision {
 }
 
 /// Refuses an example the readout cannot train on as the dataset wrote it:
-/// fewer than two or too many options, or several renderings averaged.
+/// fewer than two or too many options.
 fn check_example(readout: &Readout, example: &Example, index: usize) -> Result<()> {
     let n_options = example.question.options.len();
     if n_options < 2 {
@@ -144,12 +152,43 @@ fn check_example(readout: &Readout, example: &Example, index: usize) -> Result<(
             readout.n_options_max()
         )));
     }
-    if readout.n_variants(&example.question) != 1 {
-        return Err(Error::invalid(
-            "a readout that averages several renderings of a question does not train here",
-        ));
-    }
     Ok(())
+}
+
+/// The renderings a question trains on, each with its targets in the order
+/// its outputs are read: one per variant of the readout (the second shows the
+/// options in reverse), and a `noul` read on a rating scale has its `false`
+/// probability at the lowest rating and its `true` probability at the highest.
+fn renderings(readout: &Readout, question: &Question, targets: &[f64]) -> Vec<(usize, Vec<f64>)> {
+    let n_outputs = readout.n_outputs(question);
+    let targets: Vec<f64> = if question.kind == QuestionKind::Noul && n_outputs != targets.len() {
+        let mut scale = vec![0.0; n_outputs];
+        for (option, &p) in question.options.iter().zip(targets) {
+            let at = if option.key == "true" {
+                n_outputs - 1
+            } else {
+                0
+            };
+            scale[at] += p;
+        }
+        scale
+    } else {
+        targets.to_vec()
+    };
+    (0..readout.n_variants(question))
+        .map(|variant| {
+            let mut ordered = targets.clone();
+            if variant % 2 == 1 {
+                ordered.reverse();
+            }
+            (variant, ordered)
+        })
+        .collect()
+}
+
+/// Whether a training step reads its scores from the logits of label tokens.
+fn reads_labels(readout: &Readout) -> bool {
+    matches!(readout.head, Head::LabelLogits { .. })
 }
 
 /// The options of a `choice` question in a seeded order, and its targets in
@@ -181,6 +220,7 @@ fn option_seed(seed: u32, epoch: u32, example: usize) -> u64 {
     z ^ (z >> 31)
 }
 
+/// Every rendering of one question ready to train.
 fn render(
     trainer: &Trainer,
     info: &DecisionInfo,
@@ -189,8 +229,42 @@ fn render(
     targets: &[f64],
     micro_batch: usize,
     index: usize,
+) -> Result<Vec<Rendered>> {
+    renderings(&info.readout, question, targets)
+        .into_iter()
+        .map(|(variant, targets)| {
+            render_variant(
+                trainer,
+                info,
+                example,
+                question,
+                variant,
+                &targets,
+                micro_batch,
+                index,
+            )
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_variant(
+    trainer: &Trainer,
+    info: &DecisionInfo,
+    example: &Example,
+    question: &Question,
+    variant: usize,
+    targets: &[f64],
+    micro_batch: usize,
+    index: usize,
 ) -> Result<Rendered> {
-    let pass = trainer.decision_pass(info, &example.state, &example.question_id, question, 0)?;
+    let pass = trainer.decision_pass(
+        info,
+        &example.state,
+        &example.question_id,
+        question,
+        variant,
+    )?;
     if pass.tokens.len() > micro_batch {
         return Err(Error::config(format!(
             "decision example {} renders to {} tokens, more than one micro-batch of {}: raise \
@@ -291,9 +365,14 @@ pub fn prepare(
     if let Some(max_head_tokens) = config.max_head_tokens {
         info = info.with_max_head_tokens(max_head_tokens as usize)?;
     }
-    if !matches!(info.readout, Readout::MarkerColumn { .. }) && info.decision_type != "openjev" {
+    let trainable_head = matches!(
+        info.readout.head,
+        Head::MarkerColumn { .. } | Head::LabelLogits { .. } | Head::Pointer { .. }
+    );
+    if !info.readout.kind.trainable || !trainable_head {
         return Err(Error::config(format!(
-            "decision type '{}' does not support training; use a marker or openjev letter readout",
+            "decision type '{}' does not support training; a marker, pointer or single-label \
+             readout does (laya, kev, openjev, lev, or a causal model without decision metadata)",
             info.decision_type
         )));
     }
@@ -301,9 +380,9 @@ pub fn prepare(
     let micro_batch = training.n_ubatch as usize;
     // Hybrid/recurrent graphs require equal-sequence ubatches. A single
     // question uses that ordinary split; dense causal graphs can pack several.
-    let questions_per_batch = if matches!(info.readout, Readout::LabelLogits { .. })
-        && !trainer.supports_shared_prefix_packed_training()?
-    {
+    // An encoder (a marker head) has no memory and always packs.
+    let causal = !matches!(info.readout.head, Head::MarkerColumn { .. });
+    let questions_per_batch = if causal && !trainer.supports_shared_prefix_packed_training()? {
         1
     } else {
         config.questions_per_batch as usize
@@ -319,7 +398,7 @@ pub fn prepare(
 
     // Questions whose rendering does not depend on the epoch are rendered
     // once and reused.
-    let fixed: Vec<Option<Rendered>> = examples
+    let fixed: Vec<Option<Vec<Rendered>>> = examples
         .iter()
         .enumerate()
         .map(|(index, example)| {
@@ -368,7 +447,10 @@ pub fn prepare(
                     )
                 }
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<Vec<_>>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
         let updates = plan_updates(&questions, micro_batch, questions_per_batch, accumulation);
         plans.push(EpochPlan { questions, updates });
     }
@@ -388,21 +470,30 @@ pub fn prepare(
                 .enumerate()
                 .map(|(index, example)| {
                     check_example(&info.readout, example, index)?;
-                    let pass = trainer.decision_pass(
-                        &info,
-                        &example.state,
-                        &example.question_id,
-                        &example.question,
-                        0,
-                    )?;
-                    Ok(EvalItem {
-                        kind: example.question.kind,
-                        n_options: example.question.options.len(),
-                        pass,
-                        target: example.target.distribution(example.question.options.len()),
-                    })
+                    let targets = example.target.distribution(example.question.options.len());
+                    renderings(&info.readout, &example.question, &targets)
+                        .into_iter()
+                        .map(|(variant, target)| {
+                            let pass = trainer.decision_pass(
+                                &info,
+                                &example.state,
+                                &example.question_id,
+                                &example.question,
+                                variant,
+                            )?;
+                            Ok(EvalItem {
+                                kind: example.question.kind,
+                                n_options: example.question.options.len(),
+                                pass,
+                                target,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()
                 })
-                .collect::<Result<Vec<_>>>()?
+                .collect::<Result<Vec<Vec<_>>>>()?
+                .into_iter()
+                .flatten()
+                .collect()
         }
         None => Vec::new(),
     };
@@ -579,7 +670,7 @@ fn update(
     for batch in batches {
         let questions = &questions[batch.clone()];
         let started = std::time::Instant::now();
-        if matches!(prepared.info.readout, Readout::LabelLogits { .. }) {
+        if reads_labels(&prepared.info.readout) {
             let packed = causal_batch(questions, prepared.micro_batch)?;
             metrics = trainer
                 .train_packed_sequences_controlled(
@@ -793,6 +884,8 @@ mod tests {
                 reads: vec![0, 1],
                 column: 0,
                 pointer: -1,
+                label_groups: Vec::new(),
+                n_scores: 2,
             },
             targets: vec![1.0, 0.0],
         }
@@ -857,6 +950,54 @@ mod tests {
         let (score, score_targets) = shuffled_question(&examples[1], 7);
         assert_eq!(score, examples[1].question);
         assert_eq!(score_targets, [0.0, 0.0, 1.0]);
+    }
+
+    fn lev() -> Readout {
+        let kind = retrograd_decision::readout::DecisionType::named("lev").expect("lev is a type");
+        let labels: Vec<i32> = (0..26).collect();
+        Readout::new(
+            kind,
+            Head::LabelLogits {
+                label_texts: labels.iter().map(|l| l.to_string()).collect(),
+                labels,
+            },
+        )
+    }
+
+    #[test]
+    fn every_rendering_of_a_question_trains_with_its_targets_in_its_order() {
+        let text = r#"{"state": "s", "question": {"type": "choice", "instructions": "i", "criteria": {"a": null, "b": null, "c": null}}, "answer": "c"}
+{"state": "s", "question": {"type": "noul", "instructions": "i"}, "probabilities": {"false": 0.25, "true": 0.75}}
+{"state": "s", "question": {"type": "score", "instructions": "i", "criteria": ["low", "high"]}, "answer": 1}"#;
+        let readout = lev();
+        let examples: Vec<_> =
+            dataset::parse_jsonl(text, "data.jsonl", dataset::DataFormat::Native)
+                .expect("examples")
+                .into_iter()
+                .map(|example| example.for_readout(&readout))
+                .collect();
+        let targets = |i: usize| {
+            let example: &Example = &examples[i];
+            example.target.distribution(example.question.options.len())
+        };
+        // a choice is read in both orders, the second reversed
+        assert_eq!(
+            renderings(&readout, &examples[0].question, &targets(0)),
+            [(0, vec![0.0, 0.0, 1.0]), (1, vec![1.0, 0.0, 0.0])]
+        );
+        // a noul trains the two ends of the rating scale: its expectation is
+        // the probability of `true`
+        let noul = renderings(&readout, &examples[1].question, &targets(1));
+        assert_eq!(noul.len(), 1);
+        let scale = &noul[0].1;
+        assert_eq!(scale.len(), 9);
+        assert_eq!((scale[0], scale[8]), (0.25, 0.75));
+        assert_eq!(scale[1..8].iter().sum::<f64>(), 0.0);
+        // a score is rendered once
+        assert_eq!(
+            renderings(&readout, &examples[2].question, &targets(2)),
+            [(0, vec![0.0, 1.0])]
+        );
     }
 
     #[test]

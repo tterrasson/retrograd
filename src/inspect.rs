@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use retrograd::decision::readout::{LabelFamily, Readout};
+use retrograd::decision::readout::{Head, HeadKind, PromptScope};
 use retrograd::trainer::{DecisionInfo, TemplateSource, decision_metadata};
 use retrograd::{Device, Engine, EngineConfig, Error, Result, TrainConfig, Trainer};
 
@@ -82,20 +82,31 @@ fn decision_section(info: std::result::Result<DecisionInfo, retrograd::EngineErr
             return out;
         }
     };
+    let _ = writeln!(out, "    status: ok");
     let _ = writeln!(out, "    type: {}", info.decision_type);
-    let readout = match &info.readout {
-        Readout::MarkerColumn { marker, sep, .. } => {
+    let readout = match &info.readout.head {
+        Head::MarkerColumn { marker, sep, .. } => {
             format!("marker_column (marker token {marker}, separator token {sep})")
         }
-        Readout::LabelLogits { labels, family, .. } => format!(
+        Head::D1Omni { marker } => {
+            format!("marker_column (marker token {marker}, pieces cut to their budgets)")
+        }
+        Head::LabelLogits { labels, .. } => format!(
             "label_logits ({} {} labels)",
             labels.len(),
-            match family {
-                LabelFamily::Letters => "letter",
-                LabelFamily::Codes => "code",
+            match info.readout.kind.head {
+                HeadKind::Letters => "letter",
+                HeadKind::MetadataLabels => "metadata",
+                _ => "code",
             }
         ),
-        Readout::Pointer { marker } => format!("pointer (option end token {marker})"),
+        Head::LabelGroups => "label_groups (labels chosen per question)".to_owned(),
+        Head::Pointer { marker } => format!("pointer (option end token {marker})"),
+        Head::Joint if info.readout.kind.prompt == PromptScope::Joint => {
+            "joint (every question in one prompt)".to_owned()
+        }
+        Head::Joint => "joint (one prompt per question)".to_owned(),
+        Head::Pooled { n_classes } => format!("pooled ({n_classes} classes)"),
     };
     let _ = writeln!(out, "    readout: {readout}");
     let template = match info.template {
@@ -134,11 +145,14 @@ mod tests {
 
         let info = DecisionInfo {
             decision_type: "laya".into(),
-            readout: Readout::MarkerColumn {
-                marker: 4,
-                sep: 1,
-                marker_text: "<mask>".into(),
-            },
+            readout: retrograd::decision::readout::Readout::new(
+                retrograd::decision::readout::DecisionType::named("laya").unwrap(),
+                Head::MarkerColumn {
+                    marker: 4,
+                    sep: 1,
+                    marker_text: "<mask>".into(),
+                },
+            ),
             calibration: Calibration::default(),
             temperatures: [("temperature.choice".to_string(), "1.500000".to_string())].into(),
             budget: Some(Budget::new(256).unwrap()),
@@ -149,7 +163,7 @@ mod tests {
         };
         assert_eq!(
             decision_section(Ok(info)),
-            "  decision:\n    type: laya\n    readout: marker_column (marker token 4, separator token 1)\n    \
+            "  decision:\n    status: ok\n    type: laya\n    readout: marker_column (marker token 4, separator token 1)\n    \
              template: systemone (model)\n    max_head_tokens: 256\n    n_options_max: 255\n    \
              temperatures:\n      choice: 1.500000\n"
         );

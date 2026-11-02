@@ -117,6 +117,7 @@ pub fn arrange(
         tokens,
         markers,
         pointer: None,
+        order: Vec::new(),
     })
 }
 

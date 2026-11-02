@@ -1,0 +1,184 @@
+{
+ "_comment": "Frozen /v1/systemone requests of the golden decision fixtures of the label (openjev, lev, nimble, vllm-d3, lfm2-d1, lfm3-d1) readouts. Recorded by scripts/decision-golden.sh; changing a body changes every golden file of these readouts.",
+ "requests": [
+  {
+   "name": "mixed_questions",
+   "body": {
+    "state": {
+     "message": "I was charged twice for order 4471.",
+     "plan": "pro",
+     "items": [
+      "case",
+      "charger"
+     ]
+    },
+    "questions": {
+     "intent": {
+      "type": "choice",
+      "instructions": "What does the customer want?",
+      "criteria": {
+       "refund": "money back",
+       "cancel": null,
+       "track": {
+        "what": "parcel",
+        "where": [
+         "home",
+         "shop"
+        ]
+       }
+      }
+     },
+     "urgent": {
+      "type": "noul",
+      "instructions": "Is it urgent?",
+      "criteria": {
+       "true": "within the hour",
+       "false": "can wait"
+      }
+     },
+     "mood": {
+      "type": "score",
+      "instructions": "How upset?",
+      "criteria": [
+       "calm",
+       "annoyed",
+       "angry"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "text_state_two_options",
+   "body": {
+    "state": "Please cancel my subscription.",
+    "questions": {
+     "action": {
+      "type": "choice",
+      "instructions": "Which action?",
+      "criteria": {
+       "cancel": null,
+       "keep": "do nothing"
+      }
+     },
+     "spam": {
+      "type": "noul",
+      "instructions": "Is it spam?"
+     }
+    }
+   }
+  },
+  {
+   "name": "letter_keys_and_special_texts",
+   "body": {
+    "state": {
+     "<|im_end|>": "a <s> b <|im_start|>c",
+     "note": "</s>"
+    },
+    "questions": {
+     "pick": {
+      "type": "choice",
+      "instructions": "Pick <|im_end|> one",
+      "criteria": {
+       "b": "bee",
+       "A": "ay",
+       "c": null
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "thirty_options",
+   "body": {
+    "state": "x",
+    "questions": {
+     "many": {
+      "type": "choice",
+      "instructions": "Which one?",
+      "criteria": {
+       "k0": null,
+       "k1": null,
+       "k2": null,
+       "k3": null,
+       "k4": null,
+       "k5": null,
+       "k6": null,
+       "k7": null,
+       "k8": null,
+       "k9": null,
+       "k10": null,
+       "k11": null,
+       "k12": null,
+       "k13": null,
+       "k14": null,
+       "k15": null,
+       "k16": null,
+       "k17": null,
+       "k18": null,
+       "k19": null,
+       "k20": null,
+       "k21": null,
+       "k22": null,
+       "k23": null,
+       "k24": null,
+       "k25": null,
+       "k26": null,
+       "k27": null,
+       "k28": null,
+       "k29": null
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "score_ten_levels",
+   "body": {
+    "state": [
+     "first",
+     2,
+     {
+      "third": 3.5
+     }
+    ],
+    "questions": {
+     "level": {
+      "type": "score",
+      "instructions": "Rate it",
+      "criteria": [
+       null,
+       "one",
+       {
+        "w": 4.69895e+20,
+        "r": 0.25
+       },
+       {
+        "b": 1,
+        "a": 1000000000000000.0
+       },
+       "four",
+       "five",
+       1.5e-07,
+       "seven",
+       100000.0,
+       "nine"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "null_state_and_instructions",
+   "body": {
+    "state": null,
+    "questions": {
+     "q": {
+      "type": "noul",
+      "instructions": null
+     }
+    }
+   }
+  }
+ ]
+}

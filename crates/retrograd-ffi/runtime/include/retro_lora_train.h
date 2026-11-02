@@ -2750,6 +2750,10 @@ int retro_engine_embed(
 //   has_default_template  whether `tokenizer.chat_template` exists
 //   mask_token, sep_token  the vocabulary's ids, null when absent
 //   n_embd_out     the width of the embeddings output
+//   n_cls_out      the number of classifier labels
+//   decision_labels  `<arch>.decision.labels`, in order (empty when absent)
+//   special_tokens the control and user-defined tokens in id order, each
+//                  `{text, control, user_defined}`
 // The model is opened mapped and host-only, with no context.
 int retro_read_decision_info(const char * model_path, char * buffer, size_t n_buffer, size_t * out_n_bytes);
 // The same object for the engine's model.
@@ -2802,23 +2806,37 @@ int retro_engine_token_piece(
 
 // Where retro_engine_decide reads the scores of a prompt.
 #define RETRO_DECIDE_MARKER_COLUMN 0 // embeddings[column] at each position of `reads`
-#define RETRO_DECIDE_LABEL_LOGITS 1  // logits of each token id of `reads`, at the last position
+#define RETRO_DECIDE_LABEL_LOGITS 1  // logits of each token id of `reads`, at the last position,
+                                     // or the largest of each group of `label_groups`
 #define RETRO_DECIDE_POINTER 2       // q.k / sqrt(n/2), q the first half of the embeddings at
                                      // `pointer`, k the second half at each position of `reads`
+#define RETRO_DECIDE_JOINT 3         // column 0 of the first `n_scores` rows of the embeddings
+                                     // output of a head that reads the decision order of each
+                                     // token (`reads`, one per token: llama_decision_order)
+#define RETRO_DECIDE_POOLED 4        // the first `n_scores` values of the pooled embeddings of
+                                     // the sequence
 #define RETRO_DECIDE_INVALID_INPUT (-4)
 
 // One prompt of a decision: the tokens of one question as the model reads them.
 typedef struct retro_decision_prompt {
     const int32_t * tokens;
     size_t n_tokens;
-    const int32_t * reads; // positions, or label token ids for LABEL_LOGITS
+    const int32_t * reads; // positions, label token ids for LABEL_LOGITS, the decision order
+                           // of each token for JOINT; unused for POOLED
     size_t n_reads;
     int32_t column;        // MARKER_COLUMN only
     int32_t pointer;       // POINTER only: the position of the query
+    // LABEL_LOGITS only, NULL for one label per score: the number of
+    // consecutive labels of `reads` of each score, summing to n_reads.
+    const int32_t * label_groups;
+    size_t n_label_groups;
+    size_t n_scores;       // JOINT and POOLED only
 } retro_decision_prompt;
 
-// Evaluates the prompts and writes their scores to out_scores, n_reads per
-// prompt, in order. Each prompt is its own sequence, and a decode holds at most
+// Evaluates the prompts and writes their scores to out_scores, in order: per
+// prompt n_label_groups (or n_reads) for LABEL_LOGITS, n_scores for JOINT and
+// POOLED, n_reads otherwise. A JOINT or POOLED prompt is evaluated alone, in
+// one micro-batch. Each prompt is its own sequence, and a decode holds at most
 // n_pack_max of them (0 counts as 1), bounded by the context's sequence slots
 // and cells. One per decode is what makes a score independent of the other
 // prompts of the call: several in one decode change the shapes of the matrix

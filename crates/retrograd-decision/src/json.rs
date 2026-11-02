@@ -17,6 +17,10 @@ use serde::ser::{SerializeMap, SerializeSeq, Serializer};
 use serde::{Deserialize, Serialize};
 use serde_json::Number;
 
+mod nlohmann;
+
+pub use nlohmann::{dump_f64, dump_number};
+
 /// The members of an object, in the order they were written.
 pub type Object = IndexMap<String, Json>;
 
@@ -111,6 +115,48 @@ impl Json {
             members.insert(key.to_owned(), value);
         }
     }
+
+    /// Compact JSON as nlohmann::json's `dump()` writes it, which the decision
+    /// server uses where a value becomes prompt text. Only the floats differ
+    /// from [`Display`](fmt::Display): see [`dump_number`]. Strings are
+    /// escaped the same way by both (the short escapes, `\u00XX` for the other
+    /// control characters, everything else as UTF-8).
+    pub fn dump(&self) -> String {
+        let mut out = String::new();
+        self.dump_into(&mut out);
+        out
+    }
+
+    fn dump_into(&self, out: &mut String) {
+        match self {
+            Self::Null => out.push_str("null"),
+            Self::Bool(truth) => out.push_str(if *truth { "true" } else { "false" }),
+            Self::Number(number) => out.push_str(&dump_number(number)),
+            Self::String(text) => push_string(out, text),
+            Self::Array(items) => {
+                out.push('[');
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    item.dump_into(out);
+                }
+                out.push(']');
+            }
+            Self::Object(members) => {
+                out.push('{');
+                for (i, (key, item)) in members.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    push_string(out, key);
+                    out.push(':');
+                    item.dump_into(out);
+                }
+                out.push('}');
+            }
+        }
+    }
 }
 
 impl PartialEq<str> for Json {
@@ -176,6 +222,16 @@ impl From<serde_json::Value> for Json {
                     .collect(),
             ),
         }
+    }
+}
+
+/// A JSON string literal; serde_json escapes exactly the characters nlohmann
+/// escapes.
+fn push_string(out: &mut String, text: &str) {
+    match serde_json::to_string(text) {
+        Ok(quoted) => out.push_str(&quoted),
+        // Serializing a `str` cannot fail.
+        Err(_) => out.push_str("\"\""),
     }
 }
 

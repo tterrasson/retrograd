@@ -8,7 +8,7 @@ use std::time::Duration;
 use retrograd::decision::Json;
 use retrograd::decision::answer::Answer;
 use retrograd::decision::dataset::{self, DataFormat};
-use retrograd::decision::readout::{LabelFamily, Readout};
+use retrograd::decision::readout::{DecisionType, Head, Readout};
 use retrograd::decision::request::{Question, QuestionKind, SystemOneRequest};
 use retrograd::{Device, Engine, EngineConfig, Error, Result};
 use serde_json::{Value, json};
@@ -181,13 +181,13 @@ pub(super) fn label(args: &[String]) -> Result<()> {
     let text = std::fs::read_to_string(&args.data)?;
     let mut output = Vec::new();
     if let Some(model) = &args.teacher_model {
-        let readout = Readout::LabelLogits {
-            labels: (0..52).collect(),
-            label_texts: Vec::new(),
-            n_variants: 1,
-            noul_scale: None,
-            family: LabelFamily::Letters,
-        };
+        let readout = Readout::new(
+            DecisionType::named("openjev").expect("openjev is a decision type"),
+            Head::LabelLogits {
+                labels: (0..52).collect(),
+                label_texts: Vec::new(),
+            },
+        );
         let requests = requests(&text, &readout, &args.data.display().to_string())?;
         let key = args
             .api_key_env
@@ -350,13 +350,13 @@ mod tests {
 
     #[test]
     fn teacher_targets_preserve_order_and_require_every_key() {
-        let readout = Readout::LabelLogits {
-            labels: (0..52).collect(),
-            label_texts: vec![],
-            n_variants: 1,
-            noul_scale: None,
-            family: LabelFamily::Letters,
-        };
+        let readout = Readout::new(
+            DecisionType::named("openjev").expect("openjev is a decision type"),
+            Head::LabelLogits {
+                labels: (0..52).collect(),
+                label_texts: Vec::new(),
+            },
+        );
         let request = requests(r#"{"state":{"x":1},"question":{"type":"choice","instructions":"pick","criteria":{"z":null,"a":"two"}}}"#, &readout, "in").unwrap().remove(0);
         let q = &request.questions["question"];
         let line = record(&request.state, "question", q, json!({"z":0.7,"a":0.3})).unwrap();

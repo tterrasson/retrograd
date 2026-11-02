@@ -702,6 +702,11 @@ pub const RETRO_DECIDE_LABEL_LOGITS: i32 = 1;
 /// `q.k / sqrt(n/2)`: `q` the first half of the embeddings at `pointer`, `k`
 /// the second half at each read position.
 pub const RETRO_DECIDE_POINTER: i32 = 2;
+/// Column 0 of the first `n_scores` rows of the embeddings output of a head
+/// that reads the decision order of each token (`reads`).
+pub const RETRO_DECIDE_JOINT: i32 = 3;
+/// The first `n_scores` values of the pooled embeddings of the sequence.
+pub const RETRO_DECIDE_POOLED: i32 = 4;
 /// Mirror of `RETRO_DECIDE_INVALID_INPUT`: a prompt the context cannot
 /// evaluate, or a read out of range.
 pub const RETRO_DECIDE_INVALID_INPUT: c_int = -4;
@@ -713,13 +718,20 @@ pub const RETRO_DECIDE_INVALID_INPUT: c_int = -4;
 pub struct RetroDecisionPrompt {
     pub tokens: *const i32,
     pub n_tokens: usize,
-    /// Positions, or label token ids for `RETRO_DECIDE_LABEL_LOGITS`.
+    /// Positions, label token ids for `RETRO_DECIDE_LABEL_LOGITS`, the
+    /// decision order of each token for `RETRO_DECIDE_JOINT`.
     pub reads: *const i32,
     pub n_reads: usize,
     /// `RETRO_DECIDE_MARKER_COLUMN` only.
     pub column: i32,
     /// `RETRO_DECIDE_POINTER` only: the position of the query.
     pub pointer: i32,
+    /// `RETRO_DECIDE_LABEL_LOGITS` only, null for one label per score: the
+    /// consecutive labels of each score, the score is their largest logit.
+    pub label_groups: *const i32,
+    pub n_label_groups: usize,
+    /// `RETRO_DECIDE_JOINT` and `RETRO_DECIDE_POOLED` only.
+    pub n_scores: usize,
 }
 
 /// Mirror of `retro_grouped_batch`: one physical step of the grouped softmax
@@ -2281,8 +2293,9 @@ unsafe extern "C" {
         out_n_bytes: *mut usize,
     ) -> c_int;
 
-    /// Evaluates decision prompts, `n_reads` scores per prompt in order, at
-    /// most `n_pack_max` (0 counts as 1) per decode.
+    /// Evaluates decision prompts, their scores in order (see
+    /// `RetroDecisionPrompt`), at most `n_pack_max` (0 counts as 1) per
+    /// decode.
     pub fn retro_engine_decide(
         engine: *mut RetroEngine,
         readout: i32,
@@ -2987,7 +3000,10 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroDecisionPrompt, n_reads), 24);
         assert_eq!(offset_of!(RetroDecisionPrompt, column), 32);
         assert_eq!(offset_of!(RetroDecisionPrompt, pointer), 36);
-        assert_eq!(size_of::<RetroDecisionPrompt>(), 40);
+        assert_eq!(offset_of!(RetroDecisionPrompt, label_groups), 40);
+        assert_eq!(offset_of!(RetroDecisionPrompt, n_label_groups), 48);
+        assert_eq!(offset_of!(RetroDecisionPrompt, n_scores), 56);
+        assert_eq!(size_of::<RetroDecisionPrompt>(), 64);
 
         assert_eq!(offset_of!(RetroGroupedBatch, tokens), 0);
         assert_eq!(offset_of!(RetroGroupedBatch, positions), 8);

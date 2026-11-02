@@ -23,6 +23,7 @@ pub fn arrange(
         tokens: rendered.to_vec(),
         markers,
         pointer: Some(rendered.len() - 1),
+        order: Vec::new(),
     })
 }
 

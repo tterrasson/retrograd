@@ -1,0 +1,93 @@
+{
+ "_comment": "Frozen /v1/systemone requests of the golden decision fixtures of the joint (clef, vllm-decision2) readouts. Recorded by scripts/decision-golden.sh; changing a body changes every golden file of these readouts.",
+ "requests": [
+  {
+   "name": "three_questions",
+   "body": {
+    "state": {
+     "message": "Charged twice, <<clef:sep>> please refund.",
+     "plan": "pro"
+    },
+    "questions": {
+     "intent": {
+      "type": "choice",
+      "instructions": "What does the customer want?",
+      "criteria": {
+       "refund": "money back",
+       "cancel": {
+        "what": "order"
+       },
+       "track": "where is it"
+      }
+     },
+     "urgent": {
+      "type": "noul",
+      "instructions": "Is it urgent?",
+      "criteria": {
+       "true": "now",
+       "false": "later"
+      }
+     },
+     "mood": {
+      "type": "score",
+      "instructions": "How upset?",
+      "criteria": [
+       "calm",
+       {
+        "level": 1.5e-07
+       },
+       "angry"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "one_question",
+   "body": {
+    "state": "Where is my parcel?",
+    "questions": {
+     "spam": {
+      "type": "noul",
+      "instructions": "Is it spam?",
+      "criteria": {
+       "false": "real",
+       "true": "spam"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "empty_instructions",
+   "body": {
+    "state": "s",
+    "questions": {
+     "q": {
+      "type": "choice",
+      "instructions": "",
+      "criteria": {
+       "a": "x",
+       "b": "y"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "one_option",
+   "body": {
+    "state": "s",
+    "questions": {
+     "q": {
+      "type": "choice",
+      "instructions": "i",
+      "criteria": {
+       "a": "x"
+      }
+     }
+    }
+   }
+  }
+ ]
+}

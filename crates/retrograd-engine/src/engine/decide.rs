@@ -16,7 +16,9 @@ use std::ffi::{CString, c_char};
 use indexmap::IndexMap;
 use retrograd_decision::answer::{self, Answer, Calibration};
 use retrograd_decision::layout::{self, Budget};
-use retrograd_decision::readout::{Readout, Vocabulary};
+use retrograd_decision::readout::{
+    Head, HeadMetadata, PromptScope, Readout, SpecialToken, Vocabulary,
+};
 use retrograd_decision::request::{Question, SystemOneRequest};
 use retrograd_decision::template::{self, PromptInput};
 use retrograd_decision::{DecisionError, Json, Token};
@@ -45,6 +47,12 @@ pub struct DecisionMetadata {
     pub mask_token: Option<Token>,
     pub sep_token: Option<Token>,
     pub n_embd_out: i64,
+    /// The number of classifier labels.
+    pub n_cls_out: i64,
+    /// `<arch>.decision.labels`, in order.
+    pub decision_labels: Vec<String>,
+    /// The control and user-defined tokens, in id order.
+    pub special_tokens: Vec<SpecialToken>,
 }
 
 impl DecisionMetadata {
@@ -212,7 +220,7 @@ impl DecisionInfo {
         mut self,
         max_head_tokens: usize,
     ) -> std::result::Result<Self, EngineError> {
-        if !matches!(self.readout, Readout::MarkerColumn { .. }) {
+        if !matches!(self.readout.head, Head::MarkerColumn { .. }) {
             return Err(EngineError::invalid(format!(
                 "max_head_tokens applies to a model that reads its options at markers, \
                  not to a `{}` decision model",
@@ -288,6 +296,10 @@ pub(crate) trait DecisionHost {
     ) -> std::result::Result<Vec<Token>, EngineError>;
     /// The text of one token, a special one rendered as its text.
     fn token_text(&self, token: Token) -> std::result::Result<String, EngineError>;
+    /// The bytes of one token, a special one rendered as its text.
+    fn token_bytes(&self, token: Token) -> std::result::Result<Vec<u8>, EngineError> {
+        Ok(self.token_text(token)?.into_bytes())
+    }
 }
 
 /// The host's vocabulary as the readouts query it. A failed tokenization
@@ -297,6 +309,19 @@ struct HostVocabulary<'a, H: ?Sized> {
     host: &'a H,
     mask: Option<Token>,
     sep: Option<Token>,
+    special_tokens: &'a [SpecialToken],
+}
+
+impl<'a, H: ?Sized> HostVocabulary<'a, H> {
+    /// The vocabulary a prompt is built with: the tokenizer alone.
+    fn tokenizer(host: &'a H) -> Self {
+        Self {
+            host,
+            mask: None,
+            sep: None,
+            special_tokens: &[],
+        }
+    }
 }
 
 impl<H: DecisionHost + ?Sized> Vocabulary for HostVocabulary<'_, H> {
@@ -317,6 +342,14 @@ impl<H: DecisionHost + ?Sized> Vocabulary for HostVocabulary<'_, H> {
     fn token_text(&self, token: Token) -> String {
         self.host.token_text(token).unwrap_or_default()
     }
+
+    fn token_bytes(&self, token: Token) -> Vec<u8> {
+        self.host.token_bytes(token).unwrap_or_default()
+    }
+
+    fn special_tokens(&self) -> Vec<SpecialToken> {
+        self.special_tokens.to_vec()
+    }
 }
 
 /// The decision head `metadata` describes on `host`, with the checks
@@ -332,8 +365,16 @@ pub(crate) fn decision_info_from<H: DecisionHost + ?Sized>(
         host,
         mask: metadata.mask_token,
         sep: metadata.sep_token,
+        special_tokens: &metadata.special_tokens,
     };
-    let readout = Readout::from_decision_type(metadata.decision_type.as_deref(), &vocabulary)?;
+    let head = HeadMetadata {
+        labels: metadata.decision_labels.clone(),
+        // A negative count is no classifier at all.
+        n_classes: usize::try_from(metadata.n_cls_out).unwrap_or(0),
+        n_embd_out: metadata.n_embd_out,
+    };
+    let readout =
+        Readout::from_decision_type(metadata.decision_type.as_deref(), &head, &vocabulary)?;
     let decision_type = metadata.decision_type.clone().unwrap_or_default();
     let template = if overridden {
         TemplateSource::Override
@@ -361,8 +402,8 @@ pub(crate) fn decision_info_from<H: DecisionHost + ?Sized>(
         .filter(|(key, _)| key.starts_with("temperature."))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
-    let (budget, model_max_head_tokens) = match readout {
-        Readout::MarkerColumn { .. } => {
+    let (budget, model_max_head_tokens) = match readout.head {
+        Head::MarkerColumn { .. } => {
             let max_head_tokens = metadata.max_head_tokens();
             (Some(Budget::new(max_head_tokens)?), Some(max_head_tokens))
         }
@@ -383,17 +424,23 @@ pub(crate) fn decision_info_from<H: DecisionHost + ?Sized>(
 }
 
 /// One forward pass of a decision: the tokens of one variant of one question
-/// as the model reads them, and where its scores are read.
+/// (or of every question of a joint prompt) as the model reads them, and
+/// where its scores are read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecisionPass {
     pub tokens: Vec<Token>,
-    /// Positions of the option markers, or the label token ids of a label
-    /// readout.
+    /// Positions of the option markers, the label token ids of a label
+    /// readout, or the decision order of each token of a joint prompt.
     pub reads: Vec<i32>,
     /// The column of the question type in the embeddings output.
     pub column: i32,
     /// The position of the query of a pointer readout, -1 otherwise.
     pub pointer: i32,
+    /// The consecutive labels of each score of a label group readout, whose
+    /// score is their largest logit; empty when each label is a score.
+    pub label_groups: Vec<i32>,
+    /// The scores the pass returns.
+    pub n_scores: usize,
 }
 
 impl DecisionPass {
@@ -405,16 +452,45 @@ impl DecisionPass {
             n_reads: self.reads.len(),
             column: self.column,
             pointer: self.pointer,
+            label_groups: if self.label_groups.is_empty() {
+                std::ptr::null()
+            } else {
+                self.label_groups.as_ptr()
+            },
+            n_label_groups: self.label_groups.len(),
+            n_scores: self.n_scores,
         }
     }
 }
 
 /// Renders, tokenizes and lays out one variant of one question: what the
-/// server evaluates for it, and what a training step trains on.
+/// server evaluates for it, and what a training step trains on. The question
+/// is asked alone, about the state of the request.
 pub(crate) fn decision_pass<H: DecisionHost + ?Sized>(
     host: &H,
     info: &DecisionInfo,
     state: &Json,
+    question_id: &str,
+    question: &Question,
+    variant: usize,
+) -> std::result::Result<DecisionPass, EngineError> {
+    let state = template::prepare_state(&info.readout, state, &HostVocabulary::tokenizer(host))?;
+    if matches!(
+        info.readout.kind.prompt,
+        PromptScope::Joint | PromptScope::JointQuestion
+    ) {
+        return joint_pass(host, info, &state, &[(question_id, question)]);
+    }
+    question_pass(host, info, &state, None, question_id, question, variant)
+}
+
+/// One variant of one question of a request; `state` is the prepared state
+/// ([`template::prepare_state`]), `questions` every question of the request.
+fn question_pass<H: DecisionHost + ?Sized>(
+    host: &H,
+    info: &DecisionInfo,
+    state: &Json,
+    questions: Option<&IndexMap<String, Question>>,
     question_id: &str,
     question: &Question,
     variant: usize,
@@ -425,54 +501,109 @@ pub(crate) fn decision_pass<H: DecisionHost + ?Sized>(
         Some(budget) => budget,
         None => Budget::new(usize::MAX)?,
     };
+    let labels = readout.question_labels(question, &HostVocabulary::tokenizer(host))?;
     let renderer = |context: &Json| host.render_decision(context);
     let input = PromptInput {
         state,
+        questions,
         question_id,
         question,
+        labels: &labels.texts,
         variant,
         n_images: 0,
         media_marker: "",
     };
     let prompt = template::render(readout, &input, &renderer)?;
-    let rendered = host.tokenize_decision(&prompt, true)?;
-    let laid_out = layout::arrange(readout, &rendered, question, &budget)?;
-    let reads = match readout {
-        Readout::LabelLogits { .. } => readout
-            .label_tokens(question)
-            .ok_or_else(|| {
-                DecisionError::Evaluation(
-                    "the question has more outputs than the model has labels".into(),
-                )
-            })?
-            .to_vec(),
-        Readout::MarkerColumn { .. } | Readout::Pointer { .. } => laid_out
-            .markers
-            .iter()
-            .map(|&position| position_i32(position))
-            .collect::<std::result::Result<_, _>>()?,
+    let laid_out = layout::arrange_prompt(readout, &prompt, &[question], &budget, |text| {
+        host.tokenize_decision(text, true)
+    })?;
+    let (reads, n_scores) = match &readout.head {
+        Head::LabelLogits { .. } | Head::LabelGroups => {
+            let n_scores = if labels.groups.is_empty() {
+                labels.tokens.len()
+            } else {
+                labels.groups.len()
+            };
+            (labels.tokens, n_scores)
+        }
+        Head::MarkerColumn { .. } | Head::D1Omni { .. } | Head::Pointer { .. } => {
+            let reads = laid_out
+                .markers
+                .iter()
+                .map(|&position| position_i32(position))
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let n_scores = reads.len();
+            (reads, n_scores)
+        }
+        Head::Pooled { n_classes } => (Vec::new(), *n_classes),
+        Head::Joint => {
+            return Err(DecisionError::Evaluation(
+                "a joint head reads the joint prompt of its questions".into(),
+            )
+            .into());
+        }
     };
+    let label_groups = labels
+        .groups
+        .iter()
+        .map(|&n| {
+            i32::try_from(n).map_err(|_| EngineError::Overflow("decision label group".into()))
+        })
+        .collect::<std::result::Result<_, _>>()?;
     let pointer = match laid_out.pointer {
         Some(position) => position_i32(position)?,
         None => -1,
     };
-    // Narrowing: the column of a question type is 0, 1 or 2.
-    let column = i32::try_from(question.kind.column())
-        .map_err(|_| EngineError::Overflow("decision column".into()))?;
     Ok(DecisionPass {
         tokens: laid_out.tokens,
         reads,
-        column,
+        column: question_column(question)?,
         pointer,
+        label_groups,
+        n_scores,
     })
+}
+
+/// The joint prompt of `questions`, read by a head that scores every option
+/// of every question in one pass.
+fn joint_pass<H: DecisionHost + ?Sized>(
+    host: &H,
+    info: &DecisionInfo,
+    state: &Json,
+    questions: &[(&str, &Question)],
+) -> std::result::Result<DecisionPass, EngineError> {
+    let context = template::joint_context(state, questions, 0, "")?;
+    let prompt = host.render_decision(&context)?;
+    let listed: Vec<&Question> = questions.iter().map(|(_, question)| *question).collect();
+    let budget = Budget::new(usize::MAX)?;
+    let laid_out = layout::arrange_prompt(&info.readout, &prompt, &listed, &budget, |text| {
+        host.tokenize_decision(text, true)
+    })?;
+    Ok(DecisionPass {
+        tokens: laid_out.tokens,
+        reads: laid_out.order,
+        column: 0,
+        pointer: -1,
+        label_groups: Vec::new(),
+        n_scores: listed.iter().map(|question| question.options.len()).sum(),
+    })
+}
+
+/// The column of the question type, as the runtime takes it.
+fn question_column(question: &Question) -> std::result::Result<i32, EngineError> {
+    // Narrowing: the column of a question type is 0, 1 or 2.
+    i32::try_from(question.kind.column())
+        .map_err(|_| EngineError::Overflow("decision column".into()))
 }
 
 /// The runtime code of a readout.
 pub(crate) fn readout_code(readout: &Readout) -> i32 {
-    match readout {
-        Readout::MarkerColumn { .. } => ffi::RETRO_DECIDE_MARKER_COLUMN,
-        Readout::LabelLogits { .. } => ffi::RETRO_DECIDE_LABEL_LOGITS,
-        Readout::Pointer { .. } => ffi::RETRO_DECIDE_POINTER,
+    match readout.head {
+        Head::MarkerColumn { .. } | Head::D1Omni { .. } => ffi::RETRO_DECIDE_MARKER_COLUMN,
+        Head::LabelLogits { .. } | Head::LabelGroups => ffi::RETRO_DECIDE_LABEL_LOGITS,
+        Head::Pointer { .. } => ffi::RETRO_DECIDE_POINTER,
+        Head::Joint => ffi::RETRO_DECIDE_JOINT,
+        Head::Pooled { .. } => ffi::RETRO_DECIDE_POOLED,
     }
 }
 
@@ -491,6 +622,10 @@ impl DecisionHost for Engine {
 
     fn token_text(&self, token: Token) -> std::result::Result<String, EngineError> {
         self.token_piece(token, true)
+    }
+
+    fn token_bytes(&self, token: Token) -> std::result::Result<Vec<u8>, EngineError> {
+        self.token_piece_bytes(token, true)
     }
 }
 
@@ -658,6 +793,73 @@ impl Engine {
         })
     }
 
+    /// The bytes of one token, a piece of a multi-byte character kept as it
+    /// is; `special` renders a special token as its text.
+    pub fn token_piece_bytes(
+        &self,
+        token: Token,
+        special: bool,
+    ) -> std::result::Result<Vec<u8>, EngineError> {
+        // SAFETY: the `Engine` invariant holds and the entry point follows the
+        // two-call string contract.
+        Ok(unsafe {
+            read_bytes_sized(32, |buffer: *mut c_char, n_buffer, out| {
+                ffi::retro_engine_token_piece(
+                    self.raw.as_ptr(),
+                    token,
+                    special,
+                    buffer,
+                    n_buffer,
+                    out,
+                )
+            })?
+        })
+    }
+
+    /// The forward passes that answer `request`, in order: one per variant
+    /// of each question, or one for every question of a joint prompt. What
+    /// [`Engine::decide`] evaluates.
+    pub fn decision_passes(
+        &self,
+        info: &DecisionInfo,
+        request: &SystemOneRequest,
+    ) -> std::result::Result<Vec<DecisionPass>, EngineError> {
+        if !request.images.is_empty() {
+            return Err(DecisionError::ImagesUnsupported.into());
+        }
+        let readout = &info.readout;
+        let state =
+            template::prepare_state(readout, &request.state, &HostVocabulary::tokenizer(self))?;
+        let mut passes = Vec::new();
+        if readout.kind.prompt == PromptScope::Joint {
+            let questions: Vec<(&str, &Question)> = request
+                .questions
+                .iter()
+                .map(|(id, question)| (id.as_str(), question))
+                .collect();
+            passes.push(joint_pass(self, info, &state, &questions)?);
+        } else {
+            for (id, question) in &request.questions {
+                if readout.kind.prompt == PromptScope::JointQuestion {
+                    passes.push(joint_pass(self, info, &state, &[(id.as_str(), question)])?);
+                    continue;
+                }
+                for variant in 0..readout.n_variants(question) {
+                    passes.push(question_pass(
+                        self,
+                        info,
+                        &state,
+                        Some(&request.questions),
+                        id,
+                        question,
+                        variant,
+                    )?);
+                }
+            }
+        }
+        Ok(passes)
+    }
+
     /// Answers the questions of `request` on the loaded model, with the head
     /// `info` describes ([`Engine::decision_info`], possibly with a budget
     /// override). Each question is rendered through the `systemone` template,
@@ -675,36 +877,34 @@ impl Engine {
         info: &DecisionInfo,
         request: &SystemOneRequest,
     ) -> std::result::Result<Decision, EngineError> {
-        if !request.images.is_empty() {
-            return Err(DecisionError::ImagesUnsupported.into());
-        }
         let readout = &info.readout;
-        let mut passes = Vec::new();
-        let mut input_tokens = 0_usize;
-        for (id, question) in &request.questions {
-            for variant in 0..readout.n_variants(question) {
-                let pass = decision_pass(self, info, &request.state, id, question, variant)?;
-                input_tokens = input_tokens
-                    .checked_add(pass.tokens.len())
-                    .ok_or_else(|| EngineError::Overflow("decision input tokens".into()))?;
-                passes.push(pass);
-            }
-        }
+        let joint = readout.kind.prompt == PromptScope::Joint;
+        let passes = self.decision_passes(info, request)?;
+        let input_tokens = passes.iter().try_fold(0_usize, |sum, pass| {
+            sum.checked_add(pass.tokens.len())
+                .ok_or_else(|| EngineError::Overflow("decision input tokens".into()))
+        })?;
 
         let prompts: Vec<ffi::RetroDecisionPrompt> =
             passes.iter().map(DecisionPass::as_ffi).collect();
-        let n_scores = passes.iter().map(|pass| pass.reads.len()).sum::<usize>();
+        let n_scores = passes.iter().map(|pass| pass.n_scores).sum::<usize>();
         let mut scores = vec![0.0_f32; n_scores];
+        // A prompt that must be alone in its forward pass is never packed.
+        let pack = if readout.kind.alone_in_pass {
+            1
+        } else {
+            info.pack
+        };
         // SAFETY: the `Engine` invariant holds; every prompt points into
         // `passes`, which outlives this synchronous call, and `scores` holds
-        // the `n_reads` of every prompt.
+        // the scores of every prompt.
         let code = unsafe {
             ffi::retro_engine_decide(
                 self.raw.as_ptr(),
                 readout_code(readout),
                 prompts.as_ptr(),
                 prompts.len(),
-                info.pack,
+                pack,
                 scores.as_mut_ptr(),
                 scores.len(),
             )
@@ -714,15 +914,23 @@ impl Engine {
         }
         self.check(code)?;
 
+        // The scores of each question: its variants, or its options among the
+        // scores of a joint prompt, in order.
         let mut answers = IndexMap::with_capacity(request.questions.len());
         let mut offset = 0_usize;
         let mut pass = passes.iter();
         for (id, question) in &request.questions {
             let mut variants = Vec::new();
-            for _ in 0..readout.n_variants(question) {
-                let n = pass.next().map_or(0, |pass| pass.reads.len());
+            if joint {
+                let n = question.options.len();
                 variants.push(scores[offset..offset + n].to_vec());
                 offset += n;
+            } else {
+                for _ in 0..readout.n_variants(question) {
+                    let n = pass.next().map_or(0, |pass| pass.n_scores);
+                    variants.push(scores[offset..offset + n].to_vec());
+                    offset += n;
+                }
             }
             let answer =
                 answer::format_answer(readout, &info.calibration, question, &variants, false)?;

@@ -9,6 +9,7 @@
 #include "retro_gen_core.hpp"
 
 #include "json.h"
+#include "llama-ext.h"
 
 #include <algorithm>
 #include <cmath>
@@ -99,7 +100,34 @@ std::string describe_decision_model(const llama_model * model) {
     out["mask_token"] = token_or_null(llama_vocab_mask(vocab));
     out["sep_token"] = token_or_null(llama_vocab_sep(vocab));
     out["n_embd_out"] = static_cast<int64_t>(llama_model_n_embd_out(model));
-    return out.dump();
+    out["n_cls_out"] = static_cast<int64_t>(llama_model_n_cls_out(model));
+
+    json labels = json::array();
+    for (uint32_t i = 0; llama_model_decision_label(model, i) != nullptr; ++i) {
+        labels.push_back(std::string(llama_model_decision_label(model, i)));
+    }
+    out["decision_labels"] = labels;
+
+    // The texts an input may spell of the tokens that are not plain text,
+    // which some decision types break or quote in their inputs.
+    json special = json::array();
+    const llama_token n_vocab = llama_vocab_n_tokens(vocab);
+    for (llama_token id = 0; id < n_vocab; ++id) {
+        const auto attr = llama_vocab_get_attr(vocab, id);
+        const bool control = (attr & LLAMA_TOKEN_ATTR_CONTROL) != 0;
+        const bool user_defined = (attr & LLAMA_TOKEN_ATTR_USER_DEFINED) != 0;
+        if (!control && !user_defined) {
+            continue;
+        }
+        json token = json::object();
+        token["text"] = std::string(llama_vocab_get_text(vocab, id));
+        token["control"] = control;
+        token["user_defined"] = user_defined;
+        special.push_back(token);
+    }
+    out["special_tokens"] = special;
+    // A token text need not be UTF-8: such bytes are written as U+FFFD.
+    return out.dump_safe();
 }
 
 bool gguf_is_decision_model(const char * model_path) {
@@ -160,6 +188,146 @@ std::string describe_prompt(size_t index) {
     return "decision prompt " + std::to_string(index);
 }
 
+// The scores a prompt writes.
+size_t prompt_scores(int32_t readout, const retro_decision_prompt & prompt) {
+    if (readout == RETRO_DECIDE_JOINT || readout == RETRO_DECIDE_POOLED) {
+        return prompt.n_scores;
+    }
+    if (readout == RETRO_DECIDE_LABEL_LOGITS && prompt.label_groups) {
+        return prompt.n_label_groups;
+    }
+    return prompt.n_reads;
+}
+
+// The readouts that see a whole prompt at once: a joint head reads the spans
+// of every question of its micro-batch, a pooled output the whole sequence.
+// Each prompt is the only sequence of its decode, in one micro-batch, every
+// token an output, as llama-server evaluates them.
+int decide_alone(
+        llama_model * model,
+        llama_context * ctx,
+        int32_t readout,
+        const retro_decision_prompt * prompts,
+        size_t n_prompts,
+        float * out_scores,
+        size_t n_scores_max) {
+    const llama_vocab * vocab = llama_model_get_vocab(model);
+    const int32_t n_vocab = llama_vocab_n_tokens(vocab);
+    const int32_t n_embd_out = llama_model_n_embd_out(model);
+    const size_t n_micro = static_cast<size_t>(std::min(llama_n_batch(ctx), llama_n_ubatch(ctx)));
+    llama_memory_t memory = llama_get_memory(ctx);
+
+    size_t n_scores = 0;
+    for (size_t p = 0; p < n_prompts; ++p) {
+        const retro_decision_prompt & prompt = prompts[p];
+        if (!prompt.tokens || prompt.n_tokens == 0) {
+            set_error(describe_prompt(p) + " has no tokens");
+            return RETRO_DECIDE_INVALID_INPUT;
+        }
+        for (size_t i = 0; i < prompt.n_tokens; ++i) {
+            if (prompt.tokens[i] < 0 || prompt.tokens[i] >= n_vocab) {
+                set_error(describe_prompt(p) + " has a token outside the vocabulary");
+                return RETRO_DECIDE_INVALID_INPUT;
+            }
+        }
+        if (prompt.n_tokens > n_micro) {
+            set_error(describe_prompt(p) + " is " + std::to_string(prompt.n_tokens)
+                    + " tokens, but it must fit one micro-batch of " + std::to_string(n_micro));
+            return RETRO_DECIDE_INVALID_INPUT;
+        }
+        if (readout == RETRO_DECIDE_JOINT) {
+            if (!prompt.reads || prompt.n_reads != prompt.n_tokens) {
+                set_error(describe_prompt(p) + " needs one decision order per token");
+                return RETRO_DECIDE_INVALID_INPUT;
+            }
+            for (size_t i = 0; i < prompt.n_reads; ++i) {
+                if (prompt.reads[i] < LLAMA_DECISION_ORDER_NONE || prompt.reads[i] > LLAMA_DECISION_ORDER_OPTION) {
+                    set_error(describe_prompt(p) + " has an unknown decision order");
+                    return RETRO_DECIDE_INVALID_INPUT;
+                }
+            }
+            if (prompt.n_scores == 0 || prompt.n_scores > prompt.n_tokens) {
+                set_error(describe_prompt(p) + " reads more scores than it has rows");
+                return RETRO_DECIDE_INVALID_INPUT;
+            }
+        } else if (n_embd_out <= 0 || prompt.n_scores == 0
+                || prompt.n_scores > static_cast<size_t>(n_embd_out)) {
+            set_error(describe_prompt(p) + " reads more scores than the pooled output has");
+            return RETRO_DECIDE_INVALID_INPUT;
+        }
+        if (prompt.n_scores > std::numeric_limits<size_t>::max() - n_scores) {
+            set_error("too many decision scores");
+            return RETRO_DECIDE_INVALID_INPUT;
+        }
+        n_scores += prompt.n_scores;
+    }
+    if (!out_scores || n_scores_max < n_scores) {
+        set_error("out_scores buffer is too small");
+        return RETRO_DECIDE_INVALID_INPUT;
+    }
+
+    llama_set_embeddings(ctx, true);
+    struct batch_ext_guard {
+        llama_batch_ext * batch;
+        ~batch_ext_guard() {
+            llama_batch_ext_free(batch);
+        }
+    } guard { llama_batch_ext_init(ctx) };
+
+    size_t written = 0;
+    for (size_t p = 0; p < n_prompts; ++p) {
+        const retro_decision_prompt & prompt = prompts[p];
+        if (memory) {
+            llama_memory_clear(memory, true);
+        }
+        llama_batch_ext * batch = guard.batch;
+        llama_batch_ext_clear(batch);
+        for (size_t i = 0; i < prompt.n_tokens; ++i) {
+            const int32_t index = llama_batch_ext_add_token(batch, 0, prompt.tokens[i]);
+            const llama_pos pos = static_cast<llama_pos>(i);
+            if (index < 0 || !llama_batch_ext_set_pos(batch, index, &pos)
+                    || !llama_batch_ext_set_output_embd(batch, index, true)) {
+                set_error("the decision batch could not take " + describe_prompt(p));
+                return -1;
+            }
+            if (readout == RETRO_DECIDE_JOINT && prompt.reads[i] != LLAMA_DECISION_ORDER_NONE
+                    && !llama_batch_ext_set_decision_order(
+                            batch, index, static_cast<llama_decision_order>(prompt.reads[i]))) {
+                set_error("the decision batch could not take the order of " + describe_prompt(p));
+                return -1;
+            }
+        }
+        if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch) != 0) {
+            set_error("llama_decode failed while evaluating decision prompts");
+            return -1;
+        }
+        if (readout == RETRO_DECIDE_JOINT) {
+            // Row i of the output is the score of option i of the prompt.
+            for (size_t i = 0; i < prompt.n_scores; ++i) {
+                const float * embd = llama_get_embeddings_ith(ctx, static_cast<int32_t>(i));
+                if (!embd) {
+                    set_error("the decode produced no embeddings for a joint decision head");
+                    return -1;
+                }
+                out_scores[written++] = embd[0];
+            }
+        } else {
+            const float * embd = llama_get_embeddings_seq(ctx, 0);
+            if (!embd) {
+                set_error("the decode produced no pooled embeddings for a decision readout");
+                return -1;
+            }
+            for (size_t i = 0; i < prompt.n_scores; ++i) {
+                out_scores[written++] = embd[i];
+            }
+        }
+    }
+    if (memory) {
+        llama_memory_clear(memory, true);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int decide_prompts(
@@ -173,13 +341,17 @@ int decide_prompts(
         float * out_scores,
         size_t n_scores_max) {
     if (readout != RETRO_DECIDE_MARKER_COLUMN && readout != RETRO_DECIDE_LABEL_LOGITS
-            && readout != RETRO_DECIDE_POINTER) {
+            && readout != RETRO_DECIDE_POINTER && readout != RETRO_DECIDE_JOINT
+            && readout != RETRO_DECIDE_POOLED) {
         set_error("decision readout must be one of RETRO_DECIDE_*");
         return RETRO_DECIDE_INVALID_INPUT;
     }
     if (!prompts || n_prompts == 0) {
         set_error("decision prompts are required");
         return RETRO_DECIDE_INVALID_INPUT;
+    }
+    if (readout == RETRO_DECIDE_JOINT || readout == RETRO_DECIDE_POOLED) {
+        return decide_alone(model, ctx, readout, prompts, n_prompts, out_scores, n_scores_max);
     }
 
     const llama_vocab * vocab = llama_model_get_vocab(model);
@@ -224,6 +396,20 @@ int decide_prompts(
             set_error(message.str());
             return RETRO_DECIDE_INVALID_INPUT;
         }
+        if (readout == RETRO_DECIDE_LABEL_LOGITS && prompt.label_groups) {
+            size_t n_grouped = 0;
+            for (size_t g = 0; g < prompt.n_label_groups; ++g) {
+                if (prompt.label_groups[g] <= 0) {
+                    n_grouped = 0;
+                    break;
+                }
+                n_grouped += static_cast<size_t>(prompt.label_groups[g]);
+            }
+            if (prompt.n_label_groups == 0 || n_grouped != prompt.n_reads) {
+                set_error(describe_prompt(p) + " has label groups that do not cover its labels");
+                return RETRO_DECIDE_INVALID_INPUT;
+            }
+        }
         for (size_t r = 0; r < prompt.n_reads; ++r) {
             const int32_t read = prompt.reads[r];
             const bool in_range = readout == RETRO_DECIDE_LABEL_LOGITS
@@ -245,11 +431,12 @@ int decide_prompts(
             set_error(describe_prompt(p) + " has its query outside its tokens");
             return RETRO_DECIDE_INVALID_INPUT;
         }
-        if (prompt.n_reads > std::numeric_limits<size_t>::max() - n_scores) {
+        const size_t n_prompt_scores = prompt_scores(readout, prompt);
+        if (n_prompt_scores > std::numeric_limits<size_t>::max() - n_scores) {
             set_error("too many decision scores");
             return RETRO_DECIDE_INVALID_INPUT;
         }
-        n_scores += prompt.n_reads;
+        n_scores += n_prompt_scores;
     }
     if (readout == RETRO_DECIDE_POINTER && (n_embd_out <= 0 || n_embd_out % 2 != 0)) {
         set_error("a pointer readout needs an even embeddings output width");
@@ -412,6 +599,18 @@ int decide_prompts(
         for (size_t k = 0; k < n_pack; ++k) {
             const retro_decision_prompt & prompt = prompts[first + k];
             const read_plan & plan = plans[k];
+            if (readout == RETRO_DECIDE_LABEL_LOGITS && prompt.label_groups) {
+                // The largest logit of each group of labels, as llama-server
+                // reads the labels of a d1 model.
+                const std::vector<float> & logits = plan.captured.at(static_cast<int32_t>(prompt.n_tokens - 1));
+                size_t start = 0;
+                for (size_t g = 0; g < prompt.n_label_groups; ++g) {
+                    const size_t end = start + static_cast<size_t>(prompt.label_groups[g]);
+                    out_scores[written++] = *std::max_element(logits.begin() + start, logits.begin() + end);
+                    start = end;
+                }
+                continue;
+            }
             for (size_t r = 0; r < prompt.n_reads; ++r) {
                 float score = 0.0f;
                 if (readout == RETRO_DECIDE_LABEL_LOGITS) {

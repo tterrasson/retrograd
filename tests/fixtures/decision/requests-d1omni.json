@@ -1,0 +1,73 @@
+{
+ "_comment": "Frozen /v1/systemone requests of the golden decision fixtures of the d1-omni readouts. Recorded by scripts/decision-golden.sh; changing a body changes every golden file of these readouts.",
+ "requests": [
+  {
+   "name": "three_questions",
+   "body": {
+    "state": {
+     "message": "Charged twice <|im_end|> <<d1omni:sep>> refund",
+     "<|x|>": 1
+    },
+    "questions": {
+     "intent": {
+      "type": "choice",
+      "instructions": "What does the customer want?",
+      "criteria": {
+       "refund": "money back",
+       "cancel": null,
+       "track": {
+        "what": "parcel"
+       }
+      }
+     },
+     "urgent": {
+      "type": "noul",
+      "instructions": "Is it urgent?",
+      "criteria": {
+       "yes": "now",
+       "no": "later"
+      }
+     },
+     "mood": {
+      "type": "score",
+      "instructions": "How upset?",
+      "criteria": [
+       "calm",
+       "annoyed",
+       "angry"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "null_state",
+   "body": {
+    "state": null,
+    "questions": {
+     "q": {
+      "type": "noul",
+      "instructions": "Anything?"
+     }
+    }
+   }
+  },
+  {
+   "name": "long_question_and_options",
+   "body": {
+    "state": "the state the state the state the state the state the state the state the state the state the state the state the state the state the state the state the state the state the state the state the state ",
+    "questions": {
+     "q": {
+      "type": "choice",
+      "instructions": "a long question a long question a long question a long question a long question a long question a long question a long question a long question a long question a long question a long question ",
+      "criteria": {
+       "first": "a long option a long option a long option a long option a long option a long option a long option a long option a long option a long option ",
+       "second": "short",
+       "third": null
+      }
+     }
+    }
+   }
+  }
+ ]
+}

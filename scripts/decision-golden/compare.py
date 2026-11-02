@@ -6,7 +6,8 @@
 
   compare.py server GOLDEN.json REQUESTS.json URL [--tolerance T]
       replays every request the server can take (no head-budget override)
-      against a running llama-server and compares its answers and usage
+      against a running llama-server and compares its answers and usage; a
+      request the capture refused must be refused with the same message
 
 Exit status 1 on the first family of differences, with each one printed.
 """
@@ -17,7 +18,14 @@ import argparse
 import json
 import math
 import sys
+import urllib.error
 import urllib.request
+
+# What a pass records besides its scores; a field absent from both is skipped.
+PASS_FIELDS = (
+    "id", "variant", "prompt", "pieces", "rendered_tokens", "tokens", "markers",
+    "column", "pointer", "labels", "label_groups", "order", "n_scores", "pooled",
+)
 
 
 def answer_values(answers: dict) -> dict:
@@ -68,13 +76,15 @@ def golden(args: argparse.Namespace) -> list:
         if gold[field] != other[field]:
             errors.append(f"{field} differs")
     for g, o in zip(gold["requests"], other["requests"], strict=True):
-        for field in ("name", "max_head_tokens"):
-            if g[field] != o[field]:
+        for field in ("name", "max_head_tokens", "error"):
+            if g.get(field) != o.get(field):
                 errors.append(f"{g['name']}: {field} differs")
+        if "error" in g:
+            continue
         for qg, qo in zip(g["questions"], o["questions"], strict=True):
-            for field in ("id", "prompt", "rendered_tokens", "tokens", "markers", "column"):
-                if qg[field] != qo[field]:
-                    errors.append(f"{g['name']}: {qg['id']}: {field} differs")
+            for field in PASS_FIELDS:
+                if qg.get(field) != qo.get(field):
+                    errors.append(f"{g['name']}: {qg.get('id')}: {field} differs")
         if g["response"]["usage"] != o["response"]["usage"]:
             errors.append(
                 f"{g['name']}: usage {o['response']['usage']} vs golden {g['response']['usage']}"
@@ -93,41 +103,103 @@ def golden(args: argparse.Namespace) -> list:
     return errors
 
 
+def post(url: str, path: str, body) -> tuple[int, dict]:
+    req = urllib.request.Request(
+        url.rstrip("/") + path,
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as res:
+            return res.status, json.load(res)
+    except urllib.error.HTTPError as error:
+        return error.code, json.load(error)
+
+
+# The types whose prompt of a question shows the other questions of the
+# request: a question cannot be asked alone without changing its prompt.
+LISTS_ALL_QUESTIONS = ("nimble", "clef")
+
+
 def server(args: argparse.Namespace) -> list:
+    """Replays the requests on llama-server, its slot erased before each.
+
+    llama-server keeps the prompt of its slot and evaluates only what a new
+    pass does not share with it. On a model with a KV cache that changes the
+    shapes of the matrix products, hence the kernels' arithmetic, while the
+    capture evaluates every pass whole. So a pass is compared at the strict
+    tolerance when it is the first of its request after the erase - the first
+    question of the full request, and each question asked alone - and at
+    `--reuse-tolerance` otherwise (the questions after the first, the second
+    order of a question read twice).
+    """
     with open(args.golden) as f:
         gold = json.load(f)
     with open(args.requests) as f:
         requests = json.load(f)["requests"]
+    splittable = gold["model"]["decision_type"] not in LISTS_ALL_QUESTIONS
     errors: list = []
     worst = 0.0
+    worst_reused = 0.0
+
+    def ask(name: str, body, record, strict_ids) -> None:
+        nonlocal worst, worst_reused
+        post(args.url, "/slots/0?action=erase", {})
+        status, answer = post(args.url, "/v1/systemone", body)
+        if status != 200:
+            message = answer.get("error", {}).get("message")
+            if record.get("error") != message:
+                errors.append(f"{name}: refused with {message!r}, golden {record.get('error')!r}")
+            return
+        if "error" in record:
+            errors.append(f"{name}: answered, golden refused with {record['error']!r}")
+            return
+        expected = {qid: record["response"]["answers"][qid] for qid in answer["answers"]}
+        if list(answer["answers"]) != list(expected):
+            errors.append(f"{name}: question order differs")
+            return
+        for qid in expected:
+            strict = qid in strict_ids
+            diff = compare_answers(
+                f"{name}/{qid}",
+                {qid: expected[qid]},
+                {qid: answer["answers"][qid]},
+                args.tolerance if strict else args.reuse_tolerance,
+                errors,
+            )
+            if strict:
+                worst = max(worst, diff)
+            else:
+                worst_reused = max(worst_reused, diff)
+        if strict_ids and len(expected) == len(record["response"]["answers"]):
+            if answer["usage"] != record["response"]["usage"]:
+                errors.append(f"{name}: usage {answer['usage']} vs golden {record['response']['usage']}")
+
     for entry, record in zip(requests, gold["requests"], strict=True):
         if "max_head_tokens" in entry:
             continue  # the server reads the budget from the model only
-        req = urllib.request.Request(
-            args.url.rstrip("/") + "/v1/systemone",
-            data=json.dumps(entry["body"]).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=120) as res:
-            body = json.load(res)
-        if body["usage"] != record["response"]["usage"]:
-            errors.append(
-                f"{entry['name']}: usage {body['usage']} vs golden {record['response']['usage']}"
-            )
-        if list(body["answers"]) != list(record["response"]["answers"]):
-            errors.append(f"{entry['name']}: question order differs")
+        name = entry["name"]
+        if "error" in record:
+            ask(name, entry["body"], record, set())
             continue
-        worst = max(
-            worst,
-            compare_answers(
-                entry["name"],
-                record["response"]["answers"],
-                body["answers"],
-                args.tolerance,
-                errors,
-            ),
-        )
-    print(f"{args.golden} against {args.url}: worst probability difference {worst:.2e}")
+        passes: dict = {}
+        for trace in record["questions"]:
+            passes[trace["id"]] = passes.get(trace["id"], 0) + 1
+        ids = list(record["response"]["answers"])
+        first = {ids[0]} if passes.get(ids[0], 1) == 1 or None in passes else set()
+        if None in passes:
+            first = set(ids)  # a joint prompt is one pass for every question
+        ask(name, entry["body"], record, first)
+        if splittable and None not in passes and len(ids) > 1:
+            for qid in ids:
+                body = dict(entry["body"])
+                body["questions"] = {qid: entry["body"]["questions"][qid]}
+                strict = {qid} if passes.get(qid, 1) == 1 else set()
+                ask(f"{name} ({qid} alone)", body, record, strict)
+    print(
+        f"{args.golden} against {args.url}: worst probability difference {worst:.2e} "
+        f"for a pass evaluated whole, {worst_reused:.2e} for a pass after a shared prefix"
+    )
     return errors
 
 
@@ -145,6 +217,7 @@ def main() -> int:
     s.add_argument("requests")
     s.add_argument("url")
     s.add_argument("--tolerance", type=float, default=1e-6)
+    s.add_argument("--reuse-tolerance", type=float, default=1e-3)
     args = parser.parse_args()
     if not math.isfinite(args.tolerance) or args.tolerance < 0:
         parser.error("tolerance must be finite and non-negative")

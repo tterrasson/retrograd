@@ -155,11 +155,11 @@ impl Trainer {
         }
         let prompts: Vec<ffi::RetroDecisionPrompt> =
             passes.iter().map(DecisionPass::as_ffi).collect();
-        let n_scores = passes.iter().map(|pass| pass.reads.len()).sum::<usize>();
+        let n_scores = passes.iter().map(|pass| pass.n_scores).sum::<usize>();
         let mut scores = vec![0.0_f32; n_scores];
         // SAFETY: the `Trainer` invariant holds; every prompt points into
         // `passes`, which outlives this synchronous call, and `scores` holds
-        // the reads of every prompt.
+        // the scores of every prompt.
         let code = unsafe {
             ffi::retro_trainer_decide(
                 self.raw.as_ptr(),
@@ -178,8 +178,8 @@ impl Trainer {
         let mut out = Vec::with_capacity(passes.len());
         let mut offset = 0;
         for pass in passes {
-            out.push(scores[offset..offset + pass.reads.len()].to_vec());
-            offset += pass.reads.len();
+            out.push(scores[offset..offset + pass.n_scores].to_vec());
+            offset += pass.n_scores;
         }
         Ok(out)
     }

@@ -352,12 +352,31 @@ count of each response too, and the probabilities those of the recording of
 the same backend: exactly with one question per forward pass (the default),
 within 1e-3 with several packed in one. The CPU recordings are built with this
 build's ggml options (no BLAS, no Accelerate), which is what makes them
-reachable exactly. Built with Metal, the same binary also replays the Metal
-recording. `RETRO_DECISION_JULIA` and `RETRO_DECISION_LAYA` add the two real
-models, opt-in: exact on both backends at one question per pass, packed passes
-printed rather than asserted. The same recordings are replayed through the
-serving session that answers `/v1/systemone`, with the production loader: the
-served answers and token counts must be the recorded ones, exactly.
+reachable exactly, and a CPU recording is named after the architecture it was
+recorded on (`golden-<model>.cpu-x86_64.json`, `cpu-aarch64`): the CPU kernels
+differ between them, and a host without its recording skips the replay. Built
+with Metal, the same binary also replays the Metal recording.
+`RETRO_DECISION_JULIA`, `RETRO_DECISION_LAYA` and `RETRO_DECISION_KEV` add the
+real models, opt-in: exact on both backends at one question per pass, packed
+passes printed rather than asserted. The same recordings are replayed through
+the serving session that answers `/v1/systemone`, with the production loader:
+the served answers, token counts and refusals must be the recorded ones,
+exactly.
+
+Every other readout family is replayed the same way on a tiny model the test
+generates into its target directory (`scripts/gen-tiny-decision-fixture.py
+--type NAME`, checked against the digest of its recording): label letters
+(`openjev`), codes (`lev`, `nimble`, `vllm-d3`), label groups (`lfm2-d1`,
+`lfm3-d1`), `h2o-lightning`, the joint heads (`clef`, `vllm-decision2`), the
+d1-omni layout (`lfm2-d1-omni`), the pointer (`kev`), and the generated laya
+model. There the tokens of every pass and where they are read (labels and
+their groups, markers, the decision order of a joint prompt) are compared
+with the recording too, and the refused requests must give the recorded
+message. `retrograd-decision`'s `golden` test (fast Rust lane) replays the
+same recordings without a model: the parse or refusal of each request, the
+layout from the recorded tokens (piece by piece where the reference tokenizes
+pieces), and the answers from the recorded scores. `scripts/decision-golden.sh`
+records them all; see `tests/fixtures/decision/README.md`.
 
 `decision_training.rs` fine-tunes the generated tiny decision model
 (`TINY_DECISION_FIXTURE.toml`) on questions whose answer the untrained model
@@ -366,6 +385,12 @@ must write its fitted temperatures into the adapter and into the calibrated
 copy of the base, whose size changes by its header only; and a `full` run's
 model GGUF must be served by the engine with the probabilities the trainer
 computes for it, which is what `exports_model` grants `modern-bert`.
+
+`decision_gradient.rs` checks the grouped loss against finite differences of
+the decoded embeddings in F64: the column loss of the tiny laya model, with
+and without flash attention, and the pointer loss of `kev` (`q.k/sqrt(d)`
+between two halves of the output rows) on the generated tiny `kev` model, a
+hybrid qwen35 trunk, at the head, the final norm and the last block.
 
 `e2e_cpu.rs` is the server's one model-dependent test, and it is here because a
 fake engine cannot answer whether the pieces *join*: it plans with

@@ -7,24 +7,31 @@
 //! evaluates every question of a request in one call (one forward pass per
 //! question, or several packed together on request) and turns the scores into
 //! answers.
-//! What has to hold: the prompt and its tokens are the recorded ones exactly,
-//! the token count of the response is exact, and the probabilities agree with
-//! the recorded answers of the same backend.
+//! What has to hold: the tokens of every pass and where they are read are the
+//! recorded ones exactly, the token count of the response is exact, a refused
+//! request is refused with the recorded message, and the probabilities agree
+//! with the recorded answers of the same backend.
 //!
 //! The same recordings are replayed through the serving session that answers
 //! `/v1/systemone`, with the production loader: what a client of the server
 //! gets must be what the engine computes.
 //!
-//! The model is the small `laya` test model (`TINYLAYA_FIXTURE.toml`); the
-//! test skips when it is absent, unless `RETRO_REQUIRE_CPU_FIXTURE` is set.
+//! The models: the small `laya` test model (`TINYLAYA_FIXTURE.toml`; the test
+//! skips when it is absent, unless `RETRO_REQUIRE_CPU_FIXTURE` is set), and one
+//! tiny model per readout family, generated here by
+//! `scripts/gen-tiny-decision-fixture.py --type NAME` and checked against the
+//! digest its recording names. A CPU recording is valid for the architecture
+//! it was recorded on (`golden-<model>.cpu-<arch>.json`); without one for this
+//! host, the replay skips.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 
-use retrograd::decision::Json;
-use retrograd::decision::readout::Readout;
+use retrograd::decision::readout::Head;
 use retrograd::decision::request::SystemOneRequest;
 use retrograd::decision::template::{self, PromptInput};
+use retrograd::decision::{DecisionError, Json};
 use retrograd::trainer::{DECISION_TEMPLATE, TemplateSource, decision_metadata};
 use retrograd::{Device, Engine, EngineConfig, EngineError, SamplingParams};
 use retrograd_openai::{
@@ -44,6 +51,21 @@ const TOLERANCE: f64 = 1e-3;
 /// options for that reason: the scores are the recorded ones, and the
 /// probabilities differ by the printing of the recorded JSON alone.
 const EXACT: f64 = 1e-12;
+
+/// The generated tiny model of each readout family and its request file.
+const FAMILIES: [(&str, &str); 11] = [
+    ("openjev", "requests-labels.json"),
+    ("lev", "requests-labels.json"),
+    ("nimble", "requests-labels.json"),
+    ("vllm-d3", "requests-labels.json"),
+    ("lfm2-d1", "requests-labels.json"),
+    ("lfm3-d1", "requests-labels.json"),
+    ("h2o-lightning", "requests-h2o.json"),
+    ("vllm-decision2", "requests-joint.json"),
+    ("clef", "requests-joint.json"),
+    ("kev", "requests-kev.json"),
+    ("lfm2-d1-omni", "requests-d1omni.json"),
+];
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/decision")
@@ -66,33 +88,105 @@ fn model_path() -> Option<PathBuf> {
     }
 }
 
+/// The recording of `model` on `backend` (`cpu` is this host's architecture),
+/// or `None` when there is none.
+fn golden_path(model: &str, backend: &str) -> Option<PathBuf> {
+    let backend = if backend == "cpu" {
+        format!("cpu-{}", std::env::consts::ARCH)
+    } else {
+        backend.to_owned()
+    };
+    let path = fixtures().join(format!("golden-{model}.{backend}.json"));
+    if path.exists() {
+        Some(path)
+    } else {
+        eprintln!("skipping {model}: no recording {}", path.display());
+        None
+    }
+}
+
 fn read_json(path: &Path) -> Value {
     let text = std::fs::read_to_string(path).expect("fixture readable");
     serde_json::from_str(&text).expect("fixture is JSON")
 }
 
+/// The request file, keys in the order written: a `Value` sorts them, and the
+/// order of the questions is the order of the answers.
+fn ordered_requests(file: &str) -> Vec<Json> {
+    let text = std::fs::read_to_string(fixtures().join(file)).expect("requests readable");
+    let requests: Json = serde_json::from_str(&text).expect("requests are JSON");
+    requests["requests"].as_array().expect("requests").to_vec()
+}
+
+fn sha256(path: &Path) -> String {
+    let out = Command::new("python3")
+        .args([
+            "-c",
+            "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())",
+        ])
+        .arg(path)
+        .output()
+        .expect("python3 runs");
+    assert!(out.status.success(), "sha256 of {}", path.display());
+    String::from_utf8(out.stdout)
+        .expect("hex")
+        .trim()
+        .to_owned()
+}
+
+/// The generated tiny model of `kind`, written into the test target directory
+/// and checked against the digest `golden` recorded.
+fn generated_model(kind: &str, golden: &Value) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("decision-fixtures");
+    std::fs::create_dir_all(&dir).expect("fixture directory");
+    let path = dir.join(format!("retrograd-tiny-decision-{kind}-f32.gguf"));
+    let expected = golden["model"]["sha256"].as_str().expect("recorded digest");
+    if !path.exists() || sha256(&path) != expected {
+        let generator =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/gen-tiny-decision-fixture.py");
+        let status = Command::new("python3")
+            .arg(generator)
+            .args(["--type", kind])
+            .arg(&path)
+            .status()
+            .expect("python3 runs");
+        assert!(status.success(), "generating the {kind} fixture");
+        assert_eq!(
+            sha256(&path),
+            expected,
+            "the {kind} generator no longer writes the recorded model"
+        );
+    }
+    path
+}
+
+/// An engine whose micro-batch holds the longest recorded prompt: the generated
+/// laya model spells its byte-level prompts in up to 700 tokens.
 fn engine(path: &Path, device: Device) -> Engine {
     Engine::new(
         path,
         &EngineConfig {
             device,
+            n_batch: 2048,
+            n_ubatch: 2048,
             ..EngineConfig::default()
         },
     )
     .expect("engine loads the decision model")
 }
 
-fn token_vec(value: &Value) -> Vec<i32> {
+fn int_vec(value: &Value) -> Vec<i32> {
     value
         .as_array()
-        .expect("token array")
+        .expect("integer array")
         .iter()
-        .map(|token| i32::try_from(token.as_i64().expect("token id")).expect("token fits i32"))
+        .map(|token| i32::try_from(token.as_i64().expect("integer")).expect("fits i32"))
         .collect()
 }
 
 /// Every probability (and `noul`, `score`) of `actual` against `expected`,
-/// the keys in the same order. Returns the largest difference.
+/// the keys in the same order, the other fields equal. Returns the largest
+/// difference.
 fn compare_answers(name: &str, expected: &Value, actual: &Value) -> f64 {
     let expected = expected.as_object().expect("answers object");
     let actual = actual.as_object().expect("answers object");
@@ -105,7 +199,8 @@ fn compare_answers(name: &str, expected: &Value, actual: &Value) -> f64 {
     for (id, want) in expected {
         let got = &actual[id];
         assert_eq!(want["type"], got["type"], "{name}/{id}: type");
-        for field in ["noul", "score"] {
+        assert_eq!(want.get("legend"), got.get("legend"), "{name}/{id}: legend");
+        for field in ["noul", "score", "confidence"] {
             if let Some(value) = want.get(field) {
                 let diff =
                     (value.as_f64().expect("number") - got[field].as_f64().expect("number")).abs();
@@ -130,97 +225,147 @@ fn compare_answers(name: &str, expected: &Value, actual: &Value) -> f64 {
     largest
 }
 
+/// The questions whose choice is not the recorded one.
+fn changed_choices(name: &str, expected: &Value, actual: &Value, changed: &mut Vec<String>) {
+    for (id, want) in expected.as_object().expect("answers") {
+        if let Some(choice) = want.get("choice")
+            && choice != &actual[id]["choice"]
+        {
+            changed.push(format!("{name}/{id}"));
+        }
+    }
+}
+
+/// The message of a refused decision, as a client reads it.
+fn refusal(error: &EngineError) -> Option<&str> {
+    match error {
+        EngineError::Decision(DecisionError::InvalidRequest(message)) => Some(message),
+        _ => None,
+    }
+}
+
+/// A model of the recordings: the file, its recording and its requests.
+struct Fixture {
+    name: String,
+    path: PathBuf,
+    golden: Value,
+    requests: &'static str,
+}
+
 /// Replays every recorded request; `pack` is how many questions one forward
 /// pass may evaluate. Returns the largest probability difference and the
 /// questions whose choice is not the recorded one.
-fn replay(
-    model: &str,
-    path: &Path,
-    device: Device,
-    backend: &str,
-    pack: usize,
-) -> (f64, Vec<String>) {
-    let golden = read_json(&fixtures().join(format!("golden-{model}.{backend}.json")));
-    let requests = read_json(&fixtures().join("requests.json"));
-    // The bodies again, keys in the order written: a `Value` sorts them, and
-    // the order of the questions is the order of the answers.
-    let ordered: Json = serde_json::from_str(
-        &std::fs::read_to_string(fixtures().join("requests.json")).expect("requests readable"),
-    )
-    .expect("requests are JSON");
-    let mut engine = engine(path, device);
+fn replay(fixture: &Fixture, device: Device, pack: usize) -> (f64, Vec<String>) {
+    let golden = &fixture.golden;
+    let mut engine = engine(&fixture.path, device);
     let model_info = engine
         .decision_info()
         .expect("decision head")
         .with_packing(pack);
-    assert!(matches!(model_info.readout, Readout::MarkerColumn { .. }));
     assert_eq!(
-        model_info.model_max_head_tokens,
-        golden["model"]["max_head_tokens"]
-            .as_u64()
-            .map(|n| n as usize)
+        model_info.decision_type,
+        golden["model"]["decision_type"].as_str().expect("type")
     );
+    if let Some(budget) = golden["model"]["max_head_tokens"].as_u64() {
+        assert_eq!(model_info.model_max_head_tokens, Some(budget as usize));
+    }
 
     let mut largest = 0.0_f64;
     let mut choices_changed = Vec::new();
-    let bodies = ordered["requests"].as_array().expect("requests");
-    for ((entry, recorded), ordered_entry) in requests["requests"]
-        .as_array()
-        .expect("requests")
+    for (entry, recorded) in ordered_requests(fixture.requests)
         .iter()
         .zip(golden["requests"].as_array().expect("golden requests"))
-        .zip(bodies)
     {
         let name = entry["name"].as_str().expect("name");
-        assert_eq!(recorded["name"], entry["name"]);
-        let info = match entry.get("max_head_tokens").and_then(Value::as_u64) {
+        assert_eq!(recorded["name"], name);
+        let info = match entry["max_head_tokens"].as_u64() {
             Some(budget) => model_info
                 .clone()
                 .with_max_head_tokens(usize::try_from(budget).expect("budget fits usize"))
                 .expect("budget override"),
             None => model_info.clone(),
         };
-        let body = ordered_entry["body"].to_string().into_bytes();
-        let request = SystemOneRequest::from_slice(&body, &info.readout).expect("valid request");
+        let body = entry["body"].to_string().into_bytes();
+        let parsed = SystemOneRequest::from_slice(&body, &info.readout);
+        if let Some(message) = recorded["error"].as_str() {
+            // Refused when it is parsed, or when it is laid out.
+            match parsed {
+                Err(DecisionError::InvalidRequest(got)) => assert_eq!(got, message, "{name}"),
+                Err(other) => panic!("{name}: refused with {other}, recorded {message}"),
+                Ok(request) => {
+                    let error = engine.decide(&info, &request).expect_err(name);
+                    assert_eq!(refusal(&error), Some(message), "{name}: {error}");
+                }
+            }
+            continue;
+        }
+        let request = parsed.expect("valid request");
 
-        // The prompt and its tokens, through the engine's renderer and
-        // tokenizer, are the recorded ones.
-        for (trace, (id, question)) in recorded["questions"]
-            .as_array()
-            .expect("question traces")
-            .iter()
-            .zip(&request.questions)
-        {
-            assert_eq!(
-                trace["id"].as_str(),
-                Some(id.as_str()),
-                "{name}: question order"
-            );
-            let input = PromptInput {
-                state: &request.state,
-                question_id: id,
-                question,
-                variant: 0,
-                n_images: 0,
-                media_marker: "",
+        // The tokens of every pass and where they are read are the recorded
+        // ones.
+        let passes = engine.decision_passes(&info, &request).expect("passes");
+        let traces = recorded["questions"].as_array().expect("passes");
+        assert_eq!(passes.len(), traces.len(), "{name}: passes");
+        for (pass, trace) in passes.iter().zip(traces) {
+            let at = format!("{name}/{}", trace["id"]);
+            assert_eq!(pass.tokens, int_vec(&trace["tokens"]), "{at}: tokens");
+            let reads = match &info.readout.head {
+                Head::LabelLogits { .. } | Head::LabelGroups => int_vec(&trace["labels"]),
+                Head::Joint => int_vec(&trace["order"]),
+                Head::Pooled { .. } => Vec::new(),
+                _ => int_vec(&trace["markers"]),
             };
-            let context = template::context(&info.readout, &input).expect("context");
-            let prompt = engine
-                .render_named_template(DECISION_TEMPLATE, &context)
-                .expect("render");
+            assert_eq!(pass.reads, reads, "{at}: reads");
             assert_eq!(
-                Some(prompt.as_str()),
-                trace["prompt"].as_str(),
-                "{name}/{id}: prompt"
+                pass.label_groups,
+                int_vec(&trace["label_groups"]),
+                "{at}: label groups"
             );
-            let tokens = engine
-                .tokenize_with(&prompt, false, true)
-                .expect("tokenize");
             assert_eq!(
-                tokens,
-                token_vec(&trace["rendered_tokens"]),
-                "{name}/{id}: tokens"
+                Some(i64::from(pass.pointer)),
+                trace["pointer"].as_i64(),
+                "{at}: pointer"
             );
+            if matches!(
+                info.readout.head,
+                Head::MarkerColumn { .. } | Head::D1Omni { .. }
+            ) {
+                assert_eq!(
+                    Some(i64::from(pass.column)),
+                    trace["column"].as_i64(),
+                    "{at}"
+                );
+            }
+            assert_eq!(
+                pass.n_scores,
+                trace["scores"].as_array().expect("scores").len(),
+                "{at}: scores"
+            );
+        }
+
+        // A marker prompt renders through the engine's template as recorded.
+        if matches!(info.readout.head, Head::MarkerColumn { .. }) {
+            for (trace, (id, question)) in traces.iter().zip(&request.questions) {
+                let input = PromptInput {
+                    state: &request.state,
+                    questions: Some(&request.questions),
+                    question_id: id,
+                    question,
+                    labels: &[],
+                    variant: 0,
+                    n_images: 0,
+                    media_marker: "",
+                };
+                let context = template::context(&info.readout, &input).expect("context");
+                let prompt = engine
+                    .render_named_template(DECISION_TEMPLATE, &context)
+                    .expect("render");
+                assert_eq!(
+                    Some(prompt.as_str()),
+                    trace["prompt"].as_str(),
+                    "{name}/{id}"
+                );
+            }
         }
 
         let decision = engine.decide(&info, &request).expect("decide");
@@ -231,18 +376,13 @@ fn replay(
         );
         let answers = serde_json::to_value(&decision.answers).expect("answers serialize");
         let expected = &recorded["response"]["answers"];
-        for (id, want) in expected.as_object().expect("answers") {
-            if let Some(choice) = want.get("choice")
-                && choice != &answers[id]["choice"]
-            {
-                choices_changed.push(format!("{name}/{id}"));
-            }
-        }
+        changed_choices(name, expected, &answers, &mut choices_changed);
         largest = largest.max(compare_answers(name, expected, &answers));
     }
     eprintln!(
-        "{model} on {backend}, {pack} question(s) per pass: \
-         largest probability difference {largest:e}, choices changed: {choices_changed:?}"
+        "{} ({}), {pack} question(s) per pass: largest probability difference {largest:e}, \
+         choices changed: {choices_changed:?}",
+        fixture.name, golden["backend"]
     );
     (largest, choices_changed)
 }
@@ -251,18 +391,8 @@ fn replay(
 /// per pass (the serving default), the budget override of a request passed as
 /// the decision option of its spec. Returns the largest probability
 /// difference and the questions whose choice is not the recorded one; the
-/// token counts must be exact.
-async fn serve_replay(
-    model: &str,
-    path: &Path,
-    device: Device,
-    backend: &str,
-) -> (f64, Vec<String>) {
-    let golden = read_json(&fixtures().join(format!("golden-{model}.{backend}.json")));
-    let ordered: Json = serde_json::from_str(
-        &std::fs::read_to_string(fixtures().join("requests.json")).expect("requests readable"),
-    )
-    .expect("requests are JSON");
+/// token counts and the refusals must be exact.
+async fn serve_replay(fixture: &Fixture, device: Device) -> (f64, Vec<String>) {
     let session = Session::new(
         Arc::new(EngineLoader),
         Arc::new(Unshared),
@@ -274,15 +404,14 @@ async fn serve_replay(
     .expect("the serving thread starts");
     let mut largest = 0.0_f64;
     let mut choices_changed = Vec::new();
-    for (entry, recorded) in ordered["requests"]
-        .as_array()
-        .expect("requests")
-        .iter()
-        .zip(golden["requests"].as_array().expect("golden requests"))
-    {
+    for (entry, recorded) in ordered_requests(fixture.requests).iter().zip(
+        fixture.golden["requests"]
+            .as_array()
+            .expect("golden requests"),
+    ) {
         let name = entry["name"].as_str().expect("name");
         let spec = WeightsSpec {
-            model: path.to_path_buf(),
+            model: fixture.path.clone(),
             adapter: None,
             n_ctx: EngineConfig::default().n_ctx,
             device,
@@ -295,10 +424,13 @@ async fn serve_replay(
                 ..DecisionOptions::default()
             },
         };
-        let decision = session
-            .decide(spec, entry["body"].clone())
-            .await
-            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        let result = session.decide(spec, entry["body"].clone()).await;
+        if let Some(message) = recorded["error"].as_str() {
+            let error = result.err().unwrap_or_else(|| panic!("{name}: answered"));
+            assert_eq!(error.to_string(), message, "{name}");
+            continue;
+        }
+        let decision = result.unwrap_or_else(|error| panic!("{name}: {error}"));
         assert_eq!(
             Some(decision.input_tokens as u64),
             recorded["response"]["usage"]["input_tokens"].as_u64(),
@@ -306,18 +438,13 @@ async fn serve_replay(
         );
         let answers = serde_json::to_value(&decision.answers).expect("answers serialize");
         let expected = &recorded["response"]["answers"];
-        for (id, want) in expected.as_object().expect("answers") {
-            if let Some(choice) = want.get("choice")
-                && choice != &answers[id]["choice"]
-            {
-                choices_changed.push(format!("{name}/{id}"));
-            }
-        }
+        changed_choices(name, expected, &answers, &mut choices_changed);
         largest = largest.max(compare_answers(name, expected, &answers));
     }
     eprintln!(
-        "{model} on {backend}, served: largest probability difference {largest:e}, \
-         choices changed: {choices_changed:?}"
+        "{} ({}), served: largest probability difference {largest:e}, \
+         choices changed: {choices_changed:?}",
+        fixture.name, fixture.golden["backend"]
     );
     (largest, choices_changed)
 }
@@ -330,21 +457,78 @@ fn metal_available() -> bool {
     available
 }
 
+/// A model of the `requests.json` recordings, on `backend`.
+fn laya_fixture(name: &str, path: PathBuf, backend: &str) -> Option<Fixture> {
+    Some(Fixture {
+        name: name.to_owned(),
+        path,
+        golden: read_json(&golden_path(name, backend)?),
+        requests: "requests.json",
+    })
+}
+
+/// The generated tiny models with a recording for this host.
+fn family_fixtures() -> Vec<Fixture> {
+    FAMILIES
+        .iter()
+        .filter_map(|&(kind, requests)| {
+            let name = format!("tiny-{kind}");
+            let golden = read_json(&golden_path(&name, "cpu")?);
+            Some(Fixture {
+                path: generated_model(kind, &golden),
+                name,
+                golden,
+                requests,
+            })
+        })
+        .collect()
+}
+
+/// Asserts a replay is exact on the CPU, one question per pass.
+fn assert_exact(fixture: &Fixture, (largest, changed): (f64, Vec<String>)) {
+    assert!(
+        changed.is_empty(),
+        "{}: choices changed: {changed:?}",
+        fixture.name
+    );
+    assert!(
+        largest <= EXACT,
+        "{}: one question per pass differs by {largest:e}",
+        fixture.name
+    );
+}
+
 #[test]
 fn engine_reproduces_the_recorded_answers_on_cpu() {
     let Some(path) = model_path() else { return };
-    let (largest, changed) = replay("tinylaya", &path, Device::Cpu, "cpu", 8);
+    let Some(fixture) = laya_fixture("tinylaya", path, "cpu") else {
+        return;
+    };
+    let (largest, changed) = replay(&fixture, Device::Cpu, 8);
     assert!(changed.is_empty(), "cpu: choices changed: {changed:?}");
     assert!(
         largest <= TOLERANCE,
         "cpu: probabilities differ by {largest:e}"
     );
-    let (largest, changed) = replay("tinylaya", &path, Device::Cpu, "cpu", 1);
-    assert!(changed.is_empty(), "cpu: choices changed: {changed:?}");
-    assert!(
-        largest <= EXACT,
-        "cpu: one question per pass differs by {largest:e}"
-    );
+    assert_exact(&fixture, replay(&fixture, Device::Cpu, 1));
+}
+
+/// Every readout family on its generated tiny model, one question per pass.
+#[test]
+fn every_readout_family_reproduces_its_recorded_answers_on_cpu() {
+    for fixture in family_fixtures() {
+        assert_exact(&fixture, replay(&fixture, Device::Cpu, 1));
+    }
+    let tiny_laya = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/retrograd-tiny-decision-f32.gguf");
+    let tiny_laya = std::env::var_os("RETRO_TINY_DECISION_FIXTURE")
+        .map(PathBuf::from)
+        .unwrap_or(tiny_laya);
+    if tiny_laya.exists()
+        && let Some(fixture) = laya_fixture("tiny-laya", tiny_laya, "cpu")
+    {
+        assert_exact(&fixture, replay(&fixture, Device::Cpu, 1));
+    }
 }
 
 #[test]
@@ -353,13 +537,16 @@ fn engine_reproduces_the_recorded_answers_on_metal() {
     if !metal_available() {
         return;
     }
-    let (largest, changed) = replay("tinylaya", &path, Device::Gpu, "mtl", 8);
+    let Some(fixture) = laya_fixture("tinylaya", path, "mtl") else {
+        return;
+    };
+    let (largest, changed) = replay(&fixture, Device::Gpu, 8);
     assert!(changed.is_empty(), "mtl: choices changed: {changed:?}");
     assert!(
         largest <= TOLERANCE,
         "mtl: probabilities differ by {largest:e}"
     );
-    let (largest, changed) = replay("tinylaya", &path, Device::Gpu, "mtl", 1);
+    let (largest, changed) = replay(&fixture, Device::Gpu, 1);
     assert!(changed.is_empty(), "mtl: choices changed: {changed:?}");
     assert!(
         largest <= EXACT,
@@ -368,34 +555,37 @@ fn engine_reproduces_the_recorded_answers_on_metal() {
 }
 
 /// The real models, opt-in as for the recording (`RETRO_DECISION_JULIA`,
-/// `RETRO_DECISION_LAYA`). One question per pass is exact on either backend;
-/// packed passes are printed, not asserted: how far packing moves the answers
-/// depends on the model (Julia-1 moves by 2.6e-1 on the CPU).
+/// `RETRO_DECISION_LAYA`, `RETRO_DECISION_KEV`). One question per pass is
+/// exact on either backend; packed passes are printed, not asserted: how far
+/// packing moves the answers depends on the model (Julia-1 moves by 2.6e-1 on
+/// the CPU).
 #[test]
 fn real_models_reproduce_the_recorded_answers_when_present() {
-    for (model, variable) in [
-        ("julia-1", "RETRO_DECISION_JULIA"),
-        ("laya", "RETRO_DECISION_LAYA"),
+    for (model, variable, requests) in [
+        ("julia-1", "RETRO_DECISION_JULIA", "requests.json"),
+        ("laya", "RETRO_DECISION_LAYA", "requests.json"),
+        ("kev", "RETRO_DECISION_KEV", "requests-kev.json"),
     ] {
         let Some(path) = std::env::var_os(variable).map(PathBuf::from) else {
             eprintln!("skipping {model}: {variable} is not set");
             continue;
         };
-        replay(model, &path, Device::Cpu, "cpu", 8);
-        let (largest, changed) = replay(model, &path, Device::Cpu, "cpu", 1);
-        assert!(changed.is_empty(), "{model}: choices changed: {changed:?}");
-        assert!(
-            largest <= EXACT,
-            "{model}: one question per pass differs by {largest:e}"
-        );
+        let mut backends = vec![(Device::Cpu, "cpu")];
         if metal_available() {
-            replay(model, &path, Device::Gpu, "mtl", 8);
-            let (largest, changed) = replay(model, &path, Device::Gpu, "mtl", 1);
-            assert!(changed.is_empty(), "{model}: choices changed: {changed:?}");
-            assert!(
-                largest <= EXACT,
-                "{model}: one question per pass differs by {largest:e}"
-            );
+            backends.push((Device::Gpu, "mtl"));
+        }
+        for (device, backend) in backends {
+            let Some(golden) = golden_path(model, backend) else {
+                continue;
+            };
+            let fixture = Fixture {
+                name: model.to_owned(),
+                path: path.clone(),
+                golden: read_json(&golden),
+                requests,
+            };
+            replay(&fixture, device, 8);
+            assert_exact(&fixture, replay(&fixture, device, 1));
         }
     }
 }
@@ -408,24 +598,23 @@ async fn the_service_reproduces_the_recorded_answers() {
         backends.push((Device::Gpu, "mtl"));
     }
     for (device, backend) in backends {
-        let (largest, changed) = serve_replay("tinylaya", &path, device, backend).await;
-        assert!(
-            changed.is_empty(),
-            "{backend}: choices changed: {changed:?}"
-        );
-        assert!(
-            largest <= EXACT,
-            "{backend}: served answers differ by {largest:e}"
-        );
+        let Some(fixture) = laya_fixture("tinylaya", path.clone(), backend) else {
+            continue;
+        };
+        assert_exact(&fixture, serve_replay(&fixture, device).await);
+    }
+    for fixture in family_fixtures() {
+        assert_exact(&fixture, serve_replay(&fixture, Device::Cpu).await);
     }
 }
 
 /// The real models through the service, opt-in as for the engine replay.
 #[tokio::test]
 async fn the_service_reproduces_the_real_models_when_present() {
-    for (model, variable) in [
-        ("julia-1", "RETRO_DECISION_JULIA"),
-        ("laya", "RETRO_DECISION_LAYA"),
+    for (model, variable, requests) in [
+        ("julia-1", "RETRO_DECISION_JULIA", "requests.json"),
+        ("laya", "RETRO_DECISION_LAYA", "requests.json"),
+        ("kev", "RETRO_DECISION_KEV", "requests-kev.json"),
     ] {
         let Some(path) = std::env::var_os(variable).map(PathBuf::from) else {
             eprintln!("skipping {model}: {variable} is not set");
@@ -436,15 +625,16 @@ async fn the_service_reproduces_the_real_models_when_present() {
             backends.push((Device::Gpu, "mtl"));
         }
         for (device, backend) in backends {
-            let (largest, changed) = serve_replay(model, &path, device, backend).await;
-            assert!(
-                changed.is_empty(),
-                "{model}/{backend}: choices changed: {changed:?}"
-            );
-            assert!(
-                largest <= EXACT,
-                "{model}/{backend}: served answers differ by {largest:e}"
-            );
+            let Some(golden) = golden_path(model, backend) else {
+                continue;
+            };
+            let fixture = Fixture {
+                name: model.to_owned(),
+                path: path.clone(),
+                golden: read_json(&golden),
+                requests,
+            };
+            assert_exact(&fixture, serve_replay(&fixture, device).await);
         }
     }
 }

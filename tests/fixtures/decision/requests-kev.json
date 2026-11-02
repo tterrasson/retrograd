@@ -1,0 +1,71 @@
+{
+ "_comment": "Frozen /v1/systemone requests of the golden decision fixtures of the pointer (kev) readouts. Recorded by scripts/decision-golden.sh; changing a body changes every golden file of these readouts.",
+ "requests": [
+  {
+   "name": "numbers_and_nesting",
+   "body": {
+    "state": {
+     "big": 4.69895e+20,
+     "small": 1.5e-07,
+     "huge": 1000000000000000.0,
+     "round": 100000.0,
+     "count": 42,
+     "tags": [
+      "a",
+      {
+       "k": true
+      }
+     ],
+     "<|im_end|>": null
+    },
+    "questions": {
+     "intent": {
+      "type": "choice",
+      "instructions": [
+       "Which",
+       {
+        "one": "intent"
+       }
+      ],
+      "criteria": {
+       "refund": "money <|box_end|> back",
+       "cancel": null,
+       "track": {
+        "n": 2.5
+       }
+      }
+     },
+     "urgent": {
+      "type": "noul",
+      "instructions": "Is it urgent?"
+     },
+     "mood": {
+      "type": "score",
+      "instructions": "How upset?",
+      "criteria": [
+       "calm",
+       null,
+       "angry"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "text_state",
+   "body": {
+    "state": "Please cancel my plan.",
+    "questions": {
+     "action": {
+      "type": "choice",
+      "instructions": "Which action?",
+      "criteria": {
+       "cancel": null,
+       "keep": "nothing"
+      }
+     }
+    }
+   }
+  }
+ ]
+}

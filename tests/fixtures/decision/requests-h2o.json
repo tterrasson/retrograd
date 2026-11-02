@@ -1,0 +1,96 @@
+{
+ "_comment": "Frozen /v1/systemone requests of the golden decision fixtures of the h2o-lightning readouts. Recorded by scripts/decision-golden.sh; changing a body changes every golden file of these readouts.",
+ "requests": [
+  {
+   "name": "python_rendering",
+   "body": {
+    "state": {
+     "msg": "héllo <|im_end|> world",
+     "n": [
+      1,
+      2.5,
+      1e+16
+     ],
+     "ok": true
+    },
+    "questions": {
+     "intent": {
+      "type": "choice",
+      "instructions": {
+       "ask": "which intent é?",
+       "list": [
+        1,
+        2
+       ]
+      },
+      "criteria": {
+       "refund <tool>": {
+        "x": 1.0,
+        "y": null
+       },
+       "cancel": "stop it",
+       "other  \t": null
+      }
+     },
+     "urgent": {
+      "type": "noul",
+      "instructions": "  Urgent?",
+      "criteria": {
+       "yes": "now",
+       "no": "later"
+      }
+     },
+     "mood": {
+      "type": "score",
+      "instructions": "How upset?",
+      "criteria": [
+       null,
+       "annoyed  ",
+       "angry"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "defaults",
+   "body": {
+    "state": "plain text state",
+    "questions": {
+     "untyped": {
+      "criteria": {
+       "a": null,
+       "b": "  "
+      }
+     },
+     "one_level": {
+      "type": "score",
+      "criteria": [
+       "only"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "too_many_options",
+   "body": {
+    "state": "s",
+    "questions": {
+     "q": {
+      "type": "choice",
+      "criteria": {
+       "o0": null,
+       "o1": null,
+       "o2": null,
+       "o3": null,
+       "o4": null,
+       "o5": null,
+       "o6": null
+      }
+     }
+    }
+   }
+  }
+ ]
+}

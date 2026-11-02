@@ -24,8 +24,11 @@
 //! engine ([`template::TemplateRenderer`]), the tokenizer and the vocabulary
 //! ([`readout::Vocabulary`]), and the model itself.
 //!
-//! Only the readouts of the `laya`, `openjev`, `lev` and `kev` types are
-//! ported; any other `decision.type` is [`DecisionError::UnknownType`].
+//! Every `decision.type` llama.cpp's decision server knows is a row of
+//! [`readout::DECISION_TYPES`]; any other is [`DecisionError::UnknownType`].
+//! Media (images, audio, video, spoken instructions) are recognised and
+//! refused with [`DecisionError::ImagesUnsupported`]: the multimodal
+//! projector is not this crate's caller's.
 
 /// A `Json` literal in the tests. Its objects are alphabetical, as a
 /// `serde_json::json!` value's are: a test about key order parses text.
@@ -44,6 +47,7 @@ mod error;
 pub mod json;
 pub mod layout;
 pub mod metrics;
+mod python;
 pub mod readout;
 pub mod request;
 pub mod template;

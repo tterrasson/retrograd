@@ -45,11 +45,8 @@ impl Sample {
         mut target: Vec<f64>,
     ) -> Result<Self, DecisionError> {
         let fail = |message: &str| DecisionError::Calibration(message.to_owned());
-        let n_outputs = match readout {
-            Readout::LabelLogits {
-                noul_scale: Some(scale),
-                ..
-            } if kind == QuestionKind::Noul => *scale,
+        let n_outputs = match readout.kind.noul_scale {
+            Some(scale) if kind == QuestionKind::Noul => scale,
             _ => n_options,
         };
         if n_options == 0 || n_options > readout.n_options_max() || scores.len() != n_outputs {
@@ -215,11 +212,7 @@ mod tests {
     use crate::answer::softmax;
 
     fn laya() -> Readout {
-        Readout::MarkerColumn {
-            marker: 4,
-            sep: 1,
-            marker_text: "<mask>".into(),
-        }
+        crate::readout::tests::laya()
     }
 
     /// Scores that vary from sample to sample, deterministically. The value
