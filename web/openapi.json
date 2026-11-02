@@ -777,6 +777,19 @@
               }
             ]
           },
+          "decision": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DecisionToml"
+              }
+            ],
+            "x-retrograd-applies-to": [
+              "decision"
+            ]
+          },
           "distill": {
             "oneOf": [
               {
@@ -1231,6 +1244,81 @@
           "examples",
           "created_at",
           "stats"
+        ],
+        "type": "object"
+      },
+      "DecisionToml": {
+        "additionalProperties": false,
+        "properties": {
+          "calibrate": {
+            "description": "Defaults to whether `[evaluation]` is present, which `true` requires.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "data": {
+            "format": "path",
+            "type": "string"
+          },
+          "data_format": {
+            "description": "`native` (default): the service's question, one per line, with\n`answer` or `probabilities`. `julia`: `question`, `options`, `type`,\n`target` and optional `teacher_logits`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "export_base": {
+            "format": "path",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_head_tokens": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "option_shuffle": {
+            "description": "Defaults to `true`.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "questions_per_batch": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "shuffle": {
+            "description": "Defaults to `true`.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "template": {
+            "format": "path",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "template_variables": {
+            "description": "Variables of the causal model's chat template, e.g. enable_thinking=false.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
         ],
         "type": "object"
       },
@@ -4919,7 +5007,8 @@
               "grpo",
               "distill",
               "agent_grpo",
-              "preference"
+              "preference",
+              "decision"
             ],
             "type": "string"
           },

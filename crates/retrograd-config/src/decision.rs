@@ -27,6 +27,8 @@ pub struct DecisionConfig {
     /// A `systemone` template to render the questions with in place of the
     /// model's. Exported with the result.
     pub template: Option<PathBuf>,
+    /// Variables frozen into a causal model's standalone chat wrapper.
+    pub template_variables: serde_json::Map<String, serde_json::Value>,
     /// The head budget in place of the model's `max_head_tokens`. Exported
     /// with the result.
     pub max_head_tokens: Option<u32>,
@@ -66,6 +68,10 @@ pub struct DecisionToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = "path"))]
     pub template: Option<PathBuf>,
+    /// Variables of the causal model's chat template, e.g. enable_thinking=false.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Object))]
+    pub template_variables: serde_json::Map<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_head_tokens: Option<u32>,
     /// Defaults to `true`.
@@ -148,6 +154,7 @@ pub(crate) fn build_decision(
         data: resolve(root, value.data),
         data_format,
         template: value.template.map(|path| resolve(root, path)),
+        template_variables: value.template_variables,
         max_head_tokens: value.max_head_tokens,
         option_shuffle: value.option_shuffle.unwrap_or(true),
         shuffle: value.shuffle.unwrap_or(true),

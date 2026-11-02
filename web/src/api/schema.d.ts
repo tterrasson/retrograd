@@ -1195,6 +1195,7 @@ export interface components {
     ConfigDocument: {
       agent?: null | components['schemas']['AgentToml']
       checkpoint?: null | components['schemas']['CheckpointToml']
+      decision?: null | components['schemas']['DecisionToml']
       distill?: null | components['schemas']['DistillToml']
       evaluation?: null | components['schemas']['EvaluationToml']
       grpo?: null | components['schemas']['GrpoToml']
@@ -1342,6 +1343,32 @@ export interface components {
       name?: string | null
       sha256: string
       stats: components['schemas']['DatasetStatsView']
+    }
+    DecisionToml: {
+      /** @description Defaults to whether `[evaluation]` is present, which `true` requires. */
+      calibrate?: boolean | null
+      /** Format: path */
+      data: string
+      /**
+       * @description `native` (default): the service's question, one per line, with
+       *     `answer` or `probabilities`. `julia`: `question`, `options`, `type`,
+       *     `target` and optional `teacher_logits`.
+       */
+      data_format?: string | null
+      /** Format: path */
+      export_base?: string | null
+      /** Format: int32 */
+      max_head_tokens?: number | null
+      /** @description Defaults to `true`. */
+      option_shuffle?: boolean | null
+      /** Format: int32 */
+      questions_per_batch?: number | null
+      /** @description Defaults to `true`. */
+      shuffle?: boolean | null
+      /** Format: path */
+      template?: string | null
+      /** @description Variables of the causal model's chat template, e.g. enable_thinking=false. */
+      template_variables?: Record<string, never>
     }
     /** @description `GET /v1/defaults` */
     Defaults: {
@@ -2954,7 +2981,7 @@ export interface components {
     }
     RunToml: {
       /** @enum {string} */
-      algorithm: 'sft' | 'ppo' | 'grpo' | 'distill' | 'agent_grpo' | 'preference'
+      algorithm: 'sft' | 'ppo' | 'grpo' | 'distill' | 'agent_grpo' | 'preference' | 'decision'
       verbose?: boolean
     }
     /**

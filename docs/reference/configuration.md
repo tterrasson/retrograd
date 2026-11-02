@@ -326,6 +326,7 @@ passes over the pairs; `training.gradient_accumulation` is pinned to
 | `data` | required | Decision JSONL: one question per line with `answer` or `probabilities`. |
 | `data_format` | `native` | `native`, or `julia` for `question`/`options`/`type`/`target`/`teacher_logits`. |
 | `template` | the model's | A `systemone` template to render the questions with. |
+| `template_variables` | `{}` | Variables frozen into the causal model's chat wrapper, e.g. `{ enable_thinking = false }`. |
 | `max_head_tokens` | the model's | The head budget the questions are laid out with. |
 | `option_shuffle` | `true` | Shuffle the options of every `choice` question at each epoch. |
 | `shuffle` | `true` | Shuffle the questions at each epoch, seeded from `lora.seed`. |
@@ -336,7 +337,8 @@ passes over the pairs; `training.gradient_accumulation` is pinned to
 A micro-batch also holds at most `training.micro_batch` tokens, which bounds
 the length of one question; `training.ctx` must be a multiple of it.
 `training.gradient_accumulation` counts micro-batches per optimizer update.
-The run trains on the CPU. See [Decision models](../training/decision).
+The configured device is used. Plain causal models use `openjev` letter logits
+and require `export_base` when exporting an adapter. See [Decision models](../training/decision).
 
 ## Agentic GRPO {#agentic-grpo}
 

@@ -298,6 +298,16 @@ pub fn trajectory_signature(config: &RunConfig) -> Result<String> {
                     .as_ref()
                     .map(|path| path.display().to_string()),
             );
+            if !decision.template_variables.is_empty() {
+                descriptor.field(
+                    "template_variables",
+                    checkpoint::fingerprint(
+                        serde_json::Value::Object(decision.template_variables.clone())
+                            .to_string()
+                            .as_bytes(),
+                    ),
+                );
+            }
             descriptor.debug("max_head_tokens", decision.max_head_tokens);
             descriptor.field("option_shuffle", decision.option_shuffle);
             descriptor.field("shuffle", decision.shuffle);

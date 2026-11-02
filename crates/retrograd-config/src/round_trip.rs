@@ -261,6 +261,7 @@ fn exhaustive_decision() -> DecisionToml {
         data: PathBuf::from("data/questions.jsonl"),
         data_format: Some("julia".to_string()),
         template: Some(PathBuf::from("systemone.jinja")),
+        template_variables: serde_json::from_str(r#"{"enable_thinking":false}"#).unwrap(),
         max_head_tokens: Some(384),
         option_shuffle: Some(false),
         shuffle: Some(false),
