@@ -37,7 +37,7 @@ fi
 # a different package in one invocation.
 timed_step compile:ffi-lib cargo test ${ffi_args[@]+"${ffi_args[@]}"} --no-run -p retrograd-ffi --lib
 timed_step compile:root-tests cargo test "${root_args[@]}" --no-run \
-  --test backend_devices --test metal_ops --test weighted_ce \
+  --test backend_devices --test metal_ops --test weighted_ce --test fused_ce \
   --test gated_delta_net_chunked --test flash_attn_back --test out_prod_quant \
   --test engine_contracts --test optimizer_descriptor --test rir_probe --test rir_quant_oracle
 
@@ -47,6 +47,9 @@ timed_step run:backend_devices cargo test "${root_args[@]}" --test backend_devic
 timed_step run:optimizer_descriptor cargo test "${root_args[@]}" --test optimizer_descriptor
 timed_step run:metal_ops cargo test "${root_args[@]}" --test metal_ops
 timed_step run:weighted_ce cargo test "${root_args[@]}" --test weighted_ce
+# Sparse teacher distributions, including the complete 52-letter readout.
+timed_step run:fused_ce_topk cargo test "${root_args[@]}" --test fused_ce \
+  topk_matches_the_dense_distribution -- --test-threads=1
 # CPU only, no model: the two implementations of GATED_DELTA_NET_BACK against
 # each other. Lives here rather than in the cuda lane because it is what tells a
 # wrong derivation apart from a wrong kernel.

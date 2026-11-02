@@ -421,7 +421,7 @@ int retro_quant_roundtrip(
 // position may carry. Mirrors GGML_FUSED_SPARSE_CE_K_MAX, which bounds the
 // scratch the Vulkan and Metal kernels reserve per position; kept here so a
 // caller of this header does not have to include ggml.h to validate a sidecar.
-#define RETRO_FUSED_CE_K_MAX 32
+#define RETRO_FUSED_CE_K_MAX 64
 
 // Runs a single ggml training-backward op in isolation on the chosen backend and
 // copies the result into `dst`. Used by targeted GPU-vs-CPU correctness tests:

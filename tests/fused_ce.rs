@@ -1133,7 +1133,7 @@ fn gpu_topk_matches_the_dense_distribution() {
         eprintln!("skipping: no GPU device registered");
         return;
     }
-    for k in [1, 2, 8] {
+    for k in [1, 2, 8, 52, 64] {
         for n_tiles in [1, 4] {
             assert_topk_parity(k, n_tiles, FusedCeWeightType::F32, true);
         }
@@ -1143,7 +1143,7 @@ fn gpu_topk_matches_the_dense_distribution() {
 
 #[test]
 fn topk_matches_the_dense_distribution_for_every_k() {
-    for k in [1, 2, 3, 8, 16] {
+    for k in [1, 2, 3, 8, 16, 52, 64] {
         assert_topk_parity(k, 4, FusedCeWeightType::F32, false);
     }
 }

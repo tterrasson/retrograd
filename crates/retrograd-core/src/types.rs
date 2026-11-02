@@ -1297,7 +1297,7 @@ pub struct Generation {
 /// `RETRO_FUSED_CE_K_MAX` / `GGML_FUSED_SPARSE_CE_K_MAX`. The bound is the
 /// scratch the Vulkan and Metal kernels reserve per position, so it is part of
 /// the operator's contract rather than a preference of this crate.
-pub const FUSED_CE_K_MAX: usize = 32;
+pub const FUSED_CE_K_MAX: usize = 64;
 
 /// Fixed-shape weighted training rows: `labels` mirrors `tokens` shifted by
 /// one (-1 = ignored) and `weights` scales each label position's loss
