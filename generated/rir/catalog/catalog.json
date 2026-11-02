@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "fingerprint": "sha256:14ddcd5093381f19bbdf52e5b7b2aa4620f24debc716230030d51e6f66cff0ca",
+  "fingerprint": "sha256:64de730d02b0a070eb9ba975d56ae06ca5a1f2ae5f17b2aad834e30c6d5f9838",
   "kernels": [
     {
       "ggml_op": "GGML_OP_ADD",
@@ -4097,7 +4097,7 @@
       "ggml_op": "GGML_OP_UNARY",
       "op_variant": "GGML_UNARY_OP_ABS",
       "backend": "cuda",
-      "policy": "observe_generated",
+      "policy": "prefer_generated",
       "variants": [
         {
           "variant_id": "unary_abs_f32_4d_serial_flat_linear",
@@ -4334,7 +4334,7 @@
       "ggml_op": "GGML_OP_UNARY",
       "op_variant": "GGML_UNARY_OP_ELU",
       "backend": "cuda",
-      "policy": "observe_generated",
+      "policy": "prefer_generated",
       "variants": [
         {
           "variant_id": "unary_elu_f32_4d_serial_flat_linear",
@@ -4571,13 +4571,13 @@
       "ggml_op": "GGML_OP_UNARY",
       "op_variant": "GGML_UNARY_OP_ERF",
       "backend": "cuda",
-      "policy": "observe_generated",
+      "policy": "prefer_generated",
       "variants": [
         {
           "variant_id": "unary_erf_f32_4d_serial_flat_linear",
           "kernel": "unary_erf",
           "priority": 90,
-          "policy": "observe_generated",
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4600,7 +4600,7 @@
           "variant_id": "unary_erf_f32_4d_serial",
           "kernel": "unary_erf",
           "priority": 80,
-          "policy": "observe_generated",
+          "policy": "prefer_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -4808,7 +4808,7 @@
       "ggml_op": "GGML_OP_UNARY",
       "op_variant": "GGML_UNARY_OP_EXP",
       "backend": "cuda",
-      "policy": "observe_generated",
+      "policy": "prefer_generated",
       "variants": [
         {
           "variant_id": "unary_exp_f32_4d_serial_flat_linear",
@@ -5045,7 +5045,7 @@
       "ggml_op": "GGML_OP_UNARY",
       "op_variant": "GGML_UNARY_OP_EXPM1",
       "backend": "cuda",
-      "policy": "observe_generated",
+      "policy": "prefer_generated",
       "variants": [
         {
           "variant_id": "unary_expm1_f32_4d_serial_flat_linear",
@@ -5282,7 +5282,7 @@
       "ggml_op": "GGML_OP_UNARY",
       "op_variant": "GGML_UNARY_OP_GELU_ERF",
       "backend": "cuda",
-      "policy": "observe_generated",
+      "policy": "prefer_generated",
       "variants": [
         {
           "variant_id": "unary_gelu_erf_f32_4d_serial_flat_linear",
@@ -5430,7 +5430,7 @@
           "variant_id": "unary_gelu_erf_f32_4d_serial_narrow",
           "kernel": "unary_gelu_erf",
           "priority": 90,
-          "policy": "prefer_generated",
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5460,7 +5460,7 @@
           "variant_id": "unary_gelu_erf_f32_4d_serial_w4",
           "kernel": "unary_gelu_erf",
           "priority": 80,
-          "policy": "prefer_generated",
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -5519,7 +5519,7 @@
       "ggml_op": "GGML_OP_UNARY",
       "op_variant": "GGML_UNARY_OP_GELU_QUICK",
       "backend": "cuda",
-      "policy": "observe_generated",
+      "policy": "prefer_generated",
       "variants": [
         {
           "variant_id": "unary_gelu_quick_f32_4d_serial_flat_linear",
@@ -5756,7 +5756,7 @@
       "ggml_op": "GGML_OP_UNARY",
       "op_variant": "GGML_UNARY_OP_HARDSIGMOID",
       "backend": "cuda",
-      "policy": "observe_generated",
+      "policy": "prefer_generated",
       "variants": [
         {
           "variant_id": "unary_hardsigmoid_f32_4d_serial_flat_linear",
@@ -5993,7 +5993,7 @@
       "ggml_op": "GGML_OP_UNARY",
       "op_variant": "GGML_UNARY_OP_HARDSWISH",
       "backend": "cuda",
-      "policy": "observe_generated",
+      "policy": "prefer_generated",
       "variants": [
         {
           "variant_id": "unary_hardswish_f32_4d_serial_flat_linear",
@@ -6230,7 +6230,7 @@
       "ggml_op": "GGML_OP_UNARY",
       "op_variant": "GGML_UNARY_OP_NEG",
       "backend": "cuda",
-      "policy": "observe_generated",
+      "policy": "prefer_generated",
       "variants": [
         {
           "variant_id": "unary_neg_f32_4d_serial_flat_linear",
@@ -6467,7 +6467,7 @@
       "ggml_op": "GGML_OP_UNARY",
       "op_variant": "GGML_UNARY_OP_RELU",
       "backend": "cuda",
-      "policy": "observe_generated",
+      "policy": "prefer_generated",
       "variants": [
         {
           "variant_id": "unary_relu_f32_4d_serial_flat_linear",
@@ -6615,7 +6615,7 @@
           "variant_id": "unary_relu_f32_4d_serial_narrow",
           "kernel": "unary_relu",
           "priority": 90,
-          "policy": "prefer_generated",
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6645,7 +6645,7 @@
           "variant_id": "unary_relu_f32_4d_serial_w4",
           "kernel": "unary_relu",
           "priority": 80,
-          "policy": "prefer_generated",
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -6704,7 +6704,7 @@
       "ggml_op": "GGML_OP_UNARY",
       "op_variant": "GGML_UNARY_OP_SGN",
       "backend": "cuda",
-      "policy": "observe_generated",
+      "policy": "prefer_generated",
       "variants": [
         {
           "variant_id": "unary_sgn_f32_4d_serial_flat_linear",
@@ -6941,7 +6941,7 @@
       "ggml_op": "GGML_OP_UNARY",
       "op_variant": "GGML_UNARY_OP_SIGMOID",
       "backend": "cuda",
-      "policy": "observe_generated",
+      "policy": "prefer_generated",
       "variants": [
         {
           "variant_id": "unary_sigmoid_f32_4d_serial_flat_linear",
@@ -7178,7 +7178,7 @@
       "ggml_op": "GGML_OP_UNARY",
       "op_variant": "GGML_UNARY_OP_SILU",
       "backend": "cuda",
-      "policy": "observe_generated",
+      "policy": "prefer_generated",
       "variants": [
         {
           "variant_id": "unary_silu_f32_4d_serial_flat_linear",
@@ -7326,7 +7326,7 @@
           "variant_id": "unary_silu_f32_4d_serial_narrow",
           "kernel": "unary_silu",
           "priority": 90,
-          "policy": "prefer_generated",
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -7356,7 +7356,7 @@
           "variant_id": "unary_silu_f32_4d_serial_w4",
           "kernel": "unary_silu",
           "priority": 80,
-          "policy": "prefer_generated",
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -7415,7 +7415,7 @@
       "ggml_op": "GGML_OP_UNARY",
       "op_variant": "GGML_UNARY_OP_STEP",
       "backend": "cuda",
-      "policy": "observe_generated",
+      "policy": "prefer_generated",
       "variants": [
         {
           "variant_id": "unary_step_f32_4d_serial_flat_linear",
@@ -7652,7 +7652,7 @@
       "ggml_op": "GGML_OP_UNARY",
       "op_variant": "GGML_UNARY_OP_TANH",
       "backend": "cuda",
-      "policy": "observe_generated",
+      "policy": "prefer_generated",
       "variants": [
         {
           "variant_id": "unary_tanh_f32_4d_serial_flat_linear",
@@ -7800,7 +7800,7 @@
           "variant_id": "unary_tanh_f32_4d_serial_narrow",
           "kernel": "unary_tanh",
           "priority": 90,
-          "policy": "prefer_generated",
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"
@@ -7830,7 +7830,7 @@
           "variant_id": "unary_tanh_f32_4d_serial_w4",
           "kernel": "unary_tanh",
           "priority": 80,
-          "policy": "prefer_generated",
+          "policy": "observe_generated",
           "constraints": [
             "dtype(x)=f32",
             "rank(x)<=4"

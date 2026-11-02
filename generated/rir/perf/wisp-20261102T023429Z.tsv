@@ -1,0 +1,13 @@
+# session	pair	regime	label	nat_us	rir_us	median	min	max	passes	verdict
+wisp-20261102T023429Z	UNARY/cuda	-	RELU(type=f32,ne_a=[4096,16,1,1],v=0)	1.7700	1.8300	1.0339	0.9667	1.0694	5	parity
+wisp-20261102T023429Z	UNARY/cuda	-	RELU(type=f32,ne_a=[1024,16,1,1],v=0)	1.3800	1.4600	1.0496	0.9583	1.0809	5	parity
+wisp-20261102T023429Z	UNARY/cuda	-	RELU(type=f32,ne_a=[128,16,16,1],v=0)	1.5500	1.6000	1.0387	1.0000	1.0596	5	parity
+wisp-20261102T023429Z	UNARY/cuda	-	SILU(type=f32,ne_a=[4096,16,1,1],v=0)	1.8500	1.8500	1.0000	0.9838	1.0216	5	parity
+wisp-20261102T023429Z	UNARY/cuda	-	SILU(type=f32,ne_a=[1024,16,1,1],v=0)	1.4300	1.5000	1.0629	0.9934	1.0797	5	work item
+wisp-20261102T023429Z	UNARY/cuda	-	SILU(type=f32,ne_a=[128,16,16,1],v=0)	1.5700	1.6400	1.0446	0.9500	1.0774	5	parity
+wisp-20261102T023429Z	UNARY/cuda	-	TANH(type=f32,ne_a=[4096,16,1,1],v=0)	1.8000	1.8100	1.0000	0.9891	1.0289	5	parity
+wisp-20261102T023429Z	UNARY/cuda	-	TANH(type=f32,ne_a=[1024,16,1,1],v=0)	1.3900	1.4700	1.0629	1.0000	1.0851	5	work item
+wisp-20261102T023429Z	UNARY/cuda	-	TANH(type=f32,ne_a=[128,16,16,1],v=0)	1.5600	1.5900	1.0385	1.0192	1.1691	5	parity
+wisp-20261102T023429Z	UNARY/cuda	-	GELU_ERF(type=f32,ne_a=[4096,16,1,1],v=0)	1.8300	1.9400	1.0659	1.0054	1.1964	5	work item
+wisp-20261102T023429Z	UNARY/cuda	-	GELU_ERF(type=f32,ne_a=[1024,16,1,1],v=0)	1.4700	1.5600	1.0680	1.0333	1.0884	5	work item
+wisp-20261102T023429Z	UNARY/cuda	-	GELU_ERF(type=f32,ne_a=[128,16,16,1],v=0)	1.6100	1.6800	1.0679	1.0184	1.0705	5	work item

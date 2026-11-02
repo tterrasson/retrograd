@@ -24,3 +24,54 @@ mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_cols4	metal	observe_generated	benchmark-2
 mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_cols8_rt4_seg4_nofs	metal	observe_generated	benchmark-20261031T200650Z	decode GEMV cols8_rt4_seg4_nofs held at observe under the pair ceiling
 mul_mat_vec_q6_K_q6_K_2d_matrix_tile_mma	metal	observe_generated	benchmark-20261031T200650Z	decode GEMV mma held at observe under the pair ceiling
 mul_mat_vec_q6_K_q6_K_2d_subgroup_tree_n1	metal	observe_generated	benchmark-20261031T200650Z	single-token GEMV pick held at observe under the pair ceiling
+
+# The UNARY/cuda rows: the pair is a prefer ceiling on CUDA for ERF alone, which
+# has no native kernel and is judged on correctness. Every other member is held
+# at observe. The timed ones (flat_linear rows, written by rir-gen promote) lose
+# to unary_op_kernel by 2 to 9 % in each of the sessions wisp-20261102T023429Z,
+# wisp-20261102T025100Z and wisp-20261102T025325Z; the rest have no timed shape,
+# and a variant is promoted on measured shapes only.
+unary_abs_f32_4d_serial_flat_linear	cuda	observe_generated	wisp-20261102T025100Z	no timed shape for this member: held at observe under the pair ceiling
+unary_abs_f32_4d_serial	cuda	observe_generated	wisp-20261102T025100Z	strided twin, no timed shape: held at observe under the pair ceiling
+unary_sgn_f32_4d_serial_flat_linear	cuda	observe_generated	wisp-20261102T025100Z	no timed shape for this member: held at observe under the pair ceiling
+unary_sgn_f32_4d_serial	cuda	observe_generated	wisp-20261102T025100Z	strided twin, no timed shape: held at observe under the pair ceiling
+unary_neg_f32_4d_serial_flat_linear	cuda	observe_generated	wisp-20261102T025100Z	no timed shape for this member: held at observe under the pair ceiling
+unary_neg_f32_4d_serial	cuda	observe_generated	wisp-20261102T025100Z	strided twin, no timed shape: held at observe under the pair ceiling
+unary_step_f32_4d_serial_flat_linear	cuda	observe_generated	wisp-20261102T025100Z	no timed shape for this member: held at observe under the pair ceiling
+unary_step_f32_4d_serial	cuda	observe_generated	wisp-20261102T025100Z	strided twin, no timed shape: held at observe under the pair ceiling
+unary_tanh_f32_4d_serial_flat_linear	cuda	observe_generated	wisp-20261102T025100Z	worst median 1.0719 over 3 shape(s)
+unary_tanh_f32_4d_serial	cuda	observe_generated	wisp-20261102T025100Z	strided twin, no timed shape: held at observe under the pair ceiling
+unary_elu_f32_4d_serial_flat_linear	cuda	observe_generated	wisp-20261102T025100Z	no timed shape for this member: held at observe under the pair ceiling
+unary_elu_f32_4d_serial	cuda	observe_generated	wisp-20261102T025100Z	strided twin, no timed shape: held at observe under the pair ceiling
+unary_relu_f32_4d_serial_flat_linear	cuda	observe_generated	wisp-20261102T025100Z	worst median 1.0876 over 3 shape(s)
+unary_relu_f32_4d_serial	cuda	observe_generated	wisp-20261102T025100Z	strided twin, no timed shape: held at observe under the pair ceiling
+unary_sigmoid_f32_4d_serial_flat_linear	cuda	observe_generated	wisp-20261102T025100Z	no timed shape for this member: held at observe under the pair ceiling
+unary_sigmoid_f32_4d_serial	cuda	observe_generated	wisp-20261102T025100Z	strided twin, no timed shape: held at observe under the pair ceiling
+unary_gelu_quick_f32_4d_serial_flat_linear	cuda	observe_generated	wisp-20261102T025100Z	no timed shape for this member: held at observe under the pair ceiling
+unary_gelu_quick_f32_4d_serial	cuda	observe_generated	wisp-20261102T025100Z	strided twin, no timed shape: held at observe under the pair ceiling
+unary_silu_f32_4d_serial_flat_linear	cuda	observe_generated	wisp-20261102T025100Z	worst median 1.0915 over 3 shape(s)
+unary_silu_f32_4d_serial	cuda	observe_generated	wisp-20261102T025100Z	strided twin, no timed shape: held at observe under the pair ceiling
+unary_hardswish_f32_4d_serial_flat_linear	cuda	observe_generated	wisp-20261102T025100Z	no timed shape for this member: held at observe under the pair ceiling
+unary_hardswish_f32_4d_serial	cuda	observe_generated	wisp-20261102T025100Z	strided twin, no timed shape: held at observe under the pair ceiling
+unary_hardsigmoid_f32_4d_serial_flat_linear	cuda	observe_generated	wisp-20261102T025100Z	no timed shape for this member: held at observe under the pair ceiling
+unary_hardsigmoid_f32_4d_serial	cuda	observe_generated	wisp-20261102T025100Z	strided twin, no timed shape: held at observe under the pair ceiling
+unary_exp_f32_4d_serial_flat_linear	cuda	observe_generated	wisp-20261102T025100Z	no timed shape for this member: held at observe under the pair ceiling
+unary_exp_f32_4d_serial	cuda	observe_generated	wisp-20261102T025100Z	strided twin, no timed shape: held at observe under the pair ceiling
+unary_expm1_f32_4d_serial_flat_linear	cuda	observe_generated	wisp-20261102T025100Z	no timed shape for this member: held at observe under the pair ceiling
+unary_expm1_f32_4d_serial	cuda	observe_generated	wisp-20261102T025100Z	strided twin, no timed shape: held at observe under the pair ceiling
+unary_gelu_erf_f32_4d_serial_flat_linear	cuda	observe_generated	wisp-20261102T025100Z	worst median 1.0818 over 3 shape(s)
+unary_gelu_erf_f32_4d_serial	cuda	observe_generated	wisp-20261102T025100Z	strided twin, no timed shape: held at observe under the pair ceiling
+
+# The UNARY/vulkan rows, written by rir-gen promote from session
+# wisp-20261102T030204Z (RTX 4090, reproduced by wisp-20261102T025549Z): every
+# timed member loses to the native strip by 1.25 to 1.79 on this device, where
+# the pair was promoted on Apple's MoltenVK at 0.23 to 0.33. ERF has no native
+# kernel and keeps the pair's policy; the untimed members keep it too.
+unary_gelu_erf_f32_4d_serial_narrow	vulkan	observe_generated	wisp-20261102T030204Z	worst median 1.5476 over 1 shape(s)
+unary_gelu_erf_f32_4d_serial_w4	vulkan	observe_generated	wisp-20261102T030204Z	worst median 1.7880 over 2 shape(s)
+unary_relu_f32_4d_serial_narrow	vulkan	observe_generated	wisp-20261102T030204Z	worst median 1.2972 over 1 shape(s)
+unary_relu_f32_4d_serial_w4	vulkan	observe_generated	wisp-20261102T030204Z	worst median 1.5000 over 2 shape(s)
+unary_silu_f32_4d_serial_narrow	vulkan	observe_generated	wisp-20261102T030204Z	worst median 1.4632 over 1 shape(s)
+unary_silu_f32_4d_serial_w4	vulkan	observe_generated	wisp-20261102T030204Z	worst median 1.5704 over 2 shape(s)
+unary_tanh_f32_4d_serial_narrow	vulkan	observe_generated	wisp-20261102T030204Z	worst median 1.2509 over 1 shape(s)
+unary_tanh_f32_4d_serial_w4	vulkan	observe_generated	wisp-20261102T030204Z	worst median 1.4792 over 2 shape(s)

@@ -343,12 +343,18 @@ pub(super) fn unary(name: String, member: unary::Unary) -> IntegrationSpec {
         // versus 0.18–0.94 on Metal. Native Vulkan runs the unary strip
         // through the generic `ggml_vk_op_f32` path, while native Metal
         // has a dedicated kernel - the gap measures that generic path,
-        // not the compiler.
-        // CUDA in **observe** for the flattened variant,
-        // on the family the census picks for its
+        // not the compiler. That result is MoltenVK's: on an RTX 4090 the
+        // same shapes measure 1.25 to 1.79, so the timed members are held
+        // at `observe` per variant on Vulkan in `policy/variants.tsv`.
+        // CUDA, on the family the census picks for its
         // redundancy rather than for its traffic: fourteen native
-        // templates against one generated kernel.
-        backend_policy: cuda_policy(PreferGenerated, ObserveGenerated),
+        // templates against one generated kernel. The pair is a
+        // `prefer` **ceiling** there for the sake of `ERF`, which has no
+        // native CUDA kernel and is judged on correctness alone; every
+        // other member is held at `observe` per variant in
+        // `policy/variants.tsv`, because the timed ones measure 1.02 to
+        // 1.09 against `unary_op_kernel` and the others are not timed.
+        backend_policy: cuda_policy(PreferGenerated, PreferGenerated),
         assumed_domain: vec![
             DomainAssumption {
                 restriction: DType,

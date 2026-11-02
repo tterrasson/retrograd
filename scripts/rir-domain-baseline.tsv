@@ -23,6 +23,6 @@ RMS_NORM_BACK/vulkan	30	30
 SCALE/cuda	4	4
 SCALE/metal	4	4
 SCALE/vulkan	4	4
-UNARY/cuda	42	84
+UNARY/cuda	96	276
 UNARY/metal	96	186
 UNARY/vulkan	96	186

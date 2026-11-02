@@ -214,6 +214,55 @@ median ratio at or under the tolerance on every one of them**.
   `prefer_generated` has an attributed shape beyond the tolerance. For those
   pairs it replaces the per-pair verdict.
 
+### Attribution adapters
+
+A per-variant row is only accepted for an op whose perf labels
+`rir-gen promote` can read back into the claims the dispatcher evaluates
+(`promote::label_shape`):
+
+- `MUL_MAT` - `type_a`, then `m`, `n`, `k` as the GEMV's `row`, `plane`,
+  `col`;
+- `UNARY` - the label names the **member**, not the op
+  (`GELU_ERF(type=f32,ne_a=[1024,16,1,1],v=0)`), so the member becomes the
+  `ggml_op_variant` claim and `ne_a` the four axes. A shape is attributed only
+  to the variants of its own member, which is what lets the table hold one
+  member of the family while another stays promoted. A view (`v=1`) is
+  refused: which lowering serves it depends on a layout claim the replay does
+  not model, and the perf matrix times none.
+
+`ERF` is the member no row can promote and none needs to: it has no native GPU
+kernel, so its perf rows carry no ratio and it carries its pair's policy,
+judged on correctness alone. A `prefer_generated` ceiling with every other
+member held at `observe_generated` is how a pair lets `ERF` encode without
+promoting anything that lost a timing - the state of `UNARY` on CUDA, whose
+timed members measure 1.02 to 1.09 against `unary_op_kernel`
+in three sessions (`generated/rir/perf/wisp-20261102T023429Z.tsv`,
+`…T025100Z.tsv`, `…T025325Z.tsv`). On Vulkan the same rows hold the timed
+members of a pair promoted on MoltenVK: an RTX 4090 measures them at 1.25 to
+1.79 (`…T025549Z.tsv`, `…T030204Z.tsv`).
+
+### UNARY on Metal
+
+The Metal pair is promoted and no Metal row exists: the ratios that showed
+`RELU`, `SILU` and `TANH` beyond the tolerance were never recorded, and a row
+rests on a recorded session. On an Apple machine:
+
+```sh
+scripts/test-rir.sh --backend metal --op UNARY --repeat 5 --emit-ratios /tmp/unary-metal.tsv
+session=$(awk -F'\t' 'NR == 2 { print $1 }' /tmp/unary-metal.tsv)
+mv /tmp/unary-metal.tsv generated/rir/perf/$session.tsv
+cargo run -p rir-gen -- promote --ratios generated/rir/perf/$session.tsv --write
+cargo run -p rir-gen && cargo run -p rir-gen --example sync-fork
+scripts/test-rir.sh --backend metal --op UNARY --repeat 5   # the per-variant check
+```
+
+The lane exits non-zero on that first run while the slow members are still
+promoted; the ratios are written all the same. `promote --write` holds at
+`observe_generated` each Metal variant with an attributed shape beyond the
+tolerance and leaves the others at the pair's `prefer_generated` - `ERF`
+always, `GELU_ERF` if its three shapes hold. The pair then has mixed policies,
+so the lane's last run judges it per variant.
+
 ## Retiring a native kernel
 
 Keeping both paths has a cost: a native kernel that never runs is not a safety

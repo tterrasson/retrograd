@@ -152,12 +152,14 @@ const CUDA_ADMITTED: &[(&str, rir_emit::BackendPolicy, &str)] = &[
     ),
     (
         "GGML_OP_UNARY",
-        rir_emit::BackendPolicy::ObserveGenerated,
+        rir_emit::BackendPolicy::PreferGenerated,
         "admitted on the **redundancy** and not on the traffic (0,39 % / 1,75 %): fourteen \
-         native `unary_op_kernel` instantiations against one generated kernel. Measured and \
-         refused - 1,03 to 1,12 over nine shapes, and the flat lowering already carries the \
-         geometry that wins (`unary_flat_width_on_cuda`): what remains is the address, four \
-         stride products where the native indexes a linear array",
+         native `unary_op_kernel` instantiations against one generated kernel. The ceiling is \
+         raised for **one member**: `ERF` has no native CUDA kernel, so without it the erf GELU \
+         backward leaves the device. Every other member is held at observe per variant in \
+         `variants.tsv`: the timed ones (relu, silu, tanh, gelu_erf) measure 1,02 to 1,09 \
+         against `unary_op_kernel` over three sessions (`wisp-20261102T023429Z`, \
+         `wisp-20261102T025100Z`, `wisp-20261102T025325Z`), the others have no timed shape",
     ),
 ];
 
