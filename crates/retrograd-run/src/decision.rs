@@ -40,6 +40,7 @@ const TEMPERATURE_GAP_WARN: f32 = 0.05;
 pub(crate) struct DecisionExport {
     /// `general.architecture`, the prefix of the model's decision keys.
     architecture: String,
+    decision_type: String,
     /// The temperatures fitted on the held-out questions, when the run
     /// calibrated.
     fitted: Option<training::decision::FittedTemperatures>,
@@ -60,6 +61,10 @@ impl DecisionExport {
     fn model_entries(&self, source: &Path) -> Result<Map<String, Value>> {
         let prefix = format!("{}.decision.", self.architecture);
         let mut entries = Map::new();
+        entries.insert(
+            format!("{prefix}type"),
+            Value::from(self.decision_type.clone()),
+        );
         if let Some(fitted) = &self.fitted {
             // A bucket the new set lacks must fall back to its type, not to a
             // temperature fitted on other weights.
@@ -89,15 +94,21 @@ impl DecisionExport {
             );
             // The list of named templates llama.cpp reads names from.
             let listed = read_gguf_metadata(source, "tokenizer.chat_templates")?;
-            if let Some(text) = listed.get("tokenizer.chat_templates") {
-                let mut names: Vec<String> = serde_json::from_str(text).unwrap_or_default();
-                if !names
-                    .iter()
-                    .any(|name| name == retrograd_engine::DECISION_TEMPLATE)
-                {
-                    names.push(retrograd_engine::DECISION_TEMPLATE.to_owned());
-                    entries.insert("tokenizer.chat_templates".into(), Value::from(names));
-                }
+            let mut names: Vec<String> = listed
+                .get("tokenizer.chat_templates")
+                .map(|text| {
+                    serde_json::from_str(text).map_err(|error| {
+                        Error::checkpoint(format!("invalid named-template list: {error}"))
+                    })
+                })
+                .transpose()?
+                .unwrap_or_default();
+            if !names
+                .iter()
+                .any(|name| name == retrograd_engine::DECISION_TEMPLATE)
+            {
+                names.push(retrograd_engine::DECISION_TEMPLATE.to_owned());
+                entries.insert("tokenizer.chat_templates".into(), Value::from(names));
             }
         }
         Ok(entries)
@@ -217,6 +228,13 @@ pub(crate) fn run_decision(
     ctx: &mut Context<'_>,
 ) -> Result<(TrainMetrics, DecisionExport)> {
     let config = ctx.config;
+    let causal_base = trainer.decision_metadata()?.decision_type.is_none();
+    if causal_base && config.output.kind != OutputKind::Model && decision.export_base.is_none() {
+        return Err(Error::config(
+            "a causal decision adapter needs decision.export_base: \
+             the base copy carries its openjev readout and standalone systemone template",
+        ));
+    }
     let epochs = config.training.epochs;
     let prepared = training::decision::prepare(
         trainer,
@@ -304,22 +322,12 @@ pub(crate) fn run_decision(
         None
     };
     let metadata = trainer.decision_metadata()?;
-    let template = decision
-        .template
-        .as_ref()
-        .map(|path| {
-            std::fs::read_to_string(path).map_err(|error| {
-                Error::config(format!(
-                    "decision.template {} cannot be read: {error}",
-                    path.display()
-                ))
-            })
-        })
-        .transpose()?;
+    let template = prepared.template().map(str::to_owned);
     Ok((
         metrics,
         DecisionExport {
             architecture: metadata.architecture.unwrap_or_default(),
+            decision_type: info.decision_type.clone(),
             fitted,
             base_temperatures: info.temperatures.clone(),
             template,

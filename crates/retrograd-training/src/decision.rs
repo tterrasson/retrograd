@@ -2,12 +2,10 @@
 //!
 //! Every question is rendered through the model's `systemone` template, laid
 //! out by its readout and tokenized exactly as the server does it, so the
-//! tokens trained on are the tokens served. A training step packs several
-//! questions, each its own sequence, into one micro-batch and trains the
-//! grouped softmax cross-entropy: one softmax over the scores the head reads
-//! at the option markers of each question, against the target distribution
-//! (one-hot, or the soft probabilities a teacher gave). Several micro-batches
-//! accumulate into one optimizer update.
+//! tokens trained on are the tokens served. Each question has its own
+//! sequence. Marker heads train grouped softmax cross-entropy over their
+//! option scores; causal heads train a masked letter completion against hard
+//! or sparse soft targets. Several micro-batches accumulate into one update.
 //!
 //! The whole run is laid out before its first step - the order of the
 //! questions, the order of the options of every `choice` question, the
@@ -15,8 +13,8 @@
 //! horizon is the exact number of updates and an epoch boundary is enough to
 //! resume.
 //!
-//! Only a marker readout (`laya`) trains here: its scores come out of the
-//! embeddings output the grouped loss reads.
+//! Marker readouts train with grouped cross-entropy. Causal letter readouts
+//! train the final prompt position with masked sparse next-token targets.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -31,7 +29,9 @@ use retrograd_decision::dataset::{self, Example};
 use retrograd_decision::metrics::{Metrics, Outcome};
 use retrograd_decision::readout::Readout;
 use retrograd_decision::request::{Question, QuestionKind};
-use retrograd_engine::{DecisionInfo, DecisionPass, GroupedBatch, GroupedQuestion, Trainer};
+use retrograd_engine::{
+    DecisionInfo, DecisionPass, GroupedBatch, GroupedQuestion, PackedSequenceBatch, Trainer,
+};
 use retrograd_metrics::MetricValue;
 
 use crate::grpo::shuffled_indices;
@@ -72,6 +72,8 @@ struct EvalItem {
 #[derive(Debug)]
 pub struct PreparedDecision {
     info: DecisionInfo,
+    template: Option<String>,
+    micro_batch: usize,
     epochs: Vec<EpochPlan>,
     eval: Vec<EvalItem>,
     total_steps: u64,
@@ -84,6 +86,11 @@ impl PreparedDecision {
     /// The head the questions were rendered for, budget override included.
     pub fn info(&self) -> &DecisionInfo {
         &self.info
+    }
+
+    /// The effective replacement template, ready to embed in the exported GGUF.
+    pub fn template(&self) -> Option<&str> {
+        self.template.as_deref()
     }
 
     /// Training questions (one per example).
@@ -121,10 +128,15 @@ impl PreparedDecision {
 }
 
 /// Refuses an example the readout cannot train on as the dataset wrote it:
-/// too many options, several renderings averaged, or `noul` listed `true`
-/// first (the dataset lists `false, true`, as a marker readout does).
+/// fewer than two or too many options, or several renderings averaged.
 fn check_example(readout: &Readout, example: &Example, index: usize) -> Result<()> {
     let n_options = example.question.options.len();
+    if n_options < 2 {
+        return Err(Error::invalid(format!(
+            "decision example {} needs at least two training options",
+            index + 1
+        )));
+    }
     if n_options > readout.n_options_max() {
         return Err(Error::invalid(format!(
             "decision example {} has {n_options} options; this model reads at most {}",
@@ -135,11 +147,6 @@ fn check_example(readout: &Readout, example: &Example, index: usize) -> Result<(
     if readout.n_variants(&example.question) != 1 {
         return Err(Error::invalid(
             "a readout that averages several renderings of a question does not train here",
-        ));
-    }
-    if example.question.kind == QuestionKind::Noul && readout.noul_true_first() {
-        return Err(Error::invalid(
-            "a readout that lists `true` first does not train here",
         ));
     }
     Ok(())
@@ -252,31 +259,60 @@ pub fn prepare(
     epochs: u32,
     eval: Option<(&Path, Option<usize>)>,
 ) -> Result<PreparedDecision> {
-    if let Some(path) = &config.template {
-        let source = std::fs::read_to_string(path).map_err(|error| {
-            Error::config(format!(
-                "decision.template {} cannot be read: {error}",
-                path.display()
-            ))
-        })?;
+    trainer.set_chat_template_variables(Some(
+        &serde_json::Value::Object(config.template_variables.clone()).to_string(),
+    ))?;
+    let override_source = config
+        .template
+        .as_ref()
+        .map(|path| {
+            std::fs::read_to_string(path).map_err(|error| {
+                Error::config(format!(
+                    "decision.template {} cannot be read: {error}",
+                    path.display()
+                ))
+            })
+        })
+        .transpose()?;
+    let metadata = trainer.decision_metadata()?;
+    let (mut info, mut template) = if metadata.decision_type.is_none() {
+        let (info, source) = trainer.configure_causal_decision()?;
+        (info, Some(source))
+    } else {
+        if let Some(source) = &override_source {
+            trainer.set_decision_template(Some(source))?;
+        }
+        (trainer.decision_info()?, None)
+    };
+    if let Some(source) = override_source {
         trainer.set_decision_template(Some(&source))?;
+        template = Some(source);
     }
-    let mut info = trainer.decision_info()?;
     if let Some(max_head_tokens) = config.max_head_tokens {
         info = info.with_max_head_tokens(max_head_tokens as usize)?;
     }
-    if !matches!(info.readout, Readout::MarkerColumn { .. }) {
+    if !matches!(info.readout, Readout::MarkerColumn { .. }) && info.decision_type != "openjev" {
         return Err(Error::config(format!(
-            "decision type '{}' reads its answer from the logits; only a model that reads its \
-             options at markers of its embeddings output (laya) trains here",
+            "decision type '{}' does not support training; use a marker or openjev letter readout",
             info.decision_type
         )));
     }
 
     let micro_batch = training.n_ubatch as usize;
-    let questions_per_batch = config.questions_per_batch as usize;
+    // Hybrid/recurrent graphs require equal-sequence ubatches. A single
+    // question uses that ordinary split; dense causal graphs can pack several.
+    let questions_per_batch = if matches!(info.readout, Readout::LabelLogits { .. })
+        && !trainer.supports_shared_prefix_packed_training()?
+    {
+        1
+    } else {
+        config.questions_per_batch as usize
+    };
     let accumulation = config.gradient_accumulation as usize;
-    let examples = dataset::read_jsonl(&config.data, config.data_format)?;
+    let examples: Vec<_> = dataset::read_jsonl(&config.data, config.data_format)?
+        .into_iter()
+        .map(|example| example.for_readout(&info.readout))
+        .collect();
     for (index, example) in examples.iter().enumerate() {
         check_example(&info.readout, example, index)?;
     }
@@ -339,7 +375,10 @@ pub fn prepare(
 
     let eval = match eval {
         Some((path, max_examples)) => {
-            let examples = dataset::read_jsonl(path, config.data_format)?;
+            let examples: Vec<_> = dataset::read_jsonl(path, config.data_format)?
+                .into_iter()
+                .map(|example| example.for_readout(&info.readout))
+                .collect();
             let examples = match max_examples {
                 Some(max) => evenly_spaced_subset(examples, max),
                 None => examples,
@@ -407,6 +446,8 @@ pub fn prepare(
     });
     Ok(PreparedDecision {
         info,
+        template,
+        micro_batch,
         epochs: plans,
         eval,
         total_steps,
@@ -414,6 +455,84 @@ pub fn prepare(
         tokens,
         fingerprint: fingerprinter.finish(),
     })
+}
+
+/// One masked letter completion per question. A hard target has K=1; a soft
+/// target carries its nonzero option probabilities. Prompt and padding
+/// positions have label -1 and zero weight on both dense and fused CE paths.
+fn causal_batch(questions: &[Rendered], width: usize) -> Result<PackedSequenceBatch> {
+    let k = questions
+        .iter()
+        .map(|q| q.targets.iter().filter(|&&p| p > 0.0).count())
+        .max()
+        .unwrap_or(0);
+    if k == 0 || k > retrograd_core::FUSED_CE_K_MAX {
+        return Err(Error::invalid(
+            "causal targets exceed the sparse cross-entropy capacity",
+        ));
+    }
+    let entries = width
+        .checked_mul(k)
+        .ok_or_else(|| Error::overflow("causal batch shape"))?;
+    let mut batch = PackedSequenceBatch {
+        tokens: Vec::with_capacity(width),
+        positions: Vec::with_capacity(width),
+        labels: vec![-1; entries],
+        weights: vec![0.0; entries],
+        seq_offsets: (0..=width).collect(),
+        seq_ids: Vec::with_capacity(width),
+        n_sequences: questions.len(),
+        n_topk: k,
+    };
+    for (sequence, question) in questions.iter().enumerate() {
+        if question.pass.tokens.is_empty()
+            || question.pass.reads.len() != question.targets.len()
+            || batch.tokens.len() + question.pass.tokens.len() > width
+        {
+            return Err(Error::invalid(
+                "causal question does not fit its micro-batch",
+            ));
+        }
+        let sequence =
+            i32::try_from(sequence).map_err(|_| Error::overflow("causal sequence ID"))?;
+        for (position, &token) in question.pass.tokens.iter().enumerate() {
+            batch.tokens.push(token);
+            batch
+                .positions
+                .push(i32::try_from(position).map_err(|_| Error::overflow("causal position"))?);
+            batch.seq_ids.push(sequence);
+        }
+        let offset = (batch.tokens.len() - 1) * k;
+        for (j, (&token, &probability)) in question
+            .pass
+            .reads
+            .iter()
+            .zip(&question.targets)
+            .filter(|(_, p)| **p > 0.0)
+            .enumerate()
+        {
+            batch.labels[offset + j] = token;
+            batch.weights[offset + j] = probability;
+        }
+    }
+    // Padding extends the last sequence after its answer position, so causal
+    // masking prevents it from affecting any supervised logits.
+    let last = batch
+        .tokens
+        .last()
+        .copied()
+        .ok_or_else(|| Error::invalid("empty causal batch"))?;
+    let sequence = *batch.seq_ids.last().expect("a token has a sequence");
+    let mut position = *batch.positions.last().expect("a token has a position");
+    while batch.tokens.len() < width {
+        position = position
+            .checked_add(1)
+            .ok_or_else(|| Error::overflow("causal padding position"))?;
+        batch.tokens.push(last);
+        batch.positions.push(position);
+        batch.seq_ids.push(sequence);
+    }
+    Ok(batch)
 }
 
 /// What one optimizer update adds up to.
@@ -458,23 +577,36 @@ fn update(
     let mut totals = Totals::default();
     let mut metrics = TrainMetrics::default();
     for batch in batches {
-        let members: Vec<GroupedQuestion<'_>> = questions[batch.clone()]
-            .iter()
-            .map(|question| GroupedQuestion {
-                tokens: &question.pass.tokens,
-                reads: &question.pass.reads,
-                column: question.pass.column,
-                targets: &question.targets,
-            })
-            .collect();
-        let grouped = GroupedBatch::pack(&members, TRAINING_INV_TEMPERATURE, period)?;
+        let questions = &questions[batch.clone()];
         let started = std::time::Instant::now();
-        metrics = trainer.train_grouped(&grouped, prepared.total_steps)?;
+        if matches!(prepared.info.readout, Readout::LabelLogits { .. }) {
+            let packed = causal_batch(questions, prepared.micro_batch)?;
+            metrics = trainer
+                .train_packed_sequences_controlled(
+                    &packed,
+                    prepared.total_steps,
+                    period,
+                    |_, _| Ok(true),
+                )?
+                .0;
+        } else {
+            let members: Vec<GroupedQuestion<'_>> = questions
+                .iter()
+                .map(|question| GroupedQuestion {
+                    tokens: &question.pass.tokens,
+                    reads: &question.pass.reads,
+                    column: question.pass.column,
+                    targets: &question.targets,
+                })
+                .collect();
+            let grouped = GroupedBatch::pack(&members, TRAINING_INV_TEMPERATURE, period)?;
+            metrics = trainer.train_grouped(&grouped, prepared.total_steps)?;
+        }
         totals.seconds += started.elapsed().as_secs_f64();
         // The step's loss is the mean over its questions.
-        totals.loss += f64::from(metrics.train_loss) * members.len() as f64;
-        totals.questions += members.len();
-        totals.tokens += grouped.n_tokens();
+        totals.loss += f64::from(metrics.train_loss) * questions.len() as f64;
+        totals.questions += questions.len();
+        totals.tokens += questions.iter().map(|q| q.pass.tokens.len()).sum::<usize>();
     }
     Ok((metrics, totals))
 }
@@ -547,8 +679,8 @@ pub fn run_resumed(
 /// What a held-out pass measured.
 #[derive(Clone, Debug)]
 pub struct DecisionEval {
-    /// The mean NLL at temperature 1: the training objective, which early
-    /// stopping compares.
+    /// The mean served-readout NLL at temperature 1, which early stopping
+    /// compares. Causal training also penalizes vocabulary mass outside labels.
     pub loss: f64,
     pub metrics: Metrics,
     /// The raw scores and targets, for fitting the temperatures.
@@ -663,6 +795,36 @@ mod tests {
             },
             targets: vec![1.0, 0.0],
         }
+    }
+
+    #[test]
+    fn causal_targets_are_only_on_the_last_prompt_position() {
+        let mut hard = rendered(3);
+        hard.pass.reads = vec![65, 66];
+        let mut soft = rendered(2);
+        soft.pass.reads = vec![65, 66];
+        soft.targets = vec![0.25, 0.75];
+        let batch = causal_batch(&[hard.clone(), soft], 8).unwrap();
+        assert_eq!(batch.n_topk, 2);
+        assert_eq!(batch.n_sequences, 2);
+        assert_eq!(&batch.labels[4..6], &[65, -1]);
+        assert_eq!(&batch.labels[8..10], &[65, 66]);
+        assert_eq!(&batch.weights[8..10], &[0.25, 0.75]);
+        for position in [0, 1, 3, 5, 6, 7] {
+            assert_eq!(&batch.labels[position * 2..position * 2 + 2], &[-1, -1]);
+        }
+        assert_eq!(batch.positions, [0, 1, 2, 0, 1, 2, 3, 4]);
+        assert_eq!(causal_batch(&[hard], 4).unwrap().n_topk, 1);
+    }
+
+    #[test]
+    fn all_letter_probabilities_fit_one_sparse_target() {
+        let mut question = rendered(2);
+        question.pass.reads = (0..52).collect();
+        question.targets = vec![1.0 / 52.0; 52];
+        let batch = causal_batch(&[question], 4).unwrap();
+        assert_eq!(batch.n_topk, 52);
+        assert_eq!(&batch.labels[52..104], &(0..52).collect::<Vec<_>>());
     }
 
     #[test]

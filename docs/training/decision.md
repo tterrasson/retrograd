@@ -8,7 +8,8 @@ temperatures on held-out questions, and writes them into what it exports.
 
 Models whose `<arch>.decision.type` is `laya` train here (Julia, Laya, and
 other ModernBERT decision heads): they read the score of an option at a
-marker token of the embeddings output. The others are served, not trained.
+marker token of the embeddings output. Causal LLMs and `openjev` models train
+on letter logits. `lev` and `kev` are served only.
 
 ## Configuration
 
@@ -54,9 +55,70 @@ A ModernBERT block has a fused attention projection: target it as `qkv`
 (`q`, `k` and `v` match nothing there). The scorer can be targeted by name,
 `cls.weight`.
 
-The training runs on the CPU: the GPU backend computes wrong gradients for an
-encoder's training graph today. `device = "auto"` trains on the CPU and says
-so; `device = "gpu"` is refused. Serving and `bench` run on the GPU as usual.
+Training uses the configured device, including Metal. `auto` follows the
+ordinary backend selection.
+
+## Causal LLMs
+
+Use the same `decision` algorithm with a causal GGUF that has no decision
+metadata. Retrograd builds a generic question with labels `A..Z`, then `a..z`,
+wraps it in the model's chat template as a user message with a generation
+prompt, and trains the next letter. Every label must be one token; at most
+52 options are accepted. `decision.max_head_tokens` applies only to marker
+heads; a causal question must fit the micro-batch without truncation.
+
+```toml
+[model]
+path = "Qwen3.5-0.8B-BF16.gguf"
+
+[decision]
+data = "train.jsonl"
+template_variables = { enable_thinking = false }
+export_base = "decision-base.gguf"
+```
+
+Use the causal model's usual LoRA targets (`q`, `k`, `v`, `o`, `ffn_up`,
+`ffn_down` as available). Hard answers supervise one letter token at the last
+prompt position. Soft answers use sparse cross-entropy over the full
+vocabulary, with the teacher's probabilities on the option letters; prompt
+and padding positions are masked. This loss also penalizes probability mass
+outside the labels. Evaluation and calibration use the served softmax over
+labels. A loss restricted to labels remains a future option.
+
+Dense causal models pack questions. Recurrent/hybrid models use one question
+per micro-batch, preserving their equal-sequence graph, and accumulate the
+configured number of micro-batches into an update.
+
+The exported base/model declares `<arch>.decision.type = "openjev"` and carries
+one standalone `systemone` template, with the chat wrapper and its variables
+frozen into it. No nested chat rendering is required by llama-server.
+Templates that alter or repeat user content cannot be flattened and are
+refused. An adapter export from a plain causal base requires `export_base`;
+serve that copy with the adapter in either Retrograd or llama.cpp.
+
+## Teacher labels
+
+```bash
+retrograd decide label --teacher Laya-Q8_0.gguf --data questions.jsonl --out labelled.jsonl
+retrograd decide label --teacher decision-base.gguf --adapter teacher.gguf \
+  --data questions.jsonl --out labelled.jsonl
+retrograd decide label --teacher http://localhost:8000/v1 --teacher-model judge \
+  --api-key-env TEACHER_API_KEY --data questions.jsonl --out labelled.jsonl
+```
+
+Inputs are native single questions or service requests (`questions`), without
+needing answers. Local teachers provide their served probabilities; a plain
+causal teacher uses the generic letter prompt. `--template-variables JSON`
+controls its chat wrapper (default `{"enable_thinking":false}`). HTTP teachers
+are asked for a probability object and their reply must cover every option
+with finite nonnegative mass summing to one. Requests have a timeout and a
+response-size bound through the shared LLM client. All replies are validated
+before the output is created; an existing output file is refused.
+
+The output is native decision JSONL with `probabilities`, suitable for a
+marker-readout student or a causal student. Calibration still needs a separate
+held-out set. Remote probability reports are the judge's estimates, rather
+than access to its token logits.
 
 ## Data
 

@@ -934,3 +934,9 @@ coverage.
   little to no dedicated unit coverage.
 - Two checkpoint continuity tests remain `#[ignore]`d pending an agreed
   numerical tolerance.
+
+`causal_decision_template` (fast Rust lane) compares standalone Jinja rendering
+with the original chat templates under both thinking modes. The causal case
+of `decision_training` (CPU integration lane) covers hard and soft letter
+targets, boolean order, calibration, a standalone base export and the local
+teacher CLI. `fused_ce` covers sparse K=52 and K=64 against the dense oracle.

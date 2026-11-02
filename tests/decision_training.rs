@@ -94,6 +94,7 @@ fn decision_config(data: PathBuf) -> DecisionConfig {
         data,
         data_format: DataFormat::Native,
         template: None,
+        template_variables: Default::default(),
         max_head_tokens: None,
         option_shuffle: true,
         shuffle: true,
@@ -338,4 +339,101 @@ fn a_full_run_exports_a_model_the_engine_serves_as_trained() {
             );
         }
     }
+}
+
+/// Add a chat wrapper to the tiny causal fixture, whose weights and tokenizer
+/// otherwise exercise the same sparse-CE and export paths as a full LLM.
+fn causal_fixture(dir: &Path) -> PathBuf {
+    let source =
+        common::tiny_model_path_if_available().expect("CPU lane requires the tiny causal model");
+    let model = dir.join("causal.gguf");
+    retrograd::trainer::rewrite_gguf_metadata(&source, &model,
+        serde_json::json!({
+            "tokenizer.ggml.add_space_prefix": false,
+            "tokenizer.chat_template": "{% for message in messages %}{{ message.role }}: {{ message.content }}\n{% endfor %}{% if add_generation_prompt %}assistant: {% endif %}"
+        }).as_object().expect("metadata object")).expect("create causal fixture");
+    model
+}
+
+#[test]
+fn causal_hard_and_soft_targets_train_and_export_a_standalone_model() {
+    let _lock = common::serialize_models();
+    let dir = scratch("causal");
+    let model = causal_fixture(dir.path());
+    let data = dir.path().join("questions.jsonl");
+    fs::write(&data, concat!(
+        "{\"state\":\"red\",\"question\":{\"type\":\"choice\",\"instructions\":\"pick\",\"criteria\":{\"z\":null,\"a\":null}},\"answer\":\"z\"}\n",
+        "{\"state\":\"blue\",\"question\":{\"type\":\"choice\",\"instructions\":\"pick\",\"criteria\":{\"z\":null,\"a\":null}},\"probabilities\":{\"z\":0.25,\"a\":0.75}}\n",
+        "{\"state\":\"yes\",\"question\":{\"type\":\"noul\",\"instructions\":\"yes?\"},\"answer\":true}\n"
+    )).unwrap();
+    let document = dir.path().join("run.toml");
+    fs::write(&document, format!(
+        "[model]\npath = '{}'\ndevice = 'cpu'\n[run]\nalgorithm = 'decision'\n\
+         [training]\nctx = 512\nmicro_batch = 512\ngradient_accumulation = 2\nepochs = 2\nlr = 0.01\n\
+         [lora]\nrank = 2\nalpha = 4\ndtype = 'f32'\n\
+         [decision]\ndata = 'questions.jsonl'\nquestions_per_batch = 2\nexport_base = 'base.gguf'\n\
+         template_variables = {{ enable_thinking = false }}\n\
+         [evaluation]\ndata = 'questions.jsonl'\n[output]\npath = 'adapter.gguf'\n",
+        model.display())).unwrap();
+    let config = config::load(&document).unwrap();
+    let result = run::execute(&config, &mut SilentObserver).expect("train causal letter targets");
+    assert!(result.metrics.train_loss.is_finite());
+    assert!(result.metrics.global_step > 0);
+    let base = dir.path().join("base.gguf");
+    let mut engine = Engine::new(
+        &base,
+        &EngineConfig {
+            device: Device::Cpu,
+            ..EngineConfig::default()
+        },
+    )
+    .unwrap();
+    let mut info = engine.decision_info().expect("exported standalone readout");
+    assert_eq!(info.decision_type, "openjev");
+    assert_eq!(info.n_options_max, 52);
+    engine.load_lora(dir.path().join("adapter.gguf")).unwrap();
+    info = info
+        .with_adapter_temperatures(
+            &adapter_decision_metadata(dir.path().join("adapter.gguf")).unwrap(),
+        )
+        .unwrap();
+    let request = SystemOneRequest::from_slice(
+        br#"{"state":"yes","questions":{"q":{"type":"noul","instructions":"yes?"}}}"#,
+        &info.readout,
+    )
+    .unwrap();
+    assert_eq!(request.questions["q"].options[0].key, "true");
+    let answers = engine.decide(&info, &request).unwrap();
+    assert!(
+        matches!(answers.answers["q"], retrograd::decision::answer::Answer::Noul { noul } if noul.is_finite())
+    );
+
+    // The local teacher writes a native dataset a marker-readout student can
+    // consume, with no target needed on the input side.
+    let input = dir.path().join("unlabelled.jsonl");
+    fs::write(
+        &input,
+        r#"{"state":"yes","question":{"type":"noul","instructions":"yes?"}}"#,
+    )
+    .unwrap();
+    let labelled = dir.path().join("labelled.jsonl");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_retrograd"))
+        .args(["decide", "label", "--teacher"])
+        .arg(&base)
+        .arg("--adapter")
+        .arg(dir.path().join("adapter.gguf"))
+        .arg("--data")
+        .arg(&input)
+        .arg("--out")
+        .arg(&labelled)
+        .args(["--device", "cpu"])
+        .output()
+        .unwrap();
+    assert!(
+        status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let labelled = dataset::read_jsonl(&labelled, DataFormat::Native).unwrap();
+    assert!(matches!(labelled[0].target, dataset::Target::Soft(_)));
 }
