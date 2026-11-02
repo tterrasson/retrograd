@@ -81,7 +81,7 @@ timed_step compile:rir-f16 cargo test -p rir-kernels --test f16_oracles --no-run
 timed_step compile:contracts cargo test \
   -p retrograd-agent --test train_sequences \
   -p retrograd-decision --test golden \
-  -p retrograd-engine --test chat_parser_roundtrip --test tool_sft_render \
+  -p retrograd-engine --test chat_parser_roundtrip --test tool_sft_render --test causal_decision_template \
   -p retrograd-engine --test dependency_boundary \
   -p retrograd-infer --test chain_boundary --test fake_backend --test prefix_cache --test sync_driver --test adapters --test row_adapters \
   -p retrograd-judge --test reward_batch \
@@ -116,7 +116,7 @@ timed_step run:rir-f16 cargo test -p rir-kernels --test f16_oracles
 timed_step run:contracts cargo test \
   -p retrograd-agent --test train_sequences \
   -p retrograd-decision --test golden \
-  -p retrograd-engine --test chat_parser_roundtrip --test tool_sft_render \
+  -p retrograd-engine --test chat_parser_roundtrip --test tool_sft_render --test causal_decision_template \
   -p retrograd-engine --test dependency_boundary \
   -p retrograd-infer --test chain_boundary --test fake_backend --test prefix_cache --test sync_driver --test adapters --test row_adapters \
   -p retrograd-judge --test reward_batch \
