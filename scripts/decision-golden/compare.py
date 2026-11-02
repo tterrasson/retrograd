@@ -23,8 +23,20 @@ import urllib.request
 
 # What a pass records besides its scores; a field absent from both is skipped.
 PASS_FIELDS = (
-    "id", "variant", "prompt", "pieces", "rendered_tokens", "tokens", "markers",
-    "column", "pointer", "labels", "label_groups", "order", "n_scores", "pooled",
+    "id",
+    "variant",
+    "prompt",
+    "pieces",
+    "rendered_tokens",
+    "tokens",
+    "markers",
+    "column",
+    "pointer",
+    "labels",
+    "label_groups",
+    "order",
+    "n_scores",
+    "pooled",
 )
 
 
@@ -171,9 +183,14 @@ def server(args: argparse.Namespace) -> list:
                 worst = max(worst, diff)
             else:
                 worst_reused = max(worst_reused, diff)
-        if strict_ids and len(expected) == len(record["response"]["answers"]):
-            if answer["usage"] != record["response"]["usage"]:
-                errors.append(f"{name}: usage {answer['usage']} vs golden {record['response']['usage']}")
+        if (
+            strict_ids
+            and len(expected) == len(record["response"]["answers"])
+            and answer["usage"] != record["response"]["usage"]
+        ):
+            errors.append(
+                f"{name}: usage {answer['usage']} vs golden {record['response']['usage']}"
+            )
 
     for entry, record in zip(requests, gold["requests"], strict=True):
         if "max_head_tokens" in entry:

@@ -229,6 +229,7 @@ def write_gguf(table, kvs) -> bytes:
 
 # --- other decision types -------------------------------------------------
 
+
 def adder(seed: int):
     """A table and the function that appends a random F32 tensor to it."""
     out: list[tuple[str, list[int], int, bytes]] = []
@@ -241,7 +242,9 @@ def adder(seed: int):
         rng = tiny.Xorshift(state["seed"])
         values = [offset + scale * rng.unit() for _ in range(count)]
         out.append((name, ne, tiny.GGML_TYPE_F32, tiny.pack(values, tiny.GGML_TYPE_F32)))
-        state["seed"] = (state["seed"] * 6364136223846793005 + 1442695040888963407) & 0xFFFFFFFFFFFFFFFF
+        state["seed"] = (
+            state["seed"] * 6364136223846793005 + 1442695040888963407
+        ) & 0xFFFFFFFFFFFFFFFF
 
     return out, add
 
@@ -250,7 +253,10 @@ def tokenizer_metadata(tokens: list[str], types: list[int], bos: int, eos: int, 
     s = tiny.scalar
     e = tiny.encode_string
     # Longer pieces score higher, so the SPM merges reach them.
-    scores = [float(len(token)) if kind == tiny.TOKEN_TYPE_NORMAL else 0.0 for token, kind in zip(tokens, types)]
+    scores = [
+        float(len(token)) if kind == tiny.TOKEN_TYPE_NORMAL else 0.0
+        for token, kind in zip(tokens, types, strict=True)
+    ]
     return [
         ("tokenizer.ggml.model", tiny.T_STRING, e("llama")),
         ("tokenizer.ggml.tokens", tiny.T_ARRAY, tiny.string_array(tokens)),
@@ -449,7 +455,14 @@ def clef_head(add) -> None:
     norm("decision.option_summary_norm", h)
     norm("decision.field_norm", h)
     norm("decision.option_norm", h)
-    for proj in ("memory", "question", "option_question", "global", "option_context", "option_lexical"):
+    for proj in (
+        "memory",
+        "question",
+        "option_question",
+        "global",
+        "option_context",
+        "option_lexical",
+    ):
         add(f"decision.proj_{proj}.weight", [n_embd, h], 0.2)
     add("decision.scales", [3], 0.5, 1.0)
     add("token_types.weight", [h, 3], 0.5)
@@ -483,7 +496,8 @@ def text(name: str) -> str:
 
 LABEL_OPTIONS = (
     "{% for o in options %}"
-    "{{ o.label if o.label is defined else 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'[loop.index0] }}) "
+    "{{ o.label if o.label is defined else "
+    "'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'[loop.index0] }}) "
     "{{ o.key }}{% if o.description is not none %}: " + text("o.description") + "{% endif %}\n"
     "{% endfor %}"
 )
@@ -498,7 +512,11 @@ NIMBLE_TEMPLATE = (
     "{% for q in questions %}[{{ q.id }}] {{ q.type }}: "
     "{{ q.instructions if q.instructions is string else q.instructions | tojson }}\n"
     "{% for o in q.options %}  {{ o.label }}) {{ o.key }}\n{% endfor %}{% endfor %}"
-    "Now {{ id }} ({{ type }}): " + text("instructions") + "\n" + LABEL_OPTIONS + "<|im_end|>Answer: "
+    "Now {{ id }} ({{ type }}): "
+    + text("instructions")
+    + "\n"
+    + LABEL_OPTIONS
+    + "<|im_end|>Answer: "
 )
 
 H2O_TEMPLATE = (
@@ -525,14 +543,16 @@ JOINT_TEMPLATE = (
     "{% for q in questions %}{{ sep }}{{ mark_question }}{{ q.type }}: "
     "{{ q.instructions if q.instructions is string else q.instructions | tojson }}{{ sep }}\n"
     "{% for o in q.options %}{{ sep }}{{ mark_option }}{{ o.key }}"
-    "{% if o.description is not none %}: {{ o.description if o.description is string else o.description | tojson }}{% endif %}"
+    "{% if o.description is not none %}: "
+    "{{ o.description if o.description is string else o.description | tojson }}{% endif %}"
     "{{ sep }};{% endfor %}{% endfor %}{{ sep }}<|im_end|>"
 )
 
 D1OMNI_TEMPLATE = (
     "{% for i in images %}{{ i }}{% endfor %}{{ sep }}<bos>"
-    "{{ sep }}{{ mark_question }}{{ type }} question: " + text("instructions") +
-    "{% for o in options %}{{ sep }}{{ mark_option }}<mask> {{ o.key }}"
+    "{{ sep }}{{ mark_question }}{{ type }} question: "
+    + text("instructions")
+    + "{% for o in options %}{{ sep }}{{ mark_option }}<mask> {{ o.key }}"
     "{% if o.description %}: " + text("o.description") + "{% endif %}{% endfor %}"
     "{{ sep }}<eos>{{ sep }}{{ mark_state }}" + text("state") + "{{ sep }}<eos>"
 )
@@ -579,8 +599,12 @@ def build_type(kind: str) -> bytes:
     s = tiny.scalar
     if trunk == "modern-bert":
         # The encoder and head of the laya fixture, read with the d1-omni layout.
-        kvs = [kv for kv in metadata() if not kv[0].startswith("tokenizer.chat_template")
-               and kv[0] not in (f"{ARCHITECTURE}.decision.type", "general.alignment", "general.name")]
+        kvs = [
+            kv
+            for kv in metadata()
+            if not kv[0].startswith("tokenizer.chat_template")
+            and kv[0] not in (f"{ARCHITECTURE}.decision.type", "general.alignment", "general.name")
+        ]
         kvs.append(("general.name", tiny.T_STRING, tiny.encode_string(name)))
         kvs += decision_metadata(ARCHITECTURE, kind, template)
         return write_gguf(tensors(), kvs)
@@ -594,7 +618,13 @@ def build_type(kind: str) -> bytes:
         kvs = causal_metadata(trunk, name)
         if trunk == "vllm-decision2":
             vllm_decision2_head(add)
-            kvs.append((f"{trunk}.attention.layer_norm_epsilon", tiny.T_FLOAT32, s(tiny.T_FLOAT32, NORM_EPS)))
+            kvs.append(
+                (
+                    f"{trunk}.attention.layer_norm_epsilon",
+                    tiny.T_FLOAT32,
+                    s(tiny.T_FLOAT32, NORM_EPS),
+                )
+            )
         return write_gguf(table, kvs + tokenizer + decision_metadata(trunk, kind, template))
 
     table, add = adder(0xA0761D6478BD642F)
