@@ -4,6 +4,9 @@ Paths in a configuration resolve against the directory of the TOML file, not
 the shell's working directory. Paths passed on the command line (`--model`,
 `--data`, …) resolve against the working directory.
 
+For labelled choices, scores and yes/no questions, see the
+[decision JSONL format](../training/decision#data).
+
 ## Chat JSONL
 
 One JSON object per line, with a `messages` array. Roles are `system`, `user`

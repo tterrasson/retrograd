@@ -1,0 +1,4 @@
+{"state": "Please send me a copy of the receipt for my subscription renewal.", "question": {"type": "choice", "instructions": "Which team should handle this?", "criteria": {"billing": "payments and refunds", "shipping": "delivery and tracking", "technical": null}}, "answer": "billing"}
+{"state": "The package is due next month, but I would like an updated estimate.", "question": {"type": "score", "instructions": "How urgent is this request?", "criteria": ["can wait", "this week", "today", "right now"]}, "answer": 0}
+{"state": "The item arrived broken. Please return the full purchase amount.", "question": {"type": "noul", "instructions": "Does the customer ask for a refund?"}, "answer": true}
+{"state": "Can I update the address on a package that has already shipped?", "question": {"type": "noul", "instructions": "Does the customer ask for a refund?"}, "answer": false}

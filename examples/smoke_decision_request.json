@@ -1,0 +1,27 @@
+{
+  "state": {
+    "message": "I was charged twice for order #4471 and I want my money back.",
+    "plan": "pro"
+  },
+  "questions": {
+    "intent": {
+      "type": "choice",
+      "instructions": "What does the customer want?",
+      "criteria": {
+        "refund": "wants money back",
+        "cancel": "wants to cancel the order",
+        "track": "wants to know where the order is",
+        "other": "anything else"
+      }
+    },
+    "urgent": {
+      "type": "noul",
+      "instructions": "Does this need a human within the hour?"
+    },
+    "frustration": {
+      "type": "score",
+      "instructions": "How frustrated is the customer?",
+      "criteria": ["calm", "mildly annoyed", "annoyed", "angry"]
+    }
+  }
+}

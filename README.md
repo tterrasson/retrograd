@@ -6,8 +6,8 @@
 
 <p align="center">
   Run and train GGUF models: an OpenAI-compatible server, and LoRA or
-  full-weight training with SFT, preference optimization, PPO, GRPO and agentic
-  GRPO.
+  full-weight training with SFT, preference optimization, PPO, GRPO, agentic
+  GRPO, distillation and decision models.
 </p>
 
 <p align="center">
@@ -28,11 +28,13 @@ a selection. One TOML file describes the whole run.
 - **Serving**: an OpenAI-compatible API (Chat Completions, Responses,
   Completions, Embeddings) with token streaming, batched requests, a shared
   prefix cache and structured outputs. Several LoRA adapters of one base can
-  share a decode.
+  share a decode. Native decision models answer typed questions on
+  [`POST /v1/systemone`](https://tterrasson.github.io/retrograd/running/api#decisions).
 - **Algorithms**: SFT (plain text, chat or tool conversations), offline
   preference optimization (DPO, IPO, SimPO, ORPO), PPO, GRPO (token- or
   sequence-level importance sampling, as in GSPO), distillation from a teacher
-  model, and multi-turn agentic GRPO with MCP tools and sandboxed environments.
+  model, supervised decision training, and multi-turn agentic GRPO with MCP
+  tools and sandboxed environments.
 - **Data from rollouts**: `retrograd collect` turns the successful traces of
   an agentic configuration into SFT records, or into preference pairs with
   `--pairs`, from the local model or an OpenAI-compatible endpoint.
@@ -102,10 +104,13 @@ run ends with a finite `train_loss` and writes the adapter to
 `examples/smoke_tiny_ppo.toml`, `examples/smoke_tiny_grpo.toml` and
 `examples/smoke_tiny_gspo.toml` (GRPO with sequence-level ratios) do the same
 for the reinforcement learning algorithms, on eight arithmetic questions
-scored by `examples/smoke_rl_reward.py`, and
+scored by `examples/smoke_rl_reward.py`. Use
 `examples/smoke_tiny_preference.toml` for DPO on a few preference pairs. The
 [register machine](examples/register_machine/README.md) is a complete GRPO
 example with an exact reward and held-out evaluation.
+
+The [decision smoke test](https://tterrasson.github.io/retrograd/training/decision#smoke-test)
+shows how to answer typed questions and train a tiny decision model on CPU.
 
 The [quickstart](https://tterrasson.github.io/retrograd/getting-started/quickstart)
 walks through a first real run.
@@ -150,6 +155,7 @@ retrograd preflight --model base.gguf --strict   # operations the device cannot 
 retrograd train run.toml                         # train; --resume continues a stopped run
 retrograd bench run.toml --adapter adapter.gguf  # base model against adapter, same examples
 retrograd chat run.toml --compare                # base model and adapter, turn by turn
+retrograd decide --model base.gguf --request request.json  # answer typed questions
 retrograd serve run.toml                         # OpenAI-compatible API on 127.0.0.1:8000
 retrograd-infer serve.toml                       # the same, for a model and its adapters
 retrograd-server server.toml                     # runs and serving over HTTP, on 127.0.0.1:8471
@@ -170,6 +176,7 @@ a VitePress site in [`docs/`](docs/) (`cd docs && bun install && bun run docs:de
   [Retrograd server](https://tterrasson.github.io/retrograd/running/server).
 - **Training**: [SFT](https://tterrasson.github.io/retrograd/training/sft),
   [preference optimization](https://tterrasson.github.io/retrograd/training/preference),
+  [decision models](https://tterrasson.github.io/retrograd/training/decision),
   [PPO](https://tterrasson.github.io/retrograd/training/ppo),
   [GRPO](https://tterrasson.github.io/retrograd/training/grpo)
   (and its [GSPO option](https://tterrasson.github.io/retrograd/training/grpo#sequence-level-importance-sampling-gspo)),

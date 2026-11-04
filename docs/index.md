@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Retrograd
   text: Run and train GGUF models
-  tagline: Serve a model and its LoRA adapters through an OpenAI-compatible API, and train adapters or the model's own weights with SFT, preference optimization, PPO, GRPO, agentic GRPO or distillation. No conversion step, no Python stack.
+  tagline: Serve GGUF models and their LoRA adapters through an OpenAI-compatible API. Train adapters or model weights for text generation and typed decisions.
   image:
     src: /logo.png
     alt: Retrograd
@@ -29,6 +29,9 @@ features:
   - title: Preference optimization
     details: Learn from pairs of answers, one preferred over the other, with DPO, IPO, SimPO or ORPO.
     link: /training/preference
+  - title: Decision models
+    details: Learn from labelled choices, scores and yes/no questions, and serve typed answers on POST /v1/systemone.
+    link: /training/decision
   - title: PPO and GRPO
     details: Learn from a reward program that scores the model's own answers, with GSPO's sequence-level ratio as an option.
     link: /training/grpo

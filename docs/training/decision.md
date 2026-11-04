@@ -1,20 +1,47 @@
 # Decision models
 
-A decision model reads a state and a typed question and scores the options in
-one forward pass: a `choice` among named options, a `score` on a scale of 2 to
-10 levels, a yes/no `noul`. It is served on [`POST /v1/systemone`](../running/api#decisions).
-`run.algorithm = "decision"` fine-tunes one on labelled questions, fits its
-temperatures on held-out questions, and writes them into what it exports.
+A decision model scores options for a typed question about a state. It supports
+a `choice` among named options, a `score` on a scale of 2 to 10 levels, and a
+yes/no `noul`. Native decision models are served on
+[`POST /v1/systemone`](../running/api#decisions). The `decision` algorithm
+fine-tunes supported models on labelled questions and can fit and export
+temperatures using held-out questions.
 
 Models whose `<arch>.decision.type` is `laya` train here (Julia, Laya, and
 other ModernBERT decision heads): they read the score of an option at a
 marker token of the embeddings output. Causal LLMs and `openjev` models train
 on letter logits, `lev` models on their code labels, `kev` models on the
-pointer product of their hidden states. The other types llama.cpp knows
-(`nimble`, `pplx-decider`, `granite-switch`, `vllm-d3`, the d1 models,
-`h2o-lightning`, `clef`, `vllm-decision2`, `openbmb-minicpm-ocr-jev`) are
-served only: a run refuses them before it reads the data, with a
-configuration error that names the type.
+pointer product of their hidden states. See the
+[API reference](../running/api#decisions) for the other readouts and their
+serving constraints. Training rejects unsupported readouts before loading
+the dataset.
+
+## Smoke test
+
+From the repository root, generate the tiny `laya` fixture and submit the
+example request on CPU.
+
+```bash
+scripts/fetch-cpu-fixture.sh TINY_DECISION_FIXTURE
+cargo run --release -q -- decide \
+  --model tests/fixtures/retrograd-tiny-decision-f32.gguf \
+  --request examples/smoke_decision_request.json --device cpu
+```
+
+The JSON response contains a `choice`, a `noul` and a `score`. Train a rank-1
+LoRA adapter on the same fixture and then try the request with it.
+
+```bash
+cargo run --release -q -- train examples/smoke_tiny_decision.toml
+cargo run --release -q -- decide \
+  --model tests/fixtures/retrograd-tiny-decision-f32.gguf \
+  --adapter /tmp/retrograd-smoke-decision-adapter.gguf \
+  --request examples/smoke_decision_request.json --device cpu
+```
+
+The training configuration reads `examples/smoke_decision.jsonl` and fits
+temperatures on `examples/smoke_decision_eval.jsonl`. The generated weights
+and small datasets are intended for checking the workflow.
 
 ## Configuration
 
@@ -180,16 +207,18 @@ One question per line, written as the service receives it, with its answer:
   `state`, `question`, `options`, `type`, `target`, optionally
   `teacher_logits`.
 
-Every question is rendered through the model's `systemone` template and laid
-out by its head budget exactly as the server does, so what is trained is what
-is served. A question longer than `training.micro_batch` tokens is refused.
+Every question uses the effective `systemone` template and the layout for its
+readout. The marker heads apply their head budget before the micro-batch token
+limit is checked. A rendered and laid-out question that still exceeds
+`training.micro_batch` is refused.
 
 ## How a step works
 
 A micro-batch holds up to `questions_per_batch` questions and
-`training.micro_batch` tokens, each question its own sequence. The loss is a
-softmax cross-entropy over the scores the head reads at the option markers of
-each question, at temperature 1. `training.gradient_accumulation`
+`training.micro_batch` tokens, with one sequence per question. Recurrent and
+hybrid trunks process one question per micro-batch. Marker and pointer heads
+use softmax cross-entropy over option scores at temperature 1. Letter and code
+readouts train on label tokens. `training.gradient_accumulation`
 micro-batches make one optimizer update.
 
 The options of every `choice` question are shuffled at each epoch
@@ -198,14 +227,17 @@ score levels and noul are ordered and stay as they are.
 
 ## Evaluation and temperatures
 
-`[evaluation].data` is evaluated after each epoch at temperature 1: NLL (what
-early stopping compares), accuracy, Brier score and expected calibration
-error, overall and per type.
+`[evaluation].data` is evaluated at temperature 1 on the epoch schedule set
+by `evaluation.every_iterations` (every epoch by default) and at the final
+epoch. The report includes NLL, accuracy, Brier score and expected
+calibration error, overall and per type. Early stopping compares NLL.
 
-At the end, the run fits one temperature per type and option-count bucket
-(`choice.3_5`, ...) and one per type, minimizing the held-out NLL. A
-temperature never changes the winning option; it sets the spread of the
-probabilities and with it the `confidence` a caller thresholds on.
+When `decision.calibrate` is enabled, as it is by default with
+`[evaluation]`, the run fits one temperature per type and option-count
+bucket (`choice.3_5`, for example) and one per type to minimize held-out NLL.
+Temperature scaling changes the spread of each distribution and the
+resulting `confidence`. Aggregate answers such as expected scores can also
+change.
 
 ## Exports
 
@@ -213,7 +245,7 @@ probabilities and with it the `confidence` a caller thresholds on.
 | --- | --- |
 | `adapter` | `adapter.decision.temperature.*` in the adapter. Retrograd serves the adapter with them; llama.cpp ignores them and keeps the base's. |
 | `model` (`training.trainable = "full"` or `"partial"`) | `<arch>.decision.temperature.*` in the model, which `llama-server` serves as is. |
-| `trainable` | None: the bundle carries no metadata. |
+| `trainable` | The bundle carries no temperatures. When the run also writes a sibling LoRA adapter, the adapter carries them. |
 
 `decision.export_base` writes a copy of the base model carrying the fitted
 temperatures - and the template and head budget of the run when they were
@@ -228,4 +260,7 @@ whose temperatures differ from the base's and no such copy was asked for.
 question of `[evaluation].data` through the engine, as the server would, and
 reports accuracy, NLL, Brier and calibration error overall and per type, and
 the share of questions kept at each confidence threshold with their accuracy.
-The adapter is measured with its own temperatures.
+For coverage, the benchmark computes confidence from the returned
+probabilities using the standard choice and score formulas. A head with its
+own confidence formula can report a different value on the API. The adapter
+is measured with its own temperatures.

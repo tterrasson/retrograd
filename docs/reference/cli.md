@@ -134,6 +134,9 @@ An adapter trained by retrograd is served with the temperatures it carries.
 
 A plain causal GGUF uses the generic letter prompt with thinking disabled.
 
+The [decision smoke test](../training/decision#smoke-test) includes a request
+and a tiny model for trying this command.
+
 ```text
 retrograd decide label --teacher MODEL.gguf|URL --data QUESTIONS.jsonl --out LABELLED.jsonl
                        [--adapter A.gguf] [--device D] [--template-variables JSON]

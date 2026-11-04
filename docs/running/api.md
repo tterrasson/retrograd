@@ -159,9 +159,9 @@ causal chat model that declares no pooling is refused.
 ## Decisions
 
 `POST /v1/systemone` serves a decision model: a GGUF whose metadata declares
-`<arch>.decision.type`. It answers typed questions in one forward pass each
-and generates nothing. The body and the answer are llama-server's, so a client
-of its decision server works unchanged:
+`<arch>.decision.type`. It scores typed questions and returns structured
+answers with zero generated tokens. The request and response follow
+llama-server's decision contract.
 
 ```json
 {
@@ -181,10 +181,14 @@ of its decision server works unchanged:
 {
   "model": "base",
   "answers": {
-    "intent": {"type": "choice", "choice": "refund", "probabilities": {"refund": 0.93, "other": 0.07}, "confidence": 0.62},
+    "intent": {
+      "type": "choice", "choice": "refund", "probabilities": {"refund": 0.93, "other": 0.07}, "confidence": 0.86
+    },
     "urgent": {"type": "noul", "noul": 0.21},
-    "frustration": {"type": "score", "score": 0.8, "legend": {"0": "calm", "1": "annoyed", "2": "angry"},
-                    "probabilities": {"0": 0.38, "1": 0.44, "2": 0.18}, "confidence": 0.05}
+    "frustration": {
+      "type": "score", "score": 0.8, "legend": {"0": "calm", "1": "annoyed", "2": "angry"},
+      "probabilities": {"0": 0.38, "1": 0.44, "2": 0.18}, "confidence": 0.16
+    }
   },
   "usage": {"input_tokens": 241, "output_tokens": 0}
 }
@@ -200,10 +204,10 @@ of its decision server works unchanged:
 - The prompt is the model's `systemone` template. The model's
   `max_head_tokens` and temperatures apply. `retrograd-infer` can replace the
   template and the budget in its [`[decision]` section](./#configuration-of-retrograd-infer).
-- One question per forward pass by default: the answers then match
-  llama-server's on the same backend and build. Packing several questions in a
-  pass (`pack`) is faster, and makes each answer depend on the other questions
-  of its request.
+- By default each rendered prompt is evaluated separately, as in
+  llama-server. The head determines how many prompts a request produces.
+  `pack` can batch prompts for heads that support it, which can change the
+  scores relative to separate passes.
 - Every `<arch>.decision.type` of llama.cpp's decision server is recognised,
   with its own checks of the body and its own messages:
 
@@ -232,7 +236,9 @@ of its decision server works unchanged:
   decision model refuses `/v1/systemone` the same way.
 
 `retrograd decide --model decision.gguf --request request.json` answers one
-body from the command line, without a server.
+body from the command line without a server. The
+[decision smoke test](../training/decision#smoke-test) provides a request and a
+tiny model that work with this command.
 
 ## Clients
 

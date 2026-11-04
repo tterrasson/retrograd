@@ -32,6 +32,9 @@ and `smoke_tiny_preference.toml` do the same for the other algorithms.
 ```bash
 ./target/release/retrograd train examples/smoke_tiny_sft.toml --model /path/to/base.gguf
 ```
+
+The [decision smoke test](../training/decision#smoke-test) covers typed
+questions and decision training with a separate tiny model.
 :::
 
 ## 2. Write a dataset
@@ -125,6 +128,7 @@ Pick the algorithm that matches the signal you have:
 | --- | --- |
 | Example answers | [SFT](../training/sft) |
 | Pairs of answers, one better than the other | [Preference optimization](../training/preference) (DPO, IPO, SimPO, ORPO) |
+| Labelled choices, scores or yes/no decisions | [Decision models](../training/decision) |
 | A program that scores one answer | [PPO](../training/ppo) |
 | A program that scores and ranks several answers to the same prompt | [GRPO](../training/grpo) |
 | Tasks that need tool calls over several turns | [Agentic GRPO](../training/agent) |

@@ -1,0 +1,60 @@
+# Generate the tiny decision fixture once, then run from the repository root:
+# scripts/fetch-cpu-fixture.sh TINY_DECISION_FIXTURE
+# cargo run -q -- train examples/smoke_tiny_decision.toml
+#
+# To answer a decision request without training anything:
+# cargo run -q -- decide --model tests/fixtures/retrograd-tiny-decision-f32.gguf \
+#   --request examples/smoke_decision_request.json --device cpu
+
+[run]
+algorithm = "decision"
+verbose = true
+
+[model]
+# Relative to this file: the generated tiny decision model (a ModernBERT
+# encoder with a `laya` decision head). The LoRA targets below match ModernBERT.
+path = "../tests/fixtures/retrograd-tiny-decision-f32.gguf"
+device = "cpu"
+
+[output]
+path = "/tmp/retrograd-smoke-decision-adapter.gguf"
+
+[lora]
+dtype = "f32"
+rank = 1
+alpha = 2.0
+seed = 42
+# A ModernBERT block has a fused attention projection: `qkv` matches
+# `blk.*.attn_qkv.weight` (`q`, `k` and `v` match nothing there). The scorer
+# can be targeted by name, `cls.weight`.
+targets = ["qkv", "o", "ffn_up", "ffn_down"]
+
+[training]
+ctx = 256
+# A decision step is one micro-batch of questions, so micro_batch is that
+# batch's token budget and must divide ctx.
+micro_batch = 256
+gradient_accumulation = 2
+epochs = 2
+lr = 0.001
+lr_scheduler = "constant"
+warmup_steps = 0
+weight_decay = 0.0
+
+[decision]
+data = "smoke_decision.jsonl"
+questions_per_batch = 4
+# A base copy carrying the fitted temperatures, for `llama-server --lora`
+# with the adapter (retrograd serves the adapter with them either way):
+# export_base = "/tmp/retrograd-smoke-decision-base.gguf"
+
+[evaluation]
+data = "smoke_decision_eval.jsonl"
+every_iterations = 1 # evaluate at the end of each epoch
+patience = 3
+min_delta = 0.0
+
+[checkpoint]
+directory = "/tmp/retrograd-smoke-decision-checkpoints"
+mode = "steps_and_best_eval"
+every_steps = 2
