@@ -332,9 +332,7 @@ def encode_string(value: str) -> bytes:
 def build(matrix_type: int, router_shape: str) -> bytes:
     table = tensors(matrix_type, router_shape)
     header = bytearray()
-    kvs = metadata(
-        FILE_TYPE_MOSTLY_F16 if matrix_type == GGML_TYPE_F16 else FILE_TYPE_ALL_F32
-    )
+    kvs = metadata(FILE_TYPE_MOSTLY_F16 if matrix_type == GGML_TYPE_F16 else FILE_TYPE_ALL_F32)
     header += struct.pack("<IIQQ", GGUF_MAGIC, GGUF_VERSION, len(table), len(kvs))
     for key, value_type, payload in kvs:
         write_kv(header, key, value_type, payload)
