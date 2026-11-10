@@ -280,8 +280,8 @@ impl Engine {
         ffi_config.expert_placement = placement;
         ffi_config.expert_host_layers = host_layers;
         ffi_config.expert_device_cache_bytes = cache_bytes;
-        // SAFETY: the `Engine` invariant holds and all borrowed arguments live through this synchronous call.
         let mut invalid_placement = false;
+        // SAFETY: the path, config and writable out-parameter live through this synchronous call.
         let raw = unsafe {
             ffi::retro_engine_new_checked(model_path.as_ptr(), &ffi_config, &mut invalid_placement)
         };
