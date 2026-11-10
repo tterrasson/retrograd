@@ -157,11 +157,19 @@ fn the_serving_experts_section_builds_and_validates() {
     assert!(load(&absent).unwrap().serving.is_none());
 
     let (_tmp, host) = write_config(&format!(
-        "{base}[serving.experts]\nplacement='host'\nhost_layers=2\ndevice_cache='6GiB'\n"
+        "{base}[serving.experts]\nplacement='host'\nhost_layers=2\ndevice_cache='6GiB'\nhistory_dir='state/experts'\nroute_sample_every=4\n"
     ));
     let experts = load(&host).unwrap().serving.unwrap().experts;
     assert_eq!(experts.placement.as_deref(), Some("host"));
     assert_eq!(experts.host_layers, Some(2));
+    assert_eq!(
+        experts.history_dir.as_deref(),
+        Some(host.parent().unwrap().join("state/experts").as_path())
+    );
+    assert_eq!(
+        experts.route_sample_every.map(std::num::NonZeroU32::get),
+        Some(4)
+    );
     assert_eq!(
         experts.device_cache,
         Some(DeviceCacheRequest::Bytes(6 * (1 << 30)))
@@ -192,6 +200,29 @@ fn the_serving_experts_section_builds_and_validates() {
         write_config(&format!("{base}[serving.experts]\ndevice_cache='a lot'\n"));
     let error = load(&bad_cache).unwrap_err().to_string();
     assert!(error.contains("serving.experts.device_cache"), "{error}");
+
+    // history_dir alone is enough: the sample interval defaults at the caller.
+    let (_tmp, history_only) =
+        write_config(&format!("{base}[serving.experts]\nhistory_dir='state/experts'\n"));
+    let experts = load(&history_only).unwrap().serving.unwrap().experts;
+    assert!(experts.history_dir.is_some());
+    assert!(experts.route_sample_every.is_none());
+
+    let (_tmp, empty_history) =
+        write_config(&format!("{base}[serving.experts]\nhistory_dir=''\n"));
+    let error = load(&empty_history).unwrap_err().to_string();
+    assert!(error.contains("serving.experts.history_dir"), "{error}");
+
+    let (_tmp, orphan_sample) =
+        write_config(&format!("{base}[serving.experts]\nroute_sample_every=4\n"));
+    let error = load(&orphan_sample).unwrap_err().to_string();
+    assert!(error.contains("serving.experts.route_sample_every"), "{error}");
+
+    let (_tmp, zero_sample) = write_config(&format!(
+        "{base}[serving.experts]\nhistory_dir='state'\nroute_sample_every=0\n"
+    ));
+    let error = load(&zero_sample).unwrap_err().to_string();
+    assert!(error.contains("serving.experts.route_sample_every"), "{error}");
 }
 
 /// An omitted `lora.targets` trains every projection; only an explicit

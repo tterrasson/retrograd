@@ -132,6 +132,9 @@ fn a_dense_model_has_no_expert_banks_and_refuses_host_placement() {
         "a non-MoE model is a caller error, got: {error}"
     );
     assert!(error.to_string().contains("no expert banks"), "{error}");
+    let mut engine = Engine::new(&model, &engine_config(Device::Cpu)).unwrap();
+    let error = engine.set_expert_route_sampling(1).unwrap_err();
+    assert!(matches!(error, Error::InvalidArgument(_)), "{error}");
 }
 
 #[test]
@@ -334,4 +337,118 @@ fn host_with_a_device_cache_on_gpu_matches_device_and_reports_stats() {
     let routed = stats.small.hits + stats.small.misses + stats.large.hits + stats.large.misses;
     assert!(routed > 0, "the decode routed through the cache: {stats:?}");
     assert_eq!(group.device_bytes, FIXTURE_CACHE_FLOOR);
+}
+
+/// Submit a single logical batch that spans several micro-batches, then feed
+/// back greedy tokens so the test also sees a reused single-token graph.
+fn route_probe(engine: &mut Engine, prompt_len: usize) -> Vec<(i32, u32)> {
+    use retrograd::{StepOutput, StepRow};
+    use retrograd_core::SamplingParamsV2;
+
+    let prompt: Vec<_> = engine
+        .tokenize_text("The quick brown fox")
+        .expect("the fixture tokenizes")
+        .into_iter()
+        .cycle()
+        .take(prompt_len)
+        .collect();
+    let mut sampling = SamplingParamsV2::from(sampling());
+    sampling.top_k = 1;
+    let mut row = StepRow::prefill(0, 0, &prompt, 0);
+    row.sample = true;
+    row.sampling = sampling.clone();
+    row.n_top_logprobs = 1;
+    let mut output = StepOutput::with_capacity(1, 1);
+    engine.step(&[row], &mut output).expect("prefill steps");
+    let mut token = output.row(0).token;
+    let mut result = vec![(token, output.row(0).logprob.to_bits())];
+    for pos in prompt_len..prompt_len + 3 {
+        let mut row =
+            StepRow::decode(0, 0, token, i32::try_from(pos).expect("pos fits in i32"), &sampling);
+        row.n_top_logprobs = 1;
+        row.want_logprob = true;
+        engine.step(&[row], &mut output).expect("decode steps");
+        token = output.row(0).token;
+        result.push((token, output.row(0).logprob.to_bits()));
+    }
+    engine.seq_rm(0, -1, -1).expect("sequence removed");
+    engine.request_free(0).expect("slot freed");
+    result
+}
+
+fn assert_fixture_routes(counts: &retrograd::ExpertRouteCounts, tokens_by_layer: [u32; 2]) {
+    assert_eq!(counts.banks.len(), 6);
+    for bank in &counts.banks {
+        // The concentrated fixture routes every token computed by this bank
+        // to experts 0 and 1. OLMoE skips non-output rows in the final FFN.
+        let routed_tokens = tokens_by_layer[usize::try_from(bank.bank.layer).expect("layer fits")];
+        assert_eq!(
+            bank.counts,
+            [routed_tokens, routed_tokens, 0, 0, 0, 0, 0, 0],
+            "{}",
+            bank.bank.name
+        );
+    }
+}
+
+#[test]
+fn cpu_routing_readback_counts_each_ubatch_and_preserves_greedy_output() {
+    let _guard = serialize_models();
+    let Some(model) = moe_model() else { return };
+    let mut config = engine_config(Device::Cpu);
+    config.n_ubatch = 3;
+    for placement in [ExpertPlacement::device(), host_experts(0, 0)] {
+        let mut engine =
+            Engine::new_with_options(&model, &config, &EngineOptions { experts: placement })
+                .unwrap();
+        let baseline = route_probe(&mut engine, 9);
+        assert!(engine.expert_route_counts().unwrap().banks.is_empty());
+        engine.set_expert_route_sampling(1).unwrap();
+        assert_eq!(route_probe(&mut engine, 9), baseline);
+        let counts = engine.expert_route_counts().unwrap();
+        assert_fixture_routes(&counts, [12, 4]);
+        assert_eq!(counts.paths, [0, 0, 10]);
+        engine.reset_expert_route_counts().unwrap();
+        assert_fixture_routes(&engine.expert_route_counts().unwrap(), [0, 0]);
+
+        engine.set_expert_route_sampling(2).unwrap();
+        assert_eq!(route_probe(&mut engine, 9), baseline);
+        let counts = engine.expert_route_counts().unwrap();
+        // Widths 3,3,3,1,1,1; the first, third and fifth are sampled.
+        assert_fixture_routes(&counts, [7, 2]);
+        assert_eq!(counts.paths, [0, 0, 5]);
+        engine.set_expert_route_sampling(0).unwrap();
+        assert_eq!(route_probe(&mut engine, 9), baseline);
+    }
+}
+
+#[cfg(retro_metal)]
+#[test]
+fn metal_routing_counts_cover_device_slots_and_large_copies_without_double_counting() {
+    if !common::gpu_device_present() {
+        eprintln!("skipping: no GPU device registered at runtime");
+        return;
+    }
+    let _guard = serialize_models();
+    let Some(model) = moe_model() else { return };
+    // With only two slots, one token is always admitted. Width 4 exceeds
+    // capacity and normally computes on the host. Width 32 also exceeds
+    // capacity and reaches Metal's default host-weight offload threshold.
+    for (width, prompt, experts, paths) in [
+        (4, 8, ExpertPlacement::device(), [0, 0, 9]),
+        (1, 8, host_experts(0, FIXTURE_CACHE_FLOOR), [15, 0, 0]),
+        (32, 64, host_experts(0, FIXTURE_CACHE_FLOOR), [7, 2, 0]),
+    ] {
+        let mut config = engine_config(Device::Gpu);
+        config.n_batch = 64;
+        config.n_ubatch = width;
+        let mut engine =
+            Engine::new_with_options(&model, &config, &EngineOptions { experts }).unwrap();
+        let baseline = route_probe(&mut engine, prompt);
+        engine.set_expert_route_sampling(1).unwrap();
+        assert_eq!(route_probe(&mut engine, prompt), baseline);
+        let counts = engine.expert_route_counts().unwrap();
+        assert_fixture_routes(&counts, [u32::try_from(prompt).unwrap() + 3, 4]);
+        assert_eq!(counts.paths, paths);
+    }
 }

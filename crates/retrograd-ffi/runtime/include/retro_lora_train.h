@@ -2787,6 +2787,12 @@ int retro_engine_expert_banks(
 // when the context was built without one.
 int retro_engine_expert_stats(retro_engine * engine, retro_expert_cache_stats * out_stats);
 
+// 0 disables telemetry; otherwise collect one in every sample_every micro-batches.
+int retro_engine_expert_route_enable(retro_engine * engine, uint32_t sample_every);
+int retro_engine_expert_route_counts(retro_engine * engine, uint32_t layer, uint32_t * out, size_t n_expert);
+int retro_engine_expert_route_paths(retro_engine * engine, uint64_t out[3]); // slots, copy, readback
+int retro_engine_expert_route_reset(retro_engine * engine);
+
 // Monotonic generation of the weights/adapters the resident KV was computed
 // under: bumped by every invalidation (adapter load/enable, KV forget). A
 // prefix cache may key its entries on (model_fingerprint, weights_version).

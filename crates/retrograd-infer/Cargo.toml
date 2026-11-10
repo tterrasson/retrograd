@@ -15,6 +15,11 @@ retrograd-core.workspace = true
 # tests/chain_boundary.rs).
 retrograd-engine.workspace = true
 thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

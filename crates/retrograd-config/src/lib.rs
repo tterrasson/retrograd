@@ -130,6 +130,8 @@ pub struct ExpertsConfig {
     pub host_layers: Option<u32>,
     /// The expert device-cache budget as spelled, or `auto`.
     pub device_cache: Option<DeviceCacheRequest>,
+    pub history_dir: Option<PathBuf>,
+    pub route_sample_every: Option<std::num::NonZeroU32>,
 }
 
 /// A device-cache budget as the configuration spells it: `auto`, or a byte

@@ -14,6 +14,11 @@ use retrograd_serve::server::REQUEST_TIMEOUT;
 use retrograd_serve::{AdapterSource, Serve, ServeConfig, ServeError};
 
 fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
+        )
+        .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Err(error) = run(&args) {
         eprintln!("retrograd-infer: {error}");

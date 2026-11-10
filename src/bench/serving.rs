@@ -60,6 +60,7 @@ pub(crate) struct ServingFlags {
     pub ubatches: Option<Vec<u32>>,
     pub seqs: Option<Vec<u32>>,
     pub repeats: Option<usize>,
+    pub route_sample_every: Option<u32>,
     pub cache: Option<String>,
     pub devices: Option<String>,
     pub out: Option<PathBuf>,
@@ -73,6 +74,7 @@ impl ServingFlags {
             ("--ubatches", self.ubatches.is_some()),
             ("--seqs", self.seqs.is_some()),
             ("--repeats", self.repeats.is_some()),
+            ("--route-sample-every", self.route_sample_every.is_some()),
             ("--cache", self.cache.is_some()),
             ("--devices", self.devices.is_some()),
             ("--out", self.out.is_some()),
@@ -92,6 +94,7 @@ pub(crate) struct ServingArgs {
     /// Active sequence counts to measure.
     pub seqs: Vec<u32>,
     pub repeats: usize,
+    pub route_sample_every: u32,
     pub cache: CacheMode,
     /// Raw `--devices` value: `auto` or a comma list of `cpu`/`gpu`/`auto`.
     pub devices: String,
@@ -142,6 +145,7 @@ impl ServingArgs {
             ubatches,
             seqs,
             repeats,
+            route_sample_every: flags.route_sample_every.unwrap_or(0),
             cache: flags
                 .cache
                 .as_deref()
@@ -282,7 +286,7 @@ pub(crate) fn bench_serving(
             out.display()
         )));
     }
-    let models = model_files(model)?;
+    let models = retrograd_engine::gguf_shard_paths(model)?;
     let info = model_info(model, Device::Cpu)?;
     if info.has_encoder {
         return Err(Error::invalid(
@@ -341,6 +345,9 @@ pub(crate) fn bench_serving(
             }
             let load_disk_before = disk_read_bytes();
             let mut engine = Engine::new(model, &config).map_err(Error::from)?;
+            if args.route_sample_every != 0 {
+                engine.set_expert_route_sampling(args.route_sample_every)?;
+            }
             let load_disk = disk_read_delta(load_disk_before);
             ui.finish_spinner(spinner, "model loaded");
             let load_mem = engine.memory_report().map_err(Error::from)?;
@@ -648,29 +655,6 @@ fn disk_mib(bytes: Option<u64>) -> String {
     )
 }
 
-fn model_files(model: &Path) -> Result<Vec<PathBuf>> {
-    let metadata = retrograd::trainer::read_gguf_metadata(model, "split.count")?;
-    let Some(count) = metadata.get("split.count") else {
-        return Ok(vec![model.to_path_buf()]);
-    };
-    let count: u16 = count
-        .parse()
-        .map_err(|_| Error::invalid("invalid GGUF split.count"))?;
-    if count <= 1 {
-        return Ok(vec![model.to_path_buf()]);
-    }
-    let suffix = format!("-00001-of-{count:05}.gguf");
-    let prefix = model
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(|name| name.strip_suffix(&suffix))
-        .filter(|prefix| !prefix.is_empty())
-        .ok_or_else(|| Error::invalid(format!("bench requires the first GGUF shard ({suffix})")))?;
-    Ok((1..=count)
-        .map(|index| model.with_file_name(format!("{prefix}-{index:05}-of-{count:05}.gguf")))
-        .collect())
-}
-
 /// Drops a file's clean pages from the page cache, so the next pass that
 /// faults them in reads from disk. Linux calls `posix_fadvise(DONTNEED)`
 /// directly; macOS has no `posix_fadvise`, so it maps the file read-only and
@@ -847,6 +831,10 @@ fn write_report(
     text.push_str(&format!(
         "- grid: prompt_tokens={} decode_tokens={} ubatches={:?} seqs={:?} repeats={} cache={:?}\n",
         args.prompt_tokens, args.decode_tokens, args.ubatches, args.seqs, args.repeats, args.cache
+    ));
+    text.push_str(&format!(
+        "- route sample interval: {} (0 = disabled)\n",
+        args.route_sample_every
     ));
     text.push('\n');
     text.push_str("| device | ubatch | n_seq | cache | prefill tok/s | decode tok/s | prefill ms | decode ms | max disk read MiB | buffer MiB | kv MiB |\n");
@@ -1035,6 +1023,15 @@ pub(crate) fn parse_serving_flag(
             }
             Ok(true)
         }
+        "--route-sample-every" => {
+            let interval = crate::args::parse_value(flag, args.value(flag)?, "an integer")?;
+            if flags.route_sample_every.replace(interval).is_some() {
+                return Err(Error::invalid(
+                    "bench accepts --route-sample-every at most once",
+                ));
+            }
+            Ok(true)
+        }
         "--cache" => {
             if flags.cache.replace(args.value(flag)?.to_string()).is_some() {
                 return Err(Error::invalid("bench accepts --cache at most once"));
@@ -1200,7 +1197,7 @@ mod tests {
         std::fs::write(&model, b"tiny").unwrap();
         let out = dir.path().join("report.md");
         let args = ServingArgs::from_flags(&ServingFlags::default(), None).unwrap();
-        write_report(&out, &[model.clone()], &args, &[row]).unwrap();
+        write_report(&out, std::slice::from_ref(&model), &args, &[row]).unwrap();
         let text = std::fs::read_to_string(&out).unwrap();
         assert!(text.contains("# serving bench"), "{text}");
         assert!(text.contains("- command: `"), "{text}");

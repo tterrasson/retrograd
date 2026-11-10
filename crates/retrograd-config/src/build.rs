@@ -227,7 +227,9 @@ pub fn build_with(
     let reference = reference_toml
         .map(|value| build_reference(value, root, training.n_ctx))
         .transpose()?;
-    let serving = serving.map(build_serving).transpose()?;
+    let serving = serving
+        .map(|value| build_serving(value, root))
+        .transpose()?;
     check_across_sections(
         &algorithm,
         evaluation.as_ref(),
@@ -265,7 +267,7 @@ pub fn build_with(
 /// `[serving]`: validated spellings only - an unknown placement or an
 /// unparseable cache budget is refused here, and `auto` is kept as written for
 /// the planner to resolve when the run is created.
-fn build_serving(value: ServingToml) -> Result<ServingConfig> {
+fn build_serving(value: ServingToml, root: &Path) -> Result<ServingConfig> {
     let experts = value.experts;
     if let Some(placement) = &experts.placement
         && !matches!(placement.as_str(), "device" | "host" | "auto")
@@ -301,11 +303,29 @@ fn build_serving(value: ServingToml) -> Result<ServingConfig> {
             )));
         }
     };
+    if experts
+        .history_dir
+        .as_ref()
+        .is_some_and(|p| p.as_os_str().is_empty())
+    {
+        return Err(Error::config("serving.experts.history_dir cannot be empty"));
+    }
+    if experts.route_sample_every.is_some()
+        && (experts.history_dir.is_none() || experts.route_sample_every == Some(0))
+    {
+        return Err(Error::config(
+            "serving.experts.route_sample_every requires history_dir and must be positive",
+        ));
+    }
     Ok(ServingConfig {
         experts: ExpertsConfig {
             placement: experts.placement,
             host_layers: experts.host_layers,
             device_cache,
+            history_dir: experts.history_dir.map(|path| resolve(root, path)),
+            route_sample_every: experts
+                .route_sample_every
+                .and_then(std::num::NonZeroU32::new),
         },
     })
 }

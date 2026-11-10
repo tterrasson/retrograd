@@ -587,3 +587,34 @@ async fn run_status_is_published_as_it_is_serialized() {
         );
     }
 }
+
+#[test]
+fn expert_history_respects_the_server_output_roots() {
+    let fixture = Fixture::new("hardening-expert-history");
+    let outside = tempfile::tempdir().expect("temp dir");
+    let mut state = state_of(&fixture, FakeEngine::succeeding(), false);
+    let mut server = (*state.config).clone();
+    server.path_roots = vec![fixture.dir.path().to_path_buf()];
+    state.config = Arc::new(server);
+    let source = format!(
+        "[run]\nalgorithm='sft'\n[model]\npath='{}'\n[output]\npath='{}'\n[lora]\n\
+         [sft]\ndata='{}'\n[serving.experts]\nhistory_dir='{}'\n",
+        fixture.path("model.gguf"),
+        fixture.path("adapter.gguf"),
+        fixture.path("data.jsonl"),
+        fixture.path("experts"),
+    );
+    let mut config = retrograd_config::build(
+        retrograd_config::parse_toml(&source, "run.toml").expect("parse"),
+        std::path::Path::new("/"),
+    )
+    .expect("build");
+    state
+        .validate_run_paths(&config, Default::default())
+        .expect("inside the root");
+    config.serving.as_mut().unwrap().experts.history_dir = Some(outside.path().join("experts"));
+    let error = state
+        .validate_run_paths(&config, Default::default())
+        .unwrap_err();
+    assert!(format!("{error:?}").contains("/config/serving/experts/history_dir"));
+}

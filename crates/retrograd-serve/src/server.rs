@@ -149,11 +149,13 @@ pub async fn serve(serve: Serve) -> Result<(), ServeError> {
     let router = build_router(endpoint, serve.api_key.as_deref(), serve.max_body_bytes);
 
     tracing::info!(address = %serve.address, "serving");
-    axum::serve(listener, router)
+    let outcome = axum::serve(listener, router)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })
-        .await?;
+        .await;
+    session.shutdown().await;
+    outcome?;
     Ok(())
 }
 
@@ -252,6 +254,7 @@ mod tests {
                     chat_template_variables: None,
                     decision: Default::default(),
                     experts: Default::default(),
+                    expert_history: None,
                 },
                 base: None,
                 created: 1,

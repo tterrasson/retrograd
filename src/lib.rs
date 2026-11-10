@@ -34,14 +34,14 @@ pub use retrograd_core::{
 pub use retrograd_core::{Dataset as DatasetRecord, Progress as CheckpointProgress};
 pub use retrograd_engine::{
     AdapterId, DutyCycleStats, Engine, EngineError, EngineMemory, EngineOptions, ExpertBanks,
-    FusedCeProbeInputs, FusedCeProbeShape, GefenParams, GefenState, GroupedGradient,
-    GroupedGradientCase, OptimizerMemory, ProbeInputs, ProbeOperand, RowAdapter, StepOutRow,
-    StepOutput, StepRow, Trainer, TransferRates, backend_list, dequant_types,
-    fused_sparse_ce_probe, fused_sparse_ce_probe_offloaded, gefen_codebook, gefen_step_probe,
-    gefen_step_supported, gpu_runtime_available, grouped_gradient_probe, model_info,
-    parse_assistant_output, probe_op, probe_op_ex, read_expert_banks, render_chat_template_source,
-    rir_census_report, rir_counters, rir_runtime_policy, rir_selection_selftest,
-    rir_variant_report, set_rir_runtime_policy, slot_initial_bytes, tensor_inventory,
-    tool_call_parser_from_source, transfer_probe,
+    ExpertRouteBank, ExpertRouteCounts, FusedCeProbeInputs, FusedCeProbeShape, GefenParams,
+    GefenState, GroupedGradient, GroupedGradientCase, OptimizerMemory, ProbeInputs, ProbeOperand,
+    RowAdapter, StepOutRow, StepOutput, StepRow, Trainer, TransferRates, backend_list,
+    dequant_types, fused_sparse_ce_probe, fused_sparse_ce_probe_offloaded, gefen_codebook,
+    gefen_step_probe, gefen_step_supported, gpu_runtime_available, grouped_gradient_probe,
+    model_info, parse_assistant_output, probe_op, probe_op_ex, read_expert_banks,
+    render_chat_template_source, rir_census_report, rir_counters, rir_runtime_policy,
+    rir_selection_selftest, rir_variant_report, set_rir_runtime_policy, slot_initial_bytes,
+    tensor_inventory, tool_call_parser_from_source, transfer_probe,
 };
 pub use training::batch::{GrpoBatchParams, TrainSequence};

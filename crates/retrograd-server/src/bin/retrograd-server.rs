@@ -220,7 +220,7 @@ async fn run(args: &[String]) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "retrograd_server=info,tower_http=info".into()),
+                .unwrap_or_else(|_| "retrograd_server=info,tower_http=info,retrograd_infer::experts=warn,retrograd_openai=warn".into()),
         )
         .init();
 
@@ -326,6 +326,8 @@ async fn run(args: &[String]) -> Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(|error| Error::runtime(format!("server failed: {error}")));
+
+    state.serving.shutdown().await;
 
     // After the listener is closed and before the process exits: every live run is
     // asked to checkpoint and stop at its next boundary, so a restart resumes

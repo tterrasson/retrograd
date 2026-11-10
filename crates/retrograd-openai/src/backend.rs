@@ -12,6 +12,7 @@ use retrograd_decision::request::SystemOneRequest;
 use retrograd_engine::{
     Decision, DecisionInfo, Engine, EngineOptions, decision_metadata, generation_batch,
 };
+use retrograd_infer::experts::{Bank, ExpertHistory, ModelShards};
 use retrograd_infer::{DecodeBackend, SchedulerOptions};
 
 use crate::error::OpenAiError;
@@ -43,6 +44,10 @@ pub trait ServeBackend: DecodeBackend + PromptModel {
         info: &DecisionInfo,
         request: &SystemOneRequest,
     ) -> Result<Decision, OpenAiError>;
+    /// Hands the latest delta to the history worker before clearing counters.
+    fn flush_expert_routes(&mut self, _history: &ExpertHistory) -> CoreResult<()> {
+        Ok(())
+    }
     /// What the adapter file at `path` carries about the decision head it was
     /// trained for (`adapter.decision.*`, the prefix removed); empty when it
     /// carries nothing.
@@ -55,6 +60,13 @@ pub trait ServeBackend: DecodeBackend + PromptModel {
 }
 
 impl ServeBackend for Engine {
+    fn flush_expert_routes(&mut self, history: &ExpertHistory) -> CoreResult<()> {
+        let snapshot = self.expert_route_counts()?;
+        history.submit(snapshot.banks.into_iter().map(|bank| bank.counts).collect())?;
+        self.reset_expert_route_counts()?;
+        Ok(())
+    }
+
     fn set_reasoning_budget(&mut self, budget: i32) -> CoreResult<()> {
         Ok(Engine::set_reasoning_budget(self, budget)?)
     }
@@ -124,10 +136,27 @@ impl PromptModel for Engine {
     }
 }
 
+fn history_shards(model: &std::path::Path) -> Option<ModelShards> {
+    let result = (|| -> CoreResult<ModelShards> {
+        let first = ModelShards::capture([model.to_path_buf()])?;
+        let shards = ModelShards::capture(retrograd_engine::gguf_shard_paths(model)?)?;
+        first.verify()?;
+        Ok(shards)
+    })();
+    match result {
+        Ok(shards) => Some(shards),
+        Err(error) => {
+            tracing::warn!(model = %model.display(), %error, "could not identify model shards; using in-memory telemetry");
+            None
+        }
+    }
+}
+
 /// A loaded serving backend plus the scheduler options its geometry implies.
 pub struct ServingBackend {
     pub backend: Box<dyn ServeBackend>,
     pub scheduler: SchedulerOptions,
+    pub expert_history: Option<ExpertHistory>,
     /// The decision head, with the spec's options applied, when the model is
     /// a decision model. Such a backend answers decisions only: the session
     /// neither initializes nor pumps its scheduler.
@@ -197,6 +226,10 @@ impl Loader for EngineLoader {
         };
         // The expert placement travels beside the geometry: it is an inference
         // option, not part of the training configuration the geometry derives from.
+        let shards = spec
+            .expert_history
+            .as_ref()
+            .and_then(|_| history_shards(&spec.model));
         let mut engine = Engine::from_train_config_with(
             &spec.model,
             &training,
@@ -213,6 +246,28 @@ impl Loader for EngineLoader {
         if let Some(variables) = &spec.chat_template_variables {
             engine.set_chat_template_variables(variables)?;
         }
+        let expert_history = if let Some(options) = &spec.expert_history {
+            engine.set_expert_route_sampling(options.sample_every.get())?;
+            let banks = engine
+                .expert_route_counts()?
+                .banks
+                .into_iter()
+                .map(|route| Bank {
+                    layer: route.bank.layer,
+                    role: route.bank.role,
+                    n_expert: route.counts.len(),
+                })
+                .collect();
+            shards.and_then(|shards| match ExpertHistory::start(options.dir.clone(), shards, banks) {
+                Ok(history) => Some(history),
+                Err(error) => {
+                    tracing::warn!(%error, "could not start expert history; using in-memory telemetry");
+                    None
+                }
+            })
+        } else {
+            None
+        };
         let n_vocab = engine.vocab_size()?;
         let scheduler = SchedulerOptions {
             mode: admission,
@@ -223,6 +278,7 @@ impl Loader for EngineLoader {
         Ok(ServingBackend {
             backend: Box::new(engine),
             scheduler,
+            expert_history,
             decision: None,
         })
     }
@@ -245,6 +301,12 @@ fn load_decision(
     if spec.experts != Default::default() {
         return Err(OpenAiError::invalid(format!(
             "{} is a decision model: expert placement does not apply to it (device only)",
+            spec.model.display()
+        )));
+    }
+    if spec.expert_history.is_some() {
+        return Err(OpenAiError::invalid(format!(
+            "{} is a decision model: expert history does not apply to it",
             spec.model.display()
         )));
     }
@@ -290,6 +352,7 @@ fn load_decision(
             ..SchedulerOptions::default()
         },
         decision: Some(info),
+        expert_history: None,
     })
 }
 
@@ -326,6 +389,7 @@ mod tests {
             n_seq_max: None,
             chat_template_variables: None,
             decision: Default::default(),
+            expert_history: None,
             experts: ExpertPlacement {
                 mode: ExpertPlacementMode::Host,
                 host_layers: 0,

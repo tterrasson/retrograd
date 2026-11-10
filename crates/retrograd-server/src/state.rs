@@ -1037,6 +1037,10 @@ impl AppState {
         }
     }
 
+    pub(crate) fn resolve_expert_history_dir(&self, path: &Path) -> ApiResult<PathBuf> {
+        self.resolve_output_path(path, "/config/serving/experts/history_dir")
+    }
+
     /// Applies `path_roots` to every filesystem path a complete configuration
     /// can make the engine read or write. `managed_adapter` skips the recipe's
     /// placeholder: run creation replaces it with a server-owned run path.
@@ -1143,6 +1147,13 @@ impl AppState {
         }
         if let Some(path) = &config.metrics.wandb_export_dir {
             self.resolve_output_path(path, "/config/metrics/wandb_export_dir")?;
+        }
+        if let Some(path) = config
+            .serving
+            .as_ref()
+            .and_then(|serving| serving.experts.history_dir.as_deref())
+        {
+            self.resolve_expert_history_dir(path)?;
         }
         if let Some(observe) = &config.observe
             && !managed.observe

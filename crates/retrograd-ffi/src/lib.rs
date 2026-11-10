@@ -2297,6 +2297,16 @@ unsafe extern "C" {
     /// resident KV was computed under.
     pub fn retro_engine_weights_version(engine: *mut RetroEngine, out_version: *mut u64) -> c_int;
 
+    pub fn retro_engine_expert_route_enable(engine: *mut RetroEngine, sample_every: u32) -> c_int;
+    pub fn retro_engine_expert_route_counts(
+        engine: *mut RetroEngine,
+        layer: u32,
+        out: *mut u32,
+        n_expert: usize,
+    ) -> c_int;
+    pub fn retro_engine_expert_route_paths(engine: *mut RetroEngine, out: *mut u64) -> c_int;
+    pub fn retro_engine_expert_route_reset(engine: *mut RetroEngine) -> c_int;
+
     /// Mirror of `retro_engine_model_fingerprint`.
     pub fn retro_engine_model_fingerprint(
         engine: *mut RetroEngine,

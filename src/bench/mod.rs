@@ -43,6 +43,7 @@ pub(crate) const FLAGS: &[&str] = &[
     "--ubatches",
     "--seqs",
     "--repeats",
+    "--route-sample-every",
     "--cache",
     "--devices",
     "--out",

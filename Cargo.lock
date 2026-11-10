@@ -2069,7 +2069,12 @@ version = "0.1.0"
 dependencies = [
  "retrograd-core",
  "retrograd-engine",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -2246,6 +2251,7 @@ dependencies = [
  "toml",
  "tower",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

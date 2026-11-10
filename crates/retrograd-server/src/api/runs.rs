@@ -252,6 +252,20 @@ pub(crate) fn serving_of(config: &retrograd_config::RunConfig) -> ServingSpec {
         output: config.output.path.clone(),
         chat_template_variables: config.chat_template_variables_json(),
         experts: serving_experts(config),
+        expert_history: config.serving.as_ref().and_then(|serving| {
+            use retrograd_infer::experts::{DEFAULT_ROUTE_SAMPLE_EVERY, ExpertHistoryOptions};
+            serving
+                .experts
+                .history_dir
+                .clone()
+                .map(|dir| ExpertHistoryOptions {
+                    dir,
+                    sample_every: serving
+                        .experts
+                        .route_sample_every
+                        .unwrap_or(DEFAULT_ROUTE_SAMPLE_EVERY),
+                })
+        }),
     }
 }
 

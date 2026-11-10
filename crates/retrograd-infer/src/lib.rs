@@ -25,6 +25,7 @@ mod actor;
 mod backend;
 mod detok;
 mod error;
+pub mod experts;
 mod fake;
 mod kv;
 mod request;

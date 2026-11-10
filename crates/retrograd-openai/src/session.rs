@@ -77,6 +77,8 @@ pub struct WeightsSpec {
     /// base identity: two specs differing only here do NOT share a loaded
     /// backend. `device` (the default) is today's behaviour.
     pub experts: ExpertPlacement,
+    /// Routing telemetry and its state directory, when enabled.
+    pub expert_history: Option<retrograd_infer::experts::ExpertHistoryOptions>,
 }
 
 impl WeightsSpec {
@@ -89,6 +91,7 @@ impl WeightsSpec {
             && self.chat_template_variables == other.chat_template_variables
             && self.decision == other.decision
             && self.experts == other.experts
+            && self.expert_history == other.expert_history
     }
 }
 
@@ -225,6 +228,7 @@ enum Envelope {
     /// Nothing to do but look at the flags: sent so a thread asleep on an idle
     /// model notices a yield without waiting out its timeout.
     Wake,
+    Shutdown(oneshot::Sender<()>),
 }
 
 struct Job {
@@ -256,6 +260,9 @@ struct Core {
     /// Held, never read: dropping it is what gives the device back - after the
     /// scheduler above, so the weights are freed first.
     _lease: Lease,
+    expert_history: Option<retrograd_infer::experts::ExpertHistory>,
+    expert_counts_dirty: bool,
+    last_expert_flush: Instant,
 }
 
 /// The handle every request goes through. Cheap to share; the thread ends when
@@ -266,7 +273,31 @@ pub struct Session {
     loaded: Arc<Mutex<Option<WeightsSpec>>>,
 }
 
+impl Drop for Core {
+    fn drop(&mut self) {
+        self.flush_expert_history();
+    }
+}
+
 impl Core {
+    fn drain_live(&mut self) -> Result<(), retrograd_infer::InferError> {
+        self.expert_counts_dirty |= self.expert_history.is_some() && !self.scheduler.is_idle();
+        self.scheduler.run_until_idle()
+    }
+
+    fn flush_expert_history(&mut self) {
+        if self.expert_counts_dirty
+            && let Some(history) = &self.expert_history
+        {
+            if let Err(error) = self.scheduler.backend_mut().flush_expert_routes(history) {
+                tracing::warn!(%error, "could not submit expert history; keeping in-memory telemetry");
+                self.expert_history = None;
+            }
+            self.expert_counts_dirty = false;
+            self.last_expert_flush = Instant::now();
+        }
+    }
+
     /// Registers the adapter at `path` once per file - another request for the
     /// same checkpoint loads nothing - and returns its name.
     fn register(&mut self, path: &std::path::Path) -> Result<String, OpenAiError> {
@@ -346,6 +377,7 @@ impl Session {
             admission: options.admission,
             yield_requested: yield_requested.clone(),
             published: loaded.clone(),
+            expert_drains: std::cell::RefCell::default(),
         };
         std::thread::Builder::new()
             .name("retrograd-serve".into())
@@ -514,6 +546,18 @@ impl Session {
         let _ = self.jobs.try_send(Envelope::Wake);
     }
 
+    /// After the listener has stopped, release the weights and wait for the
+    /// final routing delta to reach the history worker.
+    pub async fn shutdown(&self) {
+        let jobs = self.jobs.clone();
+        let (reply, answer) = oneshot::channel();
+        // Map the error away: `SendError<Envelope>` carries the shutdown reply
+        // and is far larger than the `()` a failed send reports.
+        let _ = tokio::task::spawn_blocking(move || jobs.send(Envelope::Shutdown(reply)).map_err(|_| ()))
+            .await;
+        let _ = answer.await;
+    }
+
     async fn submit(
         &self,
         spec: WeightsSpec,
@@ -676,6 +720,7 @@ struct Worker {
     admission: AdmissionMode,
     yield_requested: Arc<AtomicBool>,
     published: Arc<Mutex<Option<WeightsSpec>>>,
+    expert_drains: std::cell::RefCell<Vec<std::thread::JoinHandle<()>>>,
 }
 
 impl Worker {
@@ -747,6 +792,16 @@ impl Worker {
                         let _ = reply.send(self.stats(&core));
                     }
                     Envelope::Wake => {}
+                    Envelope::Shutdown(reply) => {
+                        self.unload(&mut core, true);
+                        for worker in self.expert_drains.take() {
+                            if worker.join().is_err() {
+                                tracing::warn!("expert history worker panicked");
+                            }
+                        }
+                        let _ = reply.send(());
+                        return;
+                    }
                 }
             }
             if self.yield_requested.swap(false, Ordering::SeqCst) && core.is_some() {
@@ -754,11 +809,18 @@ impl Worker {
                 self.unload(&mut core, true);
                 continue;
             }
-            if let Some(core) = &mut core
-                && !core.scheduler.is_idle()
-            {
-                // A failed step has already failed every live request.
-                let _ = core.scheduler.pump();
+            if let Some(core) = &mut core {
+                if !core.scheduler.is_idle() {
+                    // A failed step has already failed every live request.
+                    let _ = core.scheduler.pump();
+                    core.expert_counts_dirty |= core.expert_history.is_some();
+                }
+                if core.expert_counts_dirty
+                    && (core.scheduler.is_idle()
+                        || core.last_expert_flush.elapsed() >= Duration::from_secs(15))
+                {
+                    core.flush_expert_history();
+                }
             }
         }
     }
@@ -773,9 +835,16 @@ impl Worker {
         };
         if graceful {
             core.scheduler.fail_queued();
-            let _ = core.scheduler.run_until_idle();
+            let _ = core.drain_live();
         }
+        core.flush_expert_history();
+        let history = core.expert_history.take();
         drop(core);
+        if let Some(history) = history {
+            let mut drains = self.expert_drains.borrow_mut();
+            drains.retain(|worker| !worker.is_finished());
+            drains.push(history.close());
+        }
         self.publish(None);
     }
 
@@ -817,7 +886,7 @@ impl Worker {
         // before replacing it, and restore the default for requests omitting it.
         let budget = request.reasoning_budget.unwrap_or(-1);
         if budget != core.reasoning_budget {
-            core.scheduler.run_until_idle()?;
+            core.drain_live()?;
             if let Err(error) = core.scheduler.backend_mut().set_reasoning_budget(budget) {
                 // A refused budget may already have replaced the engine plan.
                 core.scheduler
@@ -869,7 +938,7 @@ impl Worker {
             Some(path) => Some(core.register_named(path)?),
             None => None,
         };
-        core.scheduler.run_until_idle()?;
+        core.drain_live()?;
         let previous_adapter = core.scheduler.backend().active_adapter()?;
         core.scheduler
             .backend_mut()
@@ -903,6 +972,7 @@ impl Worker {
                         context,
                     ));
                 }
+                core.expert_counts_dirty |= core.expert_history.is_some();
                 let embedding = core.scheduler.backend_mut().embed(&tokens)?;
                 prompt_tokens.push(tokens.len());
                 embeddings.push(embedding);
@@ -1004,6 +1074,9 @@ impl Worker {
             decision: serving.decision,
             decision_adapters: HashMap::new(),
             _lease: lease,
+            expert_history: serving.expert_history,
+            expert_counts_dirty: false,
+            last_expert_flush: Instant::now(),
         }))
     }
 
@@ -1034,6 +1107,14 @@ mod tests {
         };
         assert!(!base.same_base(&host), "another placement = another engine");
         assert!(base.same_base(&base.clone()));
+        let with_history = WeightsSpec {
+            expert_history: Some(retrograd_infer::experts::ExpertHistoryOptions {
+                dir: "state".into(),
+                sample_every: std::num::NonZeroU32::MIN,
+            }),
+            ..base.clone()
+        };
+        assert!(!base.same_base(&with_history));
         assert!(
             base.same_base(&spec(Some("a.gguf"))),
             "the adapter stays excluded"
@@ -1050,6 +1131,7 @@ mod tests {
             chat_template_variables: None,
             decision: DecisionOptions::default(),
             experts: Default::default(),
+            expert_history: None,
         }
     }
 

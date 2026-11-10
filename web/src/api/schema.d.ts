@@ -1709,6 +1709,11 @@ export interface components {
        */
       device_cache?: unknown
       /**
+       * Format: path
+       * @description Directory for expert routing counts. Absent disables telemetry.
+       */
+      history_dir?: string | null
+      /**
        * Format: int32
        * @description MoE layers whose expert banks stay in host memory, counted from the
        *     end; 0 = all of them. Ignored unless the placement is `host`.
@@ -1716,6 +1721,11 @@ export interface components {
       host_layers?: number | null
       /** @description `device`, `host` or `auto` (resolved by the planner). */
       placement?: string | null
+      /**
+       * Format: int32
+       * @description Count one micro-batch in N when history is enabled.
+       */
+      route_sample_every?: number | null
     }
     FallbackSummary: {
       /** Format: int64 */

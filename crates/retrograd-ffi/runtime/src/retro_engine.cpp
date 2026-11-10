@@ -1651,4 +1651,59 @@ extern "C" int retro_engine_expert_stats(
     });
 }
 
+extern "C" int retro_engine_expert_route_enable(retro_engine * engine, uint32_t sample_every) {
+    return boundary([&]() -> int {
+        auto * state = checked_engine(engine);
+        if (!state) return -1;
+        if (sample_every != 0) {
+            expert_placement_probe probe;
+            if (!collect_expert_banks(*state->model, probe)) return -1;
+            if (!(probe.flags & RETRO_EXPERT_BANKS_VALIDATED)) {
+                set_error("routing telemetry is not validated for architecture " + probe.arch);
+                return -2;
+            }
+        }
+        if (!llama_moe_route_enable(state->ctx.get(), sample_every)) {
+            set_error("the context does not support routing telemetry");
+            return -2;
+        }
+        return 0;
+    });
+}
+
+extern "C" int retro_engine_expert_route_counts(
+        retro_engine * engine, uint32_t layer, uint32_t * out, size_t n_expert) {
+    return boundary([&]() -> int {
+        auto * state = checked_engine(engine);
+        if (!state) return -1;
+        if (!out || !n_expert || llama_moe_route_counts(state->ctx.get(), layer, nullptr, 0) != n_expert) {
+            set_error("routing counter buffer does not match the expert bank");
+            return -2;
+        }
+        llama_moe_route_counts(state->ctx.get(), layer, out, n_expert);
+        return 0;
+    });
+}
+
+extern "C" int retro_engine_expert_route_paths(retro_engine * engine, uint64_t out[3]) {
+    return boundary([&]() -> int {
+        auto * state = checked_engine(engine);
+        if (!state || !out) {
+            if (state) set_error("routing paths output is required");
+            return -1;
+        }
+        llama_moe_route_paths(state->ctx.get(), out);
+        return 0;
+    });
+}
+
+extern "C" int retro_engine_expert_route_reset(retro_engine * engine) {
+    return boundary([&]() -> int {
+        auto * state = checked_engine(engine);
+        if (!state) return -1;
+        llama_moe_route_reset(state->ctx.get());
+        return 0;
+    });
+}
+
 } // namespace retro

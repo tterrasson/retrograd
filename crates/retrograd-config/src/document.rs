@@ -129,11 +129,23 @@ pub struct ExpertsToml {
     /// to disable, or `auto`. Ignored unless the placement is `host`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_cache: Option<toml::Value>,
+    /// Directory for expert routing counts. Absent disables telemetry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = "path"))]
+    pub history_dir: Option<PathBuf>,
+    /// Count one micro-batch in N when history is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(minimum = 1))]
+    pub route_sample_every: Option<u32>,
 }
 
 impl ExpertsToml {
     pub fn is_empty(&self) -> bool {
-        self.placement.is_none() && self.host_layers.is_none() && self.device_cache.is_none()
+        self.placement.is_none()
+            && self.host_layers.is_none()
+            && self.device_cache.is_none()
+            && self.history_dir.is_none()
+            && self.route_sample_every.is_none()
     }
 }
 

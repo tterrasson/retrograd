@@ -173,6 +173,20 @@ fn served_models(args: &ServeArgs, run_config: &config::RunConfig) -> Result<Sin
         },
         None => Default::default(),
     };
+    let expert_history = run_config.serving.as_ref().and_then(|serving| {
+        use retrograd_serve::{DEFAULT_ROUTE_SAMPLE_EVERY, ExpertHistoryOptions};
+        serving
+            .experts
+            .history_dir
+            .clone()
+            .map(|dir| ExpertHistoryOptions {
+                dir,
+                sample_every: serving
+                    .experts
+                    .route_sample_every
+                    .unwrap_or(DEFAULT_ROUTE_SAMPLE_EVERY),
+            })
+    });
     let spec = |model: &Path, adapter: Option<PathBuf>| WeightsSpec {
         model: model.to_path_buf(),
         adapter,
@@ -182,6 +196,7 @@ fn served_models(args: &ServeArgs, run_config: &config::RunConfig) -> Result<Sin
         chat_template_variables: variables.clone(),
         decision: Default::default(),
         experts: experts.clone(),
+        expert_history: expert_history.clone(),
     };
     let base = spec(&run_config.model, None);
     let served = if args.base_only {

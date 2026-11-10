@@ -161,3 +161,93 @@ impl super::Engine {
         })
     }
 }
+
+/// Counts for the expert IDs that index one bank.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExpertRouteBank {
+    pub bank: ExpertBank,
+    pub counts: Vec<u32>,
+}
+
+/// A snapshot since telemetry was enabled or the counters were reset.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExpertRouteCounts {
+    pub banks: Vec<ExpertRouteBank>,
+    /// Number of layer micro-batches observed by the slot planner, copy
+    /// callback, and explicit readback, respectively.
+    pub paths: [u64; 3],
+}
+
+impl super::Engine {
+    /// Opt into routing telemetry on a validated MoE. Count one micro-batch in
+    /// `sample_every`, starting with the next one. Zero disables telemetry.
+    /// Reconfiguring discards any previous counts.
+    pub fn set_expert_route_sampling(&mut self, sample_every: u32) -> retrograd_core::Result<()> {
+        let banks = if sample_every == 0 {
+            Vec::new()
+        } else {
+            self.expert_banks()?
+        };
+        // SAFETY: the engine is live and exclusively borrowed.
+        match unsafe { ffi::retro_engine_expert_route_enable(self.raw.as_ptr(), sample_every) } {
+            0 => self.route_banks = banks,
+            -2 => return Err(retrograd_core::Error::invalid(ffi::last_error())),
+            _ => return Err(runtime_error()),
+        }
+        Ok(())
+    }
+
+    pub fn expert_route_counts(&self) -> Result<ExpertRouteCounts, EngineError> {
+        let mut result = ExpertRouteCounts::default();
+        if self.route_banks.is_empty() {
+            return Ok(result);
+        }
+        let mut layers = std::collections::BTreeMap::new();
+        for bank in &self.route_banks {
+            use std::collections::btree_map::Entry;
+            let counts = match layers.entry(bank.layer) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    let n_expert = usize::try_from(bank.n_expert()).map_err(|_| {
+                        EngineError::Runtime("expert bank does not fit in memory".into())
+                    })?;
+                    let mut counts = vec![0; n_expert];
+                    // SAFETY: this buffer has exactly n_expert writable entries.
+                    let code = unsafe {
+                        ffi::retro_engine_expert_route_counts(
+                            self.raw.as_ptr(),
+                            bank.layer,
+                            counts.as_mut_ptr(),
+                            n_expert,
+                        )
+                    };
+                    if code != 0 {
+                        return Err(EngineError::Runtime(ffi::last_error()));
+                    }
+                    entry.insert(counts)
+                }
+            };
+            result.banks.push(ExpertRouteBank {
+                bank: bank.clone(),
+                counts: counts.clone(),
+            });
+        }
+        // SAFETY: paths has three writable entries as required by the ABI.
+        let code = unsafe {
+            ffi::retro_engine_expert_route_paths(self.raw.as_ptr(), result.paths.as_mut_ptr())
+        };
+        if code != 0 {
+            return Err(EngineError::Runtime(ffi::last_error()));
+        }
+        Ok(result)
+    }
+
+    pub fn reset_expert_route_counts(&mut self) -> Result<(), EngineError> {
+        // SAFETY: the engine is live and exclusively borrowed.
+        let code = unsafe { ffi::retro_engine_expert_route_reset(self.raw.as_ptr()) };
+        if code != 0 {
+            return Err(EngineError::Runtime(ffi::last_error()));
+        }
+        Ok(())
+    }
+}

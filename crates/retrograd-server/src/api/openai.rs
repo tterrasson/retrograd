@@ -126,6 +126,7 @@ fn weights(serving: &ServingSpec, model: &Path, adapter: Option<PathBuf>) -> Wei
         chat_template_variables: serving.chat_template_variables.clone(),
         decision: Default::default(),
         experts: serving.experts.clone(),
+        expert_history: serving.expert_history.clone(),
     }
 }
 
@@ -299,12 +300,16 @@ impl RunModels {
             }
             _ => {}
         }
-        let serving = serving(&handle).ok_or_else(|| {
+        let mut serving = serving(&handle).ok_or_else(|| {
             OpenAiError::conflict(format!(
                 "run {run} predates the serving metadata this server records, so its weights \
                  cannot be reloaded"
             ))
         })?;
+        if let Some(history) = &mut serving.expert_history {
+            // Check the current roots again when a recorded run is served.
+            history.dir = self.state.resolve_expert_history_dir(&history.dir)?;
+        }
         let n_seq_max = self.state.config.serving.n_seq_max;
         let cold = |spec: WeightsSpec, name: &str| Target::Cold {
             spec: WeightsSpec { n_seq_max, ..spec },

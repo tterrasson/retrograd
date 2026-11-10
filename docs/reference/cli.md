@@ -53,6 +53,7 @@ retrograd bench --serving CONFIG.toml [--model M] [--ctx N]
                 [--device auto|cpu|gpu | --devices auto|cpu,gpu]
                 [--prompt-tokens N] [--decode-tokens N] [--ubatches 1,8,32,512]
                 [--seqs 1,4] [--repeats N] [--cache cold|hot|both] [--out report.md]
+                [--route-sample-every N]
 ```
 
 Measures prefill and decode for a decoder-only model over a grid of micro-batch
@@ -68,6 +69,9 @@ engine copies weights at load time, so its timed passes usually have no
 weight reads. `--devices auto` measures CPU-mmap and GPU when available.
 `--out` creates a new Markdown report with the command, machine, commit,
 SHA-256 for each model file, and per-repeat results.
+On a supported MoE, `--route-sample-every N` measures the cost of counting
+routing selections in one out of every N micro-batches. The default, 0, leaves
+telemetry off. The benchmark does not write routing history.
 
 The defaults are 512 prompt tokens, 64 decode steps, widths `1,8,32,512`,
 sequence counts `1,4`, and 3 repeats. Dataset flags (`--data`, `--adapter`,

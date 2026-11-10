@@ -127,9 +127,44 @@ pub struct ExpertsSection {
     /// `0` to disable. Ignored unless the placement is `host`.
     #[serde(default)]
     pub device_cache: Option<toml::Value>,
+    /// Directory for expert routing counts. Absent disables telemetry.
+    #[serde(default)]
+    pub history_dir: Option<PathBuf>,
+    /// Count one micro-batch in N when history is enabled.
+    #[serde(default)]
+    pub route_sample_every: Option<u32>,
 }
 
 impl ExpertsSection {
+    pub fn history(
+        &self,
+    ) -> Result<Option<retrograd_infer::experts::ExpertHistoryOptions>, ConfigError> {
+        use retrograd_infer::experts::{DEFAULT_ROUTE_SAMPLE_EVERY, ExpertHistoryOptions};
+        if self
+            .history_dir
+            .as_ref()
+            .is_some_and(|p| p.as_os_str().is_empty())
+        {
+            return Err(ConfigError::Invalid(
+                "experts.history_dir cannot be empty".into(),
+            ));
+        }
+        if self.route_sample_every.is_some()
+            && (self.history_dir.is_none() || self.route_sample_every == Some(0))
+        {
+            return Err(ConfigError::Invalid(
+                "experts.route_sample_every requires history_dir and must be positive".into(),
+            ));
+        }
+        Ok(self.history_dir.clone().map(|dir| ExpertHistoryOptions {
+            dir,
+            sample_every: self
+                .route_sample_every
+                .and_then(std::num::NonZeroU32::new)
+                .unwrap_or(DEFAULT_ROUTE_SAMPLE_EVERY),
+        }))
+    }
+
     /// The resolved placement, or the configuration error naming the field.
     pub fn placement(&self) -> Result<ExpertPlacement, ConfigError> {
         let mode = match self.placement.as_deref() {
@@ -335,6 +370,7 @@ impl ServeConfig {
         self.admission()?;
         self.device()?;
         self.experts.placement()?;
+        self.experts.history()?;
         self.check_network_rule()?;
         Ok(())
     }
@@ -463,6 +499,8 @@ mod tests {
             placement = "host"
             host_layers = 2
             device_cache = "6GiB"
+            history_dir = "state/experts"
+            route_sample_every = 4
             "#,
         )
         .unwrap();
@@ -473,6 +511,37 @@ mod tests {
                 host_layers: 2,
                 device_cache_bytes: 6 * (1 << 30),
             }
+        );
+
+        assert_eq!(
+            host.experts.history().unwrap().unwrap().sample_every.get(),
+            4
+        );
+
+        // history_dir alone leaves the sample interval at the default.
+        let defaulted = config(
+            r#"
+            model = "/dev/null"
+            [experts]
+            history_dir = "state/experts"
+            "#,
+        )
+        .unwrap();
+        let history = defaulted.experts.history().unwrap().unwrap();
+        assert_eq!(history.dir, std::path::PathBuf::from("state/experts"));
+        assert_eq!(
+            history.sample_every,
+            retrograd_infer::experts::DEFAULT_ROUTE_SAMPLE_EVERY
+        );
+        assert!(
+            config(r#"model = "/dev/null"
+            [experts]
+            placement = "device""#)
+            .unwrap()
+            .experts
+            .history()
+            .unwrap()
+            .is_none()
         );
 
         let plain_bytes = config(
@@ -527,6 +596,18 @@ mod tests {
             (
                 format!("{base}\n[experts]\nplacement = \"host\"\nunknown = 1"),
                 "unknown field",
+            ),
+            (
+                format!("{base}\n[experts]\nhistory_dir = \"\""),
+                "experts.history_dir cannot be empty",
+            ),
+            (
+                format!("{base}\n[experts]\nroute_sample_every = 4"),
+                "experts.route_sample_every requires history_dir and must be positive",
+            ),
+            (
+                format!("{base}\n[experts]\nhistory_dir = \"state\"\nroute_sample_every = 0"),
+                "experts.route_sample_every requires history_dir and must be positive",
             ),
         ] {
             let error = config(&text).unwrap_err().to_string();

@@ -17,13 +17,15 @@ mod generate;
 mod score;
 mod step;
 
-pub use experts::{EngineOptions, ExpertBanks, read_expert_banks};
+pub use experts::{
+    EngineOptions, ExpertBanks, ExpertRouteBank, ExpertRouteCounts, read_expert_banks,
+};
 
 pub use adapter::AdapterRowsInfo;
 pub use decide::{
     ADAPTER_DECISION_PREFIX, DECISION_TEMPLATE, Decision, DecisionInfo, DecisionMetadata,
-    DecisionPass, TemplateSource, adapter_decision_metadata, decision_metadata, read_gguf_metadata,
-    render_decision_template_source, rewrite_gguf_metadata,
+    DecisionPass, TemplateSource, adapter_decision_metadata, decision_metadata, gguf_shard_paths,
+    read_gguf_metadata, render_decision_template_source, rewrite_gguf_metadata,
 };
 pub(crate) use decide::{DecisionHost, decision_info_from, decision_pass, readout_code};
 pub use embed::PoolingType;
@@ -34,8 +36,8 @@ use std::path::Path;
 use std::ptr::NonNull;
 
 use retrograd_core::{
-    EngineConfig, EngineKvDtype, Generation, GenerationKvDtype, MemoryReport, SamplingParams,
-    SamplingParamsV2, TrainConfig,
+    EngineConfig, EngineKvDtype, ExpertBank, Generation, GenerationKvDtype, MemoryReport,
+    SamplingParams, SamplingParamsV2, TrainConfig,
 };
 use retrograd_ffi as ffi;
 
@@ -219,6 +221,7 @@ pub struct Engine {
     // Whether the decision template is a source set by the caller rather than
     // the model's own.
     decision_template_overridden: bool,
+    route_banks: Vec<ExpertBank>,
 }
 
 impl Engine {
@@ -295,6 +298,7 @@ impl Engine {
                 raw,
                 n_seq_max: config.n_seq_max as usize,
                 decision_template_overridden: false,
+                route_banks: Vec::new(),
             })
     }
 

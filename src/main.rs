@@ -81,6 +81,7 @@ Commands:
   bench --serving <config.toml> [--model base.gguf]
         [--device auto|cpu|gpu | --devices auto|cpu,gpu] [--ctx N]
         [--prompt-tokens N] [--decode-tokens N] [--ubatches 1,8,32,512]
+        [--route-sample-every N]
         [--seqs 1,4] [--repeats N] [--cache cold|hot|both] [--out report.md]
   chat <config.toml> [--compare] [--base-only] [--adapter adapter.gguf]
        [--model base.gguf] [--device auto|cpu|gpu] [--ctx N] [--system PROMPT]

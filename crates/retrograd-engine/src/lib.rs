@@ -503,10 +503,10 @@ mod trainer;
 
 pub use engine::{
     ADAPTER_DECISION_PREFIX, AdapterRowsInfo, DECISION_TEMPLATE, Decision, DecisionInfo,
-    DecisionMetadata, DecisionPass, Engine, EngineError, EngineOptions, ExpertBanks, PoolingType,
-    TemplateSource, adapter_decision_metadata, decision_metadata, engine_config_from_train_config,
-    generation_batch, read_expert_banks, read_gguf_metadata, render_decision_template_source,
-    rewrite_gguf_metadata,
+    DecisionMetadata, DecisionPass, Engine, EngineError, EngineOptions, ExpertBanks,
+    ExpertRouteBank, ExpertRouteCounts, PoolingType, TemplateSource, adapter_decision_metadata,
+    decision_metadata, engine_config_from_train_config, generation_batch, gguf_shard_paths,
+    read_expert_banks, read_gguf_metadata, render_decision_template_source, rewrite_gguf_metadata,
 };
 pub use grammar::{grammar_from_gbnf, grammar_from_json_schema, json_object_grammar};
 pub use grouped::{GroupedBatch, GroupedQuestion};

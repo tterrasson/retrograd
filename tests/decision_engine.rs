@@ -424,6 +424,7 @@ async fn serve_replay(fixture: &Fixture, device: Device) -> (f64, Vec<String>) {
                 ..DecisionOptions::default()
             },
             experts: Default::default(),
+            expert_history: None,
         };
         let result = session.decide(spec, entry["body"].clone()).await;
         if let Some(message) = recorded["error"].as_str() {

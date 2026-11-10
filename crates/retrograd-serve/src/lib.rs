@@ -20,4 +20,5 @@ pub use source::AdapterSource;
 // Re-exported so the delegating CLI names the admission mode without depending
 // on the policy crate itself.
 pub use retrograd_infer::AdmissionMode;
+pub use retrograd_infer::experts::{DEFAULT_ROUTE_SAMPLE_EVERY, ExpertHistoryOptions};
 pub use retrograd_openai::SessionOptions;

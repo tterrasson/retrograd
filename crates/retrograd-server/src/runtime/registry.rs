@@ -160,6 +160,8 @@ pub struct ServingSpec {
     /// reads `device` - today's behaviour.
     #[serde(default)]
     pub experts: retrograd_core::ExpertPlacement,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expert_history: Option<retrograd_infer::experts::ExpertHistoryOptions>,
 }
 
 /// Which halves of the `PATCH` whitelist this run actually has.
@@ -1009,7 +1011,8 @@ mod tests {
         });
         let spec: ServingSpec = serde_json::from_value(legacy).expect("a legacy record parses");
         assert_eq!(spec.experts, retrograd_core::ExpertPlacement::device());
-        // And the field round-trips when present.
+        assert!(spec.expert_history.is_none());
+        // And the fields round-trip when present.
         let with_experts = serde_json::json!({
             "model": "model.gguf",
             "n_ctx": 4096,
@@ -1017,12 +1020,18 @@ mod tests {
             "output_kind": "adapter",
             "output": "out/adapter.gguf",
             "experts": { "mode": "host", "host_layers": 2, "device_cache_bytes": 6442450944u64 },
+            "expert_history": { "dir": "state/experts", "sample_every": 3 },
         });
         let spec: ServingSpec =
             serde_json::from_value(with_experts).expect("a current record parses");
         assert_eq!(spec.experts.mode, retrograd_core::ExpertPlacementMode::Host);
         assert_eq!(spec.experts.host_layers, 2);
         assert_eq!(spec.experts.device_cache_bytes, 6 * (1u64 << 30));
+        assert_eq!(spec.expert_history.as_ref().unwrap().sample_every.get(), 3);
+        assert_eq!(
+            serde_json::from_value::<ServingSpec>(serde_json::to_value(&spec).unwrap()).unwrap(),
+            spec
+        );
     }
 
     fn record() -> RunRecord {

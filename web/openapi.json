@@ -2046,6 +2046,14 @@
           "device_cache": {
             "description": "Budget of the expert device cache: a byte count (`\"6GiB\"`, `4096`), `0`\nto disable, or `auto`. Ignored unless the placement is `host`."
           },
+          "history_dir": {
+            "description": "Directory for expert routing counts. Absent disables telemetry.",
+            "format": "path",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "host_layers": {
             "description": "MoE layers whose expert banks stay in host memory, counted from the\nend; 0 = all of them. Ignored unless the placement is `host`.",
             "format": "int32",
@@ -2059,6 +2067,15 @@
             "description": "`device`, `host` or `auto` (resolved by the planner).",
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "route_sample_every": {
+            "description": "Count one micro-batch in N when history is enabled.",
+            "format": "int32",
+            "minimum": 1,
+            "type": [
+              "integer",
               "null"
             ]
           }

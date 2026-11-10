@@ -45,6 +45,7 @@ fn spec(fixture: &Path, adapter: Option<PathBuf>) -> WeightsSpec {
         chat_template_variables: None,
         decision: Default::default(),
         experts: Default::default(),
+        expert_history: None,
     }
 }
 
@@ -269,5 +270,55 @@ async fn a_structured_response_obeys_its_schema_on_the_real_engine() {
                 "zero-mass probabilities use a numeric sentinel"
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn serving_flushes_moe_routing_history_and_merges_only_new_counts_after_restart() {
+    let _guard = serialize_models();
+    let Some(model) = common::tiny_moe_model_path_if_available() else {
+        return;
+    };
+    let state = tempfile::tempdir().unwrap();
+    let mut weights = spec(&model, None);
+    weights.expert_history = Some(retrograd_infer::experts::ExpertHistoryOptions {
+        dir: state.path().to_path_buf(),
+        sample_every: std::num::NonZeroU32::MIN,
+    });
+    let mut request = chat_prompt();
+    request.messages.clear();
+    request.raw_prompt = Some("The quick brown fox".into());
+
+    let mut previous = 0;
+    for _ in 0..2 {
+        let server = session();
+        let response = server
+            .complete(weights.clone(), request.clone())
+            .await
+            .unwrap();
+        server.shutdown().await;
+
+        let history = std::fs::read_dir(state.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("routing-")
+                    && path.extension().is_some_and(|ext| ext == "json")
+            })
+            .expect("routing history is persisted at shutdown");
+        let history: serde_json::Value =
+            serde_json::from_reader(std::fs::File::open(history).unwrap()).unwrap();
+        // The first layer routes the prefill and every emitted token fed back
+        // into the context, excluding the final token of the response.
+        let response = &response[0];
+        let routed =
+            u64::try_from(response.prompt_tokens + response.completion_tokens - 1).unwrap();
+        let first = history["counts"][0][0].as_u64().unwrap();
+        assert_eq!(first, previous + routed);
+        assert_eq!(history["counts"][0][1].as_u64(), Some(first));
+        previous = first;
     }
 }

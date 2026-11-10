@@ -119,6 +119,23 @@ file resolve against the working directory.
 ./target/release/retrograd-infer serve.toml --host 0.0.0.0 --port 9000 --api-key "$API_KEY"
 ```
 
+### Expert routing history
+
+Set `[experts].history_dir` to collect routing counts on a validated MoE
+(currently OLMoE). In a run configuration, use `[serving.experts]` instead.
+The state directory must be separate from the model directory.
+
+```toml
+[experts]
+history_dir = "state/expert-routing"
+route_sample_every = 64  # Default; set to 1 to count every micro-batch.
+```
+
+Counts record the experts actually used by each bank. A token skipped by a
+layer contributes no selection to that layer. Sampled counts are stored as
+observed. History is keyed by the contents of all GGUF shards and merged in
+the background. It does not change expert placement or routing.
+
 ## Serve from a training configuration
 
 `retrograd serve` reads a run's TOML and serves what the run wrote. Use it to

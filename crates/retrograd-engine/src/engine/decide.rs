@@ -120,6 +120,40 @@ pub fn read_gguf_metadata(
     })
 }
 
+/// All GGUF paths in the order used by the model loader. The metadata, not
+/// the filename alone, determines whether the model uses shards.
+pub fn gguf_shard_paths(
+    model: &std::path::Path,
+) -> retrograd_core::Result<Vec<std::path::PathBuf>> {
+    use retrograd_core::Error;
+    let metadata = read_gguf_metadata(model, "split.")?;
+    let count = metadata
+        .get("split.count")
+        .map_or(Ok(1), |count| count.parse::<u16>())
+        .map_err(|_| Error::invalid("invalid GGUF split.count"))?;
+    if count <= 1 {
+        return Ok(vec![model.to_path_buf()]);
+    }
+    let suffix = format!("-00001-of-{count:05}.gguf");
+    let prefix = model
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(&suffix))
+        .filter(|prefix| !prefix.is_empty())
+        .ok_or_else(|| Error::invalid(format!("expected the first GGUF shard ({suffix})")))?;
+    if !metadata
+        .get("split.no")
+        .is_some_and(|index| index.parse::<u16>() == Ok(0))
+    {
+        return Err(Error::invalid(
+            "the first GGUF shard must have split.no = 0",
+        ));
+    }
+    Ok((1..=count)
+        .map(|index| model.with_file_name(format!("{prefix}-{index:05}-of-{count:05}.gguf")))
+        .collect())
+}
+
 /// The `adapter.decision.*` entries of an adapter GGUF, the prefix removed:
 /// empty for an adapter that carries none.
 pub fn adapter_decision_metadata(

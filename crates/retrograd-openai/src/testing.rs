@@ -532,6 +532,7 @@ impl Loader for FakeLoader {
             }
         };
         Ok(ServingBackend {
+            expert_history: None,
             backend,
             scheduler: SchedulerOptions {
                 mode: admission,
