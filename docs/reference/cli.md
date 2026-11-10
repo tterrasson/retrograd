@@ -46,6 +46,33 @@ defaults to `[evaluation].data`.
 | `preference` | Not supported. A run with [`[evaluation]`](../training/preference#evaluation) reports its preference accuracy at each evaluation. |
 | `decision` | Accuracy, NLL, Brier and calibration error per question type, and the questions kept at each confidence threshold. The adapter is served with its own temperatures. |
 
+### Serving throughput: `bench --serving`
+
+```text
+retrograd bench --serving CONFIG.toml [--model M] [--ctx N]
+                [--device auto|cpu|gpu | --devices auto|cpu,gpu]
+                [--prompt-tokens N] [--decode-tokens N] [--ubatches 1,8,32,512]
+                [--seqs 1,4] [--repeats N] [--cache cold|hot|both] [--out report.md]
+```
+
+Measures prefill and decode for a decoder-only model over a grid of micro-batch
+widths (`--ubatches`) and active sequence counts (`--seqs`). `--ctx` sets the
+context budget per sequence. Each row reports median throughput and wall
+time, maximum process disk reads across repeats, total host and device buffers
+reported by the engine, and allocated KV bytes.
+
+`--cache both` measures each cell after requesting page-cache eviction for
+every model shard (`cold`) and after an unmeasured warm-up pass (`hot`).
+`cold*` means at least one repeat lacked evidence of disk reads. The GPU
+engine copies weights at load time, so its timed passes usually have no
+weight reads. `--devices auto` measures CPU-mmap and GPU when available.
+`--out` creates a new Markdown report with the command, machine, commit,
+SHA-256 for each model file, and per-repeat results.
+
+The defaults are 512 prompt tokens, 64 decode steps, widths `1,8,32,512`,
+sequence counts `1,4`, and 3 repeats. Dataset flags (`--data`, `--adapter`,
+`--format`, `--limit`) are reserved for dataset evaluation.
+
 ## `chat`
 
 ```text

@@ -1857,6 +1857,7 @@ version = "0.1.0"
 dependencies = [
  "comfy-table",
  "indicatif",
+ "libc",
  "retrograd-agent",
  "retrograd-agent-core",
  "retrograd-checkpoint",
@@ -1883,6 +1884,7 @@ dependencies = [
  "rir-core",
  "rir-lower",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "tracing-subscriber",

@@ -5,6 +5,7 @@
 //! in `retrograd-cli-ui`.
 
 mod report;
+mod serving;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -36,6 +37,15 @@ pub(crate) const FLAGS: &[&str] = &[
     "--format",
     "--ctx",
     "--limit",
+    "--serving",
+    "--prompt-tokens",
+    "--decode-tokens",
+    "--ubatches",
+    "--seqs",
+    "--repeats",
+    "--cache",
+    "--devices",
+    "--out",
 ];
 
 #[derive(Debug)]
@@ -48,6 +58,7 @@ pub(crate) struct BenchArgs {
     format: Option<DataFormat>,
     ctx: Option<u32>,
     limit: Option<usize>,
+    serving: serving::ServingFlags,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -178,6 +189,9 @@ fn percentile(sorted: &[f64], quantile: f64) -> f64 {
 
 pub(crate) fn bench_model(args: Vec<String>) -> Result<()> {
     let args = parse_bench_args(&args)?;
+    if args.serving.serving {
+        return bench_serving_mode(&args);
+    }
     let mut run_config = config::load_with(
         &args.config,
         config::ModelOverride {
@@ -425,6 +439,53 @@ pub(crate) fn bench_model(args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+/// The serving-throughput mode: `bench --serving` measures prefill and decode
+/// over a grid of micro-batch widths and sequence counts instead of scoring a
+/// dataset, so it takes none of the dataset flags.
+fn bench_serving_mode(args: &BenchArgs) -> Result<()> {
+    for (flag, present) in [
+        ("--data", args.data.is_some()),
+        ("--adapter", args.adapter.is_some()),
+        ("--format", args.format.is_some()),
+        ("--limit", args.limit.is_some()),
+    ] {
+        if present {
+            return Err(Error::invalid(format!(
+                "bench --serving does not take {flag}: it measures prefill and decode, not an evaluation dataset"
+            )));
+        }
+    }
+    if args.device.is_some() && args.serving.devices.is_some() {
+        return Err(Error::invalid(
+            "bench --serving takes either --device or --devices, not both",
+        ));
+    }
+    let devices = match (&args.serving.devices, &args.device) {
+        (Some(devices), _) => Some(devices.clone()),
+        (None, Some(device)) => Some(format!("{device:?}").to_ascii_lowercase()),
+        (None, None) => None,
+    };
+    let serving = serving::ServingArgs::from_flags(&args.serving, devices.as_deref())?;
+    let run_config = config::load_with(
+        &args.config,
+        config::ModelOverride {
+            path: args.model.clone(),
+            device: None,
+        },
+    )?;
+    let ui = CliUi::new();
+    ui.section("bench --serving");
+    ui.info(format!("config: {}", args.config.display()));
+    ui.info(format!("model: {}", run_config.model.display()));
+    serving::bench_serving(
+        &run_config.model,
+        run_config.training.threads,
+        args.ctx,
+        &serving,
+        &ui,
+    )
+}
+
 /// The probability the answer gives each option of `question`, in the
 /// question's order.
 fn answer_probabilities(answer: &Answer, question: &Question) -> Result<Vec<f64>> {
@@ -542,6 +603,7 @@ fn parse_bench_args(args: &[String]) -> Result<BenchArgs> {
     let mut format_seen = false;
     let mut ctx_seen = false;
     let mut limit_seen = false;
+    let mut serving = serving::ServingFlags::default();
     let mut args = Args::new("bench", args);
 
     while let Some(flag) = args.next_arg() {
@@ -553,6 +615,9 @@ fn parse_bench_args(args: &[String]) -> Result<BenchArgs> {
         }
         if !FLAGS.contains(&flag) {
             return Err(args.unknown(flag));
+        }
+        if serving::parse_serving_flag(flag, &mut args, &mut serving)? {
+            continue;
         }
         let value = args.value(flag)?;
         match flag {
@@ -608,6 +673,11 @@ fn parse_bench_args(args: &[String]) -> Result<BenchArgs> {
         }
     }
 
+    if !serving.serving
+        && let Some(flag) = serving.first_option()
+    {
+        return Err(Error::invalid(format!("bench {flag} requires --serving")));
+    }
     Ok(BenchArgs {
         config: config.ok_or_else(|| Error::invalid("bench requires a config TOML path"))?,
         model,
@@ -617,6 +687,7 @@ fn parse_bench_args(args: &[String]) -> Result<BenchArgs> {
         format,
         ctx,
         limit,
+        serving,
     })
 }
 
@@ -889,6 +960,79 @@ mod tests {
             let error = parse_bench_args(&strings(&args)).unwrap_err().to_string();
             assert!(error.contains(expected), "{args:?} -> {error}");
         }
+    }
+
+    #[test]
+    fn bench_parser_accepts_serving_flags_and_rejects_bad_lists() {
+        let parsed = parse_bench_args(&strings(&[
+            "run.toml",
+            "--serving",
+            "--prompt-tokens",
+            "256",
+            "--decode-tokens",
+            "32",
+            "--ubatches",
+            "1,8,32,512",
+            "--seqs",
+            "1,4",
+            "--repeats",
+            "2",
+            "--cache",
+            "both",
+            "--devices",
+            "cpu,gpu",
+            "--out",
+            "report.md",
+        ]))
+        .unwrap();
+        assert!(parsed.serving.serving);
+        assert_eq!(parsed.serving.prompt_tokens, Some(256));
+        assert_eq!(parsed.serving.decode_tokens, Some(32));
+        assert_eq!(parsed.serving.ubatches, Some(vec![1, 8, 32, 512]));
+        assert_eq!(parsed.serving.seqs, Some(vec![1, 4]));
+        assert_eq!(parsed.serving.repeats, Some(2));
+        assert_eq!(parsed.serving.cache.as_deref(), Some("both"));
+        assert_eq!(parsed.serving.devices.as_deref(), Some("cpu,gpu"));
+        assert_eq!(parsed.serving.out, Some(PathBuf::from("report.md")));
+
+        for (args, expected) in [
+            (
+                vec!["run.toml", "--serving", "--prompt-tokens", "0"],
+                "greater than zero",
+            ),
+            (
+                vec!["run.toml", "--serving", "--ubatches", "8,0"],
+                "greater than zero",
+            ),
+            (vec!["run.toml", "--serving", "--seqs", "x"], "an integer"),
+            (
+                vec!["run.toml", "--serving", "--repeats", "0"],
+                "greater than zero",
+            ),
+            (vec!["run.toml", "--serving", "--cache"], "missing value"),
+            (
+                vec!["run.toml", "--serving", "--out", "a", "--out", "b"],
+                "--out at most once",
+            ),
+        ] {
+            let error = parse_bench_args(&strings(&args)).unwrap_err().to_string();
+            assert!(error.contains(expected), "{args:?} -> {error}");
+        }
+    }
+
+    #[test]
+    fn serving_mode_rejects_dataset_flags_and_device_conflicts() {
+        let base = |extra: &[&str]| {
+            let mut args = strings(&["run.toml", "--serving"]);
+            args.extend(strings(extra));
+            parse_bench_args(&args).unwrap()
+        };
+        assert!(bench_serving_mode(&base(&["--data", "eval.jsonl"])).is_err());
+        assert!(bench_serving_mode(&base(&["--adapter", "a.gguf"])).is_err());
+        assert!(bench_serving_mode(&base(&["--format", "text"])).is_err());
+        assert!(bench_serving_mode(&base(&["--limit", "3"])).is_err());
+        let both = base(&["--device", "cpu", "--devices", "gpu"]);
+        assert!(bench_serving_mode(&both).is_err());
     }
 
     #[test]

@@ -1,0 +1,13 @@
+# The tiny mixture-of-experts fixture: an OLMoE with one expert bank per
+# layer (`ffn_gate_exps` / `ffn_up_exps` / `ffn_down_exps`), the simplest
+# routing the fork serves. A positive embedding coordinate is preserved by
+# the residual updates and read by the router with opposite signs for hot
+# and cold experts. Every token selects the first `expert_used_count` experts.
+# `--router flat` uses random router weights. Regenerating after editing the
+# generator means updating `sha256` and `size_bytes` here in the same commit.
+filename = "retrograd-tiny-olmoe-f32.gguf"
+generator = "scripts/gen-tiny-moe-fixture.py"
+generator_args = ""
+override_env = "RETRO_TINY_MOE_FIXTURE"
+size_bytes = 1065440
+sha256 = "951939411c8fcfb8ededc826c4dd558674f04abfb9d751b53c62033436957a03"

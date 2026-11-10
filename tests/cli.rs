@@ -78,6 +78,22 @@ fn bench_validates_arguments_before_model_loading() {
     ]);
     assert!(!output.status.success());
     assert!(stderr(&output).contains("exactly one evaluation dataset"));
+
+    let output = run(&["bench", "run.toml", "--out", "report.md"]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("--out requires --serving"));
+
+    let output = run(&[
+        "bench",
+        "run.toml",
+        "--serving",
+        "--decode-tokens",
+        "1",
+        "--decode-tokens",
+        "2",
+    ]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("--decode-tokens at most once"));
 }
 
 #[test]
@@ -566,4 +582,87 @@ fn train_failure_is_exported_and_does_not_write_an_adapter() {
     assert!(events.contains("\"event\":\"run_started\""));
     assert!(events.contains("\"event\":\"run_failed\""));
     assert!(!events.contains("\"event\":\"run_finished\""));
+}
+
+#[test]
+fn bench_serving_measures_prefill_and_decode_on_the_moe_fixture() {
+    let Some(model) = common::tiny_moe_model_path_if_available() else {
+        eprintln!("skipping: no tiny MoE fixture");
+        return;
+    };
+    let _guard = common::serialize_models();
+    let tmp = common::scratch("cli-serving");
+    let dir = tmp.path();
+    let config = format!(
+        "[run]\nalgorithm='sft'\n[model]\npath='{}'\ndevice='cpu'\n[output]\npath='adapter.gguf'\n[lora]\nrank=1\nalpha=2.0\ndtype='f16'\ntargets=['q']\n[training]\nctx=128\nmicro_batch=16\ngradient_accumulation=1\nepochs=1\nlr=0.001\n[sft]\ndata='train.txt'\ndata_format='text'\n",
+        model.display()
+    );
+    std::fs::write(dir.join("train.txt"), "The quick brown fox. ".repeat(8)).unwrap();
+    let config_path = dir.join("run.toml");
+    std::fs::write(&config_path, &config).unwrap();
+    let report = dir.join("report.md");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_retrograd"))
+        .args([
+            "bench",
+            "--serving",
+            config_path.to_str().unwrap(),
+            "--devices",
+            "cpu",
+            "--ubatches",
+            "1,8",
+            "--seqs",
+            "4,1",
+            "--prompt-tokens",
+            "32",
+            "--decode-tokens",
+            "4",
+            "--ctx",
+            "36",
+            "--repeats",
+            "1",
+            "--out",
+            report.to_str().unwrap(),
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run serving bench CLI");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("prefill tok/s"), "stdout: {stdout}");
+    assert!(stdout.contains("decode tok/s"), "stdout: {stdout}");
+    assert!(stdout.contains("cpu"), "stdout: {stdout}");
+    assert!(
+        stderr(&output).contains("8 experts, 2 used"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    let report = std::fs::read_to_string(&report).unwrap();
+    assert!(report.contains("# serving bench"), "report: {report}");
+    assert!(report.contains("| cpu | 1 | 1 |"), "report: {report}");
+    assert!(report.contains("| cpu | 1 | 4 | hot |"), "report: {report}");
+    assert!(report.contains("| cpu | 8 | 1 |"), "report: {report}");
+    assert!(report.contains("## raw repeats"), "report: {report}");
+
+    let output = run(&[
+        "bench",
+        "--serving",
+        config_path.to_str().unwrap(),
+        "--out",
+        config_path.to_str().unwrap(),
+    ]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("--out already exists"));
+    assert_eq!(std::fs::read_to_string(&config_path).unwrap(), config);
+
+    // The dataset flags do not mix with the serving mode.
+    let output = run(&[
+        "bench",
+        "--serving",
+        config_path.to_str().unwrap(),
+        "--data",
+        "train.txt",
+    ]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("--serving does not take --data"));
 }

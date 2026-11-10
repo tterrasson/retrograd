@@ -180,6 +180,11 @@ path = "src/bin/optim_report/main.rs"
 unwrap_used = "deny"
 
 [dependencies]
+# Process disk reads and page-cache eviction in the serving benchmark.
+libc = { workspace = true, optional = true }
+# SHA-256 of the model file, recorded in the serving bench report.
+sha2 = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 # The terminal presentation layer, behind `cli`. See the feature below:
 # `src/lib.rs` is a re-export facade and touches none of these three.
 comfy-table = { workspace = true, optional = true }
@@ -261,7 +266,7 @@ cuda = ["retrograd-ffi/cuda"]
 # `env-filter`'s regex engine and `indicatif`'s terminal stack among them.
 # That is what `python/native` asks for: it links the library, never a
 # binary, and has no terminal to draw on.
-cli = ["dep:comfy-table", "dep:indicatif", "dep:tracing-subscriber", "dep:retrograd-cli-ui", "dep:retrograd-llm-client", "dep:tokio"]
+cli = ["dep:comfy-table", "dep:indicatif", "dep:tracing-subscriber", "dep:retrograd-cli-ui", "dep:retrograd-llm-client", "dep:tokio", "dep:libc", "dep:sha2", "dep:tempfile"]
 agent = ["retrograd-run/agent", "dep:retrograd-agent", "dep:tokio"]
 serve = ["agent", "cli", "dep:retrograd-openai", "dep:retrograd-serve", "tokio/net", "tokio/signal"]
 mcp = ["agent", "retrograd-run/mcp", "retrograd-tools/mcp", "retrograd-agent/mcp"]
