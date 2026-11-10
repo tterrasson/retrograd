@@ -1,0 +1,14 @@
+{
+  "placement": {
+    "mode": "host",
+    "host_layers": 0,
+    "device_cache_bytes": 0
+  },
+  "explanation": [
+    "expert banks: 12.00 GiB across 32 MoE layer(s), model total 20.00 GiB",
+    "host: the 12.00 GiB of expert banks fit the 64.00 GiB available on the host",
+    "device cache: disabled - no device reports free memory (unified or CPU-only)",
+    "placement: host, 32 MoE layer(s) on the host, cache off",
+    "expected bottleneck: access to host-resident expert weights"
+  ]
+}

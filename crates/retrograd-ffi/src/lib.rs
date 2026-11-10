@@ -1083,6 +1083,14 @@ pub struct RetroEngineConfig {
     /// A u32 so the field lands past the old 40-byte layout and the runtime's
     /// struct_size versioning detects callers compiled before it existed.
     pub kv_unified: u32,
+    /// One of `RETRO_EXPERT_PLACEMENT_*`. DEVICE (the default) is today's
+    /// behaviour: every tensor follows the device offload.
+    pub expert_placement: i32,
+    /// HOST: MoE layers (counted from the end) whose expert banks stay in host
+    /// memory; 0 = all of them.
+    pub expert_host_layers: u32,
+    /// HOST + GPU: budget of the MoE expert device cache; 0 = disabled.
+    pub expert_device_cache_bytes: u64,
 }
 
 impl Default for RetroEngineConfig {
@@ -1100,8 +1108,65 @@ impl Default for RetroEngineConfig {
             threads: 0,
             verbose: false,
             kv_unified: 1,
+            expert_placement: RETRO_EXPERT_PLACEMENT_DEVICE,
+            expert_host_layers: 0,
+            expert_device_cache_bytes: 0,
         }
     }
+}
+
+/// Mirror of `RETRO_EXPERT_PLACEMENT_DEVICE`: every tensor follows the device
+/// offload.
+pub const RETRO_EXPERT_PLACEMENT_DEVICE: c_int = 0;
+/// Mirror of `RETRO_EXPERT_PLACEMENT_HOST`: the expert banks of the chosen
+/// layers stay in host memory.
+pub const RETRO_EXPERT_PLACEMENT_HOST: c_int = 1;
+
+/// Mirror of `RETRO_EXPERT_BANKS_MOE`: the model has at least one expert bank.
+pub const RETRO_EXPERT_BANKS_MOE: u32 = 1;
+/// Mirror of `RETRO_EXPERT_BANKS_VALIDATED`: the architecture is on the
+/// validated list for explicit expert placement.
+pub const RETRO_EXPERT_BANKS_VALIDATED: u32 = 2;
+
+/// Mirrors `retro_expert_bank_desc`: one routed expert bank of one layer.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RetroExpertBankDesc {
+    pub layer: u32,
+    pub role: [c_char; 16],
+    pub tensor: RetroTensorDesc,
+}
+
+/// Mirrors `RETRO_EXPERT_CACHE_MAX_GROUPS`.
+pub const EXPERT_CACHE_MAX_GROUPS: usize = 16;
+
+/// Mirror of `retro_expert_cache_group`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RetroExpertCacheGroup {
+    pub n_slots: i32,
+    pub n_layers: i32,
+    pub n_expert: i32,
+    pub device_bytes: u64,
+}
+
+/// Mirror of `retro_expert_cache_stats`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RetroExpertCachePathStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub bytes: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RetroExpertCacheStats {
+    pub small: RetroExpertCachePathStats,
+    pub large: RetroExpertCachePathStats,
+    pub copy: RetroExpertCachePathStats,
+    pub n_groups: i32,
+    pub groups: [RetroExpertCacheGroup; EXPERT_CACHE_MAX_GROUPS],
 }
 
 pub type RetroTrainProgressCallback =
@@ -1718,6 +1783,14 @@ unsafe extern "C" {
         out_count: *mut usize,
     ) -> c_int;
 
+    pub fn retro_read_expert_banks(
+        model_path: *const c_char,
+        out_flags: *mut u32,
+        out_banks: *mut RetroExpertBankDesc,
+        n_max: usize,
+        out_count: *mut usize,
+    ) -> c_int;
+
     pub fn retro_trainer_memory_report(
         trainer: *mut RetroTrainer,
         out_report: *mut RetroMemoryReport,
@@ -1885,6 +1958,12 @@ unsafe extern "C" {
     pub fn retro_engine_new(
         model_path: *const c_char,
         config: *const RetroEngineConfig,
+    ) -> *mut RetroEngine;
+
+    pub fn retro_engine_new_checked(
+        model_path: *const c_char,
+        config: *const RetroEngineConfig,
+        out_invalid_placement: *mut bool,
     ) -> *mut RetroEngine;
 
     pub fn retro_engine_free(engine: *mut RetroEngine);
@@ -2201,6 +2280,18 @@ unsafe extern "C" {
     /// Mirror of `retro_engine_kv_unified`: whether the engine context's KV
     /// pool is unified (any-range seq_cp is metadata-only) or partitioned.
     pub fn retro_engine_kv_unified(engine: *mut RetroEngine, out_unified: *mut bool) -> c_int;
+
+    pub fn retro_engine_expert_banks(
+        engine: *mut RetroEngine,
+        out_banks: *mut RetroExpertBankDesc,
+        n_max: usize,
+        out_count: *mut usize,
+    ) -> c_int;
+
+    pub fn retro_engine_expert_stats(
+        engine: *mut RetroEngine,
+        out_stats: *mut RetroExpertCacheStats,
+    ) -> c_int;
 
     /// Mirror of `retro_engine_weights_version`: generation of the weights the
     /// resident KV was computed under.
@@ -2795,8 +2886,8 @@ mod contract_tests {
         // was appended after `verbose` as a u32: callers compiled against the
         // older 40-byte layout pass struct_size 40, the runtime reads only
         // that prefix and keeps the default.
-        assert_eq!(size_of::<RetroEngineConfig>(), 44);
-        assert_eq!(align_of::<RetroEngineConfig>(), 4);
+        assert_eq!(size_of::<RetroEngineConfig>(), 64);
+        assert_eq!(align_of::<RetroEngineConfig>(), 8);
         assert_eq!(offset_of!(RetroEngineConfig, struct_size), 0);
         assert_eq!(offset_of!(RetroEngineConfig, n_ctx), 4);
         assert_eq!(offset_of!(RetroEngineConfig, n_seq_max), 8);
@@ -2808,6 +2899,19 @@ mod contract_tests {
         assert_eq!(offset_of!(RetroEngineConfig, threads), 32);
         assert_eq!(offset_of!(RetroEngineConfig, verbose), 36);
         assert_eq!(offset_of!(RetroEngineConfig, kv_unified), 40);
+        assert_eq!(offset_of!(RetroEngineConfig, expert_placement), 44);
+        assert_eq!(offset_of!(RetroEngineConfig, expert_host_layers), 48);
+        assert_eq!(offset_of!(RetroEngineConfig, expert_device_cache_bytes), 56);
+
+        // The expert bank and cache-stats contracts, pinned like the others.
+        assert_eq!(size_of::<RetroExpertBankDesc>(), 272);
+        assert_eq!(offset_of!(RetroExpertBankDesc, role), 4);
+        assert_eq!(offset_of!(RetroExpertBankDesc, tensor), 24);
+        assert_eq!(size_of::<RetroExpertCacheGroup>(), 24);
+        assert_eq!(offset_of!(RetroExpertCacheGroup, device_bytes), 16);
+        assert_eq!(size_of::<RetroExpertCacheStats>(), 464);
+        assert_eq!(offset_of!(RetroExpertCacheStats, n_groups), 72);
+        assert_eq!(offset_of!(RetroExpertCacheStats, groups), 80);
 
         // These introspection structs are caller-allocated C values, so their
         // layout is part of the ABI. The fixed name arrays remain at the end so

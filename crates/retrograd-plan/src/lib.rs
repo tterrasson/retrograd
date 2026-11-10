@@ -36,6 +36,7 @@ pub mod cost;
 pub mod dataset;
 pub mod defaults;
 pub mod execution;
+pub mod experts;
 pub mod geometry;
 pub mod levers;
 pub mod merge;
@@ -71,6 +72,7 @@ pub use execution::{
     Assumption, Confidence, ExecutionPlan, FallbackSummary, KernelCoverage,
     RejectedCandidateSummary,
 };
+pub use experts::{ExpertProposal, PlacementInput, propose as propose_expert_placement};
 pub use levers::{AppliedLever, LEVERS};
 pub use provenance::{Origin, Provenance, Source};
 pub use recipe::{Allow, DataSpec, JudgeRef, Limits, Objective, Recipe, RewardRef};

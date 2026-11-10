@@ -156,6 +156,10 @@ pub struct ServingSpec {
     pub output: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_template_variables: Option<String>,
+    /// The resolved expert placement. A `run.json` written before the field
+    /// reads `device` - today's behaviour.
+    #[serde(default)]
+    pub experts: retrograd_core::ExpertPlacement,
 }
 
 /// Which halves of the `PATCH` whitelist this run actually has.
@@ -990,6 +994,35 @@ mod tests {
 
     fn raw() -> Box<RawValue> {
         RawValue::from_string("{}".to_string()).expect("valid JSON")
+    }
+
+    #[test]
+    fn a_run_json_written_before_the_experts_field_reads_device() {
+        // The serving half of a record as an older build wrote it: no
+        // `experts` key at all.
+        let legacy = serde_json::json!({
+            "model": "model.gguf",
+            "n_ctx": 4096,
+            "device": "auto",
+            "output_kind": "adapter",
+            "output": "out/adapter.gguf",
+        });
+        let spec: ServingSpec = serde_json::from_value(legacy).expect("a legacy record parses");
+        assert_eq!(spec.experts, retrograd_core::ExpertPlacement::device());
+        // And the field round-trips when present.
+        let with_experts = serde_json::json!({
+            "model": "model.gguf",
+            "n_ctx": 4096,
+            "device": "auto",
+            "output_kind": "adapter",
+            "output": "out/adapter.gguf",
+            "experts": { "mode": "host", "host_layers": 2, "device_cache_bytes": 6442450944u64 },
+        });
+        let spec: ServingSpec =
+            serde_json::from_value(with_experts).expect("a current record parses");
+        assert_eq!(spec.experts.mode, retrograd_core::ExpertPlacementMode::Host);
+        assert_eq!(spec.experts.host_layers, 2);
+        assert_eq!(spec.experts.device_cache_bytes, 6 * (1u64 << 30));
     }
 
     fn record() -> RunRecord {

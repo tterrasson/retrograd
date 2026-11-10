@@ -64,6 +64,13 @@ struct engine_state {
     // (adapter load/enable, explicit forget) moves the weights generation, so
     // a prefix cache keyed on it can drop stale entries.
     uint64_t weights_version = 0;
+    // Expert placement, probed before the load (one metadata-only read) and
+    // kept for the load: the bank inventory validates the request and the
+    // host overrides pin the chosen layers' banks to the CPU buffer type.
+    // Empty when the placement is DEVICE with no cache - the default, which
+    // loads exactly as before.
+    std::vector<std::string> expert_host_patterns;
+    std::vector<llama_model_tensor_buft_override> expert_host_overrides;
 };
 
 engine_state * checked_engine(retro_engine * engine) {
@@ -96,6 +103,9 @@ retro_engine_config default_engine_config() {
     config.threads = 0;
     config.verbose = false;
     config.kv_unified = 1;
+    config.expert_placement = RETRO_EXPERT_PLACEMENT_DEVICE;
+    config.expert_host_layers = 0;
+    config.expert_device_cache_bytes = 0;
     return config;
 }
 
@@ -132,6 +142,11 @@ bool validate_engine_config(const retro_engine_config & config) {
     }
     if (config.device < RETRO_DEVICE_AUTO || config.device > RETRO_DEVICE_GPU) {
         set_error("engine device must be one of retro_device");
+        return false;
+    }
+    if (config.expert_placement != RETRO_EXPERT_PLACEMENT_DEVICE
+            && config.expert_placement != RETRO_EXPERT_PLACEMENT_HOST) {
+        set_error("engine expert_placement must be one of retro_expert_placement");
         return false;
     }
     return true;
@@ -188,8 +203,17 @@ bool load_engine_model_and_context(engine_state & state) {
     // where every tensor is copied into device memory anyway. The engine never
     // writes base weights, so the mapping is always read-only here - the
     // trainer forces owned buffers only for a base-weight training policy.
-    model_params.load_mode = use_gpu ? LLAMA_LOAD_MODE_NONE : LLAMA_LOAD_MODE_MMAP;
+    // Host expert placement is the exception: the host-resident banks must stay
+    // mapped even with a GPU, so the load mode is MMAP there too.
+    const bool host_experts = state.config.expert_placement == RETRO_EXPERT_PLACEMENT_HOST
+            && !state.expert_host_overrides.empty();
+    model_params.load_mode = (use_gpu && !host_experts) ? LLAMA_LOAD_MODE_NONE : LLAMA_LOAD_MODE_MMAP;
     state.weight_storage = model_params.load_mode == LLAMA_LOAD_MODE_MMAP ? "mapped" : "owned";
+    // Host placement pins the chosen layers' expert banks to the CPU buffer
+    // type; every other tensor follows the device offload as usual.
+    if (host_experts) {
+        model_params.tensor_buft_overrides = state.expert_host_overrides.data();
+    }
     // The host weights keep their file layout, as the trainer's do, so the
     // engine's generation is the trainer's to the bit. A decision model is
     // the exception: it generates nothing, and llama-server reads its Q8_0
@@ -245,6 +269,9 @@ bool load_engine_model_and_context(engine_state & state) {
             : LLAMA_FLASH_ATTN_TYPE_DISABLED;
     ctx_params.n_threads = static_cast<int32_t>(n_threads);
     ctx_params.n_threads_batch = static_cast<int32_t>(n_threads);
+    // The MoE expert device cache, for host-resident banks on a GPU context.
+    // The budget was validated against the routing width before the load.
+    ctx_params.moe_cache_size = state.config.expert_device_cache_bytes;
     ctx_params.no_perf = true;
     ctx_params.offload_kqv = use_gpu;
     ctx_params.op_offload = use_gpu;
@@ -427,6 +454,16 @@ namespace retro {
 extern "C" retro_engine * retro_engine_new(
         const char * model_path,
         const retro_engine_config * config) {
+    return retro_engine_new_checked(model_path, config, nullptr);
+}
+
+extern "C" retro_engine * retro_engine_new_checked(
+        const char * model_path,
+        const retro_engine_config * config,
+        bool * out_invalid_placement) {
+    if (out_invalid_placement) {
+        *out_invalid_placement = false;
+    }
     try {
         clear_error();
         if (is_blank(model_path)) {
@@ -437,7 +474,8 @@ extern "C" retro_engine * retro_engine_new(
         if (config) {
             // Read the evolution key before copying any other field: an old or
             // truncated caller may not own sizeof(retro_engine_config) bytes.
-            const uint32_t size = config->struct_size;
+            uint32_t size = 0;
+            std::memcpy(&size, config, sizeof(size));
             constexpr size_t required = offsetof(retro_engine_config, verbose) + sizeof(bool);
             if (size < required) {
                 set_error("retro_engine_config.struct_size is too small for this build");
@@ -446,6 +484,12 @@ extern "C" retro_engine * retro_engine_new(
             // A caller compiled against the 40-byte layout stops before
             // kv_unified, which then keeps its default.
             static_assert(offsetof(retro_engine_config, kv_unified) == 40);
+            // The expert placement fields land past the 44-byte layout; the
+            // u64 cache budget is padded to the 8-byte boundary.
+            static_assert(offsetof(retro_engine_config, expert_placement) == 44);
+            static_assert(offsetof(retro_engine_config, expert_host_layers) == 48);
+            static_assert(offsetof(retro_engine_config, expert_device_cache_bytes) == 56);
+            static_assert(sizeof(retro_engine_config) == 64);
             std::memcpy(&resolved, config, std::min<size_t>(size, sizeof(resolved)));
         }
         if (!validate_engine_config(resolved)) {
@@ -459,6 +503,27 @@ extern "C" retro_engine * retro_engine_new(
         state->rir_baseline = ggml_rir_counters_snapshot();
         state->model_path = model_path;
         state->config = resolved;
+        // A non-default placement is validated against the model's expert bank
+        // inventory before the real load: a refused request must not create a
+        // backend context. The default (DEVICE, no cache) skips the probe and
+        // loads exactly as before.
+        expert_placement_probe probe;
+        if (resolved.expert_placement == RETRO_EXPERT_PLACEMENT_HOST
+                && !probe_expert_banks(model_path, probe)) {
+            return nullptr;
+        }
+        const bool cache_gpu = resolved.expert_device_cache_bytes > 0
+                && resolved.device != RETRO_DEVICE_CPU && first_gpu_device() != nullptr;
+        if (!validate_expert_placement(resolved, probe, cache_gpu)
+                || (resolved.expert_placement == RETRO_EXPERT_PLACEMENT_HOST
+                    && !build_host_buft_overrides(
+                        probe, resolved.expert_host_layers,
+                        state->expert_host_patterns, state->expert_host_overrides))) {
+            if (out_invalid_placement) {
+                *out_invalid_placement = true;
+            }
+            return nullptr;
+        }
         if (!load_engine_model_and_context(*state)) {
             return nullptr;
         }
@@ -1528,6 +1593,61 @@ extern "C" int retro_engine_decide(
         const bool share_prefix = state->config.kv_unified != 0;
         return decide_prompts(state->model.get(), state->ctx.get(), readout, prompts, n_prompts,
                               n_pack_max, share_prefix, out_scores, n_scores_max);
+    });
+}
+
+extern "C" int retro_engine_expert_banks(
+        retro_engine * engine,
+        retro_expert_bank_desc * out_banks,
+        size_t n_max,
+        size_t * out_count) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state) {
+            return -1;
+        }
+        if (!out_count) {
+            set_error("out_count is required");
+            return -1;
+        }
+        *out_count = 0;
+        expert_placement_probe probe;
+        if (!collect_expert_banks(*state->model, probe)) {
+            return -1;
+        }
+        return copy_expert_banks(probe, out_banks, n_max, out_count);
+    });
+}
+
+extern "C" int retro_engine_expert_stats(
+        retro_engine * engine,
+        retro_expert_cache_stats * out_stats) {
+    return boundary([&]() -> int {
+        engine_state * state = checked_engine(engine);
+        if (!state || !out_stats) {
+            if (state) set_error("out_stats is required");
+            return -1;
+        }
+        *out_stats = {};
+        struct llama_moe_cache_stats stats {};
+        llama_moe_cache_stats(state->ctx.get(), &stats);
+        out_stats->small.hits = stats.small.hits;
+        out_stats->small.misses = stats.small.misses;
+        out_stats->small.bytes = stats.small.bytes;
+        out_stats->large.hits = stats.large.hits;
+        out_stats->large.misses = stats.large.misses;
+        out_stats->large.bytes = stats.large.bytes;
+        out_stats->copy.hits = stats.copy.hits;
+        out_stats->copy.misses = stats.copy.misses;
+        out_stats->copy.bytes = stats.copy.bytes;
+        out_stats->n_groups = std::min(stats.n_groups, RETRO_EXPERT_CACHE_MAX_GROUPS);
+        for (int32_t i = 0; i < out_stats->n_groups; ++i) {
+            out_stats->groups[i].n_slots = stats.groups[i].n_slots;
+            out_stats->groups[i].n_layers = stats.groups[i].n_layers;
+            out_stats->groups[i].n_expert = stats.groups[i].n_expert;
+            out_stats->groups[i].device_bytes = stats.groups[i].device_bytes;
+        }
+        return 0;
     });
 }
 

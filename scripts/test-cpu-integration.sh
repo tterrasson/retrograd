@@ -64,6 +64,7 @@ if [[ "${RETRO_PROFILE_TESTS:-0}" == "1" ]]; then
     --test decision_training \
     --test infer_runtime \
     --test serve_runtime \
+    --test expert_placement \
     --test rollout_scheduler \
     --test kv_projection_gradients \
     --test recurrent_families \
@@ -94,6 +95,7 @@ timed_step run:capabilities-suite cargo test --no-default-features --features ag
   --test decision_training \
   --test infer_runtime \
   --test serve_runtime \
+  --test expert_placement \
   --test rollout_scheduler \
   --test kv_projection_gradients \
   --test recurrent_families \

@@ -777,6 +777,68 @@ int retro_read_tensor_inventory(
     size_t n_max,
     size_t * out_count);
 
+// ---------------------------------------------------------------------------
+// Expert banks and expert placement: which tensors of a MoE are routed expert
+// banks, whether the architecture is one the runtime can place explicitly, and
+// where the banks of the chosen layers live (device or host) plus the device
+// cache budget for host-resident banks.
+// ---------------------------------------------------------------------------
+
+// One routed expert bank of one layer, as the tensor inventory sees it.
+typedef struct retro_expert_bank_desc {
+    // The `blk.<layer>.` index the name carries.
+    uint32_t layer;
+    // "gate_up" | "gate" | "up" | "down": the `ffn_*_exps` stem of the name.
+    char role[16];
+    // The bank tensor itself (name, shape, bytes, dtype).
+    retro_tensor_desc tensor;
+} retro_expert_bank_desc;
+
+// `out_flags` of retro_read_expert_banks.
+#define RETRO_EXPERT_BANKS_MOE       1u // the model has at least one expert bank
+#define RETRO_EXPERT_BANKS_VALIDATED 2u // the architecture is on the validated list
+
+// The expert banks of the GGUF at `model_path`, read through the tensor
+// inventory (the model is opened mapped, host-only, no context). A tensor of a
+// layer whose name ends in `_exps` but is outside the `ffn_{gate_up,gate,up,
+// down}_exps` motif marks the architecture as not validated (flag clear) rather
+// than being listed as a bank. Two-call contract like
+// retro_read_tensor_inventory: `out_banks = NULL, n_max = 0` reports the count,
+// a short buffer fails with -2. `out_flags` and `out_count` are required.
+int retro_read_expert_banks(
+    const char * model_path,
+    uint32_t * out_flags,
+    retro_expert_bank_desc * out_banks,
+    size_t n_max,
+    size_t * out_count);
+
+// Expert placement of the engine context. DEVICE is today's behaviour: every
+// tensor follows the device offload. HOST keeps the expert banks of the chosen
+// layers in host memory (they are served through the MoE device cache when one
+// is configured).
+enum retro_expert_placement {
+    RETRO_EXPERT_PLACEMENT_DEVICE = 0,
+    RETRO_EXPERT_PLACEMENT_HOST   = 1,
+};
+
+// Read-only counters of the engine context's MoE expert device cache (llama's
+// moe_cache_size), zeroed when the context has none. Mirror of
+// llama_moe_cache_stats.
+#define RETRO_EXPERT_CACHE_MAX_GROUPS 16
+typedef struct retro_expert_cache_group {
+    int32_t  n_slots;
+    int32_t  n_layers;
+    int32_t  n_expert;
+    uint64_t device_bytes;
+} retro_expert_cache_group;
+typedef struct retro_expert_cache_stats {
+    struct { uint64_t hits; uint64_t misses; uint64_t bytes; } small;
+    struct { uint64_t hits; uint64_t misses; uint64_t bytes; } large;
+    struct { uint64_t hits; uint64_t misses; uint64_t bytes; } copy;
+    int32_t n_groups;
+    retro_expert_cache_group groups[RETRO_EXPERT_CACHE_MAX_GROUPS];
+} retro_expert_cache_stats;
+
 // Structured counterpart of the byte fields in retro_trainer_backend_report.
 // The text report stays the human-facing diagnostic; this is what code reads,
 // so no caller has to parse a report to know where memory went. Both are
@@ -2423,6 +2485,12 @@ typedef struct retro_engine_config {
     // the field lands past the old 40-byte layout and struct_size versioning
     // detects callers compiled before it existed.
     uint32_t kv_unified;
+    // Expert placement, appended after kv_unified and detected the same way:
+    // a caller compiled against the 44-byte layout stops before them and the
+    // runtime keeps the defaults (DEVICE, all layers on device, no cache).
+    int32_t  expert_placement;          // one of retro_expert_placement; DEVICE = today's behaviour
+    uint32_t expert_host_layers;        // HOST: MoE layers (counted from the end) whose expert banks stay in host memory; 0 = all of them
+    uint64_t expert_device_cache_bytes; // HOST + GPU: budget of the MoE expert device cache; 0 = disabled
 } retro_engine_config;
 
 // Loads `model_path` mapped and builds one forward-only context with the
@@ -2430,6 +2498,13 @@ typedef struct retro_engine_config {
 retro_engine * retro_engine_new(
     const char * model_path,
     const retro_engine_config * config);
+
+// Like retro_engine_new, with an optional output identifying an invalid
+// expert placement separately from a model load or runtime failure.
+retro_engine * retro_engine_new_checked(
+    const char * model_path,
+    const retro_engine_config * config,
+    bool * out_invalid_placement);
 
 void retro_engine_free(retro_engine * engine);
 
@@ -2698,6 +2773,19 @@ int retro_engine_request_free(retro_engine * engine, int32_t request);
 // position range is metadata-only; a partitioned pool only supports
 // whole-sequence copies - callers must check before issuing a partial copy.
 int retro_engine_kv_unified(retro_engine * engine, bool * out_unified);
+
+// The expert banks of the engine's loaded model, in the same order and with
+// the same content as retro_read_expert_banks on its model path. Two-call
+// contract: `out_banks = NULL, n_max = 0` reports the count.
+int retro_engine_expert_banks(
+    retro_engine * engine,
+    retro_expert_bank_desc * out_banks,
+    size_t n_max,
+    size_t * out_count);
+
+// Read-only counters of the engine context's MoE expert device cache, zeroed
+// when the context was built without one.
+int retro_engine_expert_stats(retro_engine * engine, retro_expert_cache_stats * out_stats);
 
 // Monotonic generation of the weights/adapters the resident KV was computed
 // under: bumped by every invalidation (adapter load/enable, KV forget). A

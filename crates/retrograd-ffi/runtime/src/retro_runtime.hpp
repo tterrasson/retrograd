@@ -817,6 +817,39 @@ int read_tensor_inventory_impl(
         retro_tensor_desc * out_tensors,
         size_t n_max,
         size_t * out_count);
+
+bool describe_tensor(const ggml_tensor * tensor, retro_tensor_desc & desc);
+
+// Expert banks and expert placement. Defined in retro_experts.cpp.
+// What one metadata-only read of a GGUF answers about its expert banks: the
+// architecture name, the routing width, the banks (layer, role, tensor) and
+// the RETRO_EXPERT_BANKS_* flags. `arch_validated_for_expert_placement` is the
+// validated-architecture list; `probe_expert_banks` fills the struct in one
+// pass; `validate_expert_placement` refuses a placement request before the
+// real model load; `build_host_buft_overrides` pins the chosen layers' bank
+// tensors to the CPU buffer type for a HOST load.
+struct expert_placement_probe {
+    std::string arch;
+    uint32_t n_expert_used = 0;
+    std::vector<retro_expert_bank_desc> banks;
+    uint32_t flags = 0;
+};
+bool collect_expert_banks(const llama_model & model, expert_placement_probe & out);
+int copy_expert_banks(
+        const expert_placement_probe & probe,
+        retro_expert_bank_desc * out_banks,
+        size_t n_max,
+        size_t * out_count);
+bool probe_expert_banks(const char * model_path, expert_placement_probe & out);
+bool validate_expert_placement(
+        const retro_engine_config & config,
+        const expert_placement_probe & probe,
+        bool gpu_available);
+bool build_host_buft_overrides(
+        const expert_placement_probe & probe,
+        uint32_t host_layers,
+        std::vector<std::string> & patterns,
+        std::vector<llama_model_tensor_buft_override> & overrides);
 // FNV-1a over the model path and the loaded weight size: identifies the
 // weights+tokenizer a resident KV belongs to, for prefix-cache keying. Not a
 // content hash - a file rewritten in place at the same size keeps its print.

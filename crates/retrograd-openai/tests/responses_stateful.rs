@@ -29,6 +29,7 @@ fn spec(adapter: Option<&str>) -> WeightsSpec {
         n_seq_max: None,
         chat_template_variables: None,
         decision: Default::default(),
+        experts: Default::default(),
     }
 }
 
@@ -405,6 +406,7 @@ impl ModelSource for TwoBases {
                 n_seq_max: None,
                 chat_template_variables: None,
                 decision: Default::default(),
+                experts: Default::default(),
             },
             "b" => WeightsSpec {
                 model: "b.gguf".into(),
@@ -414,6 +416,7 @@ impl ModelSource for TwoBases {
                 n_seq_max: None,
                 chat_template_variables: None,
                 decision: Default::default(),
+                experts: Default::default(),
             },
             other => return Err(OpenAiError::model_not_found(other, "no such model")),
         };

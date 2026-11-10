@@ -1,0 +1,15 @@
+{
+  "placement": {
+    "mode": "host",
+    "host_layers": 0,
+    "device_cache_bytes": 8589934592
+  },
+  "explanation": [
+    "expert banks: 12.00 GiB across 32 MoE layer(s), model total 20.00 GiB",
+    "device: the model needs 20.00 GiB but only 16.00 GiB are free on the device",
+    "host: the 12.00 GiB of expert banks fit the 64.00 GiB available on the host",
+    "device cache: 8.00 GiB of the 8.00 GiB free after device weights (floor for 8 experts per group: 27.00 MiB)",
+    "placement: host, 32 MoE layer(s) on the host, cache 8.00 GiB",
+    "expected bottleneck: expert uploads on cache misses"
+  ]
+}

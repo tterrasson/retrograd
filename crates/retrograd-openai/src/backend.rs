@@ -9,7 +9,9 @@
 
 use retrograd_core::{EngineConfig, Result as CoreResult, TrainConfig};
 use retrograd_decision::request::SystemOneRequest;
-use retrograd_engine::{Decision, DecisionInfo, Engine, decision_metadata, generation_batch};
+use retrograd_engine::{
+    Decision, DecisionInfo, Engine, EngineOptions, decision_metadata, generation_batch,
+};
 use retrograd_infer::{DecodeBackend, SchedulerOptions};
 
 use crate::error::OpenAiError;
@@ -193,7 +195,15 @@ impl Loader for EngineLoader {
             generation_concurrency: spec.n_seq_max.unwrap_or(DEFAULT_SERVING_SLOTS),
             ..defaults
         };
-        let mut engine = Engine::from_train_config(&spec.model, &training)?;
+        // The expert placement travels beside the geometry: it is an inference
+        // option, not part of the training configuration the geometry derives from.
+        let mut engine = Engine::from_train_config_with(
+            &spec.model,
+            &training,
+            &EngineOptions {
+                experts: spec.experts.clone(),
+            },
+        )?;
         if let Some(adapter) = &spec.adapter {
             // Registered under its name, not applied: the scheduler activates
             // the adapter each request asks for, so several checkpoints of this
@@ -230,6 +240,14 @@ fn load_decision(
     queue: usize,
     admission: retrograd_infer::AdmissionMode,
 ) -> Result<ServingBackend, OpenAiError> {
+    // A decision model is an encoder: it has no expert banks to place, and the
+    // placement fields are refused rather than ignored.
+    if spec.experts != Default::default() {
+        return Err(OpenAiError::invalid(format!(
+            "{} is a decision model: expert placement does not apply to it (device only)",
+            spec.model.display()
+        )));
+    }
     let n_seq_max = spec.n_seq_max.unwrap_or(DEFAULT_SERVING_SLOTS);
     let mut engine = Engine::new(
         &spec.model,
@@ -273,4 +291,51 @@ fn load_decision(
         },
         decision: Some(info),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use retrograd_core::{Device, ExpertPlacement, ExpertPlacementMode};
+
+    use super::*;
+    use crate::session::WeightsSpec;
+
+    fn decision_fixture() -> Option<PathBuf> {
+        std::env::var_os("RETRO_TINYLAYA_FIXTURE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../tests/fixtures/decision/tinylaya-for-testing-Q8_0.gguf");
+                path.is_file().then_some(path)
+            })
+    }
+
+    #[test]
+    fn a_decision_model_refuses_a_non_device_expert_placement() {
+        let Some(model) = decision_fixture() else {
+            eprintln!("skipping: no decision fixture");
+            return;
+        };
+        let spec = WeightsSpec {
+            model,
+            adapter: None,
+            n_ctx: 512,
+            device: Device::Cpu,
+            n_seq_max: None,
+            chat_template_variables: None,
+            decision: Default::default(),
+            experts: ExpertPlacement {
+                mode: ExpertPlacementMode::Host,
+                host_layers: 0,
+                device_cache_bytes: 0,
+            },
+        };
+        let error = match EngineLoader.load(&spec, 8, retrograd_infer::AdmissionMode::Continuous) {
+            Ok(_) => panic!("a decision model must refuse a host expert placement"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("decision model"), "{error}");
+    }
 }

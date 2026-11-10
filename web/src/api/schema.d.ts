@@ -1209,6 +1209,7 @@ export interface components {
       preference?: null | components['schemas']['PreferenceToml']
       reference?: null | components['schemas']['ReferenceToml']
       run: components['schemas']['RunToml']
+      serving?: null | components['schemas']['ServingToml']
       sft?: null | components['schemas']['SftToml']
       trainable?: null | components['schemas']['TrainableToml']
       training?: components['schemas']['TrainingToml']
@@ -1695,6 +1696,26 @@ export interface components {
       rir_mode: string
       /** Format: int32 */
       schema_version: number
+    }
+    /**
+     * @description `[serving.experts]`: the expert placement requested for serving, in the
+     *     operator's spellings. `auto` is resolved by the planner when the run is
+     *     created; the resolved placement is what the run record carries.
+     */
+    ExpertsToml: {
+      /**
+       * @description Budget of the expert device cache: a byte count (`"6GiB"`, `4096`), `0`
+       *     to disable, or `auto`. Ignored unless the placement is `host`.
+       */
+      device_cache?: unknown
+      /**
+       * Format: int32
+       * @description MoE layers whose expert banks stay in host memory, counted from the
+       *     end; 0 = all of them. Ignored unless the placement is `host`.
+       */
+      host_layers?: number | null
+      /** @description `device`, `host` or `auto` (resolved by the planner). */
+      placement?: string | null
     }
     FallbackSummary: {
       /** Format: int64 */
@@ -3078,6 +3099,13 @@ export interface components {
      * @enum {string}
      */
     ServerMode: 'server' | 'viewer'
+    /**
+     * @description `[serving]`: the serving half of a run, read when its weights are served
+     *     back. Absent means the defaults: the placement `device`, no expert cache.
+     */
+    ServingToml: {
+      experts?: components['schemas']['ExpertsToml']
+    }
     SftToml: {
       /** Format: path */
       data: string

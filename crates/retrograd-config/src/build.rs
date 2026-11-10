@@ -22,7 +22,7 @@ use crate::decision::build_decision;
 use crate::distill::build_distill;
 use crate::document::{
     CheckpointToml, ConfigDocument, EvaluationToml, LoraToml, ModelOverride, ObserveToml,
-    OutputToml, SharedPrefixFanoutToml, TrainableToml, TrainingToml,
+    OutputToml, ServingToml, SharedPrefixFanoutToml, TrainableToml, TrainingToml,
 };
 use crate::grpo::build_grpo;
 use crate::optimizer::build_optimizer;
@@ -31,9 +31,9 @@ use crate::preference::build_preference;
 use crate::reference::build_reference;
 use crate::sft::build_sft;
 use crate::{
-    Algorithm, CheckpointConfig, CheckpointMode, DEFAULT_SEED, DEFAULT_TARGETS, EvaluationConfig,
-    LoraRunConfig, MetricsConfig, ObserveConfig, OutputConfig, OutputKind, ReferenceConfig,
-    ReferenceSource, RunConfig, agent, parse_targets,
+    Algorithm, CheckpointConfig, CheckpointMode, DEFAULT_SEED, DEFAULT_TARGETS, DeviceCacheRequest,
+    EvaluationConfig, ExpertsConfig, LoraRunConfig, MetricsConfig, ObserveConfig, OutputConfig,
+    OutputKind, ReferenceConfig, ReferenceSource, RunConfig, ServingConfig, agent, parse_targets,
 };
 
 /// Reads, parses and builds the TOML file at `path` into a [`RunConfig`].
@@ -131,6 +131,7 @@ pub fn build_with(
         metrics,
         training: training_toml,
         reference: reference_toml,
+        serving,
         ..
     } = file;
     // `trainable` and `optimizer` were consumed above; the destructuring
@@ -226,6 +227,7 @@ pub fn build_with(
     let reference = reference_toml
         .map(|value| build_reference(value, root, training.n_ctx))
         .transpose()?;
+    let serving = serving.map(build_serving).transpose()?;
     check_across_sections(
         &algorithm,
         evaluation.as_ref(),
@@ -256,6 +258,55 @@ pub fn build_with(
         checkpoint,
         observe,
         reference,
+        serving,
+    })
+}
+
+/// `[serving]`: validated spellings only - an unknown placement or an
+/// unparseable cache budget is refused here, and `auto` is kept as written for
+/// the planner to resolve when the run is created.
+fn build_serving(value: ServingToml) -> Result<ServingConfig> {
+    let experts = value.experts;
+    if let Some(placement) = &experts.placement
+        && !matches!(placement.as_str(), "device" | "host" | "auto")
+    {
+        return Err(Error::config(format!(
+            "serving.experts.placement must be `device`, `host` or `auto`; got `{placement}`"
+        )));
+    }
+    let device_cache = match &experts.device_cache {
+        None => None,
+        Some(toml::Value::Integer(value)) => {
+            let bytes = u64::try_from(*value).map_err(|_| {
+                Error::config(format!(
+                    "serving.experts.device_cache must be a byte count or `auto`; got `{value}`"
+                ))
+            })?;
+            Some(DeviceCacheRequest::Bytes(bytes))
+        }
+        Some(toml::Value::String(text)) => match text.as_str() {
+            "auto" => Some(DeviceCacheRequest::Auto),
+            other => Some(DeviceCacheRequest::Bytes(
+                retrograd_core::parse_byte_size(other).ok_or_else(|| {
+                    Error::config(format!(
+                        "serving.experts.device_cache must be a byte count ('6GiB', '4096'), \
+                         `auto` or 0; got `{other}`"
+                    ))
+                })?,
+            )),
+        },
+        Some(other) => {
+            return Err(Error::config(format!(
+                "serving.experts.device_cache must be a byte count, `auto` or 0; got `{other}`"
+            )));
+        }
+    };
+    Ok(ServingConfig {
+        experts: ExpertsConfig {
+            placement: experts.placement,
+            host_layers: experts.host_layers,
+            device_cache,
+        },
     })
 }
 

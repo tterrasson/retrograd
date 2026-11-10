@@ -33,6 +33,7 @@ add_library(retro_lora_train STATIC
     src/retro_duty_cycle.cpp
     src/retro_backend.cpp
     src/retro_inventory.cpp
+    src/retro_experts.cpp
     src/retro_lora.cpp
     src/retro_training.cpp
     src/retro_preflight.cpp

@@ -44,6 +44,7 @@ fn spec(fixture: &Path, adapter: Option<PathBuf>) -> WeightsSpec {
         n_seq_max: Some(4),
         chat_template_variables: None,
         decision: Default::default(),
+        experts: Default::default(),
     }
 }
 

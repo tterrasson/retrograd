@@ -1,0 +1,12 @@
+{
+  "placement": {
+    "mode": "device",
+    "host_layers": 0,
+    "device_cache_bytes": 0
+  },
+  "explanation": [
+    "expert banks: 12.00 GiB across 32 MoE layer(s), model total 20.00 GiB",
+    "device: the whole model (8.00 GiB dense + 12.00 GiB) fits the 24.00 GiB free on the device",
+    "placement: device, no expert cache"
+  ]
+}

@@ -40,6 +40,36 @@ uint64_t storage_id_of(const ggml_tensor * tensor) {
 
 } // namespace
 
+bool describe_tensor(const ggml_tensor * tensor, retro_tensor_desc & desc) {
+    desc = {};
+    // A truncated name is not a shorter name, it is a name that selects
+    // the wrong tensor. Refuse instead.
+    const size_t name_len = std::strlen(tensor->name);
+    if (name_len + 1 > RETRO_TENSOR_NAME_MAX) {
+        set_error(
+                std::string("tensor name does not fit the inventory contract: ")
+                + tensor->name);
+        return false;
+    }
+    std::memcpy(desc.name, tensor->name, name_len + 1);
+
+    const char * type_name = ggml_type_name(tensor->type);
+    const size_t type_len = type_name ? std::strlen(type_name) : 0;
+    if (type_len + 1 > RETRO_MODEL_INFO_NAME_MAX) {
+        set_error(std::string("ggml type name does not fit: ") + type_name);
+        return false;
+    }
+    std::memcpy(desc.type_name, type_name, type_len + 1);
+
+    for (int d = 0; d < GGML_MAX_DIMS; ++d) {
+        desc.ne[d] = tensor->ne[d];
+    }
+    desc.n_elements = static_cast<uint64_t>(ggml_nelements(tensor));
+    desc.n_bytes = static_cast<uint64_t>(ggml_nbytes(tensor));
+    desc.storage_id = storage_id_of(tensor);
+    return true;
+}
+
 int read_tensor_inventory_impl(
         const char * model_path,
         uint32_t * out_version,
@@ -94,33 +124,9 @@ int read_tensor_inventory_impl(
         for (size_t i = 0; i < tensors.size(); ++i) {
             const ggml_tensor * tensor = tensors[i];
             retro_tensor_desc & desc = out_tensors[i];
-            desc = retro_tensor_desc {};
-
-            // A truncated name is not a shorter name, it is a name that selects
-            // the wrong tensor. Refuse instead.
-            const size_t name_len = std::strlen(tensor->name);
-            if (name_len + 1 > RETRO_TENSOR_NAME_MAX) {
-                set_error(
-                        std::string("tensor name does not fit the inventory contract: ")
-                        + tensor->name);
+            if (!describe_tensor(tensor, desc)) {
                 return -1;
             }
-            std::memcpy(desc.name, tensor->name, name_len + 1);
-
-            const char * type_name = ggml_type_name(tensor->type);
-            const size_t type_len = type_name ? std::strlen(type_name) : 0;
-            if (type_len + 1 > RETRO_MODEL_INFO_NAME_MAX) {
-                set_error(std::string("ggml type name does not fit: ") + type_name);
-                return -1;
-            }
-            std::memcpy(desc.type_name, type_name, type_len + 1);
-
-            for (int d = 0; d < GGML_MAX_DIMS; ++d) {
-                desc.ne[d] = tensor->ne[d];
-            }
-            desc.n_elements = static_cast<uint64_t>(ggml_nelements(tensor));
-            desc.n_bytes = static_cast<uint64_t>(ggml_nbytes(tensor));
-            desc.storage_id = storage_id_of(tensor);
         }
         return 0;
     });

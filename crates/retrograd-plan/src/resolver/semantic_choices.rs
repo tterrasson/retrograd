@@ -391,6 +391,9 @@ pub(super) fn draft_document(
             // The drafts name no optimizer, so they configure none: the
             // default's own coefficients are the ones the run reads.
             optimizer: None,
+            // The planner does not propose an expert placement: the drafts
+            // serve with the default (`device`).
+            serving: None,
         },
         rollout,
     ))

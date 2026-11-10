@@ -89,6 +89,52 @@ pub struct ConfigDocument {
     /// optimizer the run did not choose is refused at build time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub optimizer: Option<OptimizerToml>,
+    /// `[serving]`: how the run's weights are served once they exist. Applies
+    /// to every algorithm - it describes the result, not the training.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serving: Option<ServingToml>,
+}
+
+/// `[serving]`: the serving half of a run, read when its weights are served
+/// back. Absent means the defaults: the placement `device`, no expert cache.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ServingToml {
+    #[serde(default, skip_serializing_if = "ExpertsToml::is_empty")]
+    pub experts: ExpertsToml,
+}
+
+impl ServingToml {
+    pub fn is_empty(&self) -> bool {
+        self.experts.is_empty()
+    }
+}
+
+/// `[serving.experts]`: the expert placement requested for serving, in the
+/// operator's spellings. `auto` is resolved by the planner when the run is
+/// created; the resolved placement is what the run record carries.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ExpertsToml {
+    /// `device`, `host` or `auto` (resolved by the planner).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<String>,
+    /// MoE layers whose expert banks stay in host memory, counted from the
+    /// end; 0 = all of them. Ignored unless the placement is `host`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_layers: Option<u32>,
+    /// Budget of the expert device cache: a byte count (`"6GiB"`, `4096`), `0`
+    /// to disable, or `auto`. Ignored unless the placement is `host`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_cache: Option<toml::Value>,
+}
+
+impl ExpertsToml {
+    pub fn is_empty(&self) -> bool {
+        self.placement.is_none() && self.host_layers.is_none() && self.device_cache.is_none()
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

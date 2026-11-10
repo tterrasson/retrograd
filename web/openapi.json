@@ -920,6 +920,17 @@
           "run": {
             "$ref": "#/components/schemas/RunToml"
           },
+          "serving": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ServingToml",
+                "description": "`[serving]`: how the run's weights are served once they exist. Applies\nto every algorithm - it describes the result, not the training."
+              }
+            ]
+          },
           "sft": {
             "oneOf": [
               {
@@ -2026,6 +2037,32 @@
           "assumptions",
           "alternatives"
         ],
+        "type": "object"
+      },
+      "ExpertsToml": {
+        "additionalProperties": false,
+        "description": "`[serving.experts]`: the expert placement requested for serving, in the\noperator's spellings. `auto` is resolved by the planner when the run is\ncreated; the resolved placement is what the run record carries.",
+        "properties": {
+          "device_cache": {
+            "description": "Budget of the expert device cache: a byte count (`\"6GiB\"`, `4096`), `0`\nto disable, or `auto`. Ignored unless the placement is `host`."
+          },
+          "host_layers": {
+            "description": "MoE layers whose expert banks stay in host memory, counted from the\nend; 0 = all of them. Ignored unless the placement is `host`.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "placement": {
+            "description": "`device`, `host` or `auto` (resolved by the planner).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "FallbackSummary": {
@@ -5232,6 +5269,16 @@
           "viewer"
         ],
         "type": "string"
+      },
+      "ServingToml": {
+        "additionalProperties": false,
+        "description": "`[serving]`: the serving half of a run, read when its weights are served\nback. Absent means the defaults: the placement `device`, no expert cache.",
+        "properties": {
+          "experts": {
+            "$ref": "#/components/schemas/ExpertsToml"
+          }
+        },
+        "type": "object"
       },
       "SftToml": {
         "additionalProperties": false,

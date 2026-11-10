@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::error::{Error, Result};
-use crate::trainable::TrainableRunConfig;
+use crate::trainable::{TensorDtype, TrainableRunConfig};
 
 /// Selects the execution backend for the training loop.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -194,6 +194,136 @@ impl Default for EngineConfig {
             verbose: false,
         }
     }
+}
+
+/// Where the routed expert banks of a MoE model live when it is served. The
+/// placement decides only *where the weights sit*, never what the model
+/// computes: the routed ids and the greedy tokens are the same at every
+/// placement.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum ExpertPlacementMode {
+    /// Every tensor follows the device offload (the default, and the only
+    /// placement a model without expert banks accepts).
+    #[default]
+    Device,
+    /// The expert banks of the chosen layers stay in host memory and are read
+    /// from there, through the device cache when one is configured.
+    Host,
+}
+
+/// The expert placement of a serving engine, resolved (never `auto`): which
+/// layers' expert banks stay in host memory, and the budget of the device
+/// cache that serves host-resident banks. A different placement is a different
+/// set of resident weights, so it belongs to the identity of a loaded model,
+/// not to a request.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ExpertPlacement {
+    pub mode: ExpertPlacementMode,
+    /// HOST: MoE layers (counted from the end) whose expert banks stay in host
+    /// memory; 0 = all of them. Ignored unless the mode is `Host`.
+    #[serde(default)]
+    pub host_layers: u32,
+    /// HOST + GPU: budget of the MoE expert device cache in bytes; 0 = disabled.
+    #[serde(default)]
+    pub device_cache_bytes: u64,
+}
+
+impl ExpertPlacement {
+    /// The default placement: everything on the device, no cache.
+    pub fn device() -> Self {
+        Self::default()
+    }
+
+    /// Whether this placement keeps expert banks in host memory.
+    pub fn is_host(&self) -> bool {
+        self.mode == ExpertPlacementMode::Host
+    }
+}
+
+/// One routed expert bank of one layer, as the tensor inventory sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExpertBank {
+    /// The `blk.<N>.` index the tensor name carries.
+    pub layer: u32,
+    /// `gate_up` | `gate` | `up` | `down`: the `ffn_*_exps` stem of the name.
+    pub role: String,
+    /// The bank tensor's full name.
+    pub name: String,
+    /// ggml dimension order; `ne[2]` is the expert count of the bank.
+    pub ne: [i64; 4],
+    pub dtype: TensorDtype,
+    pub n_bytes: u64,
+}
+
+impl ExpertBank {
+    /// The expert count of the bank (`ne[2]`), 0 when the shape is not a 3D
+    /// expert bank.
+    pub fn n_expert(&self) -> u64 {
+        u64::try_from(self.ne[2]).unwrap_or(0)
+    }
+
+    /// Bytes of one expert of this bank.
+    pub fn bytes_per_expert(&self) -> u64 {
+        self.n_bytes.checked_div(self.n_expert()).unwrap_or(0)
+    }
+}
+
+/// Counters of one path of the expert device cache.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExpertCachePathStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub bytes: u64,
+}
+
+/// One cache group: the layers sharing one slot bank on one device.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExpertCacheGroupStats {
+    pub n_slots: i32,
+    pub n_layers: i32,
+    pub n_expert: i32,
+    pub device_bytes: u64,
+}
+
+/// Read-only counters of an engine context's MoE expert device cache, monotonic
+/// since the context was created. All zero when the context has no cache.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExpertCacheStats {
+    /// Slot-map path, small ubatches.
+    pub small: ExpertCachePathStats,
+    /// Slot-map path, large ubatches.
+    pub large: ExpertCachePathStats,
+    /// Experts copied from the cache for large batches.
+    pub copy: ExpertCachePathStats,
+    pub groups: Vec<ExpertCacheGroupStats>,
+}
+
+/// Parses a byte count as a configuration spells it: a plain integer (`4096`)
+/// or a unit suffix (`6GiB`, `512MiB`, `1TiB`; the trailing `B` may be omitted,
+/// so `6G` works too). Returns `None` when the text is neither - the caller
+/// turns that into its own typed error.
+pub fn parse_byte_size(text: &str) -> Option<u64> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let (digits, unit) = match text.find(|c: char| !(c.is_ascii_digit())) {
+        Some(index) => (&text[..index], &text[index..]),
+        None => (text, ""),
+    };
+    let value: u64 = digits.parse().ok()?;
+    let multiplier: u64 = match unit.to_ascii_uppercase().as_str() {
+        "" | "B" => 1,
+        "K" | "KB" | "KIB" => 1 << 10,
+        "M" | "MB" | "MIB" => 1 << 20,
+        "G" | "GB" | "GIB" => 1 << 30,
+        "T" | "TB" | "TIB" => 1 << 40,
+        _ => return None,
+    };
+    value.checked_mul(multiplier)
 }
 
 /// Storage precision for the layer outputs retained by gradient checkpointing.

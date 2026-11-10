@@ -23,6 +23,7 @@ impl AdapterSource {
         let n_ctx = config.n_ctx();
         let n_seq_max = config.n_seq_max;
         let decision = config.decision.options();
+        let experts = config.experts.placement()?;
         let spec = |adapter: Option<std::path::PathBuf>| WeightsSpec {
             model: config.model.clone(),
             adapter,
@@ -31,6 +32,7 @@ impl AdapterSource {
             n_seq_max,
             chat_template_variables: None,
             decision: decision.clone(),
+            experts: experts.clone(),
         };
         let base = spec(None);
         let adapters = config

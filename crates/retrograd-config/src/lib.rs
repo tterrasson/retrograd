@@ -45,9 +45,9 @@ pub use distill::{
     DEFAULT_DISTILL_WEIGHT_CLIP, DistillConfig, DistillMode, DistillToml, OfflineDistillConfig,
 };
 pub use document::{
-    CheckpointToml, ConfigDocument, EvaluationToml, GefenToml, LoraToml, MetricsToml,
+    CheckpointToml, ConfigDocument, EvaluationToml, ExpertsToml, GefenToml, LoraToml, MetricsToml,
     ModelOverride, ModelToml, MuonToml, ObserveToml, OptimizerToml, OutputToml, ReferenceToml,
-    RunToml, SamplingToml, SharedPrefixFanoutToml, TrainableToml, TrainingToml,
+    RunToml, SamplingToml, ServingToml, SharedPrefixFanoutToml, TrainableToml, TrainingToml,
 };
 pub use grpo::{
     AdvantageBaseline, DEFAULT_MAX_STALLED_UPDATES, DynamicSampling, GrpoConfig, GrpoJudge,
@@ -106,6 +106,73 @@ pub struct RunConfig {
     /// one. `None` means the reference is this model with its adapter
     /// disabled, valid only while the base weights stay frozen.
     pub reference: Option<ReferenceConfig>,
+    /// The `[serving]` section: how the run's weights are served once they
+    /// exist. `None` = the defaults (placement `device`, no expert cache).
+    pub serving: Option<ServingConfig>,
+}
+
+/// The `[serving]` section of a run, validated at build. The operator's
+/// spellings are kept as written - `auto` included - because the planner
+/// resolves them when the run is created, and the resolved placement is what
+/// the run record carries.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServingConfig {
+    pub experts: ExpertsConfig,
+}
+
+/// `[serving.experts]`: the expert placement requested for serving.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExpertsConfig {
+    /// `device`, `host` or `auto` (validated at build; `auto` needs the planner).
+    pub placement: Option<String>,
+    /// MoE layers kept on the host, counted from the end; 0 = all. Ignored
+    /// unless the placement is `host`.
+    pub host_layers: Option<u32>,
+    /// The expert device-cache budget as spelled, or `auto`.
+    pub device_cache: Option<DeviceCacheRequest>,
+}
+
+/// A device-cache budget as the configuration spells it: `auto`, or a byte
+/// count (`"6GiB"`, `4096`, `"0"` = disabled).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceCacheRequest {
+    Auto,
+    Bytes(u64),
+}
+
+impl ExpertsConfig {
+    /// Whether any field asks the planner for its proposal (`auto`).
+    pub fn needs_planner(&self) -> bool {
+        self.placement.as_deref() == Some("auto")
+            || (self.placement.as_deref() == Some("host")
+                && self.device_cache == Some(DeviceCacheRequest::Auto))
+    }
+
+    /// The resolved placement when no `auto` spelling is left; `Err(field)`
+    /// names the field the planner has to resolve. The spellings were
+    /// validated at build, so an unknown one cannot reach here.
+    pub fn to_placement(&self) -> std::result::Result<retrograd_core::ExpertPlacement, String> {
+        use retrograd_core::ExpertPlacementMode;
+        let mode = match self.placement.as_deref() {
+            None | Some("device") => ExpertPlacementMode::Device,
+            Some("host") => ExpertPlacementMode::Host,
+            Some("auto") => return Err("serving.experts.placement".into()),
+            Some(other) => return Err(format!("serving.experts.placement = `{other}`")),
+        };
+        if mode == ExpertPlacementMode::Device {
+            return Ok(retrograd_core::ExpertPlacement::device());
+        }
+        let device_cache_bytes = match self.device_cache {
+            None => 0,
+            Some(DeviceCacheRequest::Bytes(bytes)) => bytes,
+            Some(DeviceCacheRequest::Auto) => return Err("serving.experts.device_cache".into()),
+        };
+        Ok(retrograd_core::ExpertPlacement {
+            mode,
+            host_layers: self.host_layers.unwrap_or(0),
+            device_cache_bytes,
+        })
+    }
 }
 
 impl RunConfig {

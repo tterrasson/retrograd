@@ -27,6 +27,7 @@ fn spec() -> WeightsSpec {
         n_seq_max: None,
         chat_template_variables: None,
         decision: Default::default(),
+        experts: Default::default(),
     }
 }
 

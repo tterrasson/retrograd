@@ -12,9 +12,12 @@ mod adapter;
 mod chat;
 mod decide;
 mod embed;
+mod experts;
 mod generate;
 mod score;
 mod step;
+
+pub use experts::{EngineOptions, ExpertBanks, read_expert_banks};
 
 pub use adapter::AdapterRowsInfo;
 pub use decide::{
@@ -194,6 +197,11 @@ fn engine_config_to_ffi(
         threads: config.threads,
         verbose: config.verbose,
         kv_unified: u32::from(config.kv_unified),
+        // Overwritten by `new_with_options` with the placement of the options;
+        // the default is DEVICE, no cache - the historical behaviour.
+        expert_placement: ffi::RETRO_EXPERT_PLACEMENT_DEVICE,
+        expert_host_layers: 0,
+        expert_device_cache_bytes: 0,
     })
 }
 
@@ -222,11 +230,24 @@ impl Engine {
         model_path: impl AsRef<Path>,
         training: &TrainConfig,
     ) -> retrograd_core::Result<Self> {
+        Self::from_train_config_with(model_path, training, &EngineOptions::default())
+    }
+
+    /// Like [`Engine::from_train_config`], with the inference options (the
+    /// expert placement) passed beside the training-derived geometry: the
+    /// placement is not part of a run's training configuration, so it does not
+    /// belong in [`EngineConfig`] either.
+    pub fn from_train_config_with(
+        model_path: impl AsRef<Path>,
+        training: &TrainConfig,
+        options: &EngineOptions,
+    ) -> retrograd_core::Result<Self> {
         let model_path = model_path.as_ref();
         let n_vocab = crate::model_info(model_path, training.device)?.n_vocab;
-        Ok(Self::new(
+        Ok(Self::new_with_options(
             model_path,
             &engine_config_from_train_config(training, n_vocab),
+            options,
         )?)
     }
 
@@ -237,12 +258,39 @@ impl Engine {
         model_path: impl AsRef<Path>,
         config: &EngineConfig,
     ) -> std::result::Result<Self, EngineError> {
+        Self::new_with_options(model_path, config, &EngineOptions::default())
+    }
+
+    /// Like [`Engine::new`], with the inference options (the expert placement)
+    /// applied to the context: `host` keeps the chosen layers' expert banks in
+    /// host memory, and `device_cache_bytes` sizes the device cache that serves
+    /// them. The default options load exactly like [`Engine::new`].
+    pub fn new_with_options(
+        model_path: impl AsRef<Path>,
+        config: &EngineConfig,
+        options: &EngineOptions,
+    ) -> std::result::Result<Self, EngineError> {
         let model_path = path_to_cstring(model_path.as_ref())?;
-        let ffi_config = engine_config_to_ffi(config)?;
+        let mut ffi_config = engine_config_to_ffi(config)?;
+        let (placement, host_layers, cache_bytes) =
+            experts::expert_placement_to_ffi(&options.experts);
+        ffi_config.expert_placement = placement;
+        ffi_config.expert_host_layers = host_layers;
+        ffi_config.expert_device_cache_bytes = cache_bytes;
         // SAFETY: the `Engine` invariant holds and all borrowed arguments live through this synchronous call.
-        let raw = unsafe { ffi::retro_engine_new(model_path.as_ptr(), &ffi_config) };
+        let mut invalid_placement = false;
+        let raw = unsafe {
+            ffi::retro_engine_new_checked(model_path.as_ptr(), &ffi_config, &mut invalid_placement)
+        };
         NonNull::new(raw)
-            .ok_or_else(|| EngineError::Runtime(ffi::last_error()))
+            .ok_or_else(|| {
+                let message = ffi::last_error();
+                if invalid_placement {
+                    EngineError::invalid(message)
+                } else {
+                    EngineError::Runtime(message)
+                }
+            })
             .map(|raw| Self {
                 raw,
                 n_seq_max: config.n_seq_max as usize,

@@ -423,6 +423,7 @@ async fn serve_replay(fixture: &Fixture, device: Device) -> (f64, Vec<String>) {
                     .map(|budget| usize::try_from(budget).expect("budget fits usize")),
                 ..DecisionOptions::default()
             },
+            experts: Default::default(),
         };
         let result = session.decide(spec, entry["body"].clone()).await;
         if let Some(message) = recorded["error"].as_str() {

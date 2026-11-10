@@ -114,6 +114,9 @@ const KEYS: &[&str] = &[
     "reference.model",
     "run.algorithm",
     "run.verbose",
+    "serving.experts.device_cache",
+    "serving.experts.host_layers",
+    "serving.experts.placement",
     "trainable.biases",
     "trainable.layers",
     "trainable.modules",
@@ -457,6 +460,13 @@ fn exhaustive_document() -> ConfigDocument {
                 beta2: Some(0.99),
                 eps: Some(1.0e-7),
             }),
+        }),
+        serving: Some(ServingToml {
+            experts: ExpertsToml {
+                placement: Some("host".to_string()),
+                host_layers: Some(2),
+                device_cache: Some(toml::Value::String("6GiB".to_string())),
+            },
         }),
     }
 }

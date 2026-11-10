@@ -147,6 +147,53 @@ fn targets_expand_aliases() {
     assert!(parse_targets(&["not-a-target".into()]).is_err());
 }
 
+/// `[serving.experts]` reaches the run config with its spellings validated,
+/// `auto` included - the planner resolves it when the run is created.
+#[test]
+fn the_serving_experts_section_builds_and_validates() {
+    let base = "[run]\nalgorithm='sft'\n[model]\npath='model.gguf'\n[output]\npath='out.gguf'\n[lora]\n[sft]\ndata='data.txt'\n";
+
+    let (_tmp, absent) = write_config(base);
+    assert!(load(&absent).unwrap().serving.is_none());
+
+    let (_tmp, host) = write_config(&format!(
+        "{base}[serving.experts]\nplacement='host'\nhost_layers=2\ndevice_cache='6GiB'\n"
+    ));
+    let experts = load(&host).unwrap().serving.unwrap().experts;
+    assert_eq!(experts.placement.as_deref(), Some("host"));
+    assert_eq!(experts.host_layers, Some(2));
+    assert_eq!(
+        experts.device_cache,
+        Some(DeviceCacheRequest::Bytes(6 * (1 << 30)))
+    );
+    assert!(!experts.needs_planner());
+    assert_eq!(
+        experts.to_placement().unwrap(),
+        retrograd_core::ExpertPlacement {
+            mode: retrograd_core::ExpertPlacementMode::Host,
+            host_layers: 2,
+            device_cache_bytes: 6 * (1 << 30),
+        }
+    );
+
+    let (_tmp, automatic) = write_config(&format!(
+        "{base}[serving.experts]\nplacement='auto'\ndevice_cache='auto'\n"
+    ));
+    let experts = load(&automatic).unwrap().serving.unwrap().experts;
+    assert!(experts.needs_planner());
+    assert!(experts.to_placement().is_err());
+
+    let (_tmp, bad_placement) =
+        write_config(&format!("{base}[serving.experts]\nplacement='sideways'\n"));
+    let error = load(&bad_placement).unwrap_err().to_string();
+    assert!(error.contains("serving.experts.placement"), "{error}");
+
+    let (_tmp, bad_cache) =
+        write_config(&format!("{base}[serving.experts]\ndevice_cache='a lot'\n"));
+    let error = load(&bad_cache).unwrap_err().to_string();
+    assert!(error.contains("serving.experts.device_cache"), "{error}");
+}
+
 /// An omitted `lora.targets` trains every projection; only an explicit
 /// `['auto']` hands the choice back to the runtime.
 #[test]

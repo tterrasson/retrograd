@@ -251,7 +251,101 @@ pub(crate) fn serving_of(config: &retrograd_config::RunConfig) -> ServingSpec {
         output_kind: config.output.kind.as_str().to_owned(),
         output: config.output.path.clone(),
         chat_template_variables: config.chat_template_variables_json(),
+        experts: serving_experts(config),
     }
+}
+
+/// The expert placement a run's `[serving.experts]` asks for. Concrete
+/// spellings pass through; `auto` is resolved here, where the planner is
+/// linked, from the model's expert bank inventory and the machine's memory -
+/// the resolved placement is what `run.json` records, so a later read of the
+/// record does not re-propose. Models outside the validated set default to
+/// device placement unless the operator explicitly requested host placement.
+fn serving_experts(config: &retrograd_config::RunConfig) -> retrograd_core::ExpertPlacement {
+    let Some(serving) = &config.serving else {
+        return retrograd_core::ExpertPlacement::device();
+    };
+    let experts = &serving.experts;
+    if !experts.needs_planner() {
+        return experts.to_placement().unwrap_or_else(|field| {
+            tracing::warn!("serving expert placement {field} is not resolvable; using device");
+            retrograd_core::ExpertPlacement::device()
+        });
+    }
+    let explicit_host = experts.placement.as_deref() == Some("host");
+    let host_layers = experts.host_layers.unwrap_or(0);
+    let fallback = if explicit_host {
+        retrograd_core::ExpertPlacement {
+            mode: retrograd_core::ExpertPlacementMode::Host,
+            host_layers,
+            device_cache_bytes: 0,
+        }
+    } else {
+        retrograd_core::ExpertPlacement::device()
+    };
+    let banks = match retrograd_engine::read_expert_banks(&config.model) {
+        Ok(banks) if banks.validated => banks,
+        Ok(_) => return fallback,
+        Err(error) => {
+            tracing::warn!(
+                "cannot read the expert banks of {}: {error}; using fallback expert placement",
+                config.model.display()
+            );
+            return fallback;
+        }
+    };
+    let info = match retrograd_engine::model_info(&config.model, config.training.device) {
+        Ok(info) => info,
+        Err(error) => {
+            tracing::warn!(
+                "cannot read the geometry of {}: {error}; using fallback expert placement",
+                config.model.display()
+            );
+            return fallback;
+        }
+    };
+    let device_free = if config.training.device == retrograd_core::Device::Cpu {
+        None
+    } else {
+        retrograd_memory::device_snapshot().map(|memory| memory.free)
+    };
+    // Host available for weights: the system RAM, minus what the process
+    // already holds. Unified memory is counted once, here.
+    let host_available = retrograd_memory::system_memory_bytes()
+        .map(|total| {
+            total.saturating_sub(
+                retrograd_memory::snapshot()
+                    .map(|s| s.resident)
+                    .unwrap_or(0),
+            )
+        })
+        .unwrap_or(0);
+    let input = retrograd_plan::experts::PlacementInput {
+        banks: banks.banks,
+        n_expert_used: info.n_expert_used,
+        model_total_bytes: info.model_size_bytes,
+        device_free_bytes: device_free,
+        host_available_bytes: host_available,
+    };
+    let mut proposal = if explicit_host {
+        retrograd_plan::experts::propose_host(&input, host_layers)
+    } else {
+        let proposal = retrograd_plan::experts::propose(&input);
+        if proposal.placement.is_host() && host_layers > 0 {
+            retrograd_plan::experts::propose_host(&input, host_layers)
+        } else {
+            proposal
+        }
+    };
+    for line in &proposal.explanation {
+        tracing::info!("expert placement proposal: {line}");
+    }
+    if proposal.placement.is_host()
+        && let Some(retrograd_config::DeviceCacheRequest::Bytes(bytes)) = experts.device_cache
+    {
+        proposal.placement.device_cache_bytes = bytes;
+    }
+    proposal.placement
 }
 
 fn render<T: serde::Serialize>(value: &T) -> ApiResult<Box<RawValue>> {

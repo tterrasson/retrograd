@@ -125,6 +125,7 @@ fn weights(serving: &ServingSpec, model: &Path, adapter: Option<PathBuf>) -> Wei
         n_seq_max: None,
         chat_template_variables: serving.chat_template_variables.clone(),
         decision: Default::default(),
+        experts: serving.experts.clone(),
     }
 }
 

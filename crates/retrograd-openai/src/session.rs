@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use retrograd_agent_core::parser::ToolCallParser;
-use retrograd_core::Device;
+use retrograd_core::{Device, ExpertPlacement};
 use retrograd_decision::Json;
 use retrograd_decision::request::SystemOneRequest;
 use retrograd_engine::{AdapterRowsInfo, Decision, DecisionInfo, EngineMemory};
@@ -72,6 +72,11 @@ pub struct WeightsSpec {
     /// What replaces the decision head's own settings, for a decision model.
     /// All absent: the model's.
     pub decision: DecisionOptions,
+    /// Where the routed expert banks of a MoE model live. A different
+    /// placement is a different set of resident weights, so it is part of the
+    /// base identity: two specs differing only here do NOT share a loaded
+    /// backend. `device` (the default) is today's behaviour.
+    pub experts: ExpertPlacement,
 }
 
 impl WeightsSpec {
@@ -83,6 +88,7 @@ impl WeightsSpec {
             && self.n_seq_max == other.n_seq_max
             && self.chat_template_variables == other.chat_template_variables
             && self.decision == other.decision
+            && self.experts == other.experts
     }
 }
 
@@ -1015,6 +1021,25 @@ mod tests {
     use super::*;
     use crate::testing::FakeLoader;
 
+    #[test]
+    fn two_specs_differing_only_in_expert_placement_do_not_share_a_base() {
+        let base = spec(None);
+        let host = WeightsSpec {
+            experts: retrograd_core::ExpertPlacement {
+                mode: retrograd_core::ExpertPlacementMode::Host,
+                host_layers: 0,
+                device_cache_bytes: 0,
+            },
+            ..base.clone()
+        };
+        assert!(!base.same_base(&host), "another placement = another engine");
+        assert!(base.same_base(&base.clone()));
+        assert!(
+            base.same_base(&spec(Some("a.gguf"))),
+            "the adapter stays excluded"
+        );
+    }
+
     fn spec(adapter: Option<&str>) -> WeightsSpec {
         WeightsSpec {
             model: "base.gguf".into(),
@@ -1024,6 +1049,7 @@ mod tests {
             n_seq_max: None,
             chat_template_variables: None,
             decision: DecisionOptions::default(),
+            experts: Default::default(),
         }
     }
 

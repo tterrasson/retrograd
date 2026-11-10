@@ -1,12 +1,13 @@
 //! The standalone server's minimal TOML configuration: the model, its
-//! adapters, the KV pool geometry, the device, the auth, the queue, and the
-//! head options of a decision model. Nothing about training - this file is
-//! parsed here, not by the run-config crate.
+//! adapters, the KV pool geometry, the device, the auth, the queue, the head
+//! options of a decision model, and the expert placement of a MoE model.
+//! Nothing about training - this file is parsed here, not by the run-config
+//! crate.
 
 use std::net::IpAddr;
 use std::path::PathBuf;
 
-use retrograd_core::Device;
+use retrograd_core::{Device, ExpertPlacement, ExpertPlacementMode, parse_byte_size};
 use serde::Deserialize;
 
 /// One LoRA checkpoint of the base model, served under `name`.
@@ -60,6 +61,10 @@ pub struct ServeConfig {
     /// Refused at load for a model that is not one.
     #[serde(default)]
     pub decision: DecisionSection,
+    /// `[experts]`: where the routed expert banks of a MoE model live.
+    /// Absent = `device`: today's behaviour, every tensor on the device.
+    #[serde(default)]
+    pub experts: ExpertsSection,
 }
 
 /// `[decision]`. Every key is absent by default, and absent means the model's
@@ -89,6 +94,101 @@ impl DecisionSection {
             max_head_tokens: self.max_head_tokens,
             pack: self.pack,
         }
+    }
+}
+
+/// `[experts]`: the expert placement of the served model. Absent means
+/// `device` - every tensor follows the device offload, with no cache - so a
+/// configuration written before this section existed loads exactly as before.
+///
+/// ```toml
+/// [experts]
+/// placement = "host"     # device | host
+/// host_layers = 0        # MoE layers kept on the host, counted from the end; 0 = all; ignored unless host
+/// device_cache = "6GiB"  # budget of the expert device cache, or 0 to disable; ignored unless host
+/// ```
+///
+/// `auto` spellings are resolved by the planner where the planner is linked
+/// (the run server resolves them from its own `[serving.experts]`); this
+/// standalone binary does not link the planner, so it refuses them here rather
+/// than guessing.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpertsSection {
+    /// `device` (the default) or `host`.
+    #[serde(default)]
+    pub placement: Option<String>,
+    /// MoE layers whose expert banks stay in host memory, counted from the
+    /// end; 0 (the default) = all of them. Ignored unless the placement is
+    /// `host`.
+    #[serde(default)]
+    pub host_layers: Option<u32>,
+    /// Budget of the expert device cache: a byte count (`"6GiB"`, `4096`) or
+    /// `0` to disable. Ignored unless the placement is `host`.
+    #[serde(default)]
+    pub device_cache: Option<toml::Value>,
+}
+
+impl ExpertsSection {
+    /// The resolved placement, or the configuration error naming the field.
+    pub fn placement(&self) -> Result<ExpertPlacement, ConfigError> {
+        let mode = match self.placement.as_deref() {
+            None | Some("device") => ExpertPlacementMode::Device,
+            Some("host") => ExpertPlacementMode::Host,
+            Some("auto") => {
+                return Err(ConfigError::Invalid(
+                    "experts.placement = \"auto\" is resolved by the planner, which this \
+                     standalone server does not link; name `device` or `host` here"
+                        .into(),
+                ));
+            }
+            Some(other) => {
+                return Err(ConfigError::Invalid(format!(
+                    "experts.placement must be `device` or `host`; got `{other}`"
+                )));
+            }
+        };
+        let host_layers = self.host_layers.unwrap_or(0);
+        // Parsed and validated even when ignored: a malformed value is a
+        // configuration error, not a silently dropped one.
+        let device_cache_bytes = match &self.device_cache {
+            None => 0,
+            Some(toml::Value::Integer(value)) => u64::try_from(*value).map_err(|_| {
+                ConfigError::Invalid(format!(
+                    "experts.device_cache must be a byte count or 0; got `{value}`"
+                ))
+            })?,
+            Some(toml::Value::String(text)) => match text.as_str() {
+                "0" => 0,
+                "auto" => {
+                    return Err(ConfigError::Invalid(
+                        "experts.device_cache = \"auto\" is resolved by the planner, which this \
+                         standalone server does not link; name a byte count or 0 here"
+                            .into(),
+                    ));
+                }
+                other => parse_byte_size(other).ok_or_else(|| {
+                    ConfigError::Invalid(format!(
+                        "experts.device_cache must be a byte count ('6GiB', '4096') or 0; got `{other}`"
+                    ))
+                })?,
+            },
+            Some(other) => {
+                return Err(ConfigError::Invalid(format!(
+                    "experts.device_cache must be a byte count or 0; got `{other}`"
+                )));
+            }
+        };
+        // `host_layers` and `device_cache` are ignored outside `host`, per the
+        // documented semantics.
+        if mode == ExpertPlacementMode::Device {
+            return Ok(ExpertPlacement::device());
+        }
+        Ok(ExpertPlacement {
+            mode,
+            host_layers,
+            device_cache_bytes,
+        })
     }
 }
 
@@ -234,6 +334,7 @@ impl ServeConfig {
         // Fail at load, not at first use.
         self.admission()?;
         self.device()?;
+        self.experts.placement()?;
         self.check_network_rule()?;
         Ok(())
     }
@@ -344,6 +445,106 @@ mod tests {
         assert_eq!(
             config.decision.options(),
             retrograd_openai::DecisionOptions::default()
+        );
+    }
+
+    #[test]
+    fn the_experts_section_parses_into_a_resolved_placement() {
+        let absent = config(r#"model = "/dev/null""#).unwrap();
+        assert_eq!(
+            absent.experts.placement().unwrap(),
+            ExpertPlacement::device()
+        );
+
+        let host = config(
+            r#"
+            model = "/dev/null"
+            [experts]
+            placement = "host"
+            host_layers = 2
+            device_cache = "6GiB"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            host.experts.placement().unwrap(),
+            ExpertPlacement {
+                mode: ExpertPlacementMode::Host,
+                host_layers: 2,
+                device_cache_bytes: 6 * (1 << 30),
+            }
+        );
+
+        let plain_bytes = config(
+            r#"
+            model = "/dev/null"
+            [experts]
+            placement = "host"
+            device_cache = 4096
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            plain_bytes.experts.placement().unwrap().device_cache_bytes,
+            4096
+        );
+
+        let zero_cache = config(
+            r#"
+            model = "/dev/null"
+            [experts]
+            placement = "host"
+            device_cache = "0"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            zero_cache.experts.placement().unwrap().device_cache_bytes,
+            0
+        );
+    }
+
+    #[test]
+    fn the_experts_section_refusals_name_the_field() {
+        let base = r#"model = "/dev/null""#;
+        for (text, expected) in [
+            (
+                format!("{base}\n[experts]\nplacement = \"sideways\""),
+                "experts.placement must be `device` or `host`",
+            ),
+            (
+                format!("{base}\n[experts]\nplacement = \"auto\""),
+                "resolved by the planner",
+            ),
+            (
+                format!("{base}\n[experts]\ndevice_cache = \"auto\""),
+                "resolved by the planner",
+            ),
+            (
+                format!("{base}\n[experts]\ndevice_cache = \"a lot\""),
+                "experts.device_cache must be a byte count",
+            ),
+            (
+                format!("{base}\n[experts]\nplacement = \"host\"\nunknown = 1"),
+                "unknown field",
+            ),
+        ] {
+            let error = config(&text).unwrap_err().to_string();
+            assert!(error.contains(expected), "{text} -> {error}");
+        }
+        // host_layers and device_cache are ignored, not refused, outside host.
+        let ignored = config(
+            r#"
+            model = "/dev/null"
+            [experts]
+            host_layers = 1
+            device_cache = "1GiB"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            ignored.experts.placement().unwrap(),
+            ExpertPlacement::device()
         );
     }
 

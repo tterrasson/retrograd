@@ -149,6 +149,30 @@ pub(crate) fn serve(args: Vec<String>) -> Result<()> {
 /// configuration the way `retrograd chat` reads them.
 fn served_models(args: &ServeArgs, run_config: &config::RunConfig) -> Result<SingleModel> {
     let variables = run_config.chat_template_variables_json();
+    // The `[serving.experts]` section of the run, resolved. The `auto`
+    // spellings are resolved by the planner where it is linked (the run server
+    // records the resolved placement in `run.json`); this CLI does not link
+    // the planner. Automatic placement defaults to device and an automatic
+    // cache is disabled.
+    let experts = match &run_config.serving {
+        Some(serving) => match serving.experts.to_placement() {
+            Ok(placement) => placement,
+            Err(field) => {
+                eprintln!(
+                    "retrograd serve: {field} = auto needs the planner; using the default for that field"
+                );
+                let mut experts = serving.experts.clone();
+                if experts.placement.as_deref() == Some("auto") {
+                    experts.placement = None;
+                }
+                if experts.device_cache == Some(config::DeviceCacheRequest::Auto) {
+                    experts.device_cache = None;
+                }
+                experts.to_placement().map_err(Error::config)?
+            }
+        },
+        None => Default::default(),
+    };
     let spec = |model: &Path, adapter: Option<PathBuf>| WeightsSpec {
         model: model.to_path_buf(),
         adapter,
@@ -157,6 +181,7 @@ fn served_models(args: &ServeArgs, run_config: &config::RunConfig) -> Result<Sin
         n_seq_max: args.slots,
         chat_template_variables: variables.clone(),
         decision: Default::default(),
+        experts: experts.clone(),
     };
     let base = spec(&run_config.model, None);
     let served = if args.base_only {
